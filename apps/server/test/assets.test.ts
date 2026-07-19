@@ -26,6 +26,29 @@ describe("secure staged assets", () => {
     expect(await assets.remove("project", "agent", staged.id)).toBe(false);
   });
 
+  it("resolves one immutable runtime snapshot only from exact Project, owner, ID, and bytes", async () => {
+    const staged = await assets.stage({
+      projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\nruntime"),
+      name: "runtime.pdf", declaredType: "application/pdf",
+    });
+    const bound = assets.authoritativeRuntimeAttachment("project", "agent", staged.id);
+    expect(bound).toMatchObject({
+      attachment: {
+        id: staged.id,
+        agentId: "agent",
+        name: "runtime.pdf",
+        mediaType: "application/pdf",
+        state: "associated",
+      },
+      localPath: path.join(dataDir, "projects", "project", "agents", "agent", "attachments", `${staged.id}.bin`),
+    });
+    expect(assets.authoritativeRuntimeAttachment("other", "agent", staged.id)).toBeUndefined();
+    expect(assets.authoritativeRuntimeAttachment("project", "other", staged.id)).toBeUndefined();
+    expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id.toUpperCase())).toBeUndefined();
+    writeFileSync(bound!.localPath, "tampered");
+    expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id)).toBeUndefined();
+  });
+
   it("rejects trailing payloads, active markup, MIME/extension disagreement, and corrupt integrity", async () => {
     await expect(assets.stage({ projectId: "p", agentId: "t", body: Buffer.concat([PNG, Buffer.from("<script>")]), name: "x.png", declaredType: "image/png" })).rejects.toMatchObject({ statusCode: 415 });
     await expect(assets.stage({ projectId: "p", agentId: "t", body: Buffer.from("<svg><script/></svg>"), name: "x.svg", declaredType: "image/svg+xml" })).rejects.toBeInstanceOf(AssetError);

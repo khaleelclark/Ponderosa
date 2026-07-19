@@ -24,6 +24,10 @@ import {
   type TriggerSourceConfig,
   type TriggerSourceKind,
   type TriggerRunBudgetDto,
+  type AssetDto,
+  ASSET_MEDIA_TYPES,
+  DEFAULT_ASSET_LIMITS,
+  LONG_TEXT_MAX_UTF8_BYTES,
   type CommunicationActor,
   type CommunicationAudience,
   type CommunicationIntent,
@@ -287,7 +291,7 @@ export interface RuntimeArtifactInputV3 {
   id: string;
   role: "long_text" | "document";
   title: string;
-  mediaType: string;
+  mediaType: "text/markdown";
   blobPath: string;
   blobHash: string;
   byteLength: number;
@@ -477,6 +481,13 @@ export interface CoordinationV3StoreOptions {
   maxOutboxAttempts?: number;
   maxPendingTriggerOccurrencesPerAgent?: number;
   maxTriggerAttempts?: number;
+  /** Server-owned immutable asset authority. Required whenever runtime intake
+   * carries canonical attachments or dispatch snapshots. */
+  attachmentAuthority?: (
+    projectId: string,
+    agentId: string,
+    attachmentId: string,
+  ) => { attachment: AssetDto; localPath: string } | undefined;
 }
 
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
@@ -525,12 +536,21 @@ function payloadHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
-const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set([
-  "image/png", "image/jpeg", "image/webp", "application/pdf",
-  "text/plain", "application/json", "application/zip",
-]);
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set<string>(ASSET_MEDIA_TYPES);
 const RUNTIME_ATTACHMENT_FIELDS = new Set(["id", "name", "mediaType", "size", "localPath"]);
+const RUNTIME_CANONICAL_ATTACHMENT_FIELDS = new Set([
+  "id", "agentId", "name", "mediaType", "size", "width", "height", "sha256",
+  "state", "createdAt", "url", "downloadUrl", "previewUrl",
+]);
+const RUNTIME_ARTIFACT_FIELDS = new Set([
+  "id", "role", "title", "mediaType", "blobPath", "blobHash", "byteLength",
+  "originAgentId", "executionId",
+]);
+const RUNTIME_MAX_ATTACHMENTS_PER_OWNER = DEFAULT_ASSET_LIMITS.maxAssetsPerMessage;
+const RUNTIME_MAX_ATTACHMENT_BYTES = DEFAULT_ASSET_LIMITS.maxFileBytes;
+const RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES = DEFAULT_ASSET_LIMITS.maxMessageBytes;
+const RUNTIME_MAX_ARTIFACT_BYTES = LONG_TEXT_MAX_UTF8_BYTES;
 
 interface RuntimeDispatchAttachmentV3 {
   id: string;
@@ -543,20 +563,26 @@ interface RuntimeDispatchAttachmentV3 {
 function runtimeArtifactMetadataIsValid(artifact: unknown): artifact is RuntimeArtifactInputV3 {
   if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return false;
   const candidate = artifact as Record<string, unknown>;
-  return typeof candidate.id === "string" && /^text-[a-f0-9]{64}$/.test(candidate.id) &&
+  const hasOrigin = Object.prototype.hasOwnProperty.call(candidate, "originAgentId") && candidate.originAgentId !== undefined;
+  const hasExecution = Object.prototype.hasOwnProperty.call(candidate, "executionId") && candidate.executionId !== undefined;
+  return !Object.keys(candidate).some((field) => !RUNTIME_ARTIFACT_FIELDS.has(field)) &&
+    typeof candidate.id === "string" && /^text-[a-f0-9]{64}$/.test(candidate.id) &&
     (candidate.role === "long_text" || candidate.role === "document") &&
     typeof candidate.blobPath === "string" && candidate.blobPath === candidate.id &&
     typeof candidate.title === "string" && Boolean(candidate.title.trim()) &&
-    typeof candidate.mediaType === "string" && Boolean(candidate.mediaType.trim()) &&
+    candidate.mediaType === "text/markdown" &&
     typeof candidate.blobHash === "string" && /^[a-f0-9]{64}$/.test(candidate.blobHash) &&
-    Number.isSafeInteger(candidate.byteLength) && (candidate.byteLength as number) >= 0 &&
-    (candidate.originAgentId === undefined || typeof candidate.originAgentId === "string") &&
-    (candidate.executionId === undefined || typeof candidate.executionId === "string");
+    Number.isSafeInteger(candidate.byteLength) && (candidate.byteLength as number) > 0 &&
+    (candidate.byteLength as number) <= RUNTIME_MAX_ARTIFACT_BYTES &&
+    hasOrigin === hasExecution &&
+    (!hasOrigin || (typeof candidate.originAgentId === "string" && UUID_PATTERN.test(candidate.originAgentId) &&
+      typeof candidate.executionId === "string" && UUID_PATTERN.test(candidate.executionId)));
 }
 
 function runtimeDispatchAttachmentsAreValid(value: unknown): value is RuntimeDispatchAttachmentV3[] {
-  if (!Array.isArray(value)) return false;
+  if (!Array.isArray(value) || value.length > RUNTIME_MAX_ATTACHMENTS_PER_OWNER) return false;
   const ids = new Set<string>();
+  let bytes = 0;
   for (const item of value) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return false;
     const attachment = item as Record<string, unknown>;
@@ -565,9 +591,45 @@ function runtimeDispatchAttachmentsAreValid(value: unknown): value is RuntimeDis
         typeof attachment.name !== "string" || !attachment.name.trim() ||
         typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
         !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||
+        (attachment.size as number) > RUNTIME_MAX_ATTACHMENT_BYTES ||
         (attachment.localPath !== undefined &&
           (typeof attachment.localPath !== "string" || !attachment.localPath.trim()))) return false;
     ids.add(attachment.id);
+    bytes += attachment.size as number;
+  }
+  return bytes <= RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES;
+}
+
+function runtimeCanonicalAttachmentsAreValid(value: unknown): value is AssetDto[] {
+  if (!Array.isArray(value)) return false;
+  const ids = new Set<string>();
+  const countByOwner = new Map<string, number>();
+  const bytesByOwner = new Map<string, number>();
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const attachment = item as Record<string, unknown>;
+    if (Object.keys(attachment).some((field) => !RUNTIME_CANONICAL_ATTACHMENT_FIELDS.has(field)) ||
+        typeof attachment.id !== "string" || !UUID_PATTERN.test(attachment.id) || ids.has(attachment.id) ||
+        typeof attachment.agentId !== "string" || !UUID_PATTERN.test(attachment.agentId) ||
+        typeof attachment.name !== "string" || !attachment.name.trim() ||
+        typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
+        !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||
+        (attachment.size as number) > RUNTIME_MAX_ATTACHMENT_BYTES ||
+        typeof attachment.url !== "string" || !attachment.url.trim() ||
+        (attachment.width !== undefined && (!Number.isSafeInteger(attachment.width) || (attachment.width as number) < 1)) ||
+        (attachment.height !== undefined && (!Number.isSafeInteger(attachment.height) || (attachment.height as number) < 1)) ||
+        (attachment.sha256 !== undefined && (typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(attachment.sha256))) ||
+        (attachment.state !== undefined && attachment.state !== "staged" && attachment.state !== "associated") ||
+        (attachment.createdAt !== undefined && (typeof attachment.createdAt !== "string" || !isIso(attachment.createdAt))) ||
+        (attachment.downloadUrl !== undefined && (typeof attachment.downloadUrl !== "string" || !attachment.downloadUrl)) ||
+        (attachment.previewUrl !== undefined && (typeof attachment.previewUrl !== "string" || !attachment.previewUrl))) return false;
+    ids.add(attachment.id);
+    const owner = attachment.agentId;
+    const count = (countByOwner.get(owner) ?? 0) + 1;
+    const bytes = (bytesByOwner.get(owner) ?? 0) + (attachment.size as number);
+    if (count > RUNTIME_MAX_ATTACHMENTS_PER_OWNER || bytes > RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES) return false;
+    countByOwner.set(owner, count);
+    bytesByOwner.set(owner, bytes);
   }
   return true;
 }
@@ -591,36 +653,36 @@ export class CoordinationV3Store {
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
     const now = input.now ?? new Date().toISOString();
     const activationInputs = [...(input.activation ? [input.activation] : []), ...(input.activations ?? [])];
-    const activationScopeKeys = activationInputs.map((activation) =>
-      input.scopeKey ?? this.communicationScopeKey(input.payload, activation.agentId));
-    const canonical = {
-      projectId: input.projectId,
-      sender: input.sender,
-      intent: input.intent,
-      audience: input.audience,
-      payload: input.payload,
-      artifacts: input.artifacts ?? [],
-      actionable: activationInputs.length > 0,
-      activations: activationInputs,
-      activationScopeKeys,
-    };
-    const hash = payloadHash(canonical);
     return this.sqlite.transaction(() => {
       if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
+      const payload = this.bindRuntimeAttachments(input.projectId, input.payload, activationInputs.map((item) => item.agentId));
+      const activationScopeKeys = activationInputs.map((activation) =>
+        input.scopeKey ?? this.communicationScopeKey(payload, activation.agentId));
       this.requireRuntimeArtifacts(input.projectId, input.artifacts, "runtime communication");
       if (!this.runtimeCommunicationAuthorityAgrees({
         projectId: input.projectId,
         sender: input.sender,
         intent: input.intent,
         audience: input.audience,
-        payload: input.payload,
+        payload,
         activations: activationInputs.map((activation, index) => ({
           agentId: activation.agentId,
           kind: activation.kind,
           scopeKey: activationScopeKeys[index]!,
         })),
       })) throw new Error("runtime communication authority does not agree on one Project");
+      const hash = payloadHash({
+        projectId: input.projectId,
+        sender: input.sender,
+        intent: input.intent,
+        audience: input.audience,
+        payload,
+        artifacts: input.artifacts ?? [],
+        actionable: activationInputs.length > 0,
+        activations: activationInputs,
+        activationScopeKeys,
+      });
       const existing = this.sqlite.prepare(`
         SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
       `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
@@ -650,7 +712,7 @@ export class CoordinationV3Store {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         input.id, input.projectId, stableJson(input.sender), input.intent,
-        stableJson(input.audience), stableJson(input.payload), hash,
+        stableJson(input.audience), stableJson(payload), hash,
         activationInputs.length ? 1 : 0, now,
       );
       const insertArtifact = this.sqlite.prepare(`
@@ -675,7 +737,7 @@ export class CoordinationV3Store {
         dispatchPolicy: activation.dispatchPolicy,
         promptClass: activation.promptClass,
         dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
-        payload: input.payload,
+        payload,
         sourceKind: "communication",
         sourceId: input.id,
         externalIntake: true,
@@ -732,7 +794,7 @@ export class CoordinationV3Store {
     `).all(ownerKind ?? null, ownerKind ?? null, ownerId ?? null, ownerId ?? null) as Array<{
       id: string; owner_kind: "communication" | "request_update"; owner_id: string;
       project_id: string; role: "long_text" | "document";
-      title: string; media_type: string; blob_path: string; blob_hash: string; byte_length: number;
+      title: string; media_type: "text/markdown"; blob_path: string; blob_hash: string; byte_length: number;
       origin_agent_id: string | null; execution_id: string | null; created_at: string;
     }>;
     return rows.map((row) => ({
@@ -752,7 +814,7 @@ export class CoordinationV3Store {
     `).get(id) as {
       id: string; owner_kind: "communication" | "request_update"; owner_id: string;
       project_id: string; role: "long_text" | "document";
-      title: string; media_type: string; blob_path: string; blob_hash: string; byte_length: number;
+      title: string; media_type: "text/markdown"; blob_path: string; blob_hash: string; byte_length: number;
       origin_agent_id: string | null; execution_id: string | null; created_at: string;
     } | undefined;
     return row ? {
@@ -4270,6 +4332,133 @@ export class CoordinationV3Store {
     }
   }
 
+  private bindRuntimeAttachments(
+    projectId: string,
+    payloadValue: unknown,
+    activationAgentIds: string[],
+  ): unknown {
+    const payload = payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
+      ? payloadValue as Record<string, unknown>
+      : undefined;
+    if (!payload) return payloadValue;
+    const embedded = payload.communication && typeof payload.communication === "object" && !Array.isArray(payload.communication)
+      ? payload.communication as Record<string, unknown>
+      : undefined;
+    const communication = embedded ?? (Object.prototype.hasOwnProperty.call(payload, "schemaVersion") ? payload : undefined);
+    const dispatch = payload.dispatch && typeof payload.dispatch === "object" && !Array.isArray(payload.dispatch)
+      ? payload.dispatch as Record<string, unknown>
+      : undefined;
+    const hasCanonicalAttachments = Boolean(communication && Object.prototype.hasOwnProperty.call(communication, "attachments"));
+    const hasTopLevelAttachments = Boolean(dispatch && Object.prototype.hasOwnProperty.call(dispatch, "attachments"));
+    const recipients = dispatch && Object.prototype.hasOwnProperty.call(dispatch, "recipients")
+      ? dispatch.recipients
+      : undefined;
+    const hasRecipientAttachments = Array.isArray(recipients) && recipients.some((candidate) =>
+      candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
+      Object.prototype.hasOwnProperty.call(candidate, "attachments"));
+    if (!hasCanonicalAttachments && !hasTopLevelAttachments && !hasRecipientAttachments) return payloadValue;
+
+    if (hasCanonicalAttachments && !runtimeCanonicalAttachmentsAreValid(communication!.attachments)) {
+      throw new Error("runtime communication attachments are invalid");
+    }
+    if (hasTopLevelAttachments && !runtimeDispatchAttachmentsAreValid(dispatch!.attachments)) {
+      throw new Error("runtime communication attachments are invalid");
+    }
+    if (recipients !== undefined && !Array.isArray(recipients)) {
+      throw new Error("runtime communication attachments are invalid");
+    }
+
+    const authority = this.options.attachmentAuthority;
+    const resolveCanonical = (attachment: AssetDto): AssetDto => {
+      const resolved = authority?.(projectId, attachment.agentId, attachment.id);
+      if (!resolved || stableJson(resolved.attachment) !== stableJson(attachment)) {
+        throw new Error("runtime communication attachment authority mismatch");
+      }
+      return resolved.attachment;
+    };
+    const dispatchIds = new Set<string>();
+    const resolveSnapshot = (attachment: RuntimeDispatchAttachmentV3, agentId: string): RuntimeDispatchAttachmentV3 => {
+      if (dispatchIds.has(attachment.id)) throw new Error("runtime communication attachments are invalid");
+      dispatchIds.add(attachment.id);
+      const resolved = authority?.(projectId, agentId, attachment.id);
+      if (!resolved || attachment.name !== resolved.attachment.name ||
+          attachment.mediaType !== resolved.attachment.mediaType || attachment.size !== resolved.attachment.size ||
+          (attachment.localPath !== undefined && attachment.localPath !== resolved.localPath)) {
+        throw new Error("runtime communication attachment authority mismatch");
+      }
+      return {
+        id: resolved.attachment.id,
+        name: resolved.attachment.name,
+        mediaType: resolved.attachment.mediaType,
+        size: resolved.attachment.size,
+        localPath: resolved.localPath,
+      };
+    };
+
+    let nextCommunication = communication;
+    if (hasCanonicalAttachments) {
+      nextCommunication = {
+        ...communication!,
+        attachments: (communication!.attachments as AssetDto[]).map(resolveCanonical),
+      };
+    }
+    const canonicalOwners = new Map<string, string>(
+      (nextCommunication?.attachments as AssetDto[] | undefined)?.map((attachment) =>
+        [attachment.id, attachment.agentId] as const) ?? [],
+    );
+    let nextDispatch = dispatch;
+    if (dispatch) {
+      nextDispatch = { ...dispatch };
+      if (hasTopLevelAttachments) {
+        const topLevelAttachments = dispatch.attachments as RuntimeDispatchAttachmentV3[];
+        const targets = [...new Set(activationAgentIds)];
+        const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
+          const owner = canonicalOwners.get(attachment.id);
+          return owner ? [owner] : [];
+        }))];
+        const target = targets.length === 1
+          ? targets[0]
+          : targets.length === 0 && canonicalTargets.length === 1 &&
+              topLevelAttachments.every((attachment) => canonicalOwners.has(attachment.id))
+            ? canonicalTargets[0]
+            : undefined;
+        if (topLevelAttachments.length > 0 && !target) {
+          throw new Error("runtime communication attachment owner is ambiguous");
+        }
+        nextDispatch.attachments = topLevelAttachments.length
+          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, target!))
+          : [];
+      }
+      if (Array.isArray(recipients)) {
+        nextDispatch.recipients = recipients.map((candidate) => {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+            if (hasRecipientAttachments) throw new Error("runtime communication attachments are invalid");
+            return candidate;
+          }
+          const recipient = candidate as Record<string, unknown>;
+          if (!Object.prototype.hasOwnProperty.call(recipient, "attachments")) return candidate;
+          if (typeof recipient.agentId !== "string" || !UUID_PATTERN.test(recipient.agentId) ||
+              !runtimeDispatchAttachmentsAreValid(recipient.attachments)) {
+            throw new Error("runtime communication attachments are invalid");
+          }
+          return {
+            ...recipient,
+            attachments: (recipient.attachments as RuntimeDispatchAttachmentV3[])
+              .map((attachment) => resolveSnapshot(attachment, recipient.agentId as string)),
+          };
+        });
+      }
+    }
+
+    if (embedded) return {
+      ...payload,
+      ...(nextCommunication ? { communication: nextCommunication } : {}),
+      ...(nextDispatch ? { dispatch: nextDispatch } : {}),
+    };
+    if (communication === payload) return nextCommunication;
+    return nextDispatch ? { ...payload, dispatch: nextDispatch } : payloadValue;
+  }
+
   private requireRuntimeArtifacts(
     projectId: string,
     artifacts: RuntimeArtifactInputV3[] | undefined,
@@ -4288,17 +4477,15 @@ export class CoordinationV3Store {
     if (!runtimeArtifactMetadataIsValid(artifact)) return false;
     const originAgentId = artifact.originAgentId;
     const executionId = artifact.executionId;
-    if (originAgentId !== undefined) {
-      if (!UUID_PATTERN.test(originAgentId) || !this.sqlite.prepare(`
-        SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND archived = 0
-      `).get(originAgentId, projectId)) return false;
-    }
-    if (executionId === undefined) return true;
-    if (!UUID_PATTERN.test(executionId)) return false;
+    if (originAgentId === undefined && executionId === undefined) return true;
+    if (originAgentId === undefined || executionId === undefined || !this.sqlite.prepare(`
+      SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND archived = 0
+    `).get(originAgentId, projectId)) return false;
     const run = this.sqlite.prepare(`
-      SELECT agent_id FROM scheduler_runs WHERE id = ? AND project_id = ?
+      SELECT agent_id FROM scheduler_runs
+      WHERE id = ? AND project_id = ? AND status IN ('leased', 'running')
     `).get(executionId, projectId) as { agent_id: string } | undefined;
-    return Boolean(run && (originAgentId === undefined || run.agent_id === originAgentId));
+    return Boolean(run && run.agent_id === originAgentId);
   }
 
   private coordinationScopeKey(conversationId: string | null, agentId: string): string {
@@ -4392,6 +4579,13 @@ export class CoordinationV3Store {
     const identityAgentIds = new Set(audienceAgentIds);
     if (sender.kind === "agent") {
       identityAgentIds.add(sender.agentId);
+    }
+    if (communication && Object.prototype.hasOwnProperty.call(communication, "attachments")) {
+      if (!runtimeCanonicalAttachmentsAreValid(communication.attachments)) return false;
+      for (const attachment of communication.attachments) {
+        identityAgentIds.add(attachment.agentId);
+        if (audience.kind !== "organization" && !audienceAgentIds.has(attachment.agentId)) return false;
+      }
     }
     const childAgentId = (payloadRecord as Record<string, unknown>).childAgentId;
     if (childAgentId !== undefined) {

@@ -1601,7 +1601,11 @@ export interface PonderosaServer extends FastifyInstance {
 
 export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
-  const coordinationV3 = new CoordinationV3Store(store.sqlite);
+  const assets = new AssetStore(opts.dataDir);
+  const coordinationV3 = new CoordinationV3Store(store.sqlite, {
+    attachmentAuthority: (projectId, agentId, attachmentId) =>
+      assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
+  });
   const resultCursorSecret = randomBytes(32);
   type PreparedCommunicationArtifact = {
     id: string;
@@ -1622,6 +1626,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     revision: CommunicationRevisionEvent;
     artifact?: PreparedCommunicationArtifact;
   };
+  const runtimeArtifactMetadata = (artifact: PreparedCommunicationArtifact) => ({
+    id: artifact.id,
+    role: artifact.role,
+    title: artifact.title,
+    mediaType: artifact.mediaType,
+    blobPath: artifact.blobPath,
+    blobHash: artifact.blobHash,
+    byteLength: artifact.byteLength,
+    ...(artifact.originAgentId ? { originAgentId: artifact.originAgentId } : {}),
+    ...(artifact.executionId ? { executionId: artifact.executionId } : {}),
+  });
   const stageCommunicationArtifact = async (input: {
     projectId: string;
     communicationId: string;
@@ -1772,7 +1787,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     ...(opts.webPush?.clearTimer ? { clearTimer: opts.webPush.clearTimer } : {}),
   }) : undefined;
   store.recoverInterruptedExecutions();
-  const assets = new AssetStore(opts.dataDir);
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const projectedUsage = (
     scope: { type: "overall" } | { type: "project" | "agent"; id: string },
@@ -6053,7 +6067,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           executionId: capability.runId,
           canonicalHandoff: (["completed", "blocked", "failed"] as CoordinationRequestUpdateKind[]).includes(kind),
         },
-        ...(artifact ? { artifacts: [artifact] } : {}),
+        ...(artifact ? { artifacts: [runtimeArtifactMetadata(artifact)] } : {}),
       });
       if (artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
         kind: "request_update", ownerId: updateId, artifactIds: [artifact.id],
@@ -6277,7 +6291,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           intent: proposedCommunication.intent,
           audience: proposedCommunication.audience,
           payload: proposedCommunication,
-          ...(preparedArtifacts.length ? { artifacts: preparedArtifacts } : {}),
+          ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
           scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
           runAuthorization: runAuthorization(capability),
           now: proposedCommunication.createdAt,
@@ -6404,7 +6418,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         intent: proposedCommunication.intent,
         audience: proposedCommunication.audience,
         payload: proposedCommunication,
-        ...(preparedArtifacts.length ? { artifacts: preparedArtifacts } : {}),
+        ...(preparedArtifacts.length ? { artifacts: preparedArtifacts.map(runtimeArtifactMetadata) } : {}),
         scopeKey: capability.conversationId ? `conversation:${capability.conversationId}` : `agent:${capability.agentId}`,
         runAuthorization: runAuthorization(capability),
         ...(intent === "collaboration" ? {
@@ -7458,7 +7472,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         intent: communicationInput.intent,
         audience: communicationInput.audience,
         payload: { communication: communicationInput },
-        ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
+        ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
         now: createdAt,
       });
     } catch (error) {
@@ -7585,7 +7599,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               })),
             },
           },
-          ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
+          ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
           activations: recipients.map((recipient, index) => ({
             agentId: recipient.agentId,
             kind: "human_message",
@@ -7811,7 +7825,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               })),
             },
           },
-          ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
+          ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
           activation: {
             agentId: target.id,
             kind: "human_message",
@@ -8046,7 +8060,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
       } : {}),
       revisionOwnerId: revisionId,
-      ...(prepared.artifact ? { artifact: prepared.artifact } : {}),
+      ...(prepared.artifact ? { artifact: runtimeArtifactMetadata(prepared.artifact) } : {}),
       revisionOutboxPayload: {
         activationId: activation.id,
         agentId: agent.id,
@@ -8420,7 +8434,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             })),
           },
         },
-        ...(prepared.artifact ? { artifacts: [prepared.artifact] } : {}),
+        ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
         activations: routing.intents.map((intent, index) => ({
           agentId: intent.targetAgentId,
           kind: "human_message",
@@ -8703,13 +8717,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               replyToMessageId: request.body.replyToMessageId ?? null,
               attachments: openingAttachments.map((item) => ({
                 id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
-                localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
               })),
               model: request.body.model ?? null,
               effort: request.body.effort ?? null,
             },
           },
-          ...(openingPrepared!.artifact ? { artifacts: [openingPrepared!.artifact] } : {}),
+          ...(openingPrepared!.artifact ? { artifacts: [runtimeArtifactMetadata(openingPrepared!.artifact)] } : {}),
           ...(!managedOpening ? { activation: {
             agentId: agent.id,
             kind: "managed_agent_opening",
@@ -9750,13 +9763,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 replyToMessageId: request.body.replyToMessageId ?? null,
                 attachments: messageAttachments.map((item) => ({
                   id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
-                  localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
                 })),
                 model: request.body.model ?? null,
                 effort: request.body.effort ?? null,
               },
             },
-            ...(userTextArtifact ? { artifacts: [userTextArtifact] } : {}),
+            ...(userTextArtifact ? { artifacts: [runtimeArtifactMetadata(userTextArtifact)] } : {}),
             activation: {
               agentId: agent.id,
               kind: "human_message",
