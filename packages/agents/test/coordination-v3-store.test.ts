@@ -977,23 +977,37 @@ describe("CoordinationV3Store scheduler", () => {
   });
 
   it("never coalesces or steers Activations across Team Chat scopes", () => {
+    const chatA = randomUUID();
+    const chatB = randomUUID();
+    const insertConversation = opened.client.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+      VALUES (?, ?, ?, '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `);
+    insertConversation.run(chatA, projectId, "Chat A");
+    insertConversation.run(chatB, projectId, "Chat B");
+    const addMembership = opened.client.prepare(`
+      INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position)
+      VALUES (?, ?, 0)
+    `);
+    addMembership.run(recipientA, chatA);
+    addMembership.run(recipientA, chatB);
     store.enqueueMessageActivation({
-      projectId, agentId: recipientA, messageId: "chat-a", scopeKey: "conversation:chat-a",
+      projectId, agentId: recipientA, messageId: "chat-a", scopeKey: `conversation:${chatA}`,
       kind: "ordinary", payload: { text: "A" },
     });
     store.enqueueMessageActivation({
-      projectId, agentId: recipientA, messageId: "chat-b", scopeKey: "conversation:chat-b",
+      projectId, agentId: recipientA, messageId: "chat-b", scopeKey: `conversation:${chatB}`,
       kind: "human", payload: { text: "B" },
     });
     const first = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
-    expect(first.scopeKey).toBe("conversation:chat-b");
+    expect(first.scopeKey).toBe(`conversation:${chatB}`);
     expect(first.activations).toHaveLength(1);
     acknowledgeLease(first);
     expect(store.leaseNextSteering({ workerId: "worker-1" })).toBeUndefined();
     store.completeRun(first.runId, first.fencingToken);
 
     const second = store.leaseNextRun({ workerId: "worker-1", coalesceLimit: 8 })!;
-    expect(second.scopeKey).toBe("conversation:chat-a");
+    expect(second.scopeKey).toBe(`conversation:${chatA}`);
     expect(second.activations).toHaveLength(1);
     expect(store.runChangesScope(second.runId, recipientA)).toBe(true);
   });
@@ -1485,12 +1499,26 @@ describe("CoordinationV3Store scheduler", () => {
       canRetry: true,
       retryMayDuplicate: true,
     })]);
+    const countRetryState = () => ({
+      activations: (opened.client.prepare(`SELECT COUNT(*) AS count FROM agent_activations`).get() as { count: number }).count,
+      outbox: (opened.client.prepare(`SELECT COUNT(*) AS count FROM activation_outbox`).get() as { count: number }).count,
+      idempotency: (opened.client.prepare(`
+        SELECT COUNT(*) AS count FROM coordination_idempotency
+        WHERE operation = 'retry_message_delivery'
+      `).get() as { count: number }).count,
+    });
+    const beforeRetry = countRetryState();
     const retry = store.retryMessageDelivery({
-      activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:20.000Z",
+      activationId, idempotencyKey: "retry-once", now: "2026-07-14T23:59:59.000Z",
     });
     expect(retry).toMatchObject({
       accepted: true, replayed: false, state: "queued", targetAgentId: recipientA,
       retryMayDuplicate: true, activationId: expect.any(String),
+    });
+    expect(countRetryState()).toEqual({
+      activations: beforeRetry.activations + 1,
+      outbox: beforeRetry.outbox + 1,
+      idempotency: beforeRetry.idempotency + 1,
     });
     expect(store.retryMessageDelivery({
       activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:21.000Z",
@@ -1500,6 +1528,21 @@ describe("CoordinationV3Store scheduler", () => {
     })).toMatchObject({
       accepted: false, state: "not_retryable", rejectionReason: "stale_attempt",
     });
+    expect(countRetryState()).toEqual({
+      activations: beforeRetry.activations + 1,
+      outbox: beforeRetry.outbox + 1,
+      idempotency: beforeRetry.idempotency + 1,
+    });
+    expect(opened.client.prepare(`
+      SELECT predecessor_activation_id, successor_activation_id,
+        root_activation_id, attempt_number
+      FROM activation_delivery_retry_lineage
+    `).all()).toEqual([{
+      predecessor_activation_id: activationId,
+      successor_activation_id: retry.activationId,
+      root_activation_id: activationId,
+      attempt_number: 1,
+    }]);
 
     const latest = store.deliveryReceiptsForCommunication(eventId);
     expect(latest).toEqual([expect.objectContaining({
@@ -1539,6 +1582,25 @@ describe("CoordinationV3Store scheduler", () => {
       attemptCount: 3,
       state: "queued",
     })]);
+    expect(opened.client.prepare(`
+      SELECT predecessor_activation_id, successor_activation_id,
+        root_activation_id, attempt_number
+      FROM activation_delivery_retry_lineage
+      ORDER BY attempt_number
+    `).all()).toEqual([
+      {
+        predecessor_activation_id: activationId,
+        successor_activation_id: retry.activationId,
+        root_activation_id: activationId,
+        attempt_number: 1,
+      },
+      {
+        predecessor_activation_id: retry.activationId,
+        successor_activation_id: third.activationId,
+        root_activation_id: activationId,
+        attempt_number: 2,
+      },
+    ]);
   });
 
   it("keeps a queued delivery retry and its single-flight fence across restart", () => {
@@ -1609,6 +1671,222 @@ describe("CoordinationV3Store scheduler", () => {
       activationId: nonOperator.activationId!, idempotencyKey: "agent-authored-retry",
       now: "2026-07-15T00:00:04.000Z",
     })).toMatchObject({ accepted: false, rejectionReason: "not_operator_message" });
+  });
+
+  it("revokes Retry and ordinary lease admission when conversation membership is removed", () => {
+    const otherConversationId = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+      VALUES (?, ?, 'Other chat', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `).run(otherConversationId, projectId);
+    opened.client.prepare(`
+      INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position)
+      VALUES (?, ?, 0)
+    `).run(recipientA, otherConversationId);
+    const failedEventId = "removed-scope-failed-delivery";
+    const failed = store.recordRuntimeCommunication({
+      id: `dispatch:${failedEventId}:${recipientA}`,
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: failedEventId, conversationId },
+        dispatch: { text: "Retry this only while membership remains active" },
+      },
+      activation: {
+        agentId: recipientA, kind: "ordinary_message", priority: 50,
+        dispatchPolicy: "next_run", promptClass: "ordinary",
+      },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    opened.client.prepare(`
+      UPDATE agent_activations
+      SET state = 'failed', updated_at = '2026-07-15T00:00:01.000Z'
+      WHERE id = ?
+    `).run(failed.activationId);
+    expect(store.deliveryReceiptsForCommunication(failedEventId)[0]).toMatchObject({
+      activationId: failed.activationId,
+      state: "failed",
+      canRetry: true,
+    });
+
+    const targetPending = store.recordRuntimeCommunication({
+      id: "removed-scope-pending",
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: "removed-scope-pending", conversationId },
+        dispatch: { text: "Must not lease after removal" },
+      },
+      activation: {
+        agentId: recipientA, kind: "ordinary_message", priority: 100,
+        dispatchPolicy: "next_run", promptClass: "human",
+      },
+      now: "2026-07-15T00:00:02.000Z",
+    });
+    const otherPending = store.recordRuntimeCommunication({
+      id: "other-scope-pending",
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: "other-scope-pending", conversationId: otherConversationId },
+        dispatch: { text: "Other-chat work remains authorized" },
+      },
+      activation: {
+        agentId: recipientA, kind: "ordinary_message", priority: 50,
+        dispatchPolicy: "next_run", promptClass: "ordinary",
+      },
+      now: "2026-07-15T00:00:03.000Z",
+    });
+
+    opened.client.prepare(`
+      DELETE FROM agent_conversation_memberships
+      WHERE agent_id = ? AND conversation_id = ?
+    `).run(recipientA, conversationId);
+    expect(opened.client.prepare(`
+      SELECT archived FROM agents WHERE id = ?
+    `).get(recipientA)).toEqual({ archived: 0 });
+    expect(opened.client.prepare(`
+      SELECT 1 AS present FROM agent_conversation_memberships
+      WHERE agent_id = ? AND conversation_id = ?
+    `).get(recipientA, otherConversationId)).toEqual({ present: 1 });
+    expect(store.deliveryReceiptsForCommunication(failedEventId)[0]).not.toHaveProperty("canRetry");
+    const activationCount = (opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+    `).get() as { count: number }).count;
+    expect(store.retryMessageDelivery({
+      activationId: failed.activationId!,
+      idempotencyKey: "removed-scope-retry",
+      now: "2026-07-15T00:00:04.000Z",
+    })).toMatchObject({
+      accepted: false,
+      rejectionReason: "recipient_unavailable",
+    });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+    `).get()).toEqual({ count: activationCount });
+
+    const lease = store.leaseNextRun({ workerId: "scope-worker", now: "2026-07-15T00:00:05.000Z" })!;
+    expect(lease.scopeKey).toBe(`conversation:${otherConversationId}`);
+    expect(lease.activationIds).toEqual([otherPending.activationId]);
+    expect(opened.client.prepare(`
+      SELECT state, terminal_outcome FROM agent_activations WHERE id = ?
+    `).get(targetPending.activationId)).toEqual({
+      state: "failed",
+      terminal_outcome: "recipient_unavailable",
+    });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs WHERE scope_key = ?
+    `).get(`conversation:${conversationId}`)).toEqual({ count: 0 });
+  });
+
+  it("rejects removed-scope steering while preserving unrelated scoped work", () => {
+    const otherConversationId = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+      VALUES (?, ?, 'Other steering chat', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `).run(otherConversationId, projectId);
+    opened.client.prepare(`
+      INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position)
+      VALUES (?, ?, 0)
+    `).run(recipientA, otherConversationId);
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${conversationId}`,
+      messageId: "removed-steering-base",
+      kind: "ordinary",
+      payload: { text: "Start scoped work" },
+      now: "2026-07-15T00:00:00.000Z",
+    });
+    const running = store.leaseNextRun({ workerId: "steering-worker", now: "2026-07-15T00:00:00.000Z" })!;
+    acknowledgeLease(running);
+    const steering = store.recordRuntimeCommunication({
+      id: "removed-scope-steering",
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: "removed-scope-steering", conversationId },
+        dispatch: { text: "Must not steer after removal" },
+      },
+      activation: {
+        agentId: recipientA, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+      now: "2026-07-15T00:00:01.000Z",
+    });
+    opened.client.prepare(`
+      DELETE FROM agent_conversation_memberships
+      WHERE agent_id = ? AND conversation_id = ?
+    `).run(recipientA, conversationId);
+
+    expect(store.leaseNextSteering({
+      workerId: "steering-worker",
+      now: "2026-07-15T00:00:02.000Z",
+    })).toBeUndefined();
+    expect(opened.client.prepare(`
+      SELECT state, terminal_outcome FROM agent_activations WHERE id = ?
+    `).get(steering.activationId)).toEqual({
+      state: "failed",
+      terminal_outcome: "recipient_unavailable",
+    });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_prompt_injections
+      WHERE run_id = ? AND kind = 'steer'
+    `).get(running.runId)).toEqual({ count: 0 });
+
+    store.completeRun(running.runId, running.fencingToken, "2026-07-15T00:00:03.000Z");
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: `conversation:${otherConversationId}`,
+      messageId: "other-chat-after-removal",
+      kind: "ordinary",
+      payload: { text: "Still authorized elsewhere" },
+      now: "2026-07-15T00:00:04.000Z",
+    });
+    expect(store.leaseNextRun({
+      workerId: "other-worker",
+      now: "2026-07-15T00:00:05.000Z",
+    })?.scopeKey).toBe(`conversation:${otherConversationId}`);
+  });
+
+  it("fails malformed and cross-recipient Activation scopes closed", () => {
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      scopeKey: "conversation:",
+      messageId: "malformed-scope",
+      kind: "ordinary",
+      payload: { text: "Malformed" },
+    });
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientB,
+      scopeKey: `agent:${recipientA}`,
+      messageId: "cross-recipient-scope",
+      kind: "ordinary",
+      payload: { text: "Wrong recipient" },
+    });
+    expect(store.leaseNextRun({ workerId: "fail-closed-worker" })).toBeUndefined();
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE terminal_outcome = 'recipient_unavailable'
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_id IN ('malformed-scope', 'cross-recipient-scope')
+        )
+    `).get()).toEqual({ count: 2 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs
+    `).get()).toEqual({ count: 0 });
   });
 
   it("never interrupts a later unrelated Run when the recovery deadline races forward", () => {

@@ -3164,7 +3164,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("classifies a dispatch 404 as recipient_unavailable without another attempt", async () => {
+  it("settles recipient authorization loss before dispatching a Run", async () => {
     const app = createServer({
       dataDir, store, engines, logger: false,
       communicationV3: { pollMs: 5 },
@@ -3179,7 +3179,7 @@ describe("server chunk F", () => {
     store.sqlite.prepare("DELETE FROM agents WHERE id = ?").run(agent.id);
 
     await vi.waitFor(() => expect(coordination.terminalActivations(project.id)).toContainEqual(
-      expect.objectContaining({ id: activationId, outcome: "recipient_unavailable", deliveryFailures: 1 }),
+      expect.objectContaining({ id: activationId, outcome: "recipient_unavailable", deliveryFailures: 0 }),
     ));
     const failedRuns = coordination.schedulerMetrics().failedRuns;
     await sleep(25);
@@ -3188,6 +3188,7 @@ describe("server chunk F", () => {
       failedRuns,
       recipientUnavailableActivations: 1,
     });
+    expect(failedRuns).toBe(0);
     await app.close();
   });
 
