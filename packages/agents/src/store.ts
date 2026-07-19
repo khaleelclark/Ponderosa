@@ -30,7 +30,6 @@ import type {
   CommunicationRevisionEvent,
   CommunicationDocumentRecord,
   CommunicationDocumentReference,
-  CommunicationContextClassification,
   CommunicationProjection,
   CommunicationReconciliationReport,
   ProjectedCommunicationMessage,
@@ -133,7 +132,6 @@ import {
   conversationDir,
   communicationEventsPath,
   communicationRevisionsPath,
-  communicationContextPath,
   communicationProjectionsPath,
   messageDispatchesPath,
   conversationJsonPath,
@@ -435,7 +433,6 @@ export class AgentStore {
     byIdempotency: Map<string, CommunicationRevisionEvent>;
     byTarget: Map<string, CommunicationRevisionEvent[]>;
   }>();
-  private readonly contextClassificationCache = new Map<string, Map<string, CommunicationContextClassification>>();
   private readonly communicationProjectionCache = new Map<string, {
     projections: CommunicationProjection[];
     byTuple: Map<string, CommunicationProjection>;
@@ -536,15 +533,6 @@ export class AgentStore {
     }
     appendFsyncedJsonl(messageDispatchesPath(this.dataDir, projectId), [record]);
     records.push(record);
-  }
-
-  private contextIndex(projectId: string): Map<string, CommunicationContextClassification> {
-    let cached = this.contextClassificationCache.get(projectId);
-    if (cached) return cached;
-    const records = readRepairableJsonl<CommunicationContextClassification>(communicationContextPath(this.dataDir, projectId), "communication context log", true);
-    cached = new Map(records.map((record) => [record.eventId, record]));
-    this.contextClassificationCache.set(projectId, cached);
-    return cached;
   }
 
   private projectionIndex(projectId: string) {
@@ -714,13 +702,6 @@ export class AgentStore {
       if (!master || master.projectId !== event.projectId || master.archived) throw new Error("communication conversation must be active in its project");
     }
     const file = communicationEventsPath(this.dataDir, event.projectId);
-    const behavior = deriveCommunicationBehavior(event);
-    const classification: CommunicationContextClassification = {
-      eventId: event.eventId,
-      policy: behavior.contextPolicy,
-      classifiedAt: event.createdAt,
-      classifiedBy: { kind: "system", component: "communication-router" },
-    };
     const index = this.communicationIndex(event.projectId);
     const idempotent = event.idempotencyKey
       ? index.byIdempotency.get(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`) : undefined;
@@ -730,19 +711,12 @@ export class AgentStore {
         idempotent.text === event.text && JSON.stringify(idempotent.attachments) === JSON.stringify(event.attachments) &&
         JSON.stringify(idempotent.document) === JSON.stringify(event.document);
       if (!equivalent) throw new Error("communication idempotency collision");
-      this.appendContextClassification(event.projectId, {
-        eventId: idempotent.eventId,
-        policy: deriveCommunicationBehavior(idempotent).contextPolicy,
-        classifiedAt: idempotent.createdAt,
-        classifiedBy: { kind: "system", component: "communication-router" },
-      });
       this.ensureCommunicationBehaviorProjections(idempotent);
       return { event: idempotent, replayed: true };
     }
     const existing = index.byId.get(event.eventId);
     if (existing) {
       if (JSON.stringify(existing) !== JSON.stringify(event)) throw new Error("communication event ID collision");
-      this.appendContextClassification(event.projectId, classification);
       this.ensureCommunicationBehaviorProjections(existing);
       return { event: existing, replayed: true };
     }
@@ -750,7 +724,6 @@ export class AgentStore {
     index.events.push(event);
     index.byId.set(event.eventId, event);
     if (event.idempotencyKey) index.byIdempotency.set(`${JSON.stringify(event.sender)}\u0000${event.idempotencyKey}`, event);
-    this.appendContextClassification(event.projectId, classification);
     this.ensureCommunicationBehaviorProjections(event);
     return { event, replayed: false };
   }
@@ -841,23 +814,6 @@ export class AgentStore {
     const file = managedArtifactContentPath(this.dataDir, projectId, event.document.artifactId);
     if (!existsSync(file)) return undefined;
     return { event, document: { ...event.document, content: readFileSync(file, "utf8") } };
-  }
-
-  private appendContextClassification(projectId: string, classification: CommunicationContextClassification): void {
-    const file = communicationContextPath(this.dataDir, projectId);
-    const index = this.contextIndex(projectId);
-    const existing = index.get(classification.eventId);
-    if (existing) {
-      if (JSON.stringify(existing) !== JSON.stringify(classification)) throw new Error("communication context classification collision");
-      return;
-    }
-    appendFsyncedJsonl(file, [classification]);
-    index.set(classification.eventId, classification);
-  }
-
-  readContextClassifications(projectId: string): CommunicationContextClassification[] {
-    if (!this.getProject(projectId)) throw new Error("communication project not found");
-    return [...this.contextIndex(projectId).values()];
   }
 
   private communicationProjectionAllowed(
@@ -1048,7 +1004,7 @@ export class AgentStore {
     }
   }
 
-  /** Verify that canonical events, classifications, and projections agree. */
+  /** Verify that canonical events and their projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
     const canonical = this.readCommunicationEvents(projectId).filter((event) =>
       !event.conversationId || Boolean(this.getConversation(event.conversationId)));
@@ -1067,9 +1023,6 @@ export class AgentStore {
       .filter((projection) => (tupleCounts.get(`${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`) ?? 0) > 1)
       .map((projection) => projection.eventId))];
     const orphanProjectionEventIds = [...counts.keys()].filter((id) => !canonicalIds.has(id));
-    const classifiedIds = new Set(this.readContextClassifications(projectId).map((item) => item.eventId));
-    const missingClassificationEventIds = canonical
-      .filter((event) => !classifiedIds.has(event.eventId)).map((event) => event.eventId);
     const missingProjectionMetadataEventIds = [...new Set(projections
       .filter((projection) => (projection.surface === "conversation" || projection.surface === "collaboration_view" || projection.surface === "direct_agent_audit") && !projection.message)
       .map((projection) => projection.eventId))];
@@ -1137,13 +1090,12 @@ export class AgentStore {
       missingProjectionEventIds,
       duplicateProjectionEventIds,
       orphanProjectionEventIds,
-      missingClassificationEventIds,
       missingProjectionMetadataEventIds,
       orphanRuntimeCommunicationEventIds: [...new Set(orphanRuntimeCommunicationEventIds)].sort(),
       orphanRequestCommunicationEventIds,
       runtimePayloadConflicts,
       ok: missingProjectionEventIds.length === 0 && duplicateProjectionEventIds.length === 0 &&
-        orphanProjectionEventIds.length === 0 && missingClassificationEventIds.length === 0 &&
+        orphanProjectionEventIds.length === 0 &&
         missingProjectionMetadataEventIds.length === 0 && orphanRuntimeCommunicationEventIds.length === 0 &&
         orphanRequestCommunicationEventIds.length === 0 && runtimePayloadConflicts.length === 0,
     };
@@ -1294,7 +1246,6 @@ export class AgentStore {
     // startup projection repair already discards rather than resurrecting.
     rmSync(deletingDir, { recursive: true, force: true });
     this.communicationEventCache.delete(id);
-    this.contextClassificationCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
@@ -1651,13 +1602,6 @@ export class AgentStore {
     return dispatch
       ? this.getConversationMessages(conversationId, dispatch.channel).find((message) => message.id === dispatch.messageId)
       : undefined;
-  }
-
-  getConversationMessageDeliveryOrderKey(conversationId: string, messageId: string): string | undefined {
-    const conversation = this.getConversation(conversationId);
-    if (!conversation) return undefined;
-    return this.messageDispatches(conversation.projectId)
-      .find((dispatch) => dispatch.conversationId === conversationId && dispatch.messageId === messageId)?.orderKey;
   }
 
   getConversationMessages(conversationId: string, channel: ConversationChannel = "main"): ConversationMessageDto[] {

@@ -4,7 +4,7 @@
 
 import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
 import type { AgentEvent, BrowserControlOwner, BrowserSessionStatus, TokenUsage, WorkItemStatus } from "./events.js";
-import type { CommunicationDocumentReference, CommunicationIntent, VerifiedCitationRecord } from "./communication.js";
+import type { CommunicationDocumentReference, VerifiedCitationRecord } from "./communication.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -191,16 +191,6 @@ export interface DecisionDto {
   response?: { optionId?: string; text?: string; respondedAt: string };
   createdAt: string;
   updatedAt: string;
-}
-
-export interface CreateDecisionRequest {
-  idempotencyKey: string;
-  mode: DecisionMode;
-  question: string;
-  context?: string;
-  options?: DecisionOptionDto[];
-  allowOther?: boolean;
-  blocking?: boolean;
 }
 
 export interface ResolveDecisionRequest { optionId?: string; text?: string }
@@ -939,23 +929,6 @@ export interface CreateAgentRequest {
   managementPermissions?: AgentManagementPermissionsDto;
 }
 
-/** Agent-facing creation request. Manager identity is always derived from the bearer capability. */
-export interface AgentSpawnRequest {
-  displayName: string;
-  initialMessage?: string;
-  runtime?: string;
-  model?: string;
-  effort?: string;
-  presetId?: string;
-  idempotencyKey: string;
-}
-
-export interface AgentSpawnResponse {
-  agent: AgentDto;
-  accepted: boolean;
-  replayed: boolean;
-}
-
 /** PATCH /api/agents/:id body (rename / archive). */
 export interface UpdateAgentRequest {
   title?: string;
@@ -1070,8 +1043,6 @@ export interface TriggerRunBudgetStateDto {
   held: boolean;
 }
 
-export interface AllowTriggerRunsRequest { additionalRuns: number }
-
 export interface CreateTriggerResponse {
   trigger: TriggerDefinitionDto;
   /** Returned once for webhook Triggers. It is never exposed by subsequent reads. */
@@ -1180,13 +1151,6 @@ export interface AssetLimitsDto {
   maxAssetsPerMessage: number;
   maxMessageBytes: number;
   maxAgentBytes: number;
-  acceptedMediaTypes: AssetMediaType[];
-}
-
-export interface ImageAttachmentLimitsDto {
-  maxFileBytes: number;
-  maxRequestBytes: number;
-  maxAttachmentsPerMessage: number;
   acceptedMediaTypes: AssetMediaType[];
 }
 
@@ -1600,8 +1564,6 @@ export interface QueuedMessageResponse {
 /** A message either starts now or is accepted into the per-agent FIFO queue. */
 export type SendMessageResponse = StartedMessageResponse | QueuedMessageResponse;
 
-/** Semantic communication requested by an agent. Routing is server-owned. */
-export type AgentCommunicationIntent = CommunicationIntent;
 /** Internal source/projection channel after the server has routed an intent. */
 export type AgentMessageChannel = "individual" | "main" | "collaboration";
 
@@ -1633,11 +1595,6 @@ export type SendAgentMessageRequest = AgentMessageRequestBase & (
 
 export interface CommunicationDocumentContentDto extends CommunicationDocumentReference {
   content: string;
-}
-
-/** POST /api/agents/:id/cancel response. */
-export interface CancelResponse {
-  cancelled: boolean;
 }
 
 // ─── Engines ─────────────────────────────────────────────────────────────────
@@ -1779,14 +1736,7 @@ export interface ReadinessDto {
   }>;
 }
 
-// ─── Legacy engine switch + global chat search ─────────────────────────────
-
-/** POST /api/agents/:id/switch-engine body (v2). */
-export interface SwitchEngineRequest {
-  engine: EngineId;
-  model?: string;
-  effort?: string;
-}
+// ─── Global chat search ─────────────────────────────────────────────────────
 
 export interface GlobalChatTargetDto {
   kind: "conversation" | "agent";

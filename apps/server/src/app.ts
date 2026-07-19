@@ -3383,7 +3383,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const projectAgents = store.listAgents(input.projectId);
     const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
     const agentName = (id: string | undefined): string => id ? names.get(id) ?? "Deleted Agent" : "You";
-    const projection = coordinationV3.agentWorkItems({ ...input, includeDetails: false });
+    const projection = coordinationV3.agentWorkItems(input);
     const items = projection.items;
     for (const item of items) {
       if (item.kind === "request") {
