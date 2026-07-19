@@ -1413,9 +1413,14 @@ export interface AgentActivityOutputDto {
   agentId: string;
   activityId: string;
   seq: number;
+  /** One UTF-8-aligned immutable page, never the unbounded canonical payload. */
   output: string;
-  utf8Bytes: number;
+  pageUtf8Bytes: number;
+  startUtf8Byte: number;
+  endUtf8Byte: number;
+  totalUtf8Bytes: number;
   sha256: string;
+  nextCursor?: string;
 }
 
 export type AgentTelemetryStream = "runOutput" | "activity" | "runs" | "workItems" | "artifacts";

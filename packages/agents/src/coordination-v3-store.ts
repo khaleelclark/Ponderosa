@@ -1827,7 +1827,7 @@ export class CoordinationV3Store {
     projectId: string;
     conversationId: string;
     limit: number;
-    before?: { updatedAt: string; id: string };
+    before?: { createdAt: string; id: string };
   }): Array<{
     id: string;
     kind: "run" | "activation" | "request" | "join" | "trigger";
@@ -1851,9 +1851,9 @@ export class CoordinationV3Store {
           request.created_at, request.updated_at
         FROM coordination_requests request
         WHERE request.project_id = @projectId AND request.conversation_id = @conversationId
-          AND (@beforeUpdatedAt IS NULL OR request.updated_at < @beforeUpdatedAt
-            OR (request.updated_at = @beforeUpdatedAt AND 'request:' || request.id < @beforeId))
-        ORDER BY request.updated_at DESC, 'request:' || request.id DESC LIMIT @limit
+          AND (@beforeCreatedAt IS NULL OR request.created_at < @beforeCreatedAt
+            OR (request.created_at = @beforeCreatedAt AND 'request:' || request.id < @beforeId))
+        ORDER BY request.created_at DESC, 'request:' || request.id DESC LIMIT @limit
       ), join_records AS (
         SELECT 'join:' || join_record.id, 'join', join_record.state, join_record.owner_agent_id, NULL, NULL,
           SUM(CASE WHEN request.state = 'completed' THEN 1 ELSE 0 END), COUNT(member.request_id),
@@ -1862,42 +1862,41 @@ export class CoordinationV3Store {
         LEFT JOIN coordination_join_members member ON member.join_id = join_record.id
         LEFT JOIN coordination_requests request ON request.id = member.request_id
         WHERE join_record.project_id = @projectId AND join_record.conversation_id = @conversationId
-          AND (@beforeUpdatedAt IS NULL OR join_record.updated_at < @beforeUpdatedAt
-            OR (join_record.updated_at = @beforeUpdatedAt AND 'join:' || join_record.id < @beforeId))
+          AND (@beforeCreatedAt IS NULL OR join_record.created_at < @beforeCreatedAt
+            OR (join_record.created_at = @beforeCreatedAt AND 'join:' || join_record.id < @beforeId))
         GROUP BY join_record.id
-        ORDER BY join_record.updated_at DESC, 'join:' || join_record.id DESC LIMIT @limit
+        ORDER BY join_record.created_at DESC, 'join:' || join_record.id DESC LIMIT @limit
       ), activation_records AS (
         SELECT 'activation:' || activation.id, 'activation', activation.state, activation.agent_id, NULL,
           activation.kind, NULL, NULL, activation.created_at, activation.updated_at
         FROM agent_activations activation
         WHERE activation.project_id = @projectId AND activation.scope_key = @scopeKey
-          AND (@beforeUpdatedAt IS NULL OR activation.updated_at < @beforeUpdatedAt
-            OR (activation.updated_at = @beforeUpdatedAt AND 'activation:' || activation.id < @beforeId))
-        ORDER BY activation.updated_at DESC, 'activation:' || activation.id DESC LIMIT @limit
+          AND (@beforeCreatedAt IS NULL OR activation.created_at < @beforeCreatedAt
+            OR (activation.created_at = @beforeCreatedAt AND 'activation:' || activation.id < @beforeId))
+        ORDER BY activation.created_at DESC, 'activation:' || activation.id DESC LIMIT @limit
       ), run_records AS (
         SELECT 'run:' || COALESCE(provider.execution_id, scheduler.id), 'run', scheduler.status,
           scheduler.agent_id, NULL, NULL, NULL, NULL,
-          COALESCE(execution.started_at, scheduler.created_at), scheduler.updated_at
+          scheduler.created_at, scheduler.updated_at
         FROM scheduler_runs scheduler
         LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
-        LEFT JOIN runs execution ON execution.id = provider.execution_id AND execution.agent_id = scheduler.agent_id
         WHERE scheduler.project_id = @projectId AND scheduler.scope_key = @scopeKey
-          AND (@beforeUpdatedAt IS NULL OR scheduler.updated_at < @beforeUpdatedAt
-            OR (scheduler.updated_at = @beforeUpdatedAt
+          AND (@beforeCreatedAt IS NULL OR scheduler.created_at < @beforeCreatedAt
+            OR (scheduler.created_at = @beforeCreatedAt
               AND 'run:' || COALESCE(provider.execution_id, scheduler.id) < @beforeId))
-        ORDER BY scheduler.updated_at DESC, 'run:' || COALESCE(provider.execution_id, scheduler.id) DESC LIMIT @limit
+        ORDER BY scheduler.created_at DESC, 'run:' || COALESCE(provider.execution_id, scheduler.id) DESC LIMIT @limit
       ), trigger_records AS (
         SELECT 'trigger:' || occurrence.id, 'trigger', occurrence.state, occurrence.agent_id, NULL,
           COALESCE(definition.name,
             CASE WHEN json_valid(occurrence.trigger_snapshot_json)
               THEN json_extract(occurrence.trigger_snapshot_json, '$.name') END),
-          NULL, NULL, COALESCE(occurrence.occurred_at, occurrence.created_at), occurrence.updated_at
+          NULL, NULL, occurrence.created_at, occurrence.updated_at
         FROM trigger_occurrences occurrence
         LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
         WHERE occurrence.project_id = @projectId AND occurrence.scope_key = @scopeKey
-          AND (@beforeUpdatedAt IS NULL OR occurrence.updated_at < @beforeUpdatedAt
-            OR (occurrence.updated_at = @beforeUpdatedAt AND 'trigger:' || occurrence.id < @beforeId))
-        ORDER BY occurrence.updated_at DESC, 'trigger:' || occurrence.id DESC LIMIT @limit
+          AND (@beforeCreatedAt IS NULL OR occurrence.created_at < @beforeCreatedAt
+            OR (occurrence.created_at = @beforeCreatedAt AND 'trigger:' || occurrence.id < @beforeId))
+        ORDER BY occurrence.created_at DESC, 'trigger:' || occurrence.id DESC LIMIT @limit
       )
       SELECT * FROM (
         SELECT * FROM request_records
@@ -1906,12 +1905,12 @@ export class CoordinationV3Store {
         UNION ALL SELECT * FROM run_records
         UNION ALL SELECT * FROM trigger_records
       ) operation
-      ORDER BY operation.updated_at DESC, operation.id DESC LIMIT @limit
+      ORDER BY operation.created_at DESC, operation.id DESC LIMIT @limit
     `).all({
       projectId: input.projectId,
       conversationId: input.conversationId,
       scopeKey,
-      beforeUpdatedAt: input.before?.updatedAt ?? null,
+      beforeCreatedAt: input.before?.createdAt ?? null,
       beforeId: input.before?.id ?? null,
       limit,
     }) as Array<{

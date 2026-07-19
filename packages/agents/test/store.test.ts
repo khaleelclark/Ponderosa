@@ -946,8 +946,33 @@ describe("AgentStore — append + projection", () => {
     const older = store.getActivityPage(agentId, { limit: 2, cursor: detail.telemetryHistory!.activity!.cursor });
     expect(older.items.map((item) => item.event.type === "tool_result" ? item.event.id : item.id)).toEqual(["tool-0"]);
     expect(older.history).toEqual({ limit: 2, hasMore: false });
+    const focused = store.getActivityPage(agentId, { limit: 2, focusId: older.items[0]!.id });
+    expect(focused.items.map((item) => item.event.type === "tool_result" ? item.event.id : item.id)).toEqual(["tool-0"]);
+    expect(() => store.getActivityPage(agentId, { limit: 2, focusId: `${agentId}:runOutput:${older.items[0]!.seq}` }))
+      .toThrow("invalid history focus");
     expect(() => store.getRunPage(agentId, { limit: 2, cursor: detail.telemetryHistory!.activity!.cursor }))
       .toThrow("invalid history cursor");
+  });
+
+  it("resolves stable focused items across every Agent telemetry stream", () => {
+    const { agentId } = seedAgent();
+    for (const event of RUN) store.appendEvent(agentId, event);
+    store.appendEvent(agentId, {
+      type: "work_item_update", workItemId: "review", status: "in_progress",
+      title: "Review the result", executionId: "run-1",
+    });
+    const detail = store.getAgentDetail(agentId)!;
+
+    expect(store.getRunOutputPage(agentId, { limit: 1, focusId: detail.runOutput[0]!.id }).items[0]?.id)
+      .toBe(detail.runOutput[0]!.id);
+    expect(store.getActivityPage(agentId, { limit: 1, focusId: detail.activity[0]!.id }).items[0]?.id)
+      .toBe(detail.activity[0]!.id);
+    expect(store.getRunPage(agentId, { limit: 1, focusId: detail.runs[0]!.id }).items[0]?.id)
+      .toBe(detail.runs[0]!.id);
+    expect(store.getWorkItemPage(agentId, { limit: 1, focusId: detail.workItems[0]!.id }).items[0]?.id)
+      .toBe(detail.workItems[0]!.id);
+    expect(store.getArtifactPage(agentId, { limit: 1, focusId: detail.artifacts[0]!.id }).items[0]?.id)
+      .toBe(detail.artifacts[0]!.id);
   });
 
   it("rebuilds usage per run and aggregates agent, project, and overall with honest coverage", () => {

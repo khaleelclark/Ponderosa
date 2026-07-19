@@ -24,7 +24,6 @@ import { and, asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   AgentActivityDto,
-  AgentActivityOutputDto,
   ChangedFileDto,
   AgentOrganizationEvent,
   CommunicationEvent,
@@ -2482,20 +2481,34 @@ export class AgentStore {
     return seq;
   }
 
+  private eventSeqFocus(focusId: string | undefined, stream: "runOutput" | "activity", agentId: string): number | undefined {
+    if (!focusId) return undefined;
+    const prefix = `${agentId}:${stream}:`;
+    if (!focusId.startsWith(prefix)) throw new Error("invalid history focus");
+    const seq = Number(focusId.slice(prefix.length));
+    if (!Number.isSafeInteger(seq) || seq < 1) throw new Error("invalid history focus");
+    return seq;
+  }
+
   getRunOutputPage(
     agentId: string,
-    input: { limit: number; cursor?: string },
+    input: { limit: number; cursor?: string; focusId?: string },
   ): HistoryPageDto<RunOutputDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
+    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
+    const focusSeq = this.eventSeqFocus(input.focusId, "runOutput", agentId);
+    const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
     const rows = this.client.prepare(`
       SELECT seq, payload_json, created_at
       FROM events
-      WHERE agent_id = ? AND type = 'agent_output' ${boundary === undefined ? "" : "AND seq < ?"}
+      WHERE agent_id = ? AND type = 'agent_output' ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
       ORDER BY seq DESC LIMIT ?
     `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
       seq: number; payload_json: string; created_at: string;
     }>;
+    if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
+      return { items: [], history: { limit, hasMore: false } };
+    }
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
     const executionIds = new Set(selected.flatMap((row) => {
@@ -2618,21 +2631,26 @@ export class AgentStore {
 
   getActivityPage(
     agentId: string,
-    input: { limit: number; cursor?: string },
+    input: { limit: number; cursor?: string; focusId?: string },
   ): HistoryPageDto<AgentActivityDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = this.eventSeqBoundary(input.cursor, "agent:activity", agentId);
+    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
+    const focusSeq = this.eventSeqFocus(input.focusId, "activity", agentId);
+    const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:activity", agentId);
     const rows = this.client.prepare(`
       SELECT seq, payload_json, created_at
       FROM events
       WHERE agent_id = ?
         AND type IN ('command', 'file_change', 'test_result', 'tool_call', 'tool_result', 'error',
           'browser_session', 'browser_action', 'browser_console', 'browser_screenshot')
-        ${boundary === undefined ? "" : "AND seq < ?"}
+        ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
       ORDER BY seq DESC LIMIT ?
     `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
       seq: number; payload_json: string; created_at: string;
     }>;
+    if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
+      return { items: [], history: { limit, hasMore: false } };
+    }
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
     const items = selected.flatMap((row) => {
@@ -2655,7 +2673,14 @@ export class AgentStore {
     };
   }
 
-  getActivityOutput(agentId: string, seq: number): AgentActivityOutputDto | undefined {
+  getActivityOutput(agentId: string, seq: number): {
+    agentId: string;
+    activityId: string;
+    seq: number;
+    output: string;
+    totalUtf8Bytes: number;
+    sha256: string;
+  } | undefined {
     const row = this.client.prepare(`
       SELECT payload_json FROM events WHERE agent_id = ? AND seq = ? AND type = 'tool_result'
     `).get(agentId, seq) as { payload_json: string } | undefined;
@@ -2667,7 +2692,7 @@ export class AgentStore {
       activityId: `${agentId}:activity:${seq}`,
       seq,
       output: event.output,
-      utf8Bytes: Buffer.byteLength(event.output, "utf8"),
+      totalUtf8Bytes: Buffer.byteLength(event.output, "utf8"),
       sha256: createHash("sha256").update(event.output).digest("hex"),
     };
   }
@@ -3017,16 +3042,22 @@ export class AgentStore {
       });
   }
 
-  getRunPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<AgentRunDto> {
+  getRunPage(agentId: string, input: { limit: number; cursor?: string; focusId?: string }): HistoryPageDto<AgentRunDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:runs", agentId) : undefined;
+    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
+    const focusId = input.focusId;
+    const focusBoundary = focusId ? this.client.prepare(`
+      SELECT started_at AS orderKey, id AS rowKey FROM runs WHERE agent_id = ? AND id = ?
+    `).get(agentId, focusId) as { orderKey: string; rowKey: string } | undefined : undefined;
+    if (focusId && !focusBoundary) return { items: [], history: { limit, hasMore: false } };
+    const boundary = focusBoundary ?? (input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:runs", agentId) : undefined);
     const rows = this.client.prepare(`
       SELECT id, agent_id, title, status, reason, engine, model, effort, communication_event_id, wake_cause,
         input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
         started_at, updated_at, completed_at
       FROM runs
       WHERE agent_id = ?
-        ${boundary ? "AND (started_at < ? OR (started_at = ? AND id < ?))" : ""}
+        ${boundary ? `AND (started_at < ? OR (started_at = ? AND id ${focusBoundary ? "<=" : "<"} ?))` : ""}
       ORDER BY started_at DESC, id DESC LIMIT ?
     `).all(...(boundary
       ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
@@ -3274,14 +3305,20 @@ export class AgentStore {
       }));
   }
 
-  getWorkItemPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<WorkItemDto> {
+  getWorkItemPage(agentId: string, input: { limit: number; cursor?: string; focusId?: string }): HistoryPageDto<WorkItemDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:workItems", agentId) : undefined;
+    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
+    const focusId = input.focusId;
+    const focusBoundary = focusId ? this.client.prepare(`
+      SELECT created_at AS orderKey, id AS rowKey FROM work_items WHERE agent_id = ? AND id = ?
+    `).get(agentId, focusId) as { orderKey: string; rowKey: string } | undefined : undefined;
+    if (focusId && !focusBoundary) return { items: [], history: { limit, hasMore: false } };
+    const boundary = focusBoundary ?? (input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:workItems", agentId) : undefined);
     const rows = this.client.prepare(`
       SELECT id, agent_id, execution_id, title, status, created_at, updated_at
       FROM work_items
       WHERE agent_id = ?
-        ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+        ${boundary ? `AND (created_at < ? OR (created_at = ? AND id ${focusBoundary ? "<=" : "<"} ?))` : ""}
       ORDER BY created_at DESC, id DESC LIMIT ?
     `).all(...(boundary
       ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
@@ -3450,14 +3487,20 @@ export class AgentStore {
     };
   }
 
-  getArtifactPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<ArtifactDto> {
+  getArtifactPage(agentId: string, input: { limit: number; cursor?: string; focusId?: string }): HistoryPageDto<ArtifactDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:artifacts", agentId) : undefined;
+    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
+    const focusId = input.focusId;
+    const focusBoundary = focusId ? this.client.prepare(`
+      SELECT created_at AS orderKey, id AS rowKey FROM artifacts WHERE agent_id = ? AND id = ?
+    `).get(agentId, focusId) as { orderKey: string; rowKey: string } | undefined : undefined;
+    if (focusId && !focusBoundary) return { items: [], history: { limit, hasMore: false } };
+    const boundary = focusBoundary ?? (input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:artifacts", agentId) : undefined);
     const rows = this.client.prepare(`
       SELECT id, agent_id, execution_id, kind, path, summary, created_at
       FROM artifacts
       WHERE agent_id = ?
-        ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+        ${boundary ? `AND (created_at < ? OR (created_at = ? AND id ${focusBoundary ? "<=" : "<"} ?))` : ""}
       ORDER BY created_at DESC, id DESC LIMIT ?
     `).all(...(boundary
       ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]

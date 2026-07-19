@@ -57,7 +57,7 @@ import {
   unifiedDiffLineTotals,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { AgentActivityDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -67,6 +67,7 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { copyText } from "../clipboard";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
+import { telemetryElementId } from "../telemetryFocus";
 import type { ExecutionItem } from "../hooks/useAgentStream";
 import { agentMentionHandle, findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
@@ -1097,8 +1098,9 @@ export function ResponseFileActivity({
   </Box>;
 }
 
-export function WorkLogPane({ entries, onOpenFile, onViewAll, projectId }: {
+export function WorkLogPane({ entries, focusId, onOpenFile, onViewAll, projectId }: {
   entries: RunOutputDto[];
+  focusId?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
@@ -1111,7 +1113,7 @@ export function WorkLogPane({ entries, onOpenFile, onViewAll, projectId }: {
         <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
       </Stack>
       {ordered.length === 0 ? <Alert severity="info">Ordinary agent output will appear here. Only explicitly sent messages appear in Chat.</Alert> : ordered.map((entry) => (
-        <Paper key={entry.id} variant="outlined" sx={{ p: 1.25 }}>
+        <Paper key={entry.id} id={telemetryElementId("runOutput", entry.id)} tabIndex={focusId === entry.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.75 }}>
             <Chip size="small" variant="outlined" label={entry.kind === "reasoning" ? "Reasoning" : entry.completed ? "Response" : "Response · live"} />
             <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
@@ -1135,12 +1137,14 @@ export function RunsPane({
   coordinationV3,
   workItems,
   timeline,
+  focus,
   onOpenAgentWork,
 }: {
   runs: AgentRunDto[];
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   timeline: ExecutionItem[];
+  focus?: { stream: "runs" | "workItems"; id: string };
   onOpenAgentWork?(runId?: string): void;
 }): JSX.Element {
   return (
@@ -1189,7 +1193,7 @@ export function RunsPane({
           }}
         >
           {runs.map((run) => (
-            <Paper key={run.id} variant="outlined" sx={{ p: 1.25 }} data-execution-id={run.id}>
+            <Paper key={run.id} id={telemetryElementId("runs", run.id)} tabIndex={focus?.stream === "runs" && focus.id === run.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }} data-execution-id={run.id}>
               <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
                 <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0 }} noWrap>
                   {run.title}
@@ -1226,7 +1230,7 @@ export function RunsPane({
           <Typography variant="caption" color="text.secondary">{workItems.length}</Typography>
         </Stack>
         {workItems.map((item) => (
-          <Paper key={item.id} variant="outlined" sx={{ p: 1.25 }}>
+          <Paper key={item.id} id={telemetryElementId("workItems", item.id)} tabIndex={focus?.stream === "workItems" && focus.id === item.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }}>
             <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
               <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
               <Chip size="small" label={workItemStatusLabel(item.status)} color={workItemStatusColor(item.status)} />
@@ -1335,11 +1339,12 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
 }
 
 /** Refresh-safe chronological projection of canonical execution events. */
-export function ActivityPane({ activity, connected, running, activeExecutionId }: {
+export function ActivityPane({ activity, connected, running, activeExecutionId, focusId }: {
   activity: AgentActivityDto[];
   connected: boolean;
   running: boolean;
   activeExecutionId?: string;
+  focusId?: string;
 }): JSX.Element {
   const groups = groupActivityByExecution(activity);
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent activity">
@@ -1360,7 +1365,7 @@ export function ActivityPane({ activity, connected, running, activeExecutionId }
           <Typography variant="caption" color="text.secondary">{new Date(group.firstAt).toLocaleString()}</Typography>
         </Stack>
         <Stack spacing={0.5} sx={{ p: 0.75 }}>
-          {group.items.map((item) => <Paper component="details" key={item.id} variant="outlined" sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
+          {group.items.map((item) => <Paper component="details" key={item.id} id={telemetryElementId("activity", item.id)} tabIndex={focusId === item.id ? -1 : undefined} variant="outlined" sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
             <Box component="summary"><EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} /></Box>
             <Typography variant="caption" color="text.secondary" sx={{ pl: 1.25 }}>{new Date(item.createdAt).toLocaleString()}</Typography>
             {item.outputPreview ? <ExactActivityOutput item={item} /> : null}
@@ -1373,13 +1378,24 @@ export function ActivityPane({ activity, connected, running, activeExecutionId }
 
 function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element | null {
   const [open, setOpen] = useState(false);
+  const [additionalPages, setAdditionalPages] = useState<AgentActivityOutputDto[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState(false);
   const reference = item.outputPreview;
   const query = useQuery({
     queryKey: ["activity-output", item.agentId, item.seq, reference?.sha256],
     queryFn: () => api.getActivityOutput(reference!.retrievalUrl),
     enabled: open && Boolean(reference),
   });
+  useEffect(() => {
+    setAdditionalPages([]);
+    setLoadMoreError(false);
+  }, [item.agentId, item.seq, reference?.sha256]);
   if (!reference) return null;
+  const pages = query.data ? [query.data, ...additionalPages] : [];
+  const nextCursor = pages.at(-1)?.nextCursor;
+  const loadedBytes = pages.reduce((sum, page) => sum + page.pageUtf8Bytes, 0);
+  const output = pages.map((page) => page.output).join("");
   return <Box sx={{ pl: 1.25, pt: 0.5 }}>
     <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>
       {open ? "Hide full output" : `Load full output (${reference.totalUtf8Bytes.toLocaleString()} bytes)`}
@@ -1387,7 +1403,23 @@ function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element 
     {open ? <Paper variant="outlined" sx={{ mt: 0.5, p: 1, maxHeight: 420, overflow: "auto" }}>
       {query.isLoading ? <CircularProgress size={18} />
         : query.isError ? <Alert severity="error">The complete canonical tool output could not be loaded.</Alert>
-          : <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{query.data?.output}</Typography>}
+          : <>
+            <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{output}</Typography>
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.75 }}>
+              <Typography variant="caption" color="text.secondary">
+                Loaded {loadedBytes.toLocaleString()} of {reference.totalUtf8Bytes.toLocaleString()} bytes
+              </Typography>
+              {nextCursor ? <Button size="small" disabled={loadingMore} onClick={() => {
+                setLoadingMore(true);
+                setLoadMoreError(false);
+                void api.getActivityOutput(reference.retrievalUrl, nextCursor)
+                  .then((page) => setAdditionalPages((current) => [...current, page]))
+                  .catch(() => setLoadMoreError(true))
+                  .finally(() => setLoadingMore(false));
+              }}>{loadingMore ? "Loading…" : "Load more"}</Button> : null}
+            </Stack>
+            {loadMoreError ? <Alert severity="error" sx={{ mt: 0.75 }}>The next output page could not be loaded.</Alert> : null}
+          </>}
     </Paper> : null}
   </Box>;
 }
@@ -1691,10 +1723,12 @@ export function ArtifactsPane({
   const [filter, setFilter] = useState("");
 
   useEffect(() => {
-    if (!selectedArtifactId || !artifacts.some((artifact) => artifact.id === selectedArtifactId)) {
+    if (initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)) {
+      if (selectedArtifactId !== initialArtifactId) setSelectedArtifactId(initialArtifactId);
+    } else if (!selectedArtifactId || !artifacts.some((artifact) => artifact.id === selectedArtifactId)) {
       setSelectedArtifactId(orderedArtifacts[0]?.id);
     }
-  }, [artifacts, orderedArtifacts, selectedArtifactId]);
+  }, [artifacts, initialArtifactId, orderedArtifacts, selectedArtifactId]);
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const visibleArtifacts = orderedArtifacts.filter((artifact) => !normalizedFilter || [
@@ -1753,6 +1787,8 @@ export function ArtifactsPane({
                 const selected = artifact.id === selectedArtifactId;
                 return <ListItemButton
                   key={artifact.id}
+                  id={telemetryElementId("artifacts", artifact.id)}
+                  tabIndex={initialArtifactId === artifact.id ? -1 : undefined}
                   selected={selected}
                   onClick={() => setSelectedArtifactId(artifact.id)}
                   aria-current={selected ? "true" : undefined}

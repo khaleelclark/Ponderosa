@@ -10,6 +10,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
+    { kind: "agent", projectId: "project / one", agentId: "agent #1", focusTelemetry: { stream: "activity", id: "agent #1:activity:7" } },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {
     expect(parseRoute(routeToPath(route))).toEqual(route);
   });

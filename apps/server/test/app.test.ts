@@ -6646,7 +6646,7 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Paged telemetry", hostPath: repoDir });
     const room = store.createConversation(project.id, { title: "Long operations" });
     const agent = store.createAgent(project.id, { title: "Historian", engine: "codex", conversationId: room.id });
-    const largeOutput = `${"full-output-".repeat(500)}END`;
+    const largeOutput = `${"a".repeat(4_095)}😀END`;
     for (let index = 0; index < 3; index += 1) {
       store.appendEvent(agent.id, { type: "tool_result", id: `tool-${index}`, output: index === 2 ? largeOutput : `output-${index}` });
     }
@@ -6659,14 +6659,38 @@ describe("server chunk F", () => {
     expect(detail.telemetryHistory.activity).toMatchObject({ hasMore: true, cursor: expect.any(String) });
     const large = detail.activity.at(-1)!;
     expect(large.outputPreview).toMatchObject({ retrievalUrl: expect.any(String), sha256: createHash("sha256").update(largeOutput).digest("hex") });
-    const exact = (await app.inject({ method: "GET", url: large.outputPreview!.retrievalUrl })).json<{ output: string }>();
-    expect(exact.output).toBe(largeOutput);
+    const firstOutput = (await app.inject({
+      method: "GET", url: `${large.outputPreview!.retrievalUrl}?maxBytes=4096`,
+    })).json<{ output: string; pageUtf8Bytes: number; endUtf8Byte: number; totalUtf8Bytes: number; nextCursor: string }>();
+    expect(firstOutput).toMatchObject({ output: "a".repeat(4_095), pageUtf8Bytes: 4_095, endUtf8Byte: 4_095 });
+    expect(firstOutput.totalUtf8Bytes).toBe(Buffer.byteLength(largeOutput));
+    expect(firstOutput.nextCursor).toEqual(expect.any(String));
+    const secondOutputResponse = await app.inject({
+      method: "GET",
+      url: `${large.outputPreview!.retrievalUrl}?maxBytes=4096&cursor=${encodeURIComponent(firstOutput.nextCursor)}`,
+    });
+    expect(secondOutputResponse.statusCode, secondOutputResponse.body).toBe(200);
+    const secondOutput = secondOutputResponse.json<{ output: string; nextCursor?: string }>();
+    expect(firstOutput.output + secondOutput.output).toBe(largeOutput);
+    expect(secondOutput.nextCursor).toBeUndefined();
+    expect((await app.inject({
+      method: "GET", url: `${large.outputPreview!.retrievalUrl}?cursor=${encodeURIComponent(`${firstOutput.nextCursor}x`)}`,
+    })).statusCode).toBe(400);
     const older = (await app.inject({
       method: "GET",
       url: `/api/agents/${agent.id}/history/activity?limit=2&cursor=${encodeURIComponent(detail.telemetryHistory.activity.cursor)}`,
-    })).json<{ items: Array<{ event: { id: string } }>; history: { hasMore: boolean } }>();
+    })).json<{ items: Array<{ id: string; event: { id: string } }>; history: { hasMore: boolean } }>();
     expect(older.items.map((item) => item.event.id)).toEqual(["tool-0"]);
     expect(older.history.hasMore).toBe(false);
+    const focused = (await app.inject({
+      method: "GET",
+      url: `/api/agents/${agent.id}/history/activity?limit=2&focusId=${encodeURIComponent(older.items[0]!.id)}`,
+    })).json<{ items: Array<{ id: string; event: { id: string } }>; history: { hasMore: boolean } }>();
+    expect(focused.items).toEqual([expect.objectContaining({ event: expect.objectContaining({ id: "tool-0" }) })]);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/agents/${agent.id}/history/activity?focusId=${encodeURIComponent(`${agent.id}:runOutput:1`)}`,
+    })).statusCode).toBe(400);
     expect((await app.inject({
       method: "GET",
       url: `/api/agents/${agent.id}/history/runs?cursor=${encodeURIComponent(detail.telemetryHistory.activity.cursor)}`,
