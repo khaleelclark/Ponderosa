@@ -363,6 +363,15 @@ export interface CreateServerOptions {
     setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
     clearTimer?: (timer: NodeJS.Timeout) => void;
   };
+  /** Deterministic provider-authority cleanup retry seams. Production uses
+   * capped exponential backoff with jitter. */
+  runtimeAuthorityRetryScheduling?: {
+    baseDelayMs?: number;
+    maxDelayMs?: number;
+    random?: () => number;
+    setTimer?: (callback: () => void, delayMs: number) => NodeJS.Timeout;
+    clearTimer?: (timer: NodeJS.Timeout) => void;
+  };
   /** Deterministic shutdown fault seam; never enabled in production. */
   shutdownFaults?: {
     backgroundCleanup?: () => void | Promise<void>;
@@ -564,6 +573,8 @@ interface AgentRuntimeAuthority {
   closing?: PersistentRuntimeTeardown;
   oneShots: Map<string, OneShotRuntimeTeardown>;
   retryTimer?: NodeJS.Timeout;
+  retryAttempt: number;
+  retryInProgress?: boolean;
 }
 
 /**
@@ -1831,12 +1842,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const runtimeAuthority = (agentId: string, create = false): AgentRuntimeAuthority | undefined => {
     const existing = runtimeAuthorities.get(agentId);
     if (existing || !create) return existing;
-    const created: AgentRuntimeAuthority = { oneShots: new Map() };
+    const created: AgentRuntimeAuthority = { oneShots: new Map(), retryAttempt: 0 };
     runtimeAuthorities.set(agentId, created);
     return created;
   };
   const pruneRuntimeAuthority = (agentId: string, authority: AgentRuntimeAuthority): void => {
     if (!authority.opening && !authority.reusable && !authority.closing && authority.oneShots.size === 0 && !authority.retryTimer &&
+        !authority.retryInProgress &&
         runtimeAuthorities.get(agentId) === authority) {
       runtimeAuthorities.delete(agentId);
     }
@@ -1974,30 +1986,29 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const errors: string[] = [];
     try { cancelAgentDecisions(receipt.deletedAgentIds); }
     catch (error) { errors.push(error instanceof Error ? error.message : "Decision cleanup failed"); }
+    const deletedAgentIds = new Set(receipt.deletedAgentIds);
+    await Promise.allSettled(receipt.deletedAgentIds.flatMap((agentId) => {
+      const session = activeRuns.get(agentId)?.runtimeSession;
+      return session ? [Promise.resolve().then(() => awaitRuntimeTerminationOperation(
+        session.interrupt(),
+        `${agentId} runtime interrupt`,
+      ))] : [];
+    }));
+    try {
+      await awaitRuntimeTerminationOperation(
+        drainProviderRuntimeAuthority("Agent deletion", deletedAgentIds),
+        "Agent deletion runtime close",
+      );
+    } catch (error) {
+      const details = error instanceof AggregateError
+        ? error.errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")
+        : undefined;
+      errors.push(error instanceof Error
+        ? `${error.message}${details ? `: ${details}` : ""}`
+        : "Agent deletion provider authority drain failed");
+    }
     for (const agentId of receipt.deletedAgentIds) {
       try {
-        const run = activeRuns.get(agentId);
-        if (run) {
-          clearRunLeaseTimer(run);
-          clearRunLivenessTimer(run);
-          agentMessageCapabilities.delete(run.messageCapability);
-          run.controller.abort();
-        }
-        const runtime = persistentRuntimeForTermination(agentId);
-        const terminationError = await terminateRuntimeHandle(
-          agentId,
-          run,
-          runtime,
-          "Agent deletion",
-          receipt.projectId,
-        );
-        if (terminationError) {
-          // Retain both handles so the receipt sweep can retry provider
-          // termination. Capabilities and output are already fenced above.
-          errors.push(`${agentId}: ${terminationError}`);
-        } else {
-          if (run && activeRuns.get(agentId) === run) activeRuns.delete(agentId);
-        }
         subscribers.delete(agentId);
         scheduledSessionRollovers.delete(agentId);
       } catch (error) {
@@ -2398,33 +2409,62 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const runtimeSessionNow = opts.runtimeSessionScheduling?.now ?? Date.now;
   const setRuntimeIdleTimer = opts.runtimeSessionScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearRuntimeIdleTimer = opts.runtimeSessionScheduling?.clearTimer ?? clearTimeout;
+  const runtimeAuthorityRetryBaseMs = Math.max(1, opts.runtimeAuthorityRetryScheduling?.baseDelayMs ?? 500);
+  const runtimeAuthorityRetryMaxMs = Math.max(runtimeAuthorityRetryBaseMs, opts.runtimeAuthorityRetryScheduling?.maxDelayMs ?? 30_000);
+  const runtimeAuthorityRetryRandom = opts.runtimeAuthorityRetryScheduling?.random ?? Math.random;
+  const setRuntimeAuthorityRetryTimer = opts.runtimeAuthorityRetryScheduling?.setTimer ??
+    ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
+  const clearRuntimeAuthorityRetryTimer = opts.runtimeAuthorityRetryScheduling?.clearTimer ?? clearTimeout;
 
   function clearRuntimeAuthorityRetry(authority: AgentRuntimeAuthority): void {
     if (!authority.retryTimer) return;
-    clearTimeout(authority.retryTimer);
+    clearRuntimeAuthorityRetryTimer(authority.retryTimer);
     authority.retryTimer = undefined;
   }
 
   function clearRuntimeAuthorityRetryIfUnblocked(authority: AgentRuntimeAuthority): void {
     if (authority.opening || authority.closing || authority.oneShots.size > 0) return;
     clearRuntimeAuthorityRetry(authority);
+    authority.retryAttempt = 0;
   }
+
+  const pendingRuntimeAuthorityCount = (authority: AgentRuntimeAuthority): number =>
+    Number(Boolean(authority.opening)) + Number(Boolean(authority.reusable)) +
+    Number(Boolean(authority.closing)) + authority.oneShots.size;
 
   function scheduleRuntimeAuthorityRetry(agentId: string): void {
     const authority = runtimeAuthority(agentId, true)!;
-    if (closed || authority.retryTimer) return;
-    authority.retryTimer = setTimeout(() => {
+    if (closed || authority.retryTimer || authority.retryInProgress) return;
+    const exponent = Math.min(authority.retryAttempt, 16);
+    const withoutJitter = Math.min(runtimeAuthorityRetryMaxMs, runtimeAuthorityRetryBaseMs * (2 ** exponent));
+    const random = Math.min(1, Math.max(0, runtimeAuthorityRetryRandom()));
+    const delayMs = Math.min(
+      runtimeAuthorityRetryMaxMs,
+      Math.max(1, Math.round(withoutJitter * (0.75 + random * 0.5))),
+    );
+    authority.retryAttempt = exponent + 1;
+    authority.retryTimer = setRuntimeAuthorityRetryTimer(() => {
       authority.retryTimer = undefined;
-      void reconcileAgentRuntimeAuthority(agentId)
-        .then(() => {
+      authority.retryInProgress = true;
+      const pendingBefore = pendingRuntimeAuthorityCount(authority);
+      void (async () => {
+        let retryError: unknown;
+        try {
+          await reconcileAgentRuntimeAuthority(agentId);
+          authority.retryAttempt = 0;
           pruneRuntimeAuthority(agentId, authority);
           coordinationV3Scheduler?.notify();
-        })
-        .catch((error) => {
+        } catch (error) {
+          retryError = error;
+          if (pendingRuntimeAuthorityCount(authority) < pendingBefore) authority.retryAttempt = 0;
           app.log.error({ err: error, agentId }, "provider runtime authority cleanup retry remains pending");
-          scheduleRuntimeAuthorityRetry(agentId);
-        });
-    }, 500);
+        } finally {
+          authority.retryInProgress = false;
+        }
+        if (retryError) scheduleRuntimeAuthorityRetry(agentId);
+        else pruneRuntimeAuthority(agentId, authority);
+      })();
+    }, delayMs);
     authority.retryTimer.unref?.();
   }
 
@@ -2657,7 +2697,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const run = activeRuns.get(agentId);
     if (!run || run.persistentRuntimeIdentity !== identity || !ownsActiveRun(agentId, run)) return;
     transitionRun(agentId, run, "cancelling");
-    activeRuns.delete(agentId);
     void closeRunBrowser(agentId, run, "persistent_provider_root_exited");
     closeLinkPreviewsForAgent(agentId, "persistent provider root exited");
     agentMessageCapabilities.delete(run.messageCapability);
@@ -3969,6 +4008,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             .map((candidate) => candidate.id)),
         ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
           authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
+        ...activeRuns.keys(),
       ])],
       onRunLeased: (lease) => {
         const triggerId = lease.activations.flatMap((activation) => {
@@ -10758,6 +10798,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
       })();
       activeRun.completion = execution;
+      // A provider root-exit fence removes scheduler ownership immediately but
+      // retains this exact local Run as a completion barrier. Release it only
+      // after the event loop unwinds; identity equality prevents a stale
+      // generation from deleting a successor.
+      void execution.finally(() => {
+        if (activeRuns.get(agent.id) === activeRun && !ownsActiveRun(agent.id, activeRun)) {
+          activeRuns.delete(agent.id);
+          coordinationV3Scheduler?.notify();
+        }
+      }).catch(() => undefined);
       const cleanup = execution.finally(async () => {
         const oneShot = oneShotRuntime(agent.id, runId);
         if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");

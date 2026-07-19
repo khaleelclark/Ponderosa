@@ -749,6 +749,7 @@ class SteerableMockAdapter extends MockAdapter {
   closeBarrier?: Promise<void>;
   openBarrier?: Promise<void>;
   openFailure?: Error;
+  closeLeavesEventsOpen = false;
   failNextSteer = false;
   completeStartedTurns = false;
   completeSteers = true;
@@ -765,6 +766,10 @@ class SteerableMockAdapter extends MockAdapter {
 
   completeTurn(sessionIndex: number): void {
     this.queues[sessionIndex]?.push({ type: "turn_done" });
+  }
+
+  closeEventStream(sessionIndex: number): void {
+    this.queues[sessionIndex]?.close();
   }
 
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
@@ -811,7 +816,7 @@ class SteerableMockAdapter extends MockAdapter {
             throw new Error("simulated provider close failure");
           }
           alive = false;
-          queue.close();
+          if (!this.closeLeavesEventsOpen) queue.close();
         })();
         closePromise = attempt.catch((error) => {
           closePromise = undefined;
@@ -2681,6 +2686,34 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("retains a root-exited Run as a Project-deletion barrier until its event loop settles", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.closeLeavesEventsOpen = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Root-exit completion barrier", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Root exit barrier", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep the event loop open" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+
+    persistent.crashRoot(0);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    const deletion = app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    let settled = false;
+    void deletion.then(() => { settled = true; });
+    await sleep(25);
+    expect(settled).toBe(false);
+    expect(store.getProject(project.id)).toBeDefined();
+
+    persistent.closeEventStream(0);
+    const deleted = await deletion;
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
   it("detaches an idle crashed persistent runtime before replacement work", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -3895,6 +3928,157 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>()).toEqual(expect.arrayContaining([
       expect.objectContaining({ dedupeKey: `agent-deletion:${receiptId}:cleanup-pending`, status: "resolved" }),
     ]));
+    await app.close();
+  });
+
+  it("keeps Agent deletion pending until a failed one-shot runtime close is retried", async () => {
+    const fallback = new MockAdapter();
+    let spawned = false;
+    let alive = true;
+    let closeAttempts = 0;
+    const handle = {
+      isAlive: () => alive,
+      close: async () => {
+        closeAttempts += 1;
+        if (closeAttempts === 1) throw new Error("simulated deleted one-shot close failure");
+        alive = false;
+      },
+    };
+    const execute = async function* (options: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> {
+      options.onRuntimeSpawned?.(handle);
+      spawned = true;
+      await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+    };
+    engines = [{
+      adapter: {
+        id: "codex", displayName: "Deleted one-shot runtime",
+        listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
+        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+      },
+      authStatus: async () => ({ authenticated: true }),
+    }];
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 },
+      runtimeAuthorityRetryScheduling: {
+        setTimer: () => ({ unref() {} }) as unknown as NodeJS.Timeout,
+        clearTimer: () => undefined,
+      },
+    });
+    const project = store.createProject({ label: "One-shot Agent deletion", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Delete active one-shot", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Wait" } });
+    await vi.waitFor(() => expect(spawned).toBe(true));
+
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    expect(alive).toBe(true);
+    expect(closeAttempts).toBe(1);
+
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
+    expect(closeAttempts).toBe(2);
+    expect(alive).toBe(false);
+    await app.close();
+  });
+
+  it("keeps Agent deletion pending until an opening provider handle is terminated", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseOpen!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpen = resolve; });
+    persistent.closeFailuresRemaining = 1;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 },
+      runtimeAuthorityRetryScheduling: {
+        setTimer: () => ({ unref() {} }) as unknown as NodeJS.Timeout,
+        clearTimer: () => undefined,
+      },
+    });
+    const project = store.createProject({ label: "Opening Agent deletion", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Delete while opening", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Open slowly" } });
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect(store.getAgent(agent.id)).toBeUndefined();
+    expect(persistent.closed).toBe(1);
+
+    releaseOpen();
+    await vi.waitFor(() => expect(persistent.closed).toBe(2));
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
+    await app.close();
+  });
+
+  it("backs off repeated runtime cleanup failures and resets after success", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const callbacks: Array<() => void> = [];
+    const delays: number[] = [];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      runtimeAuthorityRetryScheduling: {
+        baseDelayMs: 100,
+        maxDelayMs: 250,
+        random: () => 0.5,
+        setTimer: (callback, delayMs) => {
+          callbacks.push(callback);
+          delays.push(delayMs);
+          return { unref() {} } as unknown as NodeJS.Timeout;
+        },
+        clearTimer: () => undefined,
+      },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Runtime retry backoff", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Backoff", engine: "codex" });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Finish" } });
+    await waitForRun(agent.id);
+    persistent.closeFailuresRemaining = 3;
+
+    const preview = (await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/preview`, payload: { rootAgentIds: [agent.id] },
+    })).json<{ rootAgentIds: string[]; previewHash: string }>();
+    const committed = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(committed.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect(delays).toEqual([100]);
+
+    callbacks.shift()!();
+    await vi.waitFor(() => expect(delays).toEqual([100, 200]));
+    callbacks.shift()!();
+    await vi.waitFor(() => expect(delays).toEqual([100, 200, 250]));
+    callbacks.shift()!();
+    await vi.waitFor(() => expect(persistent.closed).toBe(4));
+    expect(callbacks).toHaveLength(0);
+
+    const replay = await app.inject({
+      method: "POST", url: `/api/projects/${project.id}/agent-deletions/commit`, payload: preview,
+    });
+    expect(replay.json()).toMatchObject({ deleted: true, cleanupPending: false, replayed: true });
     await app.close();
   });
 
