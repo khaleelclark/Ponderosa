@@ -133,7 +133,10 @@ export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
   inputSchema: {
     type: "object", additionalProperties: false,
     properties: {
-      before: { type: "string", description: "Optional ISO timestamp cursor from a previous response." },
+      cursor: {
+        type: "string", minLength: 1, maxLength: 4096,
+        description: "Opaque continuation cursor returned by the preceding call. Reuse it unchanged for the same scoped history.",
+      },
       limit: { type: "integer", minimum: 1, maximum: 50, description: "Defaults 20." },
     },
   },

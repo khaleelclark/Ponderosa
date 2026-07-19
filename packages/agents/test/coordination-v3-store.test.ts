@@ -304,6 +304,28 @@ describe("CoordinationV3Store transactions", () => {
     expect([...first, ...second].every((item) => item.createdAt === tiedAt)).toBe(true);
   });
 
+  it("returns the 1,001st internal sentinel for a public 1,000-row page", () => {
+    for (let index = 0; index < 1_001; index += 1) {
+      const recorded = store.recordRuntimeCommunication({
+        id: `sentinel-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        scopeKey: `conversation:${conversationId}`,
+        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        now: new Date(Date.UTC(2027, 0, 1, 0, 0, 0, index)).toISOString(),
+        activation: {
+          agentId: recipientA, kind: "human_message", priority: 100,
+          dispatchPolicy: "steer_or_run", promptClass: "human",
+        },
+      });
+      store.cancelPendingActivation({
+        activationId: recorded.activationId!, projectId,
+        idempotencyKey: `cancel-sentinel-${index}`,
+        now: new Date(Date.UTC(2027, 0, 1, 0, 0, 1, index)).toISOString(),
+      });
+    }
+    const pageWithSentinel = store.teamOperationalRecords({ projectId, conversationId, limit: 1_001 });
+    expect(pageWithSentinel).toHaveLength(1_001);
+  });
+
   it("reports truncation when one Agent has more same-kind seeds than the requested limit", () => {
     for (let index = 0; index < 5; index += 1) {
       store.recordRuntimeCommunication({

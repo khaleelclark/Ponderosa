@@ -62,7 +62,8 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
   for (const message of groups.flat()) byId.set(message.id, message);
-  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  return [...byId.values()].sort((a, b) =>
+    (a.canonicalOrderKey ?? a.createdAt).localeCompare(b.canonicalOrderKey ?? b.createdAt) || a.id.localeCompare(b.id));
 }
 
 function mergeOperationalEvents(...groups: TeamOperationalEventDto[][]): TeamOperationalEventDto[] {

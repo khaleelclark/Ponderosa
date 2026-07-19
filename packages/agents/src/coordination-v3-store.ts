@@ -1840,7 +1840,10 @@ export class CoordinationV3Store {
     createdAt: string;
     updatedAt: string;
   }> {
-    const limit = Math.max(1, Math.min(input.limit, 1_000));
+    // Public pages may contain 1,000 rows and ask this projection for one
+    // additional sentinel. Clamping that internal read to 1,000 made an exact
+    // 1,001-row history falsely claim there was no next page.
+    const limit = Math.max(1, Math.min(input.limit, 1_001));
     const scopeKey = `conversation:${input.conversationId}`;
     const rows = this.sqlite.prepare(`
       WITH request_records AS (

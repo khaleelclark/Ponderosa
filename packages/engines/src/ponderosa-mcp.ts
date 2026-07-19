@@ -58,10 +58,10 @@ async function handle(request: RpcRequest): Promise<void> {
     const isContext = params?.name === "context";
     const isResult = params?.name === "result";
     const args = params?.arguments && typeof params.arguments === "object"
-      ? params.arguments as { agentId?: unknown; before?: unknown; limit?: unknown }
+      ? params.arguments as { agentId?: unknown; cursor?: unknown; limit?: unknown }
       : {};
     const contextQuery = new URLSearchParams();
-    if (typeof args.before === "string" && args.before.trim()) contextQuery.set("before", args.before.trim());
+    if (typeof args.cursor === "string" && args.cursor.trim()) contextQuery.set("cursor", args.cursor.trim());
     if (typeof args.limit === "number") contextQuery.set("limit", String(args.limit));
     const targetUrl = params?.name === "create_managed_agent"
       ? spawnUrl

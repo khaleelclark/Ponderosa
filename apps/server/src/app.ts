@@ -855,6 +855,40 @@ export function boundedSeedHistory<T extends { text: string }>(
   return selected.reverse();
 }
 
+/**
+ * Continued provider sessions consume new canonical room history in FIFO
+ * pages. Unlike a seed (which intentionally selects the newest tail), a
+ * continuation must never jump over an older unseen message merely to fit the
+ * prompt budget. Canonical messages larger than the entire page are represented
+ * by a bounded preview; their complete content remains available through the
+ * older-context/artifact retrieval surface.
+ */
+export function boundedContinuationHistory<T extends { text: string }>(
+  messages: T[],
+  maxChars = MAX_SEED_HISTORY_CHARS,
+  maxMessages = MAX_SEED_HISTORY_MESSAGES,
+): T[] {
+  const selected: T[] = [];
+  let remaining = maxChars;
+  for (const message of messages) {
+    if (selected.length >= maxMessages || remaining <= 0) break;
+    if (message.text.length <= remaining) {
+      selected.push(message);
+      remaining -= message.text.length;
+      continue;
+    }
+    if (selected.length > 0) break;
+    const marker = "\n[Remaining content is available from the older-context reference]";
+    const available = Math.max(0, remaining - marker.length);
+    selected.push({
+      ...message,
+      text: available > 0 ? `${message.text.slice(0, available)}${marker}` : message.text.slice(0, remaining),
+    });
+    remaining = 0;
+  }
+  return selected;
+}
+
 function contextSection(
   name: string,
   priority: "AUTHORITATIVE" | "ACTION REQUIRED" | "RELEVANT BACKGROUND" | "ON-DEMAND REFERENCE",
@@ -5476,7 +5510,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return entry ?? reply.code(404).send({ error: "agent not found in this Team Chat" });
   });
 
-  app.get<{ Querystring: { before?: string; limit?: string } }>("/api/agent-context", async (request, reply) => {
+  app.get<{ Querystring: { cursor?: string; limit?: string } }>("/api/agent-context", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
     const active = capability ? activeRuns.get(capability.agentId) : undefined;
@@ -5488,8 +5522,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!Number.isSafeInteger(rawLimit) || rawLimit < 1 || rawLimit > 50) {
       return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
     }
-    const beforeMs = request.query.before === undefined ? Number.POSITIVE_INFINITY : Date.parse(request.query.before);
-    if (Number.isNaN(beforeMs)) return reply.code(400).send({ error: "before must be an ISO timestamp" });
+    const contextScope = `${agent.id}:${capability.conversationId ?? "private"}`;
+    let boundary: { createdAt: string; id: string } | undefined;
+    try {
+      boundary = request.query.cursor
+        ? decodeTimelineCursor(request.query.cursor, "agent:context", contextScope)
+        : undefined;
+    } catch {
+      return reply.code(400).send({ error: "invalid context cursor" });
+    }
 
     const scopedAgentMessages = agentMessages(agent.id).filter((message) =>
       capability.conversationId
@@ -5531,16 +5572,23 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!deduped.has(key)) deduped.set(key, message);
     }
     const newest = [...deduped.values()]
-      .filter((message) => Date.parse(message.createdAt) < beforeMs)
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(0, rawLimit);
-    const messages = newest.reverse();
+      .filter((message) => !boundary || message.createdAt < boundary.createdAt ||
+        (message.createdAt === boundary.createdAt && message.id < boundary.id))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, rawLimit + 1);
+    const hasMore = newest.length > rawLimit;
+    const selected = newest.slice(0, rawLimit);
+    const messages = selected.reverse();
+    const oldest = selected.at(-1);
     return {
       scope: capability.conversationId
         ? { kind: "project_chat", conversationId: capability.conversationId }
         : { kind: "agent_private" },
       messages,
-      ...(messages.length === rawLimit ? { nextBefore: messages[0]!.createdAt } : {}),
+      hasMore,
+      ...(hasMore && oldest ? {
+        nextCursor: encodeTimelineCursor("agent:context", contextScope, oldest.createdAt, oldest.id),
+      } : {}),
     };
   });
 
@@ -8955,36 +9003,36 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const seq = Number(request.params.seq);
     if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
-    const exact = store.getActivityOutput(request.params.id, seq);
-    if (!exact) return reply.code(404).send({ error: "tool output not found" });
     try {
       const cursor = request.query.cursor
         ? decodeActivityOutputCursor(request.query.cursor, request.params.id, seq)
         : undefined;
-      if (cursor && cursor.sha256 !== exact.sha256) throw new Error("activity output changed after the cursor was issued");
       const requestedBytes = Number(request.query.maxBytes ?? RESULT_PAGE_DEFAULT_BYTES);
       const maxBytes = Math.min(
         RESULT_PAGE_MAX_BYTES,
         Math.max(RESULT_PAGE_MIN_BYTES, Number.isFinite(requestedBytes) ? Math.floor(requestedBytes) : RESULT_PAGE_DEFAULT_BYTES),
       );
       const startUtf8Byte = cursor?.byteOffset ?? 0;
-      const page = utf8Page(exact.output, startUtf8Byte, maxBytes);
+      const page = store.getActivityOutputPage(request.params.id, seq, startUtf8Byte, maxBytes);
+      if (!page) return reply.code(404).send({ error: "tool output not found" });
+      if (cursor && cursor.sha256 !== page.sha256) throw new Error("activity output changed after the cursor was issued");
+      const endUtf8Byte = startUtf8Byte + page.pageUtf8Bytes;
       return {
-        agentId: exact.agentId,
-        activityId: exact.activityId,
-        seq: exact.seq,
+        agentId: page.agentId,
+        activityId: page.activityId,
+        seq: page.seq,
         output: page.output,
         pageUtf8Bytes: page.pageUtf8Bytes,
         startUtf8Byte,
-        endUtf8Byte: page.endUtf8Byte,
+        endUtf8Byte,
         totalUtf8Bytes: page.totalUtf8Bytes,
-        sha256: exact.sha256,
-        ...(page.endUtf8Byte < page.totalUtf8Bytes ? {
+        sha256: page.sha256,
+        ...(endUtf8Byte < page.totalUtf8Bytes ? {
           nextCursor: encodeActivityOutputCursor({
-            agentId: exact.agentId,
-            seq: exact.seq,
-            sha256: exact.sha256,
-            byteOffset: page.endUtf8Byte,
+            agentId: page.agentId,
+            seq: page.seq,
+            sha256: page.sha256,
+            byteOffset: endUtf8Byte,
           }),
         } : {}),
       };
@@ -9996,8 +10044,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // A missing cursor target means canonical history was cleared or replaced;
       // reseed rather than assuming that later rows were already delivered.
       const incremental = previousCursor !== undefined && (!previousCursor.lastMessageId || previousIndex >= 0);
-      const roomMessages = incremental
+      const pendingRoomMessages = incremental
         ? allRoomMessages.slice(previousCursor?.lastMessageId ? previousIndex + 1 : 0)
+        : allRoomMessages;
+      const roomMessages = incremental
+        ? boundedContinuationHistory(pendingRoomMessages)
         : boundedSeedHistory(allRoomMessages);
       const allBroadcastMessages = conversation && sourceChannel !== "main"
         ? organizationalMasterMessages(
@@ -10024,13 +10075,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         : -1;
       const broadcastIncremental = previousBroadcastCursor !== undefined &&
         (!previousBroadcastCursor.lastMessageId || previousBroadcastIndex >= 0);
-      const initialBroadcastContext = broadcastIncremental
+      const pendingBroadcastMessages = broadcastIncremental
         ? allBroadcastMessages.slice(previousBroadcastCursor?.lastMessageId ? previousBroadcastIndex + 1 : 0)
+        : allBroadcastMessages;
+      const initialBroadcastContext = broadcastIncremental
+        ? boundedContinuationHistory(pendingBroadcastMessages)
         : boundedSeedHistory(allBroadcastMessages);
+      const roomDeltaOmitted = boundedHistoryOmitted(pendingRoomMessages, roomMessages);
+      const broadcastDeltaOmitted = boundedHistoryOmitted(pendingBroadcastMessages, initialBroadcastContext);
       const hasOmittedScopedContext = (
         (!resumeSessionId && boundedHistoryOmitted(fullHistory, history)) ||
-        (!incremental && boundedHistoryOmitted(allRoomMessages, roomMessages)) ||
-        (!broadcastIncremental && boundedHistoryOmitted(allBroadcastMessages, initialBroadcastContext))
+        roomDeltaOmitted ||
+        broadcastDeltaOmitted
       );
       const changedRoutingMetadata = !previousCursor || previousCursor.routingHash !== routingHash
         ? routingMetadata
@@ -10400,13 +10456,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   ? call.arguments as { agentId?: unknown }
                   : {};
                 const contextArguments = call.arguments && typeof call.arguments === "object"
-                  ? call.arguments as { before?: unknown; limit?: unknown }
+                  ? call.arguments as { cursor?: unknown; limit?: unknown }
                   : {};
                 const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
                 const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
                 const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
                 const contextQuery = new URLSearchParams();
-                if (typeof contextArguments.before === "string" && contextArguments.before.trim()) contextQuery.set("before", contextArguments.before.trim());
+                if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
                 if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
                 const url = call.name === PONDEROSA_CREATE_MANAGED_AGENT_TOOL.name
                   ? "/api/agent-spawn"
@@ -10851,7 +10907,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sessionId: acceptedSessionId,
                 conversationId: cursorConversationId,
                 channel: cursorChannel,
-                lastMessageId: allRoomMessagesIncludingCurrent.at(-1)?.id,
+                // A continued session advances only through the FIFO page that
+                // was actually submitted. A fresh/reseeded session deliberately
+                // accepts the newest bounded tail and records the canonical tip.
+                lastMessageId: incremental && roomDeltaOmitted
+                  ? roomMessages.at(-1)?.id ?? previousCursor?.lastMessageId
+                  : allRoomMessagesIncludingCurrent.at(-1)?.id,
                 routingHash,
               });
             }
@@ -10863,7 +10924,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sessionId: acceptedSessionId,
                 conversationId: routingConversationId,
                 channel: "broadcast",
-                lastMessageId: allBroadcastMessages.at(-1)?.id,
+                lastMessageId: broadcastIncremental && broadcastDeltaOmitted
+                  ? initialBroadcastContext.at(-1)?.id ?? previousBroadcastCursor?.lastMessageId
+                  : allBroadcastMessages.at(-1)?.id,
                 routingHash,
               });
             }

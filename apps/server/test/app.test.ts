@@ -3393,6 +3393,45 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keyset-pages every equal-time older-context message without tie loss", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Tied context", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex" });
+    const tiedAt = "2026-07-16T23:59:59.000Z";
+    store.setImportedHistory(agent.id, "tied-history", Array.from({ length: 51 }, (_, index) => ({
+      role: "system" as const,
+      text: `TIED-CONTEXT-${String(index).padStart(2, "0")}`,
+      createdAt: tiedAt,
+    })));
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect older context" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    let cursor: string | undefined;
+    const retrieved: string[] = [];
+    do {
+      const page = await app.inject({
+        method: "GET",
+        url: `/api/agent-context?limit=20${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(page.statusCode, page.body).toBe(200);
+      const body = page.json<{ messages: Array<{ text: string }>; hasMore: boolean; nextCursor?: string }>();
+      retrieved.push(...body.messages.flatMap((message) => message.text.includes("TIED-CONTEXT-") ? [message.text] : []));
+      cursor = body.nextCursor;
+      expect(body.hasMore).toBe(Boolean(cursor));
+    } while (cursor);
+
+    expect(new Set(retrieved).size).toBe(51);
+    expect(retrieved).toEqual(expect.arrayContaining([
+      "[Imported private context]\nTIED-CONTEXT-00",
+      "[Imported private context]\nTIED-CONTEXT-50",
+    ]));
+    await cancelAndWait(app, agent.id);
+    await app.close();
+  });
+
   it("excludes hidden, generated, and credential-like project references", () => {
     expect(isProjectFileReferenceAllowed("src/app.ts")).toBe(true);
     for (const candidate of [".git/config", ".env.example", ".oauth_tokens.json", "node_modules/pkg/index.js", "config/credentials.json", "build/app.js"]) {
@@ -4923,7 +4962,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("selects continued-session deltas from canonical history beyond the UI window", async () => {
+  it("delivers oversized continued-session deltas in bounded FIFO pages", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Canonical context", hostPath: repoDir });
     const master = store.createConversation(project.id, { title: "Long-running room" });
@@ -4939,8 +4978,30 @@ describe("server chunk F", () => {
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue", sourceChannel: "main" } });
     await waitForRun(agent.id, 2);
     expect(adapter.continues[0]?.prompt).toContain("canonical delta 0");
-    expect(adapter.continues[0]?.prompt).toContain("canonical delta 100");
+    expect(adapter.continues[0]?.prompt).toContain("canonical delta 39");
+    expect(adapter.continues[0]?.prompt).not.toContain("canonical delta 40");
+    expect(adapter.continues[0]?.prompt).toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
     expect(adapter.continues[0]?.prompt).not.toContain("accepted cursor marker");
+
+    adapter.failNextTurn = true;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue page 2 fails", sourceChannel: "main" } });
+    await waitForRun(agent.id, 3);
+    expect(adapter.continues[1]?.prompt).not.toContain("canonical delta 39");
+    expect(adapter.continues[1]?.prompt).toContain("canonical delta 40");
+    expect(adapter.continues[1]?.prompt).toContain("canonical delta 79");
+    expect(adapter.continues[1]?.prompt).not.toContain("canonical delta 80");
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "retry page 2", sourceChannel: "main" } });
+    await waitForRun(agent.id, 4);
+    expect(adapter.continues[2]?.prompt).toContain("canonical delta 40");
+    expect(adapter.continues[2]?.prompt).toContain("canonical delta 79");
+    expect(adapter.continues[2]?.prompt).not.toContain("canonical delta 80");
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue page 3", sourceChannel: "main" } });
+    await waitForRun(agent.id, 5);
+    expect(adapter.continues[3]?.prompt).not.toContain("canonical delta 79");
+    expect(adapter.continues[3]?.prompt).toContain("canonical delta 80");
+    expect(adapter.continues[3]?.prompt).toContain("canonical delta 100");
     await app.close();
   });
 
