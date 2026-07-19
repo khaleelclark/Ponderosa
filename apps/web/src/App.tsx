@@ -37,6 +37,7 @@ import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
@@ -566,7 +567,9 @@ export default function App({
           onReorder={reorderWorkspaceViews}
         />
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
-        {projectsQuery.isError || enginesQuery.isError ? (
+        {route.kind === "wiki" ? (
+          <WikiView articleId={route.articleId} navigate={goHome} />
+        ) : projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
             <Alert
               severity="error"
