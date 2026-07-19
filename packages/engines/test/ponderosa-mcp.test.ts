@@ -62,7 +62,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     expect(responses[1]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "decision" }, { name: "manage" },
       { name: "coordinate" }, { name: "result" }, { name: "update_request" }, { name: "message" },
-      { name: "team_directory" }, { name: "context" },
+      { name: "team_directory" }, { name: "context" }, { name: "docs" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
@@ -136,7 +136,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     expect(responses[0]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "decision" }, { name: "manage" },
       { name: "coordinate" }, { name: "result" }, { name: "update_request" }, { name: "message" },
-      { name: "team_directory" }, { name: "context" },
+      { name: "team_directory" }, { name: "context" }, { name: "docs" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
