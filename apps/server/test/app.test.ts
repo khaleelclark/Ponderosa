@@ -598,6 +598,7 @@ describe("link favicon loading", () => {
     const favicon = await app.inject({ method: "GET", url: "/api/link-favicon?url=https%3A%2F%2Fdocs.example.com%2Fguide" });
     expect(favicon.statusCode).toBe(200);
     expect(favicon.headers["content-type"]).toContain("image/png");
+    expect(favicon.headers["cache-control"]).toBe("public, max-age=3600");
     expect(favicon.rawPayload).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     expect(linkFaviconLoader).toHaveBeenCalledWith(new URL("https://docs.example.com/favicon.ico"));
 
@@ -605,6 +606,16 @@ describe("link favicon loading", () => {
       expect((await app.inject({ method: "GET", url: `/api/link-favicon?url=${encodeURIComponent(url)}` })).statusCode).toBe(400);
     }
     expect(linkFaviconLoader).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("briefly caches favicon failures without changing successful response caching", async () => {
+    const unavailable = vi.fn(async () => { throw new Error("temporary upstream failure"); });
+    const app = createServer({ dataDir, store, engines, logger: false, linkFaviconLoader: unavailable });
+    const failed = await app.inject({ method: "GET", url: "/api/link-favicon?url=https%3A%2F%2Fdocs.example.com%2Fguide" });
+    expect(failed.statusCode).toBe(404);
+    expect(failed.headers["cache-control"]).toBe("public, max-age=60");
+    expect(unavailable).toHaveBeenCalledTimes(1);
     await app.close();
   });
 });

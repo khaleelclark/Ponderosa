@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { WorkspaceEvent } from "@ponderosa/core";
-import { conversationChangedQueryKeys, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
 
 afterEach(() => vi.useRealTimers());
 
@@ -71,6 +71,21 @@ describe("workspace stream cursor recovery", () => {
     await vi.advanceTimersByTimeAsync(150);
 
     expect(client.getQueryState(["agent-work", "project-a"])?.isInvalidated).toBe(true);
+    invalidator.dispose();
+  });
+
+  it("traces a 90-event lifecycle storm as one timely project agent-list refresh", async () => {
+    vi.useFakeTimers();
+    const invalidateQueries = vi.fn(() => Promise.resolve());
+    const invalidator = createAgentListInvalidator({ invalidateQueries }, 350);
+
+    for (let event = 0; event < 90; event += 1) invalidator.schedule("project-a");
+    expect(invalidateQueries).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(349);
+    expect(invalidateQueries).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(invalidateQueries).toHaveBeenCalledTimes(1);
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "project-a"] });
     invalidator.dispose();
   });
 

@@ -6764,6 +6764,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       reply.header("cache-control", "public, max-age=3600");
       return reply.send(favicon.body);
     } catch {
+      // Failures are safe to cache briefly, which bounds repeated DNS/TLS work
+      // without turning a transient outage into a long-lived missing icon.
+      reply.header("cache-control", "public, max-age=60");
       return reply.code(404).send({ error: "favicon unavailable" });
     }
   });
