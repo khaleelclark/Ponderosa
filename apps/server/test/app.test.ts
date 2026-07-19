@@ -10,7 +10,7 @@ import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, ArtifactDto, CommunicationEvent, ContinueOptions, ConversationDetailDto, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -1372,6 +1372,102 @@ describe("generated artifact endpoints", () => {
       (SELECT COUNT(*) FROM scheduler_runs) AS runs,
       (SELECT COUNT(*) FROM agent_activations) AS activations`).get()).toEqual(countsBefore);
     for (let index = 0; index < persistent.openedOptions.length; index += 1) persistent.completeTurn(index);
+    await app.close();
+  });
+
+  it("revalidates artifact-backed document bytes on every managed read route", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+    });
+    const project = store.createProject({ label: "Managed read authority", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Document recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const original = `Managed document\n${"a".repeat(10_100)}`;
+    const payload = {
+      text: original, idempotencyKey: "managed-read-authority",
+      sourceChannel: "main" as const, sourceConversationId: conversation.id,
+    };
+    const accepted = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload,
+    });
+    expect(accepted.statusCode, accepted.body).toBe(202);
+    const communicationEventId = accepted.json<{ communicationEventId: string }>().communicationEventId;
+    const event = store.getCommunicationEvent(project.id, communicationEventId)!;
+    const artifactId = event.document!.artifactId!;
+    const blob = managedArtifactContentPath(dataDir, project.id, artifactId);
+    const documentRoot = `/api/projects/${project.id}/communication-documents/${artifactId}`;
+    const generatedRoot = `/api/projects/${project.id}/artifacts/${artifactId}`;
+    const agentGeneratedRoot = `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}`;
+    const mutationState = () => {
+      const count = (table: string) => (store.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+      return {
+        communications: store.readCommunicationEvents(project.id).length,
+        projectArtifacts: store.getProjectArtifacts(project.id).length,
+        runtimeCommunications: count("runtime_communications"),
+        runtimeArtifacts: count("runtime_artifacts"),
+        activations: count("agent_activations"),
+        outbox: count("activation_outbox"),
+        idempotency: count("coordination_idempotency"),
+        promptInjections: count("scheduler_prompt_injections"),
+        runs: count("scheduler_runs"),
+      };
+    };
+    const acceptedState = mutationState();
+
+    const retry = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload,
+    });
+    expect(retry.statusCode, retry.body).toBe(202);
+    expect(retry.json<{ communicationEventId: string }>().communicationEventId).toBe(communicationEventId);
+    expect(mutationState()).toEqual(acceptedState);
+
+    const preview = await app.inject({ method: "GET", url: documentRoot });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json<{ content: string }>().content).toBe(original);
+    const documentDownload = await app.inject({ method: "GET", url: `${documentRoot}/download` });
+    expect(documentDownload.statusCode, documentDownload.body).toBe(200);
+    expect(documentDownload.rawPayload).toEqual(Buffer.from(original));
+    for (const suffix of ["preview", "download"]) {
+      for (const root of [generatedRoot, agentGeneratedRoot]) {
+        const generated = await app.inject({ method: "GET", url: `${root}/${suffix}` });
+        expect(generated.statusCode, generated.body).toBe(200);
+        expect(generated.rawPayload).toEqual(Buffer.from(original));
+      }
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    const replacement = `Managed document\n${"z".repeat(10_100)}`;
+    expect(Buffer.byteLength(replacement)).toBe(Buffer.byteLength(original));
+    writeFileSync(blob, replacement);
+    for (const url of [
+      documentRoot, `${documentRoot}/download`, `${generatedRoot}/preview`, `${generatedRoot}/download`,
+      `${agentGeneratedRoot}/preview`, `${agentGeneratedRoot}/download`,
+    ]) {
+      const rejected = await app.inject({ method: "GET", url });
+      expect(rejected.statusCode, rejected.body).toBe(404);
+      expect(rejected.rawPayload).not.toEqual(Buffer.from(replacement));
+      expect(rejected.rawPayload).not.toEqual(Buffer.from(original));
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    rmSync(blob);
+    for (const url of [
+      documentRoot, `${documentRoot}/download`, `${generatedRoot}/preview`, `${generatedRoot}/download`,
+      `${agentGeneratedRoot}/preview`, `${agentGeneratedRoot}/download`,
+    ]) {
+      expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+    }
+    expect(mutationState()).toEqual(acceptedState);
+
+    writeFileSync(blob, original, { mode: 0o600 });
+    expect((await app.inject({ method: "GET", url: documentRoot })).json<{ content: string }>().content).toBe(original);
+    expect((await app.inject({ method: "GET", url: `${documentRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect((await app.inject({ method: "GET", url: `${generatedRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect((await app.inject({ method: "GET", url: `${agentGeneratedRoot}/download` })).rawPayload).toEqual(Buffer.from(original));
+    expect(mutationState()).toEqual(acceptedState);
     await app.close();
   });
 
@@ -6067,6 +6163,48 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("rejects managed-artifact replacement after admission and repairs only after exact bytes return", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    let projectId = "";
+    let artifactId = "";
+    const original = "m".repeat(10_100);
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+      messageLifecycleFaults: {
+        afterCommunicationArtifactCommit: ({ kind, artifactIds }) => {
+          if (kind !== "communication" || artifactId) return;
+          artifactId = artifactIds[0]!;
+          writeFileSync(managedArtifactContentPath(dataDir, projectId, artifactId), "n".repeat(10_100));
+        },
+      },
+    });
+    const project = store.createProject({ label: "Artifact replacement", hostPath: repoDir });
+    projectId = project.id;
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Writer", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Write the long result", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const call = { name: "ponderosa_message", arguments: { text: original } };
+    const rejected = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);
+    expect(rejected.success).toBe(false);
+    expect(rejected.text).toContain("runtime artifact changed after scheduler admission");
+    const runtimeRow = store.sqlite.prepare(`SELECT owner_id AS id FROM runtime_artifacts WHERE project_id = ?`)
+      .get(project.id) as { id: string };
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toBeUndefined();
+
+    writeFileSync(managedArtifactContentPath(dataDir, project.id, artifactId), original);
+    const repaired = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);
+    expect(repaired.success, repaired.text).toBe(true);
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toMatchObject({ eventId: runtimeRow.id });
+    persistent.completeTurn(0);
+    await app.close();
+  });
+
   it("gives a Trigger root a silent-by-default direct user reply route", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -6639,8 +6777,12 @@ describe("server chunk F", () => {
     };
     const recoveryAssets = new AssetStore(dataDir);
     const recoveryCoordination = new CoordinationV3Store(store.sqlite, {
-      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
-        recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+      },
     });
     recoveryCoordination.recordRuntimeCommunication({
       id: `dispatch:${event.eventId}:${agent.id}`,
@@ -6697,6 +6839,122 @@ describe("server chunk F", () => {
     await recoveredApp.close();
   });
 
+  it("keeps a canonical-only passive Broadcast attachment reachable across commit, crash, restart, and sweep", async () => {
+    const project = store.createProject({ label: "Passive attachment recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const owner = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
+    const staging = new AssetStore(dataDir);
+    const attachment = await staging.stage({
+      projectId: project.id, agentId: owner.id, body: Buffer.from("%PDF-1.7\npassive durable"),
+      name: "passive.pdf", declaredType: "application/pdf",
+    });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id }, text: "",
+      attachments: [{ ...attachment, state: "associated" }], createdAt: new Date().toISOString(),
+    };
+    const coordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          staging.reserveRuntimeCommunication(communicationId, bindings),
+      },
+    });
+    expect(coordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience, payload: { communication: event }, now: event.createdAt,
+    })).toEqual({ id: event.eventId, replayed: false });
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+    expect((await staging.read(project.id, owner.id, attachment.id))?.state).toBe("staged");
+    expect(await staging.reconcile(project.id, owner.id, new Set(), Date.now() + 25 * 60 * 60 * 1000)).toBe(0);
+    staging.close();
+
+    const recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toMatchObject({
+      intent: "broadcast", attachments: [expect.objectContaining({ id: attachment.id })],
+    });
+    const verificationStore = new AssetStore(dataDir);
+    expect((await verificationStore.read(project.id, owner.id, attachment.id))?.state).toBe("associated");
+    verificationStore.close();
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+    await recoveredApp.close();
+  });
+
+  it("rejects post-admission attachment replacement before provider delivery", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Immutable delivery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const staging = new AssetStore(dataDir);
+    const body = Buffer.from("%PDF-1.7\noriginal bytes");
+    const attachment = await staging.stage({
+      projectId: project.id, agentId: recipient.id, body,
+      name: "immutable.pdf", declaredType: "application/pdf",
+    });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id },
+      text: "Inspect the attachment", attachments: [{ ...attachment, state: "associated" }],
+      createdAt: new Date().toISOString(),
+    };
+    const coordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          staging.reserveRuntimeCommunication(communicationId, bindings),
+      },
+    });
+    const accepted = coordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience,
+      payload: {
+        communication: event,
+        dispatch: {
+          text: event.text,
+          attachments: [{ id: attachment.id, name: attachment.name, mediaType: attachment.mediaType, size: attachment.size }],
+        },
+      },
+      activation: {
+        agentId: recipient.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "next_run", promptClass: "human",
+      },
+    });
+    staging.close();
+    const replacement = Buffer.from("%PDF-1.7\nreplaced bytes");
+    expect(replacement.length).toBe(body.length);
+    writeFileSync(path.join(
+      dataDir, "projects", project.id, "agents", recipient.id, "attachments", `${attachment.id}.bin`,
+    ), replacement);
+
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    await app.ready();
+    await vi.waitFor(() => expect(store.sqlite.prepare(`
+      SELECT delivery_failures AS failures FROM agent_activations WHERE id=?
+    `).get(accepted.activationId) as { failures: number }).toMatchObject({ failures: expect.any(Number) }));
+    await vi.waitFor(() => {
+      const row = store.sqlite.prepare(`
+        SELECT delivery_failures AS failures, last_delivery_error AS error
+        FROM agent_activations WHERE id=?
+      `).get(accepted.activationId) as { failures: number; error: string | null };
+      expect(row.failures).toBeGreaterThan(0);
+      expect(row.error).toContain("runtime attachment changed after scheduler admission");
+    });
+    expect(persistent.openedOptions).toHaveLength(0);
+    await app.close();
+  });
+
   it("repairs recipient-specific Collaboration copies idempotently at every durable handoff boundary", async () => {
     const project = store.createProject({ label: "Recipient recovery", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "Team recovery" });
@@ -6726,8 +6984,12 @@ describe("server chunk F", () => {
 
     const recoveryAssets = new AssetStore(dataDir);
     const coordination = new CoordinationV3Store(store.sqlite, {
-      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
-        recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+      },
     });
     const eventIds = new Map<string, string>();
     for (const [index, phase] of phases.entries()) {
@@ -7593,6 +7855,18 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "POST", url: "/api/internal/assignments/missing/output", payload: { text: "forged" } })).statusCode).toBe(404);
 
     await cancelAndWait(app, agent.id);
+    await app.close();
+  });
+
+  it("publishes the exact Core attachment limits without a second count contract", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const assetLimits = (await app.inject({ method: "GET", url: "/api/asset-limits" })).json();
+    const attachmentLimits = (await app.inject({ method: "GET", url: "/api/attachment-limits" })).json();
+    expect(assetLimits).toEqual(DEFAULT_ASSET_LIMITS);
+    expect(attachmentLimits).toEqual({
+      ...DEFAULT_ASSET_LIMITS,
+      maxAttachmentsPerMessage: DEFAULT_ASSET_LIMITS.maxAssetsPerMessage,
+    });
     await app.close();
   });
 

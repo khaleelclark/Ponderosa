@@ -727,7 +727,7 @@ const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
 const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
-const MAX_ATTACHMENTS_PER_MESSAGE = 4;
+const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 
 function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
   return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
@@ -1603,8 +1603,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const assets = new AssetStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
-    attachmentAuthority: (projectId, agentId, attachmentId) =>
-      assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
+    attachmentAuthority: {
+      resolve: (projectId, agentId, attachmentId) =>
+        assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
+      reserveCommunication: (communicationId, bindings) =>
+        assets.reserveRuntimeCommunication(communicationId, bindings),
+    },
+    artifactAuthority: (projectId, artifact) =>
+      assets.authoritativeRuntimeArtifact(projectId, artifact),
   });
   const resultCursorSecret = randomBytes(32);
   type PreparedCommunicationArtifact = {
@@ -1677,14 +1683,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         throw error;
       }
     }
-    return {
+    const artifact: PreparedCommunicationArtifact = {
       id, role: input.role, title: input.title, mediaType: "text/markdown",
       blobPath: id, blobHash, byteLength: content.length, createdAt: input.createdAt,
       ...(input.originAgentId ? { originAgentId: input.originAgentId } : {}),
       ...(input.executionId ? { executionId: input.executionId } : {}),
     };
+    const registered = assets.registerRuntimeArtifact({ ...artifact, projectId: input.projectId });
+    return { ...artifact, createdAt: registered.createdAt };
   };
   const projectCommunicationArtifact = (projectId: string, fallbackAgentId: string, artifact: PreparedCommunicationArtifact): void => {
+    const authoritative = assets.authoritativeRuntimeArtifact(projectId, runtimeArtifactMetadata(artifact));
+    if (!authoritative || authoritative.contentHash !== artifact.blobHash ||
+        authoritative.byteLength !== artifact.byteLength) {
+      throw new Error("runtime artifact changed after scheduler admission");
+    }
     if (store.getProjectArtifact(projectId, artifact.id)) return;
     store.recordProjectArtifact({
       id: artifact.id, projectId, agentId: artifact.originAgentId ?? fallbackAgentId,
@@ -3949,6 +3962,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const dispatchAttachments = Array.isArray(recipientDispatch?.attachments)
         ? recipientDispatch.attachments
         : Array.isArray(dispatch?.attachments) ? dispatch.attachments : [];
+      const reboundAttachmentIds = new Set<string>();
+      for (const value of dispatchAttachments) {
+        if (!value || typeof value !== "object") throw new Error("runtime attachment delivery identity is malformed");
+        const expected = value as Record<string, unknown>;
+        if (typeof expected.id !== "string" || reboundAttachmentIds.has(expected.id)) {
+          throw new Error("runtime attachment delivery identity is duplicated or malformed");
+        }
+        reboundAttachmentIds.add(expected.id);
+        const resolved = assets.authoritativeRuntimeAttachment(lease.projectId, lease.agentId, expected.id);
+        if (!resolved || expected.name !== resolved.attachment.name ||
+            expected.mediaType !== resolved.attachment.mediaType || expected.size !== resolved.byteLength ||
+            expected.sha256 !== resolved.contentHash || expected.localPath !== resolved.localPath) {
+          throw new Error("runtime attachment changed after scheduler admission");
+        }
+      }
       const attachmentIds = dispatchAttachments
         .map((value) => value && typeof value === "object" && "id" in value ? value.id : undefined)
         .filter((value): value is string => typeof value === "string");
@@ -4399,6 +4427,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.addHook("onReady", async () => {
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const ownedRuntimeArtifactIds = new Set(coordinationV3.runtimeArtifacts().map((artifact) => artifact.id));
+    const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
+      coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+    if (recoveredAssociations.unavailable) {
+      app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
+    }
     for (const project of store.listProjects()) {
       const contentDirectory = path.join(managedArtifactsDir(opts.dataDir, project.id), "content");
       let names: string[] = [];
@@ -4413,7 +4446,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       for (const name of names.filter((candidate) => candidate.startsWith("text-") && !candidate.includes(".staged-") && !ownedRuntimeArtifactIds.has(candidate))) {
         const candidate = path.join(contentDirectory, name);
         try {
-          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) await fs.rm(candidate, { force: true });
+          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) {
+            await fs.rm(candidate, { force: true });
+            assets.removeRuntimeArtifactReservation(project.id, name);
+          }
         } catch { /* a concurrent exact retry may have committed its metadata */ }
       }
     }
@@ -5369,14 +5405,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
       }
       let content: Buffer;
-      try {
-        content = await fs.readFile(managedArtifactContentPath(
-          opts.dataDir,
-          author.projectId,
-          runtimeArtifact?.blobPath ?? artifact!.id,
-        ));
+      if (runtimeArtifact?.projectId === author.projectId) {
+        const authoritative = assets.authoritativeRuntimeArtifact(author.projectId, runtimeArtifact);
+        if (!authoritative) {
+          return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
+        }
+        content = authoritative.body;
+      } else {
+        const managed = artifact?.size === undefined
+          ? undefined
+          : assets.managedArtifactContent(author.projectId, artifact.id, artifact.size);
+        if (!managed) return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
+        content = managed;
       }
-      catch { return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` }); }
       sources.push({
         ref,
         title: runtimeArtifact?.title ?? artifact!.summary ?? path.basename(artifact!.path),
@@ -6578,6 +6619,50 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return event.sender.kind === "agent" && event.sender.agentId === agentId;
   }
 
+  function managedProjectArtifactAgreesWithRuntime(
+    managed: ArtifactDto,
+    runtime: import("@ponderosa/agents").RuntimeArtifactInputV3,
+  ): boolean {
+    const provenanceAgrees = runtime.originAgentId
+      ? managed.agentId === runtime.originAgentId && managed.originAgentId === runtime.originAgentId &&
+        managed.executionId === runtime.executionId
+      : managed.agentId === managed.originAgentId && managed.executionId === undefined;
+    return managed.id === runtime.id && managed.kind === "document" &&
+      managed.path === `communication/${runtime.id}.md` &&
+      managed.summary === runtime.title && managed.mediaType === runtime.mediaType &&
+      managed.size === runtime.byteLength && provenanceAgrees;
+  }
+
+  function authoritativeCommunicationDocument(projectId: string, documentId: string) {
+    if (!store.getProject(projectId)) return undefined;
+    const event = store.readCommunicationEvents(projectId)
+      .find((candidate) => candidate.document?.id === documentId);
+    const document = event?.document;
+    if (!event || !document || document.mediaType !== "text/markdown" || !document.title.trim()) return undefined;
+    const validAuthor = event.sender.kind === "agent"
+      ? document.authorAgentId === event.sender.agentId &&
+        document.executionId === event.sender.executionId && !document.authorUserId
+      : event.sender.kind === "user"
+        ? document.authorUserId === event.sender.userId && !document.authorAgentId && !document.executionId
+        : false;
+    if (!validAuthor) return undefined;
+    if (document.content !== undefined) {
+      if (document.artifactId || document.byteLength !== Buffer.byteLength(document.content, "utf8")) return undefined;
+      return { event, document: { ...document, content: document.content } };
+    }
+    if (!document.artifactId || document.artifactId !== document.id) return undefined;
+    const authoritative = assets.authoritativeRuntimeArtifactById(projectId, document.artifactId);
+    if (!authoritative || authoritative.artifact.id !== document.id ||
+        authoritative.artifact.title !== document.title ||
+        authoritative.artifact.mediaType !== document.mediaType ||
+        authoritative.artifact.byteLength !== document.byteLength ||
+        authoritative.artifact.originAgentId !== document.authorAgentId ||
+        authoritative.artifact.executionId !== document.executionId) return undefined;
+    const managed = store.getProjectArtifact(projectId, document.artifactId);
+    if (!managed || !managedProjectArtifactAgreesWithRuntime(managed, authoritative.artifact)) return undefined;
+    return { event, document: { ...document, content: authoritative.body.toString("utf8") } };
+  }
+
   app.get<{ Params: { documentId: string } }>("/api/agent-documents/:documentId", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
@@ -6586,7 +6671,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(401).send({ error: "invalid or expired agent document capability" });
     }
     const agent = store.getAgent(capability.agentId);
-    const found = agent ? store.getCommunicationDocument(agent.projectId, request.params.documentId) : undefined;
+    const found = agent ? authoritativeCommunicationDocument(agent.projectId, request.params.documentId) : undefined;
     if (!found || !agentCanReadDocument(found.event, capability.agentId)) return reply.code(404).send({ error: "document not found" });
     return { ...found.document };
   });
@@ -7427,7 +7512,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
-    if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: "at most 4 assets are allowed" });
+    if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
       const owner = store.getAgent(requested.agentId);
@@ -7530,7 +7615,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       for (const recipient of recipients) {
         const ids = recipient.attachmentIds ?? [];
         if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(ids).size !== ids.length) {
-          return reply.code(400).send({ error: "each recipient supports at most 4 unique attachments" });
+          return reply.code(400).send({ error: `each recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments` });
         }
       }
       const master = store.getConversation(request.params.id);
@@ -7770,7 +7855,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!replyToMessageId || !targetAuthorAgentId) return reply.code(400).send({ error: "reply target and author are required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
-        return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
       }
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
@@ -8350,7 +8435,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!recipient || typeof recipient.agentId !== "string" || attachmentIdsByAgent.has(recipient.agentId) ||
           !routing.intents.some((intent) => intent.targetAgentId === recipient.agentId) || !Array.isArray(recipient.attachmentIds) ||
           recipient.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length) {
-        return reply.code(400).send({ error: "each collaboration recipient supports at most 4 unique owned attachments" });
+        return reply.code(400).send({ error: `each collaboration recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique owned attachments` });
       }
       attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
     }
@@ -8580,7 +8665,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const initialMessage = request.body.initialMessage?.trim() ?? "";
       const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
       if (!Array.isArray(draftAttachmentIds) || draftAttachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(draftAttachmentIds).size !== draftAttachmentIds.length) {
-        return reply.code(400).send({ error: "at most 4 unique draft attachments are allowed" });
+        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
       }
       if (draftAttachmentIds.length && !request.body.conversationId) {
         return reply.code(400).send({ error: "first-turn draft attachments require a Project chat" });
@@ -9655,7 +9740,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[agent.activeEngine]]).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
       const attachmentIds = request.body?.attachmentIds ?? [];
-      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique attachments are allowed" });
+      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(agent.id, id))));
       if (attached.some((item) => !item || item.agentId !== agent.id)) return reply.code(404).send({ error: "asset not found" });
       const messageAttachments = (attached as NonNullable<(typeof attached)[number]>[]).map(({ projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...item }) => ({ ...item, state: "associated" as const })) as AssetDto[];
@@ -11067,7 +11152,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.put<{ Params: { id: string }; Body: PutConversationDraftRequest }>("/api/conversations/:id/draft", async (request, reply) => {
     if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
     if (!request.body?.clientId || !Number.isSafeInteger(request.body.expectedRevision) || !Array.isArray(request.body.attachmentIds)) return reply.code(400).send({ error: "invalid draft update" });
-    if (request.body.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(request.body.attachmentIds).size !== request.body.attachmentIds.length) return reply.code(400).send({ error: "at most 4 unique draft attachments are allowed" });
+    if (request.body.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(request.body.attachmentIds).size !== request.body.attachmentIds.length) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
     const referenced = await Promise.all(request.body.attachmentIds.map((id) => readDraftAttachment(request.params.id, id)));
     if (referenced.some((item) => !item)) return reply.code(400).send({ error: "draft attachment is missing or belongs to another conversation" });
     const cursor = workspace.cursor();
@@ -11694,7 +11779,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string; documentId: string } }>(
     "/api/projects/:projectId/communication-documents/:documentId",
     async (request, reply) => {
-      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
       if (!found) return reply.code(404).send({ error: "document not found" });
       const { content, ...metadata } = found.document;
       const root = `/api/projects/${encodeURIComponent(request.params.projectId)}/communication-documents/${encodeURIComponent(found.document.id)}`;
@@ -11705,7 +11790,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string; documentId: string } }>(
     "/api/projects/:projectId/communication-documents/:documentId/download",
     async (request, reply) => {
-      const found = store.getCommunicationDocument(request.params.projectId, request.params.documentId);
+      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
       if (!found) return reply.code(404).send({ error: "document not found" });
       return reply.type("text/markdown; charset=utf-8")
         .header("Content-Disposition", contentDisposition(`${found.document.title}.md`))
@@ -11721,16 +11806,23 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const project = store.getProject(projectId);
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {
-      try {
-        const file = managedArtifactContentPath(opts.dataDir, projectId, artifactId);
-        const info = await fs.stat(file);
-        if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
+      if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
+      const runtime = assets.authoritativeRuntimeArtifactById(projectId, artifactId);
+      if (runtime) {
+        if (!managedProjectArtifactAgreesWithRuntime(managed, runtime.artifact)) return undefined;
         return {
-          body: await fs.readFile(file),
+          body: runtime.body,
           name: managed.summary ?? path.basename(managed.path),
           mediaType: managed.mediaType ?? "application/octet-stream",
         };
-      } catch { return undefined; }
+      }
+      if (managed.kind === "document" || managed.size === undefined || !managed.mediaType) return undefined;
+      const body = assets.managedArtifactContent(projectId, artifactId, managed.size);
+      return body ? {
+        body,
+        name: managed.summary ?? path.basename(managed.path),
+        mediaType: managed.mediaType,
+      } : undefined;
     }
     const agent = store.getAgent(agentId);
     if (!project || !agent || agent.projectId !== project.id) return undefined;
