@@ -1159,9 +1159,12 @@ export interface MessageDto {
   deliveryReceipts?: MessageDeliveryReceiptDto[];
 }
 
-export type AssetMediaType =
-  | "image/png" | "image/jpeg" | "image/webp"
-  | "application/pdf" | "text/plain" | "application/json" | "application/zip";
+export const ASSET_MEDIA_TYPES = [
+  "image/png", "image/jpeg", "image/webp",
+  "application/pdf", "text/plain", "application/json", "application/zip",
+] as const;
+
+export type AssetMediaType = typeof ASSET_MEDIA_TYPES[number];
 
 /** A content-validated, agent-owned asset staged for or associated with a message. */
 export interface AssetDto {
@@ -1192,6 +1195,17 @@ export interface AssetLimitsDto {
   maxAgentBytes: number;
   acceptedMediaTypes: AssetMediaType[];
 }
+
+/** One shared admission budget for uploads, canonical Communications, and
+ * per-recipient runtime dispatch snapshots. */
+export const DEFAULT_ASSET_LIMITS: AssetLimitsDto = {
+  maxFileBytes: 8 * 1024 * 1024,
+  maxRequestBytes: 8 * 1024 * 1024 + 16 * 1024,
+  maxAssetsPerMessage: 4,
+  maxMessageBytes: 24 * 1024 * 1024,
+  maxAgentBytes: 64 * 1024 * 1024,
+  acceptedMediaTypes: [...ASSET_MEDIA_TYPES],
+};
 
 /** Structural reason one Run was activated; never inferred from message text. */
 export type AgentRunWakeCause =

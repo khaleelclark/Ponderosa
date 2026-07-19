@@ -142,7 +142,7 @@ function runtimeArtifactInput(
     executionId: string;
     role: "long_text" | "document";
     title: string;
-    mediaType: string;
+    mediaType: "text/markdown";
     blobHash: string;
     byteLength: number;
   }> = {},
@@ -157,6 +157,26 @@ function runtimeArtifactInput(
     blobPath: id,
     blobHash: "a".repeat(64),
     byteLength: 8,
+    ...overrides,
+  };
+}
+
+function runtimeAttachment(
+  agentId: string,
+  overrides: Partial<import("@ponderosa/core").AssetDto> = {},
+): import("@ponderosa/core").AssetDto {
+  const id = overrides.id ?? randomUUID();
+  return {
+    id,
+    agentId,
+    name: "evidence.pdf",
+    mediaType: "application/pdf",
+    size: 42,
+    sha256: "b".repeat(64),
+    state: "associated",
+    createdAt: "2026-07-15T00:00:00.000Z",
+    url: `/api/agents/${agentId}/assets/${id}/download`,
+    downloadUrl: `/api/agents/${agentId}/assets/${id}/download`,
     ...overrides,
   };
 }
@@ -1988,11 +2008,27 @@ describe("CoordinationV3Store scheduler", () => {
     const rejected = [
       broadcastInput("artifact-foreign-origin", runtimeArtifactInput(1, { originAgentId: foreign.agentId })),
       broadcastInput("artifact-foreign-execution", runtimeArtifactInput(2, { executionId: foreignRun.runId })),
+      broadcastInput("artifact-foreign-pair", runtimeArtifactInput(15, {
+        originAgentId: foreign.agentId, executionId: foreignRun.runId,
+      })),
       broadcastInput("artifact-mismatched-identities", runtimeArtifactInput(3, {
         originAgentId: recipientB, executionId: localRun.runId,
       })),
       broadcastInput("artifact-malformed-origin", runtimeArtifactInput(4, { originAgentId: "not-a-uuid" })),
       broadcastInput("artifact-malformed-execution", runtimeArtifactInput(5, { executionId: "not-a-uuid" })),
+      broadcastInput("artifact-unknown-field", { ...runtimeArtifactInput(10), unknown: true } as never),
+      broadcastInput("artifact-noncanonical-role", { ...runtimeArtifactInput(11), role: "result" } as never),
+      broadcastInput("artifact-noncanonical-media", { ...runtimeArtifactInput(12), mediaType: "text/plain" } as never),
+      broadcastInput("artifact-uppercase-origin", runtimeArtifactInput(13, {
+        originAgentId: recipientA.toUpperCase(), executionId: localRun.runId,
+      })),
+      broadcastInput("artifact-uppercase-execution", runtimeArtifactInput(14, {
+        originAgentId: recipientA, executionId: localRun.runId.toUpperCase(),
+      })),
+      broadcastInput("artifact-uppercase-id", {
+        ...runtimeArtifactInput(21), id: runtimeArtifactInput(21).id.toUpperCase(),
+        blobPath: runtimeArtifactInput(21).id.toUpperCase(),
+      } as never),
     ];
     const before = runtimeMutationState();
     for (const input of rejected) {
@@ -2024,7 +2060,12 @@ describe("CoordinationV3Store scheduler", () => {
 
   it("applies the same artifact provenance admission before request-update and queued-edit mutation", () => {
     const foreign = seedAdditionalProject("Foreign alternate artifact path");
-    const foreignArtifact = runtimeArtifactInput(8, { originAgentId: foreign.agentId });
+    const invalidAlternateArtifacts = [
+      runtimeArtifactInput(8, { originAgentId: foreign.agentId }),
+      runtimeArtifactInput(16, { executionId: randomUUID() }),
+      { ...runtimeArtifactInput(17), extra: "closed" },
+      { ...runtimeArtifactInput(18), mediaType: "text/plain" },
+    ];
     store.coordinate({
       projectId,
       requesterAgentId: requesterId,
@@ -2033,17 +2074,19 @@ describe("CoordinationV3Store scheduler", () => {
       requests: [{ requestId: "artifact-request", recipientAgentId: recipientA, lifetime: indefinite }],
     });
     const beforeUpdate = runtimeMutationState();
-    expect(() => store.updateRequest({
-      requestId: "artifact-request",
-      updateId: "artifact-request-update",
-      kind: "completed",
-      actor: { kind: "agent", id: recipientA },
-      payload: { text: "Result" },
-      artifacts: [foreignArtifact],
-    })).toThrow("request update artifact metadata or provenance is invalid");
-    expect(runtimeMutationState()).toEqual(beforeUpdate);
+    invalidAlternateArtifacts.forEach((artifact, index) => {
+      expect(() => store.updateRequest({
+        requestId: "artifact-request",
+        updateId: `artifact-request-update-${index}`,
+        kind: "completed",
+        actor: { kind: "agent", id: recipientA },
+        payload: { text: "Result" },
+        artifacts: [artifact as never],
+      })).toThrow("request update artifact metadata or provenance is invalid");
+      expect(runtimeMutationState()).toEqual(beforeUpdate);
+    });
     expect(opened.client.prepare(`
-      SELECT COUNT(*) AS count FROM coordination_request_updates WHERE id = 'artifact-request-update'
+      SELECT COUNT(*) AS count FROM coordination_request_updates WHERE id LIKE 'artifact-request-update-%'
     `).get()).toEqual({ count: 0 });
     expect(store.getRequest("artifact-request")).toMatchObject({ state: "open", version: 0 });
 
@@ -2069,20 +2112,87 @@ describe("CoordinationV3Store scheduler", () => {
     const activationBefore = opened.client.prepare(`
       SELECT payload_json FROM agent_activations WHERE id = ?
     `).get(intake.activationId) as { payload_json: string };
-    expect(() => store.editPendingActivationText({
+    invalidAlternateArtifacts.forEach((artifact, index) => {
+      expect(() => store.editPendingActivationText({
+        activationId: intake.activationId!,
+        projectId,
+        requestText: `Edited ${index}`,
+        text: `Edited ${index}`,
+        revisionOwnerId: `artifact-queued-edit-revision-${index}`,
+        artifact: artifact as never,
+        revisionOutboxPayload: { revision: `artifact-queued-edit-revision-${index}` },
+        idempotencyKey: `artifact-queued-edit-${index}`,
+      })).toThrow("queued edit artifact metadata or provenance is invalid");
+      expect(runtimeMutationState()).toEqual(beforeEdit);
+    });
+    expect(opened.client.prepare(`
+      SELECT payload_json FROM agent_activations WHERE id = ?
+    `).get(intake.activationId)).toEqual(activationBefore);
+  });
+
+  it("accepts paired agent/Run provenance and provenance-free user artifacts on alternate artifact paths", () => {
+    store.enqueueMessageActivation({
+      projectId, agentId: recipientA, messageId: "artifact-positive-run",
+      kind: "ordinary", payload: { text: "artifact authority" },
+    });
+    const lease = store.leaseNextRun({ workerId: "artifact-positive-worker" })!;
+    store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "artifact-positive-request",
+      requests: [{ requestId: "artifact-positive-request", recipientAgentId: recipientA, lifetime: indefinite }],
+    });
+    const paired = runtimeArtifactInput(19, {
+      originAgentId: recipientA,
+      executionId: lease.runId,
+    });
+    expect(store.updateRequest({
+      requestId: "artifact-positive-request",
+      updateId: "artifact-positive-update",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Paired result" },
+      artifacts: [paired],
+    })).toMatchObject({ state: "completed", replayed: false });
+    expect(store.runtimeArtifact(paired.id)).toMatchObject({
+      ownerKind: "request_update",
+      originAgentId: recipientA,
+      executionId: lease.runId,
+    });
+
+    const communication = userDmEvent({
+      eventId: "artifact-positive-queued-edit", agentId: recipientB, text: "Original",
+    });
+    const intake = store.recordRuntimeCommunication({
+      id: communication.eventId,
+      projectId,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      payload: { communication, dispatch: { text: communication.text } },
+      activation: {
+        agentId: recipientB,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "next_run",
+        promptClass: "human",
+      },
+    });
+    const userArtifact = runtimeArtifactInput(20);
+    expect(store.editPendingActivationText({
       activationId: intake.activationId!,
       projectId,
       requestText: "Edited",
       text: "Edited",
-      revisionOwnerId: "artifact-queued-edit-revision",
-      artifact: runtimeArtifactInput(9, { originAgentId: foreign.agentId }),
-      revisionOutboxPayload: { revision: "artifact-queued-edit-revision" },
-      idempotencyKey: "artifact-queued-edit",
-    })).toThrow("queued edit artifact metadata or provenance is invalid");
-    expect(runtimeMutationState()).toEqual(beforeEdit);
-    expect(opened.client.prepare(`
-      SELECT payload_json FROM agent_activations WHERE id = ?
-    `).get(intake.activationId)).toEqual(activationBefore);
+      revisionOwnerId: "artifact-positive-revision",
+      artifact: userArtifact,
+      revisionOutboxPayload: { revision: "artifact-positive-revision" },
+      idempotencyKey: "artifact-positive-edit",
+    })).toMatchObject({ edited: true, replayed: false });
+    expect(store.runtimeArtifact(userArtifact.id)).toMatchObject({ ownerKind: "communication", projectId });
+    expect(store.runtimeArtifact(userArtifact.id)).not.toHaveProperty("originAgentId");
+    expect(store.runtimeArtifact(userArtifact.id)).not.toHaveProperty("executionId");
   });
 
   it("rejects malformed top-level and per-recipient dispatch attachments before durable intake", () => {
@@ -2145,10 +2255,18 @@ describe("CoordinationV3Store scheduler", () => {
     const before = runtimeMutationState();
     for (const candidate of rejected) {
       expect(() => store.recordRuntimeCommunication(candidate as never)).toThrow(
-        "runtime communication authority does not agree on one Project",
+        /runtime communication (attachments are invalid|authority does not agree)/,
       );
       expect(runtimeMutationState()).toEqual(before);
     }
+
+    const authoritative = runtimeAttachment(recipientA, { id: validAttachment.id });
+    store = new CoordinationV3Store(opened.client, {
+      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
+        candidateProjectId === projectId && candidateAgentId === recipientA && attachmentId === authoritative.id
+          ? { attachment: authoritative, localPath: `/validated/${authoritative.id}.bin` }
+          : undefined,
+    });
 
     expect(store.recordRuntimeCommunication(input("top-level-empty-attachments", { attachments: [] })).activationId)
       .toBeTruthy();
@@ -2156,11 +2274,144 @@ describe("CoordinationV3Store scheduler", () => {
       recipients: [{ agentId: recipientA, attachments: [] }],
     })).activationId).toBeTruthy();
     expect(store.recordRuntimeCommunication(input("top-level-valid-attachment", {
-      attachments: [{ ...validAttachment, localPath: "/validated/evidence.pdf" }],
+      attachments: [{ ...validAttachment, localPath: `/validated/${authoritative.id}.bin` }],
     })).activationId).toBeTruthy();
     expect(store.recordRuntimeCommunication(input("recipient-valid-attachment", {
       recipients: [{ agentId: recipientA, attachments: [validAttachment] }],
     })).activationId).toBeTruthy();
+  });
+
+  it("binds canonical and dispatch attachments to one authoritative Project and owner before mutation", () => {
+    const foreign = seedAdditionalProject("Foreign attachment authority");
+    const authority = new Map<string, { attachment: import("@ponderosa/core").AssetDto; localPath: string }>();
+    const register = (candidateProjectId: string, agentId: string, attachment: import("@ponderosa/core").AssetDto) => {
+      const bound = {
+        attachment,
+        localPath: `/authority/projects/${candidateProjectId}/agents/${agentId}/${attachment.id}.bin`,
+      };
+      authority.set(`${candidateProjectId}:${agentId}:${attachment.id}`, bound);
+      return bound;
+    };
+    store = new CoordinationV3Store(opened.client, {
+      attachmentAuthority: (candidateProjectId, agentId, attachmentId) =>
+        authority.get(`${candidateProjectId}:${agentId}:${attachmentId}`),
+    });
+    const snapshot = (attachment: import("@ponderosa/core").AssetDto, localPath?: string) => ({
+      id: attachment.id,
+      name: attachment.name,
+      mediaType: attachment.mediaType,
+      size: attachment.size,
+      ...(localPath ? { localPath } : {}),
+    });
+    const input = (
+      id: string,
+      attachments: import("@ponderosa/core").AssetDto[] | undefined,
+      dispatch?: Record<string, unknown>,
+    ) => {
+      const communication = userDmEvent({ eventId: id, agentId: recipientA, conversation: conversationId });
+      return {
+        id,
+        projectId,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: communication.audience,
+        payload: {
+          communication: {
+            ...communication,
+            ...(attachments !== undefined ? { attachments } : {}),
+          },
+          ...(dispatch ? { dispatch } : {}),
+        },
+        activation: {
+          agentId: recipientA,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy: "next_run" as const,
+          promptClass: "human" as const,
+        },
+      };
+    };
+
+    const valid = runtimeAttachment(recipientA);
+    const validBound = register(projectId, recipientA, valid);
+    const missingCanonical = runtimeAttachment(recipientA);
+    const foreignCanonical = runtimeAttachment(recipientA);
+    register(foreign.projectId, recipientA, foreignCanonical);
+    const reused = runtimeAttachment(recipientA);
+    register(projectId, recipientA, reused);
+    const oversized = Array.from({ length: 4 }, (_, index) => {
+      const item = runtimeAttachment(recipientA, {
+        id: randomUUID(), name: `oversized-${index}.pdf`, size: 8 * 1024 * 1024,
+      });
+      register(projectId, recipientA, item);
+      return item;
+    });
+    const overCount = Array.from({ length: 5 }, (_, index) => runtimeAttachment(recipientA, {
+      id: randomUUID(), name: `count-${index}.pdf`,
+    }));
+    const rejected = [
+      input("missing-canonical-authority", [missingCanonical]),
+      input("foreign-canonical-authority", [foreignCanonical]),
+      input("forged-local-path", [valid], {
+        attachments: [snapshot(valid, `/other/project/${valid.id}.bin`)],
+      }),
+      input("uppercase-attachment-id", undefined, {
+        attachments: [{ ...snapshot(valid), id: valid.id.toUpperCase() }],
+      }),
+      input("case-variant-reuse", undefined, {
+        recipients: [{ agentId: recipientA, attachments: [snapshot(valid), {
+          ...snapshot(valid), id: valid.id.toUpperCase(),
+        }] }],
+      }),
+      input("top-recipient-reuse", undefined, {
+        attachments: [snapshot(reused)],
+        recipients: [{ agentId: recipientA, attachments: [snapshot(reused)] }],
+      }),
+      input("cross-recipient-reuse", undefined, {
+        recipients: [
+          { agentId: recipientA, attachments: [snapshot(reused)] },
+          { agentId: recipientB, attachments: [snapshot(reused)] },
+        ],
+      }),
+      input("over-count", undefined, { attachments: overCount.map((item) => snapshot(item)) }),
+      input("over-size", undefined, { attachments: oversized.map((item) => snapshot(item)) }),
+      input("canonical-over-count", overCount),
+      input("canonical-over-size", oversized),
+      input("canonical-unknown-field", [{ ...valid, localPath: validBound.localPath } as never]),
+    ];
+    const before = runtimeMutationState();
+    for (const candidate of rejected) {
+      expect(() => store.recordRuntimeCommunication(candidate as never)).toThrow(/runtime communication attachment/);
+      expect(runtimeMutationState()).toEqual(before);
+    }
+
+    expect(store.recordRuntimeCommunication(input("valid-empty-canonical", [], { attachments: [] })).activationId)
+      .toBeTruthy();
+    expect(store.recordRuntimeCommunication(input("valid-authoritative-attachment", [valid], {
+      attachments: [snapshot(valid, validBound.localPath)],
+    })).activationId).toBeTruthy();
+    expect((store.runtimeCommunication("valid-authoritative-attachment")!.payload as {
+      dispatch: { attachments: Array<{ localPath: string }> };
+    }).dispatch.attachments[0]!.localPath).toBe(validBound.localPath);
+    const passive = input("valid-passive-authoritative-attachment", [valid], {
+      attachments: [snapshot(valid)],
+    });
+    expect(store.recordRuntimeCommunication({ ...passive, activation: undefined })).toMatchObject({
+      id: "valid-passive-authoritative-attachment",
+      replayed: false,
+    });
+
+    const mediaTypes: import("@ponderosa/core").AssetMediaType[] = [
+      "image/png", "image/jpeg", "image/webp", "application/pdf",
+      "text/plain", "application/json", "application/zip",
+    ];
+    for (const [index, mediaType] of mediaTypes.entries()) {
+      const attachment = runtimeAttachment(recipientA, {
+        id: randomUUID(), name: `type-${index}`, mediaType,
+      });
+      register(projectId, recipientA, attachment);
+      expect(store.recordRuntimeCommunication(input(`valid-media-${index}`, [attachment])).activationId).toBeTruthy();
+    }
   });
 
   it("accepts current canonical and closed internal RuntimeCommunication variants", () => {

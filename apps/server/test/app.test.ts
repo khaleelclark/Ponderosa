@@ -15,6 +15,7 @@ import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContent
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
+import { AssetStore } from "../src/assets.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const processAlive = (pid: number): boolean => {
@@ -6626,7 +6627,7 @@ describe("server chunk F", () => {
       payload: Buffer.from("%PDF-1.7\nrecovery evidence"),
     });
     expect(uploaded.statusCode, uploaded.body).toBe(201);
-    const attachment = uploaded.json<{ id: string; name: string; mediaType: string; size: number }>();
+    const attachment = uploaded.json<import("@ponderosa/core").AssetDto>();
     await stagingApp.close();
     store = new AgentStore(dataDir);
 
@@ -6634,9 +6635,14 @@ describe("server chunk F", () => {
       eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
       sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
       audience: { kind: "organization", organizationId: project.id },
-      text: "", createdAt: new Date().toISOString(),
+      text: "", attachments: [{ ...attachment, state: "associated" }], createdAt: new Date().toISOString(),
     };
-    new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+    const recoveryAssets = new AssetStore(dataDir);
+    const recoveryCoordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
+        recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+    });
+    recoveryCoordination.recordRuntimeCommunication({
       id: `dispatch:${event.eventId}:${agent.id}`,
       projectId: project.id,
       sender: event.sender,
@@ -6659,7 +6665,7 @@ describe("server chunk F", () => {
       now: event.createdAt,
     });
     const malformedEventId = randomUUID();
-    expect(() => new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
+    expect(() => recoveryCoordination.recordRuntimeCommunication({
       id: `dispatch:${malformedEventId}:${agent.id}`,
       projectId: project.id,
       sender: event.sender,
@@ -6670,9 +6676,10 @@ describe("server chunk F", () => {
         dispatch: { text: "", attachments: [{ id: "missing" }] },
       },
       now: event.createdAt,
-    })).toThrow("runtime communication authority does not agree on one Project");
+    })).toThrow(/runtime communication (attachments are invalid|authority does not agree)/);
     expect(new CoordinationV3Store(store.sqlite).runtimeCommunication(`dispatch:${malformedEventId}:${agent.id}`))
       .toBeUndefined();
+    recoveryAssets.close();
 
     const recoveredApp = createServer({
       dataDir, store, engines, logger: false,
@@ -6717,7 +6724,11 @@ describe("server chunk F", () => {
     await stagingApp.close();
     store = new AgentStore(dataDir);
 
-    const coordination = new CoordinationV3Store(store.sqlite);
+    const recoveryAssets = new AssetStore(dataDir);
+    const coordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
+        recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+    });
     const eventIds = new Map<string, string>();
     for (const [index, phase] of phases.entries()) {
       const phaseCopies = copies.get(phase)!;
@@ -6789,6 +6800,7 @@ describe("server chunk F", () => {
         writeFileSync(metadataPath, JSON.stringify({ ...metadata, state: "associated", associatedAt: event.createdAt }));
       }
     }
+    recoveryAssets.close();
 
     let recoveredApp = createServer({
       dataDir, store, engines, logger: false,

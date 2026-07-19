@@ -1,25 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, ftruncateSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import Database from "better-sqlite3";
-import type { AssetDto, AssetLimitsDto } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type AssetDto, type AssetLimitsDto } from "@ponderosa/core";
 import { attachmentsDir } from "@ponderosa/agents";
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
-export const ASSET_LIMITS: AssetLimitsDto = {
-  maxFileBytes: 8 * 1024 * 1024,
-  maxRequestBytes: 8 * 1024 * 1024 + 16 * 1024,
-  maxAssetsPerMessage: 4,
-  maxMessageBytes: 24 * 1024 * 1024,
-  maxAgentBytes: 64 * 1024 * 1024,
-  acceptedMediaTypes: [
-    "image/png", "image/jpeg", "image/webp", "application/pdf",
-    "text/plain", "application/json", "application/zip",
-  ],
-};
+export const ASSET_LIMITS: AssetLimitsDto = DEFAULT_ASSET_LIMITS;
 
 const MAX_PIXELS = 25_000_000;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
@@ -36,6 +26,11 @@ export interface StoredAsset extends AssetDto {
   associatedAt?: string;
   originalFile: string;
   previewFile?: string;
+}
+
+export interface AuthoritativeRuntimeAttachment {
+  attachment: AssetDto;
+  localPath: string;
 }
 
 export class AssetError extends Error {
@@ -331,6 +326,53 @@ export class AssetStore {
       try { return validateStoredAsset(JSON.parse((await readNoFollow(path.join(directory.path, `${id}.json`), 32 * 1024)).toString("utf8")), projectId, agentId, id); }
       finally { await directory.handle.close(); }
     } catch { return undefined; }
+  }
+
+  /** Resolve immutable attachment metadata and bytes at the synchronous
+   * scheduler intake boundary. */
+  authoritativeRuntimeAttachment(
+    projectId: string,
+    agentId: string,
+    id: string,
+  ): AuthoritativeRuntimeAttachment | undefined {
+    if (!ID.test(id)) return undefined;
+    let metadataFd: number | undefined;
+    let contentFd: number | undefined;
+    try {
+      const directory = this.dir(projectId, agentId);
+      const root = this.root ??= realpathSync(this.dataDir);
+      const actual = realpathSync(directory);
+      if (actual !== path.join(root, "projects", projectId, "agents", agentId, "attachments")) return undefined;
+      for (const ancestor of [
+        path.join(this.dataDir, "projects"),
+        path.join(this.dataDir, "projects", projectId),
+        path.join(this.dataDir, "projects", projectId, "agents"),
+        path.join(this.dataDir, "projects", projectId, "agents", agentId),
+        directory,
+      ]) {
+        const info = lstatSync(ancestor);
+        if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
+      }
+      metadataFd = openSync(path.join(actual, `${id}.json`), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const metadataInfo = fstatSync(metadataFd);
+      if (!metadataInfo.isFile() || metadataInfo.size > 32 * 1024) return undefined;
+      const asset = validateStoredAsset(JSON.parse(readFileSync(metadataFd, "utf8")), projectId, agentId, id);
+      if (!asset) return undefined;
+      contentFd = openSync(path.join(actual, asset.originalFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const contentInfo = fstatSync(contentFd);
+      if (!contentInfo.isFile() || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+      const body = readFileSync(contentFd);
+      if (createHash("sha256").update(body).digest("hex") !== asset.sha256) return undefined;
+      return {
+        attachment: { ...publicDto(asset), state: "associated" },
+        localPath: path.join(actual, asset.originalFile),
+      };
+    } catch {
+      return undefined;
+    } finally {
+      if (metadataFd !== undefined) closeSync(metadataFd);
+      if (contentFd !== undefined) closeSync(contentFd);
+    }
   }
 
   async stage(input: { projectId: string; agentId: string; body: Buffer; name: unknown; declaredType?: string }): Promise<AssetDto> {
