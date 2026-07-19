@@ -86,6 +86,8 @@ export interface WorkspacePreferencesDto {
   engineDefaults?: Record<string, { model: string; effort?: string }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
+  /** Workspace-wide admission limit for concurrently active Agent Runs. */
+  maxConcurrentAgentRuns: number;
   profile: OperatorProfileDto;
   updatedAt: string;
 }

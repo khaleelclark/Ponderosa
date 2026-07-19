@@ -728,6 +728,8 @@ const MAX_TEXT_LENGTH = 64 * 1024;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
+const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
+const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
 
 function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
   return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
@@ -4055,7 +4057,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
     {
       workerId: coordinationV3WorkerId,
-      maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns,
+      maxConcurrentRuns: opts.communicationV3?.maxConcurrentRuns ?? workspace.getPreferences().maxConcurrentAgentRuns,
       pollMs: opts.communicationV3?.pollMs,
       leaseMs: coordinationV3LeaseMs,
       maxDeliveryFailures: opts.communicationV3?.maxDeliveryFailures,
@@ -11243,6 +11245,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
+    if (patch.maxConcurrentAgentRuns !== undefined && (!Number.isSafeInteger(patch.maxConcurrentAgentRuns) ||
+        patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
+        patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {
+      return reply.code(400).send({ error: `maximum concurrent Agent Runs must be an integer from ${MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY} to ${MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY}` });
+    }
     if (patch.profile !== undefined) {
       const profile = patch.profile;
       const handle = profile?.handle?.replace(/^#/, "").toLowerCase();
@@ -11256,6 +11263,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
+    if (preferences.maxConcurrentAgentRuns !== previousPreferences.maxConcurrentAgentRuns) {
+      coordinationV3Scheduler.setMaxConcurrentRuns(preferences.maxConcurrentAgentRuns);
+    }
     publishWorkspaceSince(cursor);
     if (globalInstructionsChanged || profileChanged) for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
       organizationEnvelopeStates.delete(agent.id);

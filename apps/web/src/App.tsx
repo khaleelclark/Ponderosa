@@ -42,6 +42,7 @@ import { AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { NotificationPanel } from "./components/NotificationPanel";
+import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
@@ -128,6 +129,7 @@ export default function App({
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
   const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
   const [globalInstructionsDraft, setGlobalInstructionsDraft] = useState("");
+  const [maxConcurrentAgentRunsDraft, setMaxConcurrentAgentRunsDraft] = useState("8");
   const [profileNameDraft, setProfileNameDraft] = useState("User");
   const [profileHandleDraft, setProfileHandleDraft] = useState("operator");
   const [profileAvatarDraft, setProfileAvatarDraft] = useState("default-user");
@@ -355,7 +357,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -448,6 +450,7 @@ export default function App({
   }, [workspaceTabs, activeWorkspaceTabKey]);
   const openSettings = () => {
     setGlobalInstructionsDraft(preferences.globalInstructions);
+    setMaxConcurrentAgentRunsDraft(String(preferences.maxConcurrentAgentRuns));
     setNotificationSettingsOpen(true);
   };
   const openOperatorProfile = () => {
@@ -822,6 +825,7 @@ export default function App({
                   .finally(() => setPushBusy(false));
               }}>Disable on this device</Button>
             ) : null}
+            <RuntimeSettings value={maxConcurrentAgentRunsDraft} onChange={setMaxConcurrentAgentRunsDraft} />
             <Typography variant="subtitle2">AI providers</Typography>
             <Typography variant="body2" color="text.secondary">Disabled providers finish active Runs, then hold queued work until re-enabled.</Typography>
             {engines.map((engine) => {
@@ -848,8 +852,11 @@ export default function App({
             <TextField label="Rules for every Ponderosa Agent" value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText="Ponderosa stores these rules directly and starts affected Agents with a fresh provider session on their next Run." />
           </Stack>
         </DialogContent>
-        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" onClick={() => {
-          savePreferences({ globalInstructions: globalInstructionsDraft });
+        <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={parseAgentRunConcurrencyLimit(maxConcurrentAgentRunsDraft) === undefined} onClick={() => {
+          savePreferences({
+            globalInstructions: globalInstructionsDraft,
+            maxConcurrentAgentRuns: parseAgentRunConcurrencyLimit(maxConcurrentAgentRunsDraft)!,
+          });
           setNotificationSettingsOpen(false);
         }}>Save settings</Button></DialogActions>
       </Dialog>

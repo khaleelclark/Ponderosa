@@ -977,6 +977,42 @@ async function createProjectAndAgent() {
   return { app, project, agent };
 }
 
+describe("runtime settings API", () => {
+  it("validates and persists the workspace-wide Agent Run concurrency limit", async () => {
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+
+    const initial = await app.inject({ method: "GET", url: "/api/workspace/preferences" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ maxConcurrentAgentRuns: 8 });
+
+    for (const maxConcurrentAgentRuns of [0, 65, 1.5, "4"]) {
+      const rejected = await app.inject({
+        method: "PATCH",
+        url: "/api/workspace/preferences",
+        payload: { maxConcurrentAgentRuns },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json()).toMatchObject({ error: expect.stringContaining("integer from 1 to 64") });
+    }
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: { maxConcurrentAgentRuns: 3 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ maxConcurrentAgentRuns: 3 });
+    expect(new WorkspaceStore(dataDir).getPreferences()).toMatchObject({ maxConcurrentAgentRuns: 3 });
+    await app.close();
+  });
+});
+
 describe("notification panel actions", () => {
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
