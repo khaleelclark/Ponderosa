@@ -2497,7 +2497,7 @@ describe("persistent engine steering", () => {
         projectId: input.projectId,
         sender: communication.sender,
         intent: communication.intent,
-        audience: { agentId: input.agentId },
+        audience: communication.audience,
         payload: {
           communication,
           dispatch: { conversationId: input.conversationId, text: input.text },
@@ -5901,16 +5901,23 @@ describe("server chunk F", () => {
     const project = store.createProject({ label: "Result retrieval", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
     const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const fullResult = "é".repeat(40_000);
+    const communication: CommunicationEvent = {
+      eventId: "large-result", schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Inspect the large result", createdAt: "2026-07-19T00:00:00.000Z",
+    };
     const activation = new CoordinationV3Store(store.sqlite).recordRuntimeCommunication({
-      id: "large-result",
+      id: communication.eventId,
       projectId: project.id,
-      sender: { kind: "system", component: "qualification" },
-      intent: "qualification_result",
-      audience: { agentId: agent.id },
-      payload: { result: "é".repeat(40_000), exact: true },
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      payload: { communication, result: fullResult, exact: true },
       scopeKey: `conversation:${conversation.id}`,
       activation: {
-        agentId: agent.id, kind: "qualification_result", priority: 60,
+        agentId: agent.id, kind: "ordinary_message", priority: 60,
         dispatchPolicy: "next_run", promptClass: "coordination",
       },
     });
@@ -6634,7 +6641,7 @@ describe("server chunk F", () => {
       projectId: project.id,
       sender: event.sender,
       intent: event.intent,
-      audience: { agentId: agent.id },
+      audience: event.audience,
       payload: {
         communication: event,
         dispatch: {
@@ -6657,7 +6664,7 @@ describe("server chunk F", () => {
       projectId: project.id,
       sender: event.sender,
       intent: event.intent,
-      audience: { agentId: agent.id },
+      audience: event.audience,
       payload: {
         communication: { ...event, eventId: malformedEventId },
         dispatch: { text: "", attachments: [{ id: "missing" }] },
@@ -6961,9 +6968,10 @@ describe("server chunk F", () => {
     const coordination = new CoordinationV3Store(store.sqlite);
     for (let index = 0; index < 3; index += 1) {
       coordination.recordRuntimeCommunication({
-        id: `team-operation-${index}`, projectId: project.id, sender: { kind: "user" }, intent: "user_dm",
+        id: `team-operation-${index}`, projectId: project.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         scopeKey: `conversation:${room.id}`,
-        audience: { kind: "agent", id: agent.id }, payload: { text: `Work ${index}` },
+        audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id }, payload: { text: `Work ${index}` },
         now: `2026-07-18T00:00:0${index}.000Z`,
         activation: { agentId: agent.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
       });
@@ -8047,7 +8055,7 @@ describe("server chunk F", () => {
       projectId: project.id,
       sender: communication.sender,
       intent: communication.intent,
-      audience: { agentId: agent.id },
+      audience: communication.audience,
       payload: { communication, dispatch: { conversationId: conversation.id, text: communication.text } },
       activation: { agentId: agent.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run" },
       now: createdAt,

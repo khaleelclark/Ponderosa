@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { CommunicationEvent } from "@ponderosa/core";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import { openDb, type OpenedDb } from "../src/db.js";
 
@@ -99,6 +100,40 @@ afterEach(() => opened.client.close());
 
 const indefinite = { kind: "indefinite" as const };
 
+function userDmEvent(input: {
+  eventId: string;
+  agentId: string;
+  project?: string;
+  conversation?: string;
+  text?: string;
+  createdAt?: string;
+}): CommunicationEvent {
+  return {
+    eventId: input.eventId,
+    schemaVersion: 2,
+    projectId: input.project ?? projectId,
+    ...(input.conversation ? { conversationId: input.conversation } : {}),
+    sender: { kind: "user", userId: "local-operator" },
+    intent: "user_dm",
+    audience: { kind: "user_agent", userId: "local-operator", agentId: input.agentId },
+    text: input.text ?? "Current-contract test message",
+    createdAt: input.createdAt ?? "2026-07-15T00:00:00.000Z",
+  };
+}
+
+function runtimeMutationState() {
+  const count = (table: string) => (opened.client.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+  return {
+    communications: count("runtime_communications"),
+    activations: count("agent_activations"),
+    outbox: count("activation_outbox"),
+    retryLineage: count("activation_delivery_retry_lineage"),
+    idempotency: count("coordination_idempotency"),
+    promptInjections: count("scheduler_prompt_injections"),
+    runs: count("scheduler_runs"),
+  };
+}
+
 function acknowledgeLease(lease: NonNullable<ReturnType<CoordinationV3Store["leaseNextRun"]>>, prompt = "test prompt"): void {
   store.preparePromptInjection({
     injectionId: lease.injectionId, runId: lease.runId,
@@ -121,14 +156,18 @@ function createUncertainHumanSteer(eventId: string, now: string) {
   });
   const run = store.leaseNextRun({ workerId: "worker-1", now })!;
   acknowledgeLease(run);
+  const communication = userDmEvent({
+    eventId, agentId: recipientA, project: projectId,
+    text: "Change direction", createdAt: now,
+  });
   const intake = store.recordRuntimeCommunication({
     id: `dispatch:${eventId}:${recipientA}`,
     projectId,
-    sender: { kind: "user", userId: "local-operator" },
-    intent: "user_dm",
-    audience: { agentId: recipientA },
+    sender: communication.sender,
+    intent: communication.intent,
+    audience: communication.audience,
     payload: {
-      communication: { eventId, projectId },
+      communication,
       dispatch: { text: "Change direction" },
     },
     activation: {
@@ -219,14 +258,14 @@ describe("CoordinationV3Store transactions", () => {
   it("records passive communication without waking and routes actionable communication only through the scheduler", () => {
     const now = "2026-07-15T00:00:00.000Z";
     expect(store.recordRuntimeCommunication({
-      id: "broadcast", projectId, sender: { kind: "user" }, intent: "broadcast",
-      audience: { kind: "organization", id: projectId }, payload: { text: "FYI" }, now,
+      id: "broadcast", projectId, sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: projectId }, payload: { text: "FYI" }, now,
     })).toEqual({ id: "broadcast", replayed: false });
     expect(opened.client.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 0 });
 
     const direct = store.recordRuntimeCommunication({
-      id: "direct", projectId, sender: { kind: "user" }, intent: "user_dm",
-      audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, now,
+      id: "direct", projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: requesterId }, payload: { text: "Start" }, now,
       activation: {
         agentId: requesterId, kind: "human_message", priority: 100,
         dispatchPolicy: "steer_or_run", promptClass: "human",
@@ -244,25 +283,25 @@ describe("CoordinationV3Store transactions", () => {
       SELECT state FROM agent_activations WHERE id = ?
     `).get(direct.activationId)).toEqual({ state: "consumed" });
     expect(store.recordRuntimeCommunication({
-      id: "direct", projectId, sender: { kind: "user" }, intent: "user_dm",
-      audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, now,
+      id: "direct", projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: requesterId }, payload: { text: "Start" }, now,
       activation: {
         agentId: requesterId, kind: "human_message", priority: 100,
         dispatchPolicy: "steer_or_run", promptClass: "human",
       },
     }).replayed).toBe(true);
     expect(store.runtimeCommunications(projectId)).toEqual([
-      { id: "broadcast", projectId, audience: { kind: "organization", id: projectId }, payload: { text: "FYI" }, createdAt: now },
-      { id: "direct", projectId, audience: { kind: "agent", id: requesterId }, payload: { text: "Start" }, createdAt: now },
+      { id: "broadcast", projectId, audience: { kind: "organization", organizationId: projectId }, payload: { text: "FYI" }, createdAt: now },
+      { id: "direct", projectId, audience: { kind: "user_agent", userId: "local-operator", agentId: requesterId }, payload: { text: "Start" }, createdAt: now },
     ]);
   });
 
   it("keyset-pages Team operational records without rebuilding per-Agent snapshots", () => {
     for (let index = 0; index < 3; index += 1) {
       store.recordRuntimeCommunication({
-        id: `team-page-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        id: `team-page-${index}`, projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         scopeKey: `conversation:${conversationId}`,
-        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        audience: { kind: "user_agent", userId: "local-operator", agentId: recipientA }, payload: { text: `Work ${index}` },
         now: `2026-07-15T00:00:0${index}.000Z`,
         activation: {
           agentId: recipientA, kind: "human_message", priority: 100,
@@ -288,9 +327,9 @@ describe("CoordinationV3Store transactions", () => {
     const activationIds: string[] = [];
     for (let index = 0; index < 4; index += 1) {
       const recorded = store.recordRuntimeCommunication({
-        id: `team-mutation-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        id: `team-mutation-${index}`, projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         scopeKey: `conversation:${conversationId}`,
-        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        audience: { kind: "user_agent", userId: "local-operator", agentId: recipientA }, payload: { text: `Work ${index}` },
         now: `2026-07-15T00:00:0${index}.000Z`,
         activation: {
           agentId: recipientA, kind: "human_message", priority: 100,
@@ -342,9 +381,9 @@ describe("CoordinationV3Store transactions", () => {
   it("returns the 1,001st internal sentinel for a public 1,000-row page", () => {
     for (let index = 0; index < 1_001; index += 1) {
       const recorded = store.recordRuntimeCommunication({
-        id: `sentinel-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        id: `sentinel-${index}`, projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         scopeKey: `conversation:${conversationId}`,
-        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        audience: { kind: "user_agent", userId: "local-operator", agentId: recipientA }, payload: { text: `Work ${index}` },
         now: new Date(Date.UTC(2027, 0, 1, 0, 0, 0, index)).toISOString(),
         activation: {
           agentId: recipientA, kind: "human_message", priority: 100,
@@ -364,8 +403,8 @@ describe("CoordinationV3Store transactions", () => {
   it("reports truncation when one Agent has more same-kind seeds than the requested limit", () => {
     for (let index = 0; index < 5; index += 1) {
       store.recordRuntimeCommunication({
-        id: `bounded-direct-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
-        audience: { kind: "agent", id: recipientA }, payload: { text: `Message ${index}` },
+        id: `bounded-direct-${index}`, projectId, sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+        audience: { kind: "user_agent", userId: "local-operator", agentId: recipientA }, payload: { text: `Message ${index}` },
         now: `2026-07-15T00:00:0${index}.000Z`,
         activation: {
           agentId: recipientA, kind: "human_message", priority: 100,
@@ -1315,8 +1354,8 @@ describe("CoordinationV3Store scheduler", () => {
     store.cancelAgentRun({ agentId: recipientA, idempotencyKey: "cancel-authorized-run" });
 
     expect(() => store.recordRuntimeCommunication({
-      id: "late-message", projectId, sender: { kind: "agent", id: recipientA },
-      intent: "collaboration", audience: { agentId: recipientB }, payload: { text: "late" },
+      id: "late-message", projectId, sender: { kind: "agent", agentId: recipientA },
+      intent: "collaboration", audience: { kind: "agents", agentIds: [recipientB] }, payload: { text: "late" },
       runAuthorization: authorization,
       artifacts: [{
         id: "late-artifact", role: "long_text", title: "Late", mediaType: "text/markdown",
@@ -1646,18 +1685,19 @@ describe("CoordinationV3Store scheduler", () => {
       projectId: string;
       conversationId: string;
       agentId: string;
-    }) => store.recordRuntimeCommunication({
+    }) => {
+      const communication = userDmEvent({
+        eventId, agentId: input.agentId, project: input.projectId,
+        conversation: input.conversationId, text: `Work in ${input.projectId}`,
+      });
+      return store.recordRuntimeCommunication({
       id: input.runtimeId,
       projectId: input.projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: input.agentId },
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
       payload: {
-        communication: {
-          eventId,
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-        },
+        communication,
         dispatch: { conversationId: input.conversationId, text: `Work in ${input.projectId}` },
       },
       activation: {
@@ -1668,7 +1708,8 @@ describe("CoordinationV3Store scheduler", () => {
         promptClass: "ordinary",
       },
       now: "2026-07-15T00:00:00.000Z",
-    });
+      });
+    };
     const localDelivery = recordDelivery({
       runtimeId: "runtime:local-collision",
       projectId,
@@ -1770,19 +1811,32 @@ describe("CoordinationV3Store scheduler", () => {
     `).get()).toEqual(communicationBefore);
   });
 
-  it("rejects runtime communication identities that cross the Project boundary", () => {
+  it("rejects malformed, contradictory, cross-Project, and nonmember runtime identities before mutation", () => {
     const foreign = seedAdditionalProject("Foreign authority Project");
-    const countState = () => ({
-      communications: (opened.client.prepare(`SELECT COUNT(*) AS count FROM runtime_communications`).get() as { count: number }).count,
-      activations: (opened.client.prepare(`SELECT COUNT(*) AS count FROM agent_activations`).get() as { count: number }).count,
-      outbox: (opened.client.prepare(`SELECT COUNT(*) AS count FROM activation_outbox`).get() as { count: number }).count,
+    const secondConversationId = randomUUID();
+    const scopeOnlyAgentId = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+      VALUES (?, ?, 'Scope-only chat', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `).run(secondConversationId, projectId);
+    opened.client.prepare(`
+      INSERT INTO agents (id, project_id, title, active_engine, created_at, updated_at, archived)
+      VALUES (?, ?, 'Scope-only Agent', 'codex', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `).run(scopeOnlyAgentId, projectId);
+    opened.client.prepare(`
+      INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position) VALUES (?, ?, 0)
+    `).run(scopeOnlyAgentId, secondConversationId);
+
+    const local = userDmEvent({
+      eventId: "runtime-authority", agentId: recipientA, conversation: conversationId,
     });
-    const before = countState();
     const baseInput = {
+      id: "runtime-authority",
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: local.sender,
+      intent: local.intent,
+      audience: local.audience,
+      payload: { communication: local, dispatch: { conversationId, text: local.text } },
       activation: {
         agentId: recipientA,
         kind: "ordinary_message",
@@ -1791,45 +1845,154 @@ describe("CoordinationV3Store scheduler", () => {
         promptClass: "ordinary" as const,
       },
     };
-    expect(() => store.recordRuntimeCommunication({
-      ...baseInput,
-      id: "foreign-embedded-project",
+    const foreignAudience = userDmEvent({
+      eventId: "foreign-audience", agentId: foreign.agentId, project: projectId,
+      conversation: conversationId,
+    });
+    const nonmemberCollaboration: CommunicationEvent = {
+      eventId: "nonmember-sender", schemaVersion: 2, projectId, conversationId,
+      sender: { kind: "agent", agentId: scopeOnlyAgentId }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipientA] }, text: "Contradictory membership",
+      createdAt: "2026-07-15T00:00:00.000Z",
+    };
+    const conversationScopeMismatch = userDmEvent({
+      eventId: "conversation-scope-mismatch", agentId: scopeOnlyAgentId,
+      conversation: conversationId,
+    });
+    const managedChildFailure = {
+      id: "managed-child-failure", projectId,
+      sender: { kind: "system", component: "runtime-supervisor" },
+      intent: "managed_child_failure",
+      audience: { kind: "agents", agentIds: [requesterId] },
       payload: {
-        communication: {
-          eventId: "foreign-embedded-project",
-          projectId: foreign.projectId,
-          conversationId,
-        },
+        text: "Child failed", childAgentId: recipientA,
+        executionId: "failed-child-execution", failure: "provider exited",
       },
-    })).toThrow("does not agree on one Project");
-    expect(() => store.recordRuntimeCommunication({
-      ...baseInput,
-      id: "foreign-conversation",
+      scopeKey: `conversation:${conversationId}`,
+      activation: {
+        agentId: requesterId, kind: "managed_child_failure", priority: 90,
+        dispatchPolicy: "steer_or_run", promptClass: "blocker",
+      },
+    };
+    const malformedValues: unknown[] = [[], null, "malformed"];
+    const rejectedInputs: unknown[] = [
+      { ...baseInput, id: "unknown-sender", sender: { kind: "unknown", userId: "local-operator" } },
+      { ...baseInput, id: "unknown-audience", audience: { kind: "unknown", agentId: recipientA } },
+      { ...baseInput, id: "unknown-intent", intent: "unknown" },
+      {
+        ...baseInput, id: "foreign-canonical-audience",
+        payload: { communication: foreignAudience, dispatch: { conversationId, text: foreignAudience.text } },
+      },
+      {
+        ...baseInput, id: "nonmember-sender", sender: nonmemberCollaboration.sender,
+        intent: nonmemberCollaboration.intent, audience: nonmemberCollaboration.audience,
+        payload: { communication: nonmemberCollaboration },
+      },
+      {
+        ...baseInput, id: "conversation-scope-mismatch", audience: conversationScopeMismatch.audience,
+        payload: { communication: conversationScopeMismatch },
+        scopeKey: `conversation:${secondConversationId}`,
+        activation: { ...baseInput.activation, agentId: scopeOnlyAgentId },
+      },
+      ...malformedValues.map((communication, index) => ({
+        ...baseInput, id: `malformed-communication-${index}`, payload: { communication },
+      })),
+      ...malformedValues.map((dispatch, index) => ({
+        ...baseInput, id: `malformed-dispatch-${index}`, payload: { text: "work", dispatch },
+      })),
+      { ...managedChildFailure, id: "managed-wrong-component", sender: { kind: "system", component: "other" } },
+      {
+        ...managedChildFailure, id: "managed-missing-payload-field",
+        payload: { ...managedChildFailure.payload, failure: "" },
+      },
+      {
+        ...managedChildFailure, id: "managed-foreign-child",
+        payload: { ...managedChildFailure.payload, childAgentId: foreign.agentId },
+      },
+      {
+        ...managedChildFailure, id: "managed-child-outside-scope",
+        payload: { ...managedChildFailure.payload, childAgentId: scopeOnlyAgentId },
+      },
+      {
+        ...managedChildFailure, id: "managed-wrong-activation-kind",
+        activation: { ...managedChildFailure.activation, kind: "ordinary_message" },
+      },
+    ];
+    const before = runtimeMutationState();
+    for (const input of rejectedInputs) {
+      expect(() => store.recordRuntimeCommunication(input as never)).toThrow(
+        "runtime communication authority does not agree on one Project",
+      );
+      expect(runtimeMutationState()).toEqual(before);
+    }
+    expect(store.deliveryReceiptsForCommunication(projectId, conversationScopeMismatch.eventId)).toEqual([]);
+    expect(store.retryMessageDelivery({
+      projectId, activationId: "conversation-scope-mismatch", idempotencyKey: "mismatch-retry",
+    })).toMatchObject({ accepted: false, rejectionReason: "not_found" });
+    expect(runtimeMutationState()).toEqual(before);
+    expect(store.leaseNextRun({ workerId: "mismatch-worker" })).toBeUndefined();
+    expect(runtimeMutationState()).toEqual(before);
+  });
+
+  it("accepts current canonical and closed internal RuntimeCommunication variants", () => {
+    const userDm = userDmEvent({ eventId: "valid-user-dm", agentId: recipientA, conversation: conversationId });
+    expect(store.recordRuntimeCommunication({
+      id: userDm.eventId, projectId, sender: userDm.sender, intent: userDm.intent,
+      audience: userDm.audience, payload: { communication: userDm },
+      activation: { agentId: recipientA, kind: "human_message", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
+    }).activationId).toBeTruthy();
+
+    const collaboration: CommunicationEvent = {
+      eventId: "valid-agent-collaboration", schemaVersion: 2, projectId, conversationId,
+      sender: { kind: "agent", agentId: requesterId }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipientB] }, text: "Please review",
+      createdAt: "2026-07-15T00:00:01.000Z",
+    };
+    expect(store.recordRuntimeCommunication({
+      id: collaboration.eventId, projectId, sender: collaboration.sender, intent: collaboration.intent,
+      audience: collaboration.audience, payload: { communication: collaboration },
+      activation: { agentId: recipientB, kind: "ordinary_message", priority: 50, dispatchPolicy: "next_run", promptClass: "ordinary" },
+    }).activationId).toBeTruthy();
+
+    const broadcast: CommunicationEvent = {
+      eventId: "valid-organization-audience", schemaVersion: 2, projectId, conversationId,
+      sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+      audience: { kind: "organization", organizationId: projectId }, text: "Shared context",
+      createdAt: "2026-07-15T00:00:02.000Z",
+    };
+    expect(store.recordRuntimeCommunication({
+      id: broadcast.eventId, projectId, sender: broadcast.sender, intent: broadcast.intent,
+      audience: broadcast.audience, payload: { communication: broadcast },
+    })).toEqual({ id: broadcast.eventId, replayed: false });
+
+    const managedFailure = store.recordRuntimeCommunication({
+      id: "valid-managed-child-failure", projectId,
+      sender: { kind: "system", component: "runtime-supervisor" }, intent: "managed_child_failure",
+      audience: { kind: "agents", agentIds: [requesterId] },
       payload: {
-        communication: {
-          eventId: "foreign-conversation",
-          projectId,
-          conversationId: foreign.conversationId,
-        },
+        text: "Child failed", childAgentId: recipientA,
+        executionId: "valid-child-execution", failure: "provider exited",
       },
-    })).toThrow("does not agree on one Project");
-    expect(() => store.recordRuntimeCommunication({
-      ...baseInput,
-      id: "foreign-scope",
-      scopeKey: `conversation:${foreign.conversationId}`,
-      payload: {
-        communication: { eventId: "foreign-scope", projectId, conversationId },
-      },
-    })).toThrow("does not agree on one Project");
-    expect(() => store.recordRuntimeCommunication({
-      ...baseInput,
-      id: "foreign-audience",
-      audience: { agentId: foreign.agentId },
-      payload: {
-        communication: { eventId: "foreign-audience", projectId, conversationId },
-      },
-    })).toThrow("does not agree on one Project");
-    expect(countState()).toEqual(before);
+      scopeKey: `conversation:${conversationId}`,
+      activation: { agentId: requesterId, kind: "managed_child_failure", priority: 90, dispatchPolicy: "steer_or_run", promptClass: "blocker" },
+    });
+    expect(managedFailure.activationId).toBeTruthy();
+    expect(store.deliveryReceiptsForCommunication(projectId, "valid-managed-child-failure"))
+      .toEqual([expect.objectContaining({
+        activationId: managedFailure.activationId,
+        targetAgentId: requesterId,
+        state: "queued",
+      })]);
+
+    const correction = userDmEvent({
+      eventId: "valid-correction", agentId: recipientA, conversation: conversationId,
+      text: "Corrected instruction", createdAt: "2026-07-15T00:00:03.000Z",
+    });
+    expect(store.recordRuntimeCommunication({
+      id: correction.eventId, projectId, sender: correction.sender, intent: "correction",
+      audience: correction.audience, payload: { communication: correction },
+      activation: { agentId: recipientA, kind: "message_correction", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
+    }).activationId).toBeTruthy();
   });
 
   it("keeps a queued delivery retry and its single-flight fence across restart", () => {
@@ -1886,11 +2049,14 @@ describe("CoordinationV3Store scheduler", () => {
 
     const nonOperator = store.recordRuntimeCommunication({
       id: "agent-authored-delivery", projectId,
-      sender: { kind: "agent", agentId: requesterId }, intent: "direct",
-      audience: { agentId: recipientA },
-      payload: {
-        communication: { eventId: "agent-authored", projectId, conversationId },
-      },
+      sender: { kind: "agent", agentId: requesterId }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipientA] },
+      payload: { communication: {
+        eventId: "agent-authored", schemaVersion: 2, projectId, conversationId,
+        sender: { kind: "agent", agentId: requesterId }, intent: "collaboration",
+        audience: { kind: "agents", agentIds: [recipientA] }, text: "Agent-authored work",
+        createdAt: "2026-07-15T00:00:03.000Z",
+      } },
       activation: {
         agentId: recipientA, kind: "ordinary_message", priority: 50,
         dispatchPolicy: "next_run", promptClass: "ordinary",
@@ -1916,14 +2082,18 @@ describe("CoordinationV3Store scheduler", () => {
       VALUES (?, ?, 0)
     `).run(recipientA, otherConversationId);
     const failedEventId = "removed-scope-failed-delivery";
+    const failedCommunication = userDmEvent({
+      eventId: failedEventId, agentId: recipientA, conversation: conversationId,
+      text: "Retry this only while membership remains active",
+    });
     const failed = store.recordRuntimeCommunication({
       id: `dispatch:${failedEventId}:${recipientA}`,
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: failedCommunication.sender,
+      intent: failedCommunication.intent,
+      audience: failedCommunication.audience,
       payload: {
-        communication: { eventId: failedEventId, projectId, conversationId },
+        communication: failedCommunication,
         dispatch: { text: "Retry this only while membership remains active" },
       },
       activation: {
@@ -1943,14 +2113,18 @@ describe("CoordinationV3Store scheduler", () => {
       canRetry: true,
     });
 
+    const targetCommunication = userDmEvent({
+      eventId: "removed-scope-pending", agentId: recipientA, conversation: conversationId,
+      text: "Must not lease after removal", createdAt: "2026-07-15T00:00:02.000Z",
+    });
     const targetPending = store.recordRuntimeCommunication({
       id: "removed-scope-pending",
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: targetCommunication.sender,
+      intent: targetCommunication.intent,
+      audience: targetCommunication.audience,
       payload: {
-        communication: { eventId: "removed-scope-pending", projectId, conversationId },
+        communication: targetCommunication,
         dispatch: { text: "Must not lease after removal" },
       },
       activation: {
@@ -1959,14 +2133,18 @@ describe("CoordinationV3Store scheduler", () => {
       },
       now: "2026-07-15T00:00:02.000Z",
     });
+    const otherCommunication = userDmEvent({
+      eventId: "other-scope-pending", agentId: recipientA, conversation: otherConversationId,
+      text: "Other-chat work remains authorized", createdAt: "2026-07-15T00:00:03.000Z",
+    });
     const otherPending = store.recordRuntimeCommunication({
       id: "other-scope-pending",
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: otherCommunication.sender,
+      intent: otherCommunication.intent,
+      audience: otherCommunication.audience,
       payload: {
-        communication: { eventId: "other-scope-pending", projectId, conversationId: otherConversationId },
+        communication: otherCommunication,
         dispatch: { text: "Other-chat work remains authorized" },
       },
       activation: {
@@ -2039,14 +2217,18 @@ describe("CoordinationV3Store scheduler", () => {
     });
     const running = store.leaseNextRun({ workerId: "steering-worker", now: "2026-07-15T00:00:00.000Z" })!;
     acknowledgeLease(running);
+    const steeringCommunication = userDmEvent({
+      eventId: "removed-scope-steering", agentId: recipientA, conversation: conversationId,
+      text: "Must not steer after removal", createdAt: "2026-07-15T00:00:01.000Z",
+    });
     const steering = store.recordRuntimeCommunication({
       id: "removed-scope-steering",
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: steeringCommunication.sender,
+      intent: steeringCommunication.intent,
+      audience: steeringCommunication.audience,
       payload: {
-        communication: { eventId: "removed-scope-steering", projectId, conversationId },
+        communication: steeringCommunication,
         dispatch: { text: "Must not steer after removal" },
       },
       activation: {
@@ -2270,17 +2452,17 @@ describe("CoordinationV3Store scheduler", () => {
   });
 
   it("atomically fences an edited Activation behind its durable revision outbox", () => {
+    const communication = userDmEvent({
+      eventId: "queued-communication", agentId: recipientA, text: "old",
+    });
     const intake = store.recordRuntimeCommunication({
       id: "queued-communication",
       projectId,
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { agentId: recipientA },
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
       payload: {
-        communication: {
-          eventId: "queued-communication", projectId,
-          sender: { kind: "user", userId: "local-operator" }, text: "old",
-        },
+        communication,
         dispatch: { text: "old" },
       },
       activation: { agentId: recipientA, kind: "human_message", priority: 100, dispatchPolicy: "next_run" },

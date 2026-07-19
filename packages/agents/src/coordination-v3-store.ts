@@ -24,6 +24,13 @@ import {
   type TriggerSourceConfig,
   type TriggerSourceKind,
   type TriggerRunBudgetDto,
+  type CommunicationActor,
+  type CommunicationAudience,
+  type CommunicationIntent,
+  type CommunicationEvent,
+  isCommunicationActor,
+  isCommunicationAudience,
+  isCommunicationEvent,
 } from "@ponderosa/core";
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
@@ -213,13 +220,9 @@ export type ActivationDispatchPolicy = "steer_or_run" | "next_run";
 export type ActivationPromptClass = "human" | "blocker" | "coordination" | "ordinary";
 export type ActivationTerminalOutcome = "recipient_unavailable" | "permanent_failure" | "retry_exhausted";
 
-export interface RuntimeCommunicationV3Input {
+interface RuntimeCommunicationV3InputBase {
   id: string;
   projectId: string;
-  sender: unknown;
-  intent: string;
-  audience: unknown;
-  payload: unknown;
   scopeKey?: string;
   /** Required for provider-authored communications. */
   runAuthorization?: RunAuthorizationV3;
@@ -242,6 +245,27 @@ export interface RuntimeCommunicationV3Input {
   }>;
   now?: string;
 }
+
+export type RuntimeCommunicationV3Input = RuntimeCommunicationV3InputBase & (
+  | { sender: CommunicationActor; intent: CommunicationIntent; audience: CommunicationAudience; payload: unknown }
+  | {
+      sender: Extract<CommunicationActor, { kind: "system" }>;
+      intent: "managed_child_failure";
+      audience: Extract<CommunicationAudience, { kind: "agents" }>;
+      payload: {
+        text: string;
+        childAgentId: string;
+        executionId: string;
+        failure: string;
+      };
+    }
+  | {
+      sender: Extract<CommunicationActor, { kind: "user" }>;
+      intent: "correction";
+      audience: Extract<CommunicationAudience, { kind: "user_agent" | "user_agents" }>;
+      payload: unknown;
+    }
+);
 
 export interface RuntimeCommunicationV3Result {
   id: string;
@@ -547,10 +571,12 @@ export class CoordinationV3Store {
       if (!this.runtimeCommunicationAuthorityAgrees({
         projectId: input.projectId,
         sender: input.sender,
+        intent: input.intent,
         audience: input.audience,
         payload: input.payload,
         activations: activationInputs.map((activation, index) => ({
           agentId: activation.agentId,
+          kind: activation.kind,
           scopeKey: activationScopeKeys[index]!,
         })),
       })) throw new Error("runtime communication authority does not agree on one Project");
@@ -706,10 +732,10 @@ export class CoordinationV3Store {
     if (!projectId.trim() || !communicationEventId.trim()) return [];
     const activations = this.sqlite.prepare(`
       SELECT DISTINCT activation.id, activation.project_id, activation.agent_id,
-        activation.scope_key, activation.state, activation.updated_at,
+        activation.scope_key, activation.kind, activation.state, activation.updated_at,
         activation.rowid AS row_sequence,
         COALESCE(retry_lineage.attempt_number, 0) AS attempt_number,
-        runtime.sender_json, runtime.audience_json, runtime.payload_json
+        runtime.sender_json, runtime.intent, runtime.audience_json, runtime.payload_json
       FROM activation_sources source
       JOIN runtime_communications runtime ON runtime.id = source.source_id
       JOIN agent_activations activation ON activation.id = source.activation_id
@@ -728,8 +754,8 @@ export class CoordinationV3Store {
       ORDER BY attempt_number, row_sequence
     `).all(projectId, communicationEventId, communicationEventId) as Array<{
       id: string; project_id: string; agent_id: string; scope_key: string;
-      state: string; updated_at: string; row_sequence: number; attempt_number: number;
-      sender_json: string; audience_json: string; payload_json: string;
+      kind: string; state: string; updated_at: string; row_sequence: number; attempt_number: number;
+      sender_json: string; intent: string; audience_json: string; payload_json: string;
     }>;
     const latestByRecipient = new Map<string, { activation: typeof activations[number]; attemptCount: number }>();
     for (const activation of activations) {
@@ -746,9 +772,10 @@ export class CoordinationV3Store {
       if (!this.runtimeCommunicationAuthorityAgrees({
         projectId,
         sender,
+        intent: activation.intent,
         audience,
         payload,
-        activations: [{ agentId: activation.agent_id, scopeKey: activation.scope_key }],
+        activations: [{ agentId: activation.agent_id, kind: activation.kind, scopeKey: activation.scope_key }],
       }, false)) continue;
       latestByRecipient.set(activation.agent_id, {
         activation,
@@ -844,7 +871,7 @@ export class CoordinationV3Store {
 
       const sources = this.sqlite.prepare(`
         SELECT source.source_kind, source.source_id, runtime.project_id AS runtime_project_id,
-          runtime.sender_json, runtime.audience_json, runtime.payload_json
+          runtime.sender_json, runtime.intent, runtime.audience_json, runtime.payload_json
         FROM activation_sources source
         LEFT JOIN runtime_communications runtime
           ON source.source_kind = 'communication' AND runtime.id = source.source_id
@@ -852,19 +879,20 @@ export class CoordinationV3Store {
         ORDER BY source.source_kind, source.source_id
       `).all(original.id) as Array<{
         source_kind: string; source_id: string; runtime_project_id: string | null;
-        sender_json: string | null; audience_json: string | null; payload_json: string | null;
+        sender_json: string | null; intent: string | null; audience_json: string | null; payload_json: string | null;
       }>;
       const communicationSources = sources.filter((source) => source.source_kind === "communication");
       const communicationAuthorityAgrees = communicationSources.length > 0 && communicationSources.every((source) => {
-        if (source.runtime_project_id !== input.projectId || !source.sender_json ||
+        if (source.runtime_project_id !== input.projectId || !source.sender_json || !source.intent ||
           !source.audience_json || !source.payload_json) return false;
         try {
           return this.runtimeCommunicationAuthorityAgrees({
             projectId: input.projectId,
             sender: JSON.parse(source.sender_json) as unknown,
+            intent: source.intent,
             audience: JSON.parse(source.audience_json) as unknown,
             payload: JSON.parse(source.payload_json) as unknown,
-            activations: [{ agentId: original.agent_id, scopeKey: original.scope_key }],
+            activations: [{ agentId: original.agent_id, kind: original.kind, scopeKey: original.scope_key }],
           });
         } catch {
           return false;
@@ -1098,16 +1126,18 @@ export class CoordinationV3Store {
     return { settled: changed };
   }
 
-  communicationRecipientAgentIds(communicationId: string): string[] {
+  communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
     return (this.sqlite.prepare(`
       SELECT DISTINCT activation.agent_id
       FROM activation_sources source
       JOIN agent_activations activation ON activation.id = source.activation_id
       JOIN runtime_communications communication ON communication.id = source.source_id
       WHERE source.source_kind = 'communication'
+        AND communication.project_id = ?
+        AND activation.project_id = communication.project_id
         AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
       ORDER BY activation.agent_id
-    `).all(communicationId, communicationId) as Array<{ agent_id: string }>).map((row) => row.agent_id);
+    `).all(projectId, communicationId, communicationId) as Array<{ agent_id: string }>).map((row) => row.agent_id);
   }
 
   cancelPendingActivation(input: {
@@ -4226,55 +4256,80 @@ export class CoordinationV3Store {
   private runtimeCommunicationAuthorityAgrees(input: {
     projectId: string;
     sender: unknown;
+    intent: string;
     audience: unknown;
     payload: unknown;
-    activations: Array<{ agentId: string; scopeKey: string }>;
+    activations: Array<{ agentId: string; kind?: string; scopeKey: string }>;
   }, requireCurrentAuthorization = true): boolean {
     const record = (value: unknown): Record<string, unknown> | undefined =>
       value && typeof value === "object" && !Array.isArray(value)
         ? value as Record<string, unknown>
         : undefined;
-    const sender = record(input.sender);
-    const audience = record(input.audience);
-    const payload = record(input.payload);
-    if (!sender || !audience || !payload) return false;
+    if (!isCommunicationActor(input.sender) || !isCommunicationAudience(input.audience)) return false;
+    const sender = input.sender;
+    const audience = input.audience;
+    const payloadRecord = record(input.payload);
+    if (!payloadRecord) return false;
+    const runtimePayload = payloadRecord as Record<string, unknown>;
+    const hasOwn = (key: string): boolean => Object.prototype.hasOwnProperty.call(payloadRecord, key);
+    if (hasOwn("communication") && !isCommunicationEvent(payloadRecord.communication)) return false;
+    if (hasOwn("dispatch") && !record(payloadRecord.dispatch)) return false;
+    const directCanonicalPayload = !hasOwn("communication") &&
+      (Object.prototype.hasOwnProperty.call(payloadRecord, "schemaVersion") ||
+        Object.prototype.hasOwnProperty.call(payloadRecord, "eventId"));
+    if (directCanonicalPayload && !isCommunicationEvent(payloadRecord)) return false;
+    const communication = hasOwn("communication")
+      ? (payloadRecord as Record<string, unknown>).communication as CommunicationEvent
+      : directCanonicalPayload ? payloadRecord as unknown as CommunicationEvent : undefined;
+    if (communication) {
+      const expectedIntent = input.intent === "correction" ? "user_dm"
+        : input.intent === "managed_child_failure" ? undefined
+          : input.intent;
+      if (!expectedIntent || communication.projectId !== input.projectId || communication.intent !== expectedIntent ||
+          stableJson(communication.sender) !== stableJson(input.sender) ||
+          !this.communicationAudiencesAgree(communication.audience, input.audience)) return false;
+      if (communication.schemaVersion === 2 && communication.intent === "user_dm") {
+        const targetAgentIds = this.communicationAudienceAgentIds(communication.audience);
+        if (communication.sender.kind === "system" ||
+            (communication.sender.kind === "user" &&
+              communication.sender.userId !== communication.audience.userId) ||
+            (communication.sender.kind === "agent" &&
+              (targetAgentIds.length !== 1 || targetAgentIds[0] !== communication.sender.agentId))) return false;
+      }
+    } else if (input.intent === "correction") return false;
 
-    const embeddedCommunication = record(payload.communication);
-    const communication = embeddedCommunication ??
-      (payload.projectId !== undefined || payload.conversationId !== undefined ? payload : undefined);
-    if (embeddedCommunication && embeddedCommunication.projectId !== input.projectId) return false;
-    if (!embeddedCommunication && communication?.projectId !== undefined &&
-      communication.projectId !== input.projectId) return false;
+    const intentAudienceAgrees = input.intent === "broadcast"
+      ? audience.kind === "organization"
+      : input.intent === "direct_to_user"
+        ? audience.kind === "user"
+        : input.intent === "user_dm"
+          ? audience.kind === "user_agent" || audience.kind === "user_agents"
+          : input.intent === "collaboration"
+            ? audience.kind === "agents"
+            : input.intent === "correction"
+              ? (audience.kind === "user_agent" || audience.kind === "user_agents") && sender.kind === "user"
+              : input.intent === "managed_child_failure" &&
+                audience.kind === "agents" && sender.kind === "system";
+    if (!intentAudienceAgrees) return false;
+    if (audience.kind === "organization" && audience.organizationId !== input.projectId) return false;
+    if (input.intent === "managed_child_failure" &&
+        (sender.kind !== "system" || sender.component !== "runtime-supervisor" ||
+          audience.kind !== "agents" || audience.agentIds.length !== 1 ||
+          typeof runtimePayload.text !== "string" || !runtimePayload.text.trim() ||
+          typeof runtimePayload.childAgentId !== "string" || !runtimePayload.childAgentId ||
+          typeof runtimePayload.executionId !== "string" || !runtimePayload.executionId ||
+          typeof runtimePayload.failure !== "string" || !runtimePayload.failure.trim() ||
+          input.activations.length !== 1)) return false;
 
-    const audienceProjectId = audience.kind === "organization"
-      ? audience.organizationId ?? audience.id
-      : audience.projectId;
-    if (audience.kind === "organization" && audienceProjectId === undefined) return false;
-    if (audienceProjectId !== undefined && audienceProjectId !== input.projectId) return false;
-
-    const audienceAgentIds = new Set<string>();
-    const addAudienceAgentId = (value: unknown): boolean => {
-      if (value === undefined) return true;
-      if (typeof value !== "string" || !value) return false;
-      audienceAgentIds.add(value);
-      return true;
-    };
-    if (!addAudienceAgentId(audience.agentId)) return false;
-    if (audience.kind === "agent" && !addAudienceAgentId(audience.id)) return false;
-    if (audience.agentIds !== undefined) {
-      if (!Array.isArray(audience.agentIds) ||
-        audience.agentIds.some((agentId) => !addAudienceAgentId(agentId))) return false;
-    }
+    const audienceAgentIds = new Set(this.communicationAudienceAgentIds(audience));
     const identityAgentIds = new Set(audienceAgentIds);
     if (sender.kind === "agent") {
-      if (typeof sender.agentId !== "string" || !sender.agentId) return false;
       identityAgentIds.add(sender.agentId);
     }
-    for (const agentId of identityAgentIds) {
-      if (!this.sqlite.prepare(`
-        SELECT 1 FROM agents WHERE id = ? AND project_id = ?
-          AND (? = 0 OR archived = 0)
-      `).get(agentId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
+    const childAgentId = (payloadRecord as Record<string, unknown>).childAgentId;
+    if (childAgentId !== undefined) {
+      if (typeof childAgentId !== "string" || !childAgentId) return false;
+      identityAgentIds.add(childAgentId);
     }
 
     const conversationIds = new Set<string>();
@@ -4285,9 +4340,46 @@ export class CoordinationV3Store {
       return true;
     };
     if (!addConversationId(communication?.conversationId)) return false;
-    const dispatch = record(payload.dispatch);
+    const dispatch = record((payloadRecord as Record<string, unknown>).dispatch);
     if (!addConversationId(dispatch?.conversationId) ||
       !addConversationId(dispatch?.sourceConversationId)) return false;
+    for (const activation of input.activations) {
+      const prefix = "conversation:";
+      if (activation.scopeKey.startsWith(prefix) && !addConversationId(activation.scopeKey.slice(prefix.length))) {
+        return false;
+      }
+    }
+    if (conversationIds.size > 1) return false;
+    const conversationId = [...conversationIds][0];
+
+    if (dispatch?.communicationEventId !== undefined &&
+        (typeof dispatch.communicationEventId !== "string" || !communication ||
+          dispatch.communicationEventId !== communication.eventId)) return false;
+    if (dispatch?.targetAuthorAgentId !== undefined) {
+      if (typeof dispatch.targetAuthorAgentId !== "string" || !dispatch.targetAuthorAgentId) return false;
+      identityAgentIds.add(dispatch.targetAuthorAgentId);
+      if (audience.kind !== "organization" && !audienceAgentIds.has(dispatch.targetAuthorAgentId)) return false;
+    }
+    if (dispatch?.recipients !== undefined) {
+      if (!Array.isArray(dispatch.recipients)) return false;
+      for (const candidate of dispatch.recipients) {
+        const recipient = record(candidate);
+        if (!recipient || typeof recipient.agentId !== "string" || !recipient.agentId) return false;
+        identityAgentIds.add(recipient.agentId);
+        if (audience.kind !== "organization" && !audienceAgentIds.has(recipient.agentId)) return false;
+      }
+    }
+
+    for (const agentId of identityAgentIds) {
+      if (!this.sqlite.prepare(`
+        SELECT 1 FROM agents WHERE id = ? AND project_id = ?
+          AND (? = 0 OR archived = 0)
+      `).get(agentId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
+      if (conversationId && requireCurrentAuthorization && !this.sqlite.prepare(`
+        SELECT 1 FROM agent_conversation_memberships
+        WHERE conversation_id = ? AND agent_id = ?
+      `).get(conversationId, agentId)) return false;
+    }
     for (const conversationId of conversationIds) {
       if (!this.sqlite.prepare(`
         SELECT 1 FROM conversations
@@ -4297,7 +4389,12 @@ export class CoordinationV3Store {
 
     const audienceIsOrganization = audience.kind === "organization";
     for (const activation of input.activations) {
+      if (input.intent === "managed_child_failure" && activation.kind !== input.intent) return false;
+      if (input.intent === "correction" && activation.kind !== "message_correction") return false;
       if (!audienceIsOrganization && !audienceAgentIds.has(activation.agentId)) return false;
+      if (conversationId
+        ? activation.scopeKey !== `conversation:${conversationId}`
+        : activation.scopeKey !== `agent:${activation.agentId}`) return false;
       if (requireCurrentAuthorization) {
         if (!this.recipientAuthorizedForActivationScope(
           input.projectId,
@@ -4314,6 +4411,29 @@ export class CoordinationV3Store {
       }
     }
     return true;
+  }
+
+  private communicationAudienceAgentIds(audience: CommunicationAudience): string[] {
+    if (audience.kind === "agents" || audience.kind === "user_agents") return audience.agentIds;
+    if (audience.kind === "user_agent") return [audience.agentId];
+    return [];
+  }
+
+  private communicationAudiencesAgree(left: CommunicationAudience, right: CommunicationAudience): boolean {
+    if (left.kind !== right.kind) return false;
+    if (left.kind === "organization" && right.kind === "organization") {
+      return left.organizationId === right.organizationId;
+    }
+    if (left.kind === "user" && right.kind === "user") return left.userId === right.userId;
+    if (left.kind === "user_agent" && right.kind === "user_agent") {
+      return left.userId === right.userId && left.agentId === right.agentId;
+    }
+    if (left.kind === "user_agents" && right.kind === "user_agents") {
+      return left.userId === right.userId &&
+        stableJson([...new Set(left.agentIds)].sort()) === stableJson([...new Set(right.agentIds)].sort());
+    }
+    return left.kind === "agents" && right.kind === "agents" &&
+      stableJson([...new Set(left.agentIds)].sort()) === stableJson([...new Set(right.agentIds)].sort());
   }
 
   /** One fail-closed authority boundary for every Activation consumer. */

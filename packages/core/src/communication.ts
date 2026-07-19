@@ -87,6 +87,79 @@ export type CommunicationEventV2 = Omit<CommunicationEventBase, "schemaVersion">
 
 /** V1 is retained for append-only replay; all new communication uses V2. */
 export type CommunicationEvent = CommunicationEventV1 | CommunicationEventV2;
+export type CommunicationAudience = CommunicationEvent["audience"];
+
+const communicationIntentValues: ReadonlySet<string> = new Set<CommunicationIntent>([
+  "broadcast",
+  "direct_to_user",
+  "collaboration",
+  "user_dm",
+]);
+
+function communicationRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function nonEmptyStringArray(value: unknown): value is [string, ...string[]] {
+  return Array.isArray(value) && value.length > 0 && value.every(nonEmptyString);
+}
+
+/** Structural runtime guard for the canonical authored-identity union. */
+export function isCommunicationActor(value: unknown): value is CommunicationActor {
+  const actor = communicationRecord(value);
+  if (!actor || !nonEmptyString(actor.kind)) return false;
+  if (actor.kind === "user") return nonEmptyString(actor.userId);
+  if (actor.kind === "agent") {
+    return nonEmptyString(actor.agentId) &&
+      (actor.executionId === undefined || nonEmptyString(actor.executionId));
+  }
+  return actor.kind === "system" && nonEmptyString(actor.component);
+}
+
+/** Structural runtime guard for every canonical audience discriminator. */
+export function isCommunicationAudience(value: unknown): value is CommunicationAudience {
+  const audience = communicationRecord(value);
+  if (!audience || !nonEmptyString(audience.kind)) return false;
+  if (audience.kind === "organization") return nonEmptyString(audience.organizationId);
+  if (audience.kind === "user") return nonEmptyString(audience.userId);
+  if (audience.kind === "agents") return nonEmptyStringArray(audience.agentIds);
+  if (audience.kind === "user_agent") {
+    return nonEmptyString(audience.userId) && nonEmptyString(audience.agentId);
+  }
+  return audience.kind === "user_agents" && nonEmptyString(audience.userId) &&
+    nonEmptyStringArray(audience.agentIds);
+}
+
+/**
+ * Validate the required structural fields and correlated discriminators of one
+ * canonical Communication. Project membership and conversation authority remain
+ * persistence concerns and are checked transactionally by the owning store.
+ */
+export function isCommunicationEvent(value: unknown): value is CommunicationEvent {
+  const event = communicationRecord(value);
+  if (!event || (event.schemaVersion !== 1 && event.schemaVersion !== 2) ||
+      !nonEmptyString(event.eventId) || !nonEmptyString(event.projectId) ||
+      (event.conversationId !== undefined && !nonEmptyString(event.conversationId)) ||
+      !isCommunicationActor(event.sender) || !nonEmptyString(event.intent) ||
+      !communicationIntentValues.has(event.intent) || !isCommunicationAudience(event.audience) ||
+      typeof event.text !== "string" || !nonEmptyString(event.createdAt)) return false;
+
+  const audience = event.audience;
+  if (event.schemaVersion === 1) {
+    return (event.intent === "broadcast" && audience.kind === "organization") ||
+      (event.intent === "direct_to_user" && audience.kind === "user") ||
+      (event.intent === "collaboration" && audience.kind === "agents");
+  }
+  return (event.intent === "broadcast" && audience.kind === "organization") ||
+    (event.intent === "user_dm" && (audience.kind === "user_agent" || audience.kind === "user_agents")) ||
+    (event.intent === "collaboration" && audience.kind === "agents");
+}
 
 /**
  * Append-only replacement text for one immutable communication. The original

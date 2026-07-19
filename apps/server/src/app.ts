@@ -4212,9 +4212,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         app.log.error({ runtimeCommunicationId: row.id, communicationEventId }, "runtime communication artifact is unavailable; projection remains uncommitted");
         continue;
       }
-      const audience = row.audience && typeof row.audience === "object"
-        ? row.audience as Record<string, unknown>
-        : undefined;
       const dispatch = payload?.dispatch && typeof payload.dispatch === "object"
         ? payload.dispatch as Record<string, unknown>
         : undefined;
@@ -4231,9 +4228,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           rawRecipientSets.push({ agentId: recipient.agentId, rawAttachments: recipient.attachments });
         }
       }
-      if (Array.isArray(dispatch?.attachments) && typeof audience?.agentId === "string" &&
-          !rawRecipientSets.some((recipient) => recipient.agentId === audience.agentId)) {
-        rawRecipientSets.push({ agentId: audience.agentId, rawAttachments: dispatch.attachments });
+      if (Array.isArray(dispatch?.attachments)) {
+        for (const agentId of coordinationV3.communicationRecipientAgentIds(row.projectId, row.id)) {
+          if (!rawRecipientSets.some((recipient) => recipient.agentId === agentId)) {
+            rawRecipientSets.push({ agentId, rawAttachments: dispatch.attachments });
+          }
+        }
       }
 
       const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
@@ -4814,9 +4814,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3.recordRuntimeCommunication({
       id,
       projectId: child.projectId,
-      sender: { kind: "system", component: "runtime-supervisor", childAgentId: child.id },
+      sender: { kind: "system", component: "runtime-supervisor" },
       intent: "managed_child_failure",
-      audience: { agentId: manager.id },
+      audience: { kind: "agents", agentIds: [manager.id] },
       payload: { text, childAgentId: child.id, executionId, failure },
       scopeKey: child.conversationId && manager.conversationIds.includes(child.conversationId)
         ? `conversation:${child.conversationId}`
@@ -7696,7 +7696,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         projectId,
         sender: reactionCommunication.sender,
         intent: reactionCommunication.intent,
-        audience: { agentId: target.id },
+        audience: reactionCommunication.audience,
         payload: {
           communication: reactionCommunication,
           dispatch: {
@@ -8196,7 +8196,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast edit conflict" });
       }
     }
-    const targets = originalEventId ? coordinationV3.communicationRecipientAgentIds(originalEventId) : [];
+    const targets = originalEventId
+      ? coordinationV3.communicationRecipientAgentIds(conversation.projectId, originalEventId)
+      : [];
     if (targets.length !== 1) {
       return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not been scheduled" : "messages sent to multiple agents cannot be corrected as one turn" });
     }
@@ -8216,7 +8218,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       intake = coordinationV3.recordRuntimeCommunication({
         id: eventId,
         projectId: conversation.projectId,
-        sender: communication.sender,
+        sender: { kind: "user", userId: "local-operator" },
         intent: "correction",
         audience: communication.audience,
         payload: {
@@ -9731,7 +9733,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             projectId: project.id,
             sender: proposedCommunication.sender,
             intent: proposedCommunication.intent,
-            audience: { agentId: agent.id },
+            audience: proposedCommunication.audience,
             payload: {
               communication: proposedCommunication,
               dispatch: {
