@@ -430,6 +430,8 @@ export interface ConversationMessageDto {
   role: "user" | "assistant" | "system";
   text: string;
   createdAt: string;
+  /** Immutable server traversal key used to merge tied-timestamp history pages. */
+  canonicalOrderKey?: string;
   /**
    * The agent (agent) that authored this message, when it came from an agent
    * reporting back into the group chat (finished/stuck). Absent for the manager's

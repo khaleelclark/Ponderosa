@@ -967,7 +967,7 @@ export class AgentStore {
           ...(event.citations?.length ? { citations: event.citations } : {}),
         }];
       })
-      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
+      .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt) || a.eventId.localeCompare(b.eventId));
   }
 
   private encodeHistoryCursor(input: { stream: string; scope: string; orderKey: string; rowKey: string }): string {
@@ -1770,6 +1770,7 @@ export class AgentStore {
         role: message.role,
         text: message.text,
         createdAt: message.createdAt,
+        canonicalOrderKey: message.orderKey ?? message.createdAt,
         ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
         ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
@@ -2682,18 +2683,60 @@ export class AgentStore {
     sha256: string;
   } | undefined {
     const row = this.client.prepare(`
-      SELECT payload_json FROM events WHERE agent_id = ? AND seq = ? AND type = 'tool_result'
-    `).get(agentId, seq) as { payload_json: string } | undefined;
+      SELECT output, total_utf8_bytes, sha256
+      FROM tool_output_projection WHERE agent_id = ? AND seq = ?
+    `).get(agentId, seq) as { output: Buffer; total_utf8_bytes: number; sha256: string } | undefined;
     if (!row) return undefined;
-    const event = JSON.parse(row.payload_json) as LogEvent;
-    if (event.type !== "tool_result") return undefined;
     return {
       agentId,
       activityId: `${agentId}:activity:${seq}`,
       seq,
-      output: event.output,
-      totalUtf8Bytes: Buffer.byteLength(event.output, "utf8"),
-      sha256: createHash("sha256").update(event.output).digest("hex"),
+      output: Buffer.isBuffer(row.output) ? row.output.toString("utf8") : String(row.output),
+      totalUtf8Bytes: row.total_utf8_bytes,
+      sha256: row.sha256,
+    };
+  }
+
+  getActivityOutputPage(agentId: string, seq: number, startUtf8Byte: number, maxBytes: number): {
+    agentId: string;
+    activityId: string;
+    seq: number;
+    output: string;
+    pageUtf8Bytes: number;
+    totalUtf8Bytes: number;
+    sha256: string;
+  } | undefined {
+    const row = this.client.prepare(`
+      SELECT substr(output, ?, ?) AS page, total_utf8_bytes, sha256
+      FROM tool_output_projection WHERE agent_id = ? AND seq = ?
+    `).get(startUtf8Byte + 1, maxBytes + 3, agentId, seq) as {
+      page: Buffer; total_utf8_bytes: number; sha256: string;
+    } | undefined;
+    if (!row) return undefined;
+    if (!Number.isSafeInteger(startUtf8Byte) || startUtf8Byte < 0 || startUtf8Byte > row.total_utf8_bytes) {
+      throw new Error("activity output cursor is outside the retained output");
+    }
+    const bytes = Buffer.isBuffer(row.page) ? row.page : Buffer.from(row.page);
+    let pageBytes = Math.min(maxBytes, bytes.length);
+    // The cursor is always emitted on a code-point boundary. Pulling three
+    // lookahead bytes lets this page retreat from a split UTF-8 sequence while
+    // still returning the largest valid prefix within maxBytes.
+    while (pageBytes > 0) {
+      try {
+        new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, pageBytes));
+        break;
+      } catch {
+        pageBytes -= 1;
+      }
+    }
+    return {
+      agentId,
+      activityId: `${agentId}:activity:${seq}`,
+      seq,
+      output: bytes.subarray(0, pageBytes).toString("utf8"),
+      pageUtf8Bytes: pageBytes,
+      totalUtf8Bytes: row.total_utf8_bytes,
+      sha256: row.sha256,
     };
   }
 
@@ -3764,6 +3807,7 @@ export class AgentStore {
 
   rebuildProjections(): void {
     this.recoverAgentDeletionDirectories();
+    this.client.prepare(`DELETE FROM tool_output_projection`).run();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -3927,6 +3971,17 @@ export class AgentStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
+            if (op.row.type === "tool_result") {
+              const event = JSON.parse(op.row.payloadJson) as LogEvent;
+              if (event.type === "tool_result") {
+                const output = Buffer.from(event.output, "utf8");
+                this.client.prepare(`
+                  INSERT OR IGNORE INTO tool_output_projection
+                    (agent_id, seq, output, total_utf8_bytes, sha256)
+                  VALUES (?, ?, ?, ?, ?)
+                `).run(agentId, op.row.seq, output, output.length, createHash("sha256").update(output).digest("hex"));
+              }
+            }
             break;
           case "insert_artifact":
             tx.insert(artifacts).values(op.row).onConflictDoNothing().run();

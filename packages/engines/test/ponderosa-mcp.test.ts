@@ -126,7 +126,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     })}\n`);
     child.stdin!.write(`${JSON.stringify({
       jsonrpc: "2.0", id: 5, method: "tools/call",
-      params: { name: "context", arguments: { before: "cursor", limit: 12 } },
+      params: { name: "context", arguments: { cursor: "opaque-cursor", limit: 12 } },
     })}\n`);
     child.stdin!.write(`${JSON.stringify({
       jsonrpc: "2.0", id: 6, method: "tools/call",
@@ -151,7 +151,7 @@ describe("Ponderosa stdio MCP bridge", () => {
       "/api/agent-results",
       "/api/agent-browser",
       "/api/agent-directory/agent%2Fa",
-      "/api/agent-context?before=cursor&limit=12",
+      "/api/agent-context?cursor=opaque-cursor&limit=12",
     ].sort());
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });

@@ -360,7 +360,9 @@ discovery/retrieval tools to the model:
 - `ponderosa_team_directory`: retrieves the current run-scoped Team Chat roster
   or one focused Agent entry without relying on provider shell/network access.
 - `ponderosa_context`: retrieves paginated older scoped history only when the
-  current Run advertises that bounded context omitted it.
+  current Run advertises that bounded context omitted it. Pages use an opaque,
+  scope-bound `(createdAt, stable message ID)` cursor so equal-time records are
+  traversed exactly once across Codex and Claude.
 - `ponderosa_result`: retrieves ordered, byte-bounded pages for stable
   `ponderosa://activation/<id>` and `ponderosa://artifact/<id>` references that
   are reachable from the current authoritative Run. Its signed cursor is bound

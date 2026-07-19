@@ -59,15 +59,17 @@ import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
 import { effortOptionsForModel, engineAvailabilityPresentation, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
+  adjacentWorkspaceTab,
   closeWorkspaceTab,
-  mostRecentWorkspaceTab,
+  createWorkspaceTab,
+  navigateWorkspaceTab,
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
   removeWorkspaceRoute,
+  renameWorkspaceTab,
   reorderWorkspaceTabs,
-  restoreWorkspaceTabs,
+  restoreWorkspaceTabSession,
   serializeWorkspaceTabs,
-  workspaceTabKey,
 } from "./workspaceTabs";
 import { hasUnreadConversationNotifications } from "./workspaceNavigation";
 
@@ -81,13 +83,21 @@ export default function App({
   const queryClient = useQueryClient();
   useWorkspaceStream();
   const { route, navigate } = useRoute();
-  const [workspaceTabs, setWorkspaceTabs] = useState(() => {
+  const [initialWorkspaceSession] = useState(() => {
     try {
-      return restoreWorkspaceTabs(window.localStorage.getItem(WORKSPACE_TABS_STORAGE_KEY));
+      const restored = restoreWorkspaceTabSession(window.localStorage.getItem(WORKSPACE_TABS_STORAGE_KEY));
+      if (restored.tabs.length > 0) return {
+        tabs: restored.tabs,
+        activeKey: restored.activeKey ?? restored.tabs[0]!.key,
+      };
     } catch {
-      return [];
+      // Fall through to the required first tab.
     }
+    const first = createWorkspaceTab(route);
+    return { tabs: [first], activeKey: first.key };
   });
+  const [workspaceTabs, setWorkspaceTabs] = useState(initialWorkspaceSession.tabs);
+  const [activeWorkspaceTabKey, setActiveWorkspaceTabKey] = useState(initialWorkspaceSession.activeKey);
   const projectsQuery = useProjects();
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
@@ -143,16 +153,24 @@ export default function App({
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
 
   useEffect(() => {
-    setWorkspaceTabs((current) => openWorkspaceTab(current, route));
-  }, [route]);
+    setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, route));
+  }, [route, activeWorkspaceTabKey]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(WORKSPACE_TABS_STORAGE_KEY, serializeWorkspaceTabs(workspaceTabs));
+      window.localStorage.setItem(WORKSPACE_TABS_STORAGE_KEY, serializeWorkspaceTabs(workspaceTabs, activeWorkspaceTabKey));
     } catch {
       // Tabs remain available for this session when storage is unavailable.
     }
-  }, [workspaceTabs]);
+  }, [workspaceTabs, activeWorkspaceTabKey]);
+
+  useEffect(() => {
+    if (workspaceTabs.some((tab) => tab.key === activeWorkspaceTabKey)) return;
+    const next = workspaceTabs[0];
+    if (!next) return;
+    setActiveWorkspaceTabKey(next.key);
+    navigate(next.route, { replace: true });
+  }, [workspaceTabs, activeWorkspaceTabKey, navigate]);
 
   useEffect(() => {
     if (!projectsQuery.isSuccess) return;
@@ -362,24 +380,72 @@ export default function App({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const goHome = (next: Route) => navigate(next);
+  const goHome = (next: Route) => {
+    setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, next));
+    navigate(next);
+  };
+  const activateWorkspaceView = (key: string) => {
+    const tab = workspaceTabs.find((candidate) => candidate.key === key);
+    if (!tab) return;
+    setActiveWorkspaceTabKey(key);
+    setWorkspaceTabs((current) => navigateWorkspaceTab(current, key, tab.route));
+    navigate(tab.route);
+  };
+  const createWorkspaceView = () => {
+    const tab = createWorkspaceTab({ kind: "home" });
+    setWorkspaceTabs((current) => openWorkspaceTab(current, tab.route, tab.lastActivatedAt, tab.key));
+    setActiveWorkspaceTabKey(tab.key);
+    navigate(tab.route);
+  };
   const closeWorkspaceView = (key: string) => {
+    if (workspaceTabs.length <= 1) return;
+    const nextActive = key === activeWorkspaceTabKey ? adjacentWorkspaceTab(workspaceTabs, key) : undefined;
     const remaining = closeWorkspaceTab(workspaceTabs, key);
     setWorkspaceTabs(remaining);
-    if (workspaceTabKey(route) === key) {
-      navigate(mostRecentWorkspaceTab(remaining)?.route ?? { kind: "home" });
+    if (nextActive) {
+      setActiveWorkspaceTabKey(nextActive.key);
+      navigate(nextActive.route);
     }
   };
-  const closeAllWorkspaceViews = () => {
-    setWorkspaceTabs([]);
-    navigate({ kind: "home" });
+  const closeOtherWorkspaceViews = (key: string) => {
+    const retained = workspaceTabs.find((tab) => tab.key === key);
+    if (!retained) return;
+    setWorkspaceTabs([retained]);
+    setActiveWorkspaceTabKey(key);
+    navigate(retained.route);
   };
+  const renameWorkspaceView = (key: string, title: string) => setWorkspaceTabs((current) => renameWorkspaceTab(current, key, title));
   const reorderWorkspaceViews = (draggedKey: string, targetKey: string) => {
     setWorkspaceTabs((current) => reorderWorkspaceTabs(current, draggedKey, targetKey));
   };
   const removeWorkspaceView = (removedRoute: Route) => {
     setWorkspaceTabs((current) => removeWorkspaceRoute(current, removedRoute));
   };
+  useEffect(() => {
+    const onWorkspaceTabShortcut = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
+      if (event.key.toLowerCase() === "t") {
+        event.preventDefault();
+        createWorkspaceView();
+        return;
+      }
+      if (event.key.toLowerCase() === "w" && workspaceTabs.length > 1) {
+        event.preventDefault();
+        closeWorkspaceView(activeWorkspaceTabKey);
+        return;
+      }
+      const position = Number(event.key);
+      if (Number.isInteger(position) && position >= 1 && position <= 9) {
+        const target = position === 9 ? workspaceTabs.at(-1) : workspaceTabs[position - 1];
+        if (target) {
+          event.preventDefault();
+          activateWorkspaceView(target.key);
+        }
+      }
+    };
+    window.addEventListener("keydown", onWorkspaceTabShortcut);
+    return () => window.removeEventListener("keydown", onWorkspaceTabShortcut);
+  }, [workspaceTabs, activeWorkspaceTabKey]);
   const openSettings = () => {
     setGlobalInstructionsDraft(preferences.globalInstructions);
     setNotificationSettingsOpen(true);
@@ -484,7 +550,17 @@ export default function App({
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
-        <WorkspaceTabs tabs={workspaceTabs} projects={projects} route={route} navigate={goHome} onClose={closeWorkspaceView} onCloseAll={closeAllWorkspaceViews} onReorder={reorderWorkspaceViews} />
+        <WorkspaceTabs
+          tabs={workspaceTabs}
+          projects={projects}
+          activeKey={activeWorkspaceTabKey}
+          onActivate={activateWorkspaceView}
+          onCreate={createWorkspaceView}
+          onClose={closeWorkspaceView}
+          onCloseOthers={closeOtherWorkspaceViews}
+          onRename={renameWorkspaceView}
+          onReorder={reorderWorkspaceViews}
+        />
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>

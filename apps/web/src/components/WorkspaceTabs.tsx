@@ -1,136 +1,179 @@
+import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
+import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
-import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Tooltip, Typography } from "@mui/material";
+import {
+  Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle,
+  IconButton, Menu, MenuItem, Stack, TextField, Tooltip, Typography,
+} from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
-import type { Route } from "../routing";
 import { routeProjectId } from "../routing";
 import type { WorkspaceTabState } from "../workspaceTabs";
-import { workspaceTabKey } from "../workspaceTabs";
 import { TokenUsageButton } from "./TokenUsageButton";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
   if (kind === "conversation") return <ChatBubbleOutlineIcon fontSize="small" />;
   if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
-  if (kind === "agents") return <GroupsOutlinedIcon fontSize="small" />;
+  if (kind === "agents" || kind === "allAgents") return <GroupsOutlinedIcon fontSize="small" />;
   if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
-  return <FolderOutlinedIcon fontSize="small" />;
+  if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
+  return <HomeOutlinedIcon fontSize="small" />;
 }
 
-export function WorkspaceTabs({ tabs, projects, route, navigate, onClose, onCloseAll, onReorder }: {
+export function WorkspaceTabs({
+  tabs, projects, activeKey, onActivate, onCreate, onClose, onCloseOthers, onRename, onReorder,
+}: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
-  route: Route;
-  navigate(route: Route): void;
+  activeKey: string;
+  onActivate(key: string): void;
+  onCreate(): void;
   onClose(key: string): void;
-  onCloseAll(): void;
+  onCloseOthers(key: string): void;
+  onRename(key: string, title: string): void;
   onReorder(draggedKey: string, targetKey: string): void;
 }): JSX.Element {
   const [contextMenu, setContextMenu] = useState<{ anchor: HTMLElement; key: string; label: string }>();
+  const [renameTarget, setRenameTarget] = useState<{ key: string; label: string }>();
+  const [renameDraft, setRenameDraft] = useState("");
   const [draggedKey, setDraggedKey] = useState<string>();
   const [dragTargetKey, setDragTargetKey] = useState<string>();
-  const activeTabElement = useRef<HTMLDivElement>(null);
-  const projectIds = [...new Set(tabs.map((tab) => tab.route.projectId))];
+  const projectIds = [...new Set(tabs.flatMap((tab) => "projectId" in tab.route ? [tab.route.projectId] : []))];
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: ["conversations", projectId],
-      queryFn: () => api.listConversations(projectId),
-      staleTime: 10_000,
+      queryKey: ["conversations", projectId], queryFn: () => api.listConversations(projectId), staleTime: 10_000,
     })),
   });
   const agentQueries = useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: ["agents", projectId],
-      queryFn: () => api.listAgents(projectId),
-      staleTime: 10_000,
+      queryKey: ["agents", projectId], queryFn: () => api.listAgents(projectId), staleTime: 10_000,
     })),
   });
   const resourcesByProject = new Map(projectIds.map((projectId, index) => [projectId, {
-    conversations: conversationQueries[index]?.data ?? [],
-    agents: agentQueries[index]?.data ?? [],
+    conversations: conversationQueries[index]?.data ?? [], agents: agentQueries[index]?.data ?? [],
   }]));
-  const activeKey = workspaceTabKey(route);
-  const activeProjectId = routeProjectId(route);
+  const activeRoute = tabs.find((tab) => tab.key === activeKey)?.route ?? { kind: "home" as const };
+  const activeProjectId = routeProjectId(activeRoute);
 
-  useEffect(() => {
-    activeTabElement.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [activeKey, tabs.length]);
+  const beginRename = (key: string, label: string) => {
+    setRenameTarget({ key, label });
+    setRenameDraft(label);
+    setContextMenu(undefined);
+  };
 
-  return <Stack component="nav" aria-label="Open workspace views" direction="row" sx={{ display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 56 }, px: 1, pt: 0.75, bgcolor: "background.paper", alignItems: "flex-end", overflow: "hidden", borderBottom: 1, borderColor: "divider" }}>
-    <Stack direction="row" spacing={0} className="ponderosa-scroll" sx={{ minWidth: 0, flex: 1, height: "100%", overflowX: "auto", overflowY: "hidden", alignItems: "flex-end", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
-      {tabs.map((tab, index) => {
-        const project = projects.find((candidate) => candidate.id === tab.route.projectId);
-        const resources = resourcesByProject.get(tab.route.projectId);
-        const conversationId = tab.route.kind === "conversation" ? tab.route.conversationId : undefined;
-        const agentId = tab.route.kind === "agent" ? tab.route.agentId : undefined;
-        const reviewAgentId = tab.route.kind === "review" ? tab.route.agentId : undefined;
-        const label = tab.route.kind === "conversation"
-          ? resources?.conversations.find((conversation) => conversation.id === conversationId)?.title ?? "Project Chat"
-          : tab.route.kind === "agent"
-            ? resources?.agents.find((agent) => agent.id === agentId)?.title ?? "Agent"
-            : tab.route.kind === "review"
-              ? tab.route.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === reviewAgentId)?.title ?? "Agent"} review`
-              : tab.route.kind === "agents" ? "Agents" : "Project files";
+  return <Stack component="nav" aria-label="Open workspace tabs" direction="row" sx={{
+    display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 52 }, px: 1, py: 0.75,
+    bgcolor: "background.paper", alignItems: "center", overflow: "hidden", borderBottom: 1, borderColor: "divider",
+  }}>
+    <Stack direction="row" spacing={0.5} sx={{ minWidth: 0, flex: 1, height: 38, overflow: "hidden", alignItems: "stretch" }}>
+      {tabs.map((tab) => {
+        const tabRoute = tab.route;
+        const projectId = "projectId" in tabRoute ? tabRoute.projectId : undefined;
+        const project = projectId ? projects.find((candidate) => candidate.id === projectId) : undefined;
+        const resources = projectId ? resourcesByProject.get(projectId) : undefined;
+        const generatedLabel = tabRoute.kind === "conversation"
+          ? resources?.conversations.find((conversation) => conversation.id === tabRoute.conversationId)?.title ?? "Project Chat"
+          : tabRoute.kind === "agent"
+            ? resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"
+            : tabRoute.kind === "review"
+              ? tabRoute.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"} review`
+              : tabRoute.kind === "agents" ? "Agents"
+                : tabRoute.kind === "allAgents" ? "All Agents"
+                  : tabRoute.kind === "project" ? "Project files"
+                    : "Projects";
+        const label = tab.title ?? generatedLabel;
         const selected = tab.key === activeKey;
-        const projectLabel = project?.label ?? "Unavailable project";
+        const projectLabel = project?.label ?? (projectId ? "Unavailable project" : "Ponderosa");
         return <Box
-          ref={selected ? activeTabElement : undefined}
           key={tab.key}
           data-tab-key={tab.key}
           data-tab-dragging={draggedKey === tab.key ? "true" : undefined}
           draggable
           onDragStart={(event) => {
-            setDraggedKey(tab.key);
-            setDragTargetKey(undefined);
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData("text/plain", tab.key);
+            setDraggedKey(tab.key); setDragTargetKey(undefined);
+            event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", tab.key);
           }}
           onDragOver={(event) => {
             if (!draggedKey || draggedKey === tab.key) return;
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            setDragTargetKey(tab.key);
+            event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDragTargetKey(tab.key);
           }}
           onDragLeave={() => setDragTargetKey((current) => current === tab.key ? undefined : current)}
           onDrop={(event) => {
             event.preventDefault();
             const sourceKey = draggedKey ?? event.dataTransfer.getData("text/plain");
             if (sourceKey && sourceKey !== tab.key) onReorder(sourceKey, tab.key);
-            setDraggedKey(undefined);
-            setDragTargetKey(undefined);
+            setDraggedKey(undefined); setDragTargetKey(undefined);
           }}
-          onDragEnd={() => {
-            setDraggedKey(undefined);
-            setDragTargetKey(undefined);
-          }}
+          onDragEnd={() => { setDraggedKey(undefined); setDragTargetKey(undefined); }}
           onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }}
-          sx={{ position: "relative", zIndex: selected ? tabs.length + 2 : Math.max(1, tabs.length - index), ml: index === 0 ? 0 : "-6px", minWidth: 174, maxWidth: 240, height: selected ? 49 : 46, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: "13px 13px 0 0", border: 1, borderBottom: 0, borderColor: dragTargetKey === tab.key ? "primary.main" : "divider", color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "background.default", boxShadow: dragTargetKey === tab.key ? (theme) => `inset 3px 0 0 ${theme.palette.primary.main}` : selected ? (theme) => `0 -4px 14px ${theme.palette.mode === "dark" ? "rgba(2,8,6,.16)" : "rgba(30,42,36,.07)"}` : "none", opacity: draggedKey === tab.key ? 0.55 : 1, cursor: draggedKey === tab.key ? "grabbing" : "grab", "&:hover": { zIndex: tabs.length + 3, bgcolor: "action.hover", color: "text.primary" }, "&::after": selected ? { content: '""', position: "absolute", left: 12, right: 12, bottom: 0, height: 2, borderRadius: 2, bgcolor: "primary.main" } : undefined }}
+          onDoubleClick={() => beginRename(tab.key, label)}
+          sx={{
+            position: "relative", containerType: "inline-size", minWidth: 38, maxWidth: 240, flex: "1 1 200px",
+            height: 38, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 2,
+            border: 1, borderColor: dragTargetKey === tab.key ? "primary.main" : selected ? "divider" : "transparent",
+            color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent",
+            boxShadow: dragTargetKey === tab.key ? (theme) => `inset 3px 0 0 ${theme.palette.primary.main}` : "none",
+            opacity: draggedKey === tab.key ? 0.55 : 1, cursor: draggedKey === tab.key ? "grabbing" : "grab",
+            "&:hover": { bgcolor: "action.hover", color: "text.primary" },
+          }}
         >
-          <Tooltip title={`${label} · ${projectLabel}`} enterDelay={600}>
-            <ButtonBase onClick={() => navigate(tab.route)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{ minWidth: 0, flex: 1, px: 1.25, gap: 1, justifyContent: "flex-start" }}>
-              <TabIcon kind={tab.route.kind} />
-              <Box sx={{ minWidth: 0, flex: 1, textAlign: "left" }}>
-                <Typography variant="body2" fontWeight={selected ? 750 : 600} noWrap>{label}</Typography>
-                <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block", lineHeight: 1.2 }}>{projectLabel}</Typography>
-              </Box>
+          <Tooltip title={`${label} · ${projectLabel}`} enterDelay={500}>
+            <ButtonBase onClick={() => onActivate(tab.key)} aria-label={`Open ${label} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{
+              minWidth: 0, flex: 1, px: 1, gap: 0.75, justifyContent: "flex-start", overflow: "hidden",
+              "& > svg": { flex: "0 0 auto", fontSize: 18 },
+            }}>
+              <TabIcon kind={tabRoute.kind} />
+              <Typography className="workspace-tab-label" variant="body2" fontWeight={selected ? 750 : 600} noWrap sx={{ minWidth: 0 }}>
+                {label}
+              </Typography>
             </ButtonBase>
           </Tooltip>
-          <IconButton size="small" aria-label={`Close ${label}`} onClick={() => onClose(tab.key)} sx={{ width: 32, minWidth: 32, minHeight: 32, alignSelf: "center", color: "text.secondary", opacity: selected ? .8 : .45, "&:hover": { color: "text.primary", bgcolor: "transparent", opacity: 1 } }}><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+          <IconButton
+            size="small" aria-label={`Close ${label}`} disabled={tabs.length === 1}
+            onClick={(event) => { event.stopPropagation(); onClose(tab.key); }}
+            sx={{
+              width: 28, minWidth: 28, height: 28, alignSelf: "center", mr: 0.25, color: "text.secondary",
+              opacity: selected ? 0.75 : 0, "&:hover": { color: "text.primary", opacity: 1 },
+              "@container (max-width: 86px)": { display: "none" },
+            }}
+          ><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>;
       })}
     </Stack>
-    <Box sx={{ ml: 1, pl: 1.25, pr: .25, height: 40, alignSelf: "center", display: "flex", alignItems: "center", borderLeft: 1, borderColor: "divider", bgcolor: "background.paper", flexShrink: 0 }}>
+    <Tooltip title="New tab (⌘T)"><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
+    <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: "flex", alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
       {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project" /> : <TokenUsageButton scope="overall" label="Overall" />}
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
-      <MenuItem onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close {contextMenu.label}</MenuItem>
-      <MenuItem onClick={() => { onCloseAll(); setContextMenu(undefined); }}>Close all tabs</MenuItem>
+      <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename tab</MenuItem>
+      <MenuItem disabled={tabs.length === 1} onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close tab</MenuItem>
+      <MenuItem disabled={tabs.length === 1} onClick={() => { onCloseOthers(contextMenu.key); setContextMenu(undefined); }}>Close other tabs</MenuItem>
     </Menu> : null}
+    <Dialog open={Boolean(renameTarget)} onClose={() => setRenameTarget(undefined)} fullWidth maxWidth="xs">
+      <DialogTitle>Rename tab</DialogTitle>
+      <DialogContent><TextField
+        autoFocus fullWidth label="Tab name" value={renameDraft} sx={{ mt: 1 }}
+        inputProps={{ maxLength: 80 }} onChange={(event) => setRenameDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && renameTarget) {
+            event.preventDefault(); onRename(renameTarget.key, renameDraft); setRenameTarget(undefined);
+          }
+        }}
+      /></DialogContent>
+      <DialogActions>
+        <Button onClick={() => setRenameTarget(undefined)}>Cancel</Button>
+        <Button variant="contained" onClick={() => {
+          if (renameTarget) onRename(renameTarget.key, renameDraft);
+          setRenameTarget(undefined);
+        }}>Save</Button>
+      </DialogActions>
+    </Dialog>
   </Stack>;
 }
