@@ -5,6 +5,7 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -24,6 +25,7 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   if (kind === "agents" || kind === "allAgents") return <GroupsOutlinedIcon fontSize="small" />;
   if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
   if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
+  if (kind === "wiki") return <MenuBookOutlinedIcon fontSize="small" />;
   return <HomeOutlinedIcon fontSize="small" />;
 }
 
@@ -88,6 +90,7 @@ export function WorkspaceTabs({
                 : tabRoute.kind === "allAgents" ? "All Agents"
                   : tabRoute.kind === "allChat" ? "All Chat"
                   : tabRoute.kind === "project" ? "Project files"
+                    : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";
         const label = tab.title ?? generatedLabel;
         const selected = tab.key === activeKey;

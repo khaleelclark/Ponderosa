@@ -142,6 +142,33 @@ export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
+/** Read-only access to the version-controlled product wiki. Prompts receive a
+ * compact reference index; article bodies stay behind this run-scoped tool. */
+export const PONDEROSA_DOCS_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_docs",
+  description: "Retrieve version-controlled Ponderosa product documentation by the stable ponderosa://docs/<id> references advertised in the current prompt. Full articles are returned only on demand and paginated within a byte budget.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["refs"],
+    properties: {
+      refs: {
+        type: "array", minItems: 1, maxItems: 10, uniqueItems: true,
+        items: { type: "string", pattern: "^ponderosa://docs/[a-z0-9]+(?:-[a-z0-9]+)*$", maxLength: 160 },
+        description: "One to ten stable documentation references from the compact PRODUCT DOCUMENTATION index, in desired order.",
+      },
+      cursor: {
+        type: "string", minLength: 1, maxLength: 4096,
+        description: "Opaque continuation cursor from the previous call. Reuse it with the same refs and maxBytes.",
+      },
+      maxBytes: {
+        type: "integer", minimum: 4096, maximum: 65536,
+        description: "Overall UTF-8 content budget for this page. Defaults to 32768 bytes.",
+      },
+    },
+  },
+};
+
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
   description: "Report the canonical result of the current correlated Request with {text}, or ask its requester a blocking follow-up with {question}. Ponderosa resolves the sole attached Request, generates stable idempotency, and defaults text to completed. Add kind only for progress, waiting, blocked/failed, answer, cancellation, or supersession. Supply requestId only when the Run has multiple attached Requests or when mutating an exact authorized historical outbound Request.",
@@ -351,5 +378,6 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_DOCS_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
 ];

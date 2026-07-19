@@ -3692,7 +3692,11 @@ describe("server chunk F", () => {
       .toMatchObject({ agentId: child.id, managerAgentId: parent.id });
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_CONTEXT_URL).toContain("/api/agent-context");
+    expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DOCS_URL).toContain("/api/agent-docs");
     expect(adapter.seeds[0]!.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("[PRODUCT DOCUMENTATION | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("ponderosa://docs/project-chat");
+    expect(adapter.seeds[0]!.prompt).not.toContain("A plain user message is a shared organizational message");
     expect(adapter.seeds[0]!.prompt).toContain("ponderosa_team_directory({})");
     expect(adapter.seeds[0]!.prompt).not.toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
     expect(adapter.seeds[0]!.prompt).not.toContain("ponderosa_context({})");
@@ -3708,6 +3712,7 @@ describe("server chunk F", () => {
     await cancelAndWait(app, parent.id);
     expect((await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/api/agent-context", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/agent-docs", headers: { authorization: `Bearer ${token}` }, payload: { refs: ["ponderosa://docs/project-chat"] } })).statusCode).toBe(401);
     await app.close();
   });
 
@@ -6481,8 +6486,13 @@ describe("server chunk F", () => {
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result",
+      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result", "ponderosa_docs",
     ]));
+    const providerDocs = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_docs", arguments: { refs: ["ponderosa://docs/project-chat"], maxBytes: 4096 },
+    });
+    expect(providerDocs.success, providerDocs.text).toBe(true);
+    expect(JSON.parse(providerDocs.text)).toMatchObject({ items: [expect.objectContaining({ ref: "ponderosa://docs/project-chat" })] });
     const providerDirectory = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_team_directory", arguments: { agentId: recipient.id },
     });

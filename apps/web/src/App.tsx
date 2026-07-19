@@ -237,7 +237,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents") return;
+    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project files intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then

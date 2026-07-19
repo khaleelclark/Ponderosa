@@ -24,6 +24,7 @@ export type Route =
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allAgents" }
+  | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
   | { kind: "agents"; projectId: string }
@@ -47,6 +48,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
+  if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
   }
@@ -82,6 +84,8 @@ export function routeToPath(route: Route): string {
       return "/chats";
     case "allAgents":
       return "/agents";
+    case "wiki":
+      return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
     case "conversation": {

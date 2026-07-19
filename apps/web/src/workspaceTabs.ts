@@ -27,6 +27,7 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
   if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allAgents") return true;
+  if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
   if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
   if (candidate.kind === "project" || candidate.kind === "agents") return true;
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
@@ -43,6 +44,7 @@ export function workspaceTabKey(route: Route): string {
     case "projects": return "projects";
     case "allChat": return "all-chat";
     case "allAgents": return "all-agents";
+    case "wiki": return `wiki:${route.articleId ?? "home"}`;
     case "project": return `project:${route.projectId}`;
     case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;
     case "agents": return `agents:${route.projectId}`;

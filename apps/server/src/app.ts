@@ -128,6 +128,7 @@ import {
   deriveCommunicationBehavior,
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_DOCS_TOOL,
   PONDEROSA_RESULT_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_MESSAGE_TOOL,
@@ -157,6 +158,7 @@ import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
+import { documentationReferences } from "./documentation-reference/index.js";
 import {
   BrowserSessionError,
   BrowserSessionManager,
@@ -933,6 +935,7 @@ function communicationV3Prompt(): string[] {
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
     "Live Team identities are retrievable with ponderosa_team_directory. Retrieve overflow Activation or artifact references with ponderosa_result({refs:[ref]}); continue only with the returned nextCursor.",
+    "Version-controlled product documentation is advertised as stable references and retrieved only when needed with ponderosa_docs({refs:[ref]}).",
     "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
@@ -4489,7 +4492,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const agentToolRequest = request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover";
+    const agentToolRequest = request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-docs" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover";
     const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
     if (capability) {
       if (deletingAgentIds.has(capability.agentId)) {
@@ -5451,6 +5454,32 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ? "Ponderosa asked the user to approve this exact plan. Do not call apply until the Decision response resumes this Run."
         : "Review the exact plan, then call apply with planId.",
     };
+  });
+
+  app.post<{
+    Body: { refs?: string[]; cursor?: string; maxBytes?: number };
+  }>("/api/agent-docs", async (request, reply) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const capability = token ? agentMessageCapabilities.get(token) : undefined;
+    const active = capability ? activeRuns.get(capability.agentId) : undefined;
+    const author = capability ? store.getAgent(capability.agentId) : undefined;
+    if (!capability || !author || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
+      return reply.code(401).send({ error: "documentation capability is not authorized for an active Run" });
+    }
+    const body = request.body ?? {};
+    if (Object.keys(body).some((key) => !["refs", "cursor", "maxBytes"].includes(key))) {
+      return reply.code(400).send({ error: "documentation retrieval accepts only refs, cursor, and maxBytes" });
+    }
+    if (!Array.isArray(body.refs) || body.refs.some((ref) => typeof ref !== "string") ||
+        (body.cursor !== undefined && typeof body.cursor !== "string") ||
+        (body.maxBytes !== undefined && typeof body.maxBytes !== "number")) {
+      return reply.code(400).send({ error: "documentation retrieval fields do not match the published tool schema" });
+    }
+    try {
+      return documentationReferences.documentationPage(body.refs, body.cursor, body.maxBytes);
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "documentation retrieval failed" });
+    }
   });
 
   app.post<{
@@ -9694,6 +9723,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return store.searchGlobalChats({ query: q, limit, notifications: workspace.listNotifications() });
   };
 
+  app.get("/api/wiki", async () => documentationReferences.index());
+
+  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/wiki/search", async (request, reply) => {
+    const query = request.query.q?.trim() ?? "";
+    const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
+    return documentationReferences.search(query, limit);
+  });
+
+  app.get<{ Params: { id: string } }>("/api/wiki/articles/:id", async (request, reply) => {
+    const article = documentationReferences.article(request.params.id);
+    return article ?? reply.code(404).send({ error: "wiki article not found" });
+  });
+
+  app.get<{ Params: { name: string } }>("/api/wiki/assets/:name", async (request, reply) => {
+    const asset = documentationReferences.asset(request.params.name);
+    if (!asset) return reply.code(404).send({ error: "wiki asset not found" });
+    return reply.type(asset.mediaType).header("cache-control", "public, max-age=3600").send(asset.body);
+  });
+
   app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search", async (request, reply) => {
     try {
       return globalChatSearch(request.query);
@@ -10424,8 +10473,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ? `\n\nAdditional coalesced Activations for this scheduler-owned Run:\n${v3ActivationPrompt!.slice(additionalActivationIndex + 1)}`
         : "";
       const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
+      const documentationReference = documentationReferences.compactPromptIndex();
       const olderContextReference = hasOmittedScopedContext ? olderContextPrompt() : "";
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first
@@ -10532,6 +10582,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             kind: "team_directory" as const,
             ref: routingConversationId ?? agent.projectId,
             hash: createHash("sha256").update(teamDirectoryReference).digest("hex"),
+            delivery: "submitted" as const,
+          },
+          {
+            kind: "context_reference" as const,
+            ref: `product-docs:${documentationReferences.version}`,
+            hash: createHash("sha256").update(documentationReference).digest("hex"),
             delivery: "submitted" as const,
           },
           ...(olderContextReference ? [{
@@ -10697,6 +10753,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             PONDEROSA_AGENT_CONTEXT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-context`,
             PONDEROSA_AGENT_COORDINATE_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-coordinate`,
             PONDEROSA_AGENT_RESULT_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-results`,
+            PONDEROSA_AGENT_DOCS_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-docs`,
             PONDEROSA_AGENT_UPDATE_REQUEST_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-request-updates`,
             PONDEROSA_AGENT_BROWSER_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-browser`,
             PONDEROSA_AGENT_SPAWN_URL: `${agentMessageUrl.replace(/\/api\/agent-messages$/, "")}/api/agent-spawn`,
@@ -10733,6 +10790,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 const isDirectory = call.name === PONDEROSA_TEAM_DIRECTORY_TOOL.name;
                 const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
                 const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
+                const isDocs = call.name === PONDEROSA_DOCS_TOOL.name;
                 const contextQuery = new URLSearchParams();
                 if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
                 if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
@@ -10746,6 +10804,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   ? "/api/agent-coordinate"
                   : isResult
                     ? "/api/agent-results"
+                  : isDocs
+                    ? "/api/agent-docs"
                   : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                     ? "/api/agent-request-updates"
                     : call.name === PONDEROSA_MESSAGE_TOOL.name

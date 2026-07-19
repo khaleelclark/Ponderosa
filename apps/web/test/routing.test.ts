@@ -6,6 +6,8 @@ describe("mobile-critical durable navigation", () => {
     { kind: "projects" },
     { kind: "allChat" },
     { kind: "allAgents" },
+    { kind: "wiki" },
+    { kind: "wiki", articleId: "communication-scopes" },
     { kind: "project", projectId: "project / one" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1" },
@@ -27,6 +29,7 @@ describe("mobile-critical durable navigation", () => {
     expect(routeToPath({ kind: "allChat" })).toBe("/chats");
     expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
     expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
+    expect(routeToPath({ kind: "wiki", articleId: "project chat" })).toBe("/wiki/project%20chat");
   });
 
   it("deep-links Team Chat without conflating it with Project Chat", () => {

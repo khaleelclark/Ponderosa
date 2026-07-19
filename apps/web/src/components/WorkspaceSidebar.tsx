@@ -7,6 +7,7 @@ import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import InboxOutlinedIcon from "@mui/icons-material/InboxOutlined";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SearchIcon from "@mui/icons-material/Search";
@@ -302,6 +303,7 @@ export function WorkspaceSidebar({
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Inbox" badge={counts.unread || undefined} badgeColor="error" onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
+      <RailButton label="Wiki" selected={sidebarSection === "navigation" && route.kind === "wiki"} onClick={() => showNavigation({ kind: "wiki" })}><MenuBookOutlinedIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>

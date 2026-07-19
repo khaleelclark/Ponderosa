@@ -100,6 +100,9 @@ import type {
   WorkspacePreferencesDto,
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
+  WikiArticleDto,
+  WikiIndexDto,
+  WikiSearchResponseDto,
 } from "@ponderosa/core";
 import {
   ApiRequestError,
@@ -158,6 +161,15 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  getWikiIndex(): Promise<WikiIndexDto> {
+    return requestJson<WikiIndexDto>("/api/wiki");
+  },
+  getWikiArticle(id: string): Promise<WikiArticleDto> {
+    return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
+  },
+  searchWiki(query: string, limit = 20): Promise<WikiSearchResponseDto> {
+    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit })}`);
+  },
   listProjects(): Promise<ProjectDto[]> {
     return requestJson<ProjectDto[]>("/api/projects");
   },
