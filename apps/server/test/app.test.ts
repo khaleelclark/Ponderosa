@@ -3741,6 +3741,16 @@ describe("server chunk F", () => {
       store.appendEvent(agent.id, { type: "user_message", text: `historical-${index}`, communicationEventId });
     }
 
+    const fullImportedReader = vi.spyOn(store, "getImportedHistory").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete imported history");
+    });
+    const fullAgentReader = vi.spyOn(store, "getProjectedAgentMessages").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete private history");
+    });
+    const fullConversationReader = vi.spyOn(store, "getCanonicalConversationContextMessages").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete shared history");
+    });
+
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Use history if needed" } });
     await waitForSeedCount(1);
 
@@ -3761,6 +3771,10 @@ describe("server chunk F", () => {
     expect(retrieved.json<{ messages: Array<{ text: string }> }>().messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ text: "[Imported private context]\nIMPORTED-EFFECTIVE-HISTORY" }),
     ]));
+
+    fullImportedReader.mockRestore();
+    fullAgentReader.mockRestore();
+    fullConversationReader.mockRestore();
 
     await cancelAndWait(app, agent.id);
     await app.close();
@@ -3801,6 +3815,46 @@ describe("server chunk F", () => {
       "[Imported private context]\nTIED-CONTEXT-00",
       "[Imported private context]\nTIED-CONTEXT-50",
     ]));
+    await cancelAndWait(app, agent.id);
+    await app.close();
+  });
+
+  it("keeps older-context source merges byte-bounded while advancing the stable cursor", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Byte-bounded context", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex" });
+    store.setImportedHistory(agent.id, "oversized-history", [{
+      role: "system",
+      text: `OVERSIZED-${"x".repeat(100_000)}`,
+      createdAt: "2026-07-16T23:59:59.000Z",
+    }]);
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect bounded context" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    let cursor: string | undefined;
+    const cursors = new Set<string>();
+    let sawClipped = false;
+    do {
+      const page = await app.inject({
+        method: "GET",
+        url: `/api/agent-context?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(page.statusCode, page.body).toBe(200);
+      expect(Buffer.byteLength(page.body, "utf8")).toBeLessThan(66 * 1024);
+      const body = page.json<{ messages: Array<{ text: string }>; hasMore: boolean; nextCursor?: string }>();
+      sawClipped ||= body.messages.some((message) => message.text.includes("Content clipped"));
+      cursor = body.nextCursor;
+      if (cursor) {
+        expect(cursors.has(cursor)).toBe(false);
+        cursors.add(cursor);
+      }
+      expect(body.hasMore).toBe(Boolean(cursor));
+    } while (cursor);
+    expect(sawClipped).toBe(true);
+
     await cancelAndWait(app, agent.id);
     await app.close();
   });

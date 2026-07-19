@@ -1038,6 +1038,67 @@ function boundedHistoryOmitted<T extends { text: string }>(source: T[], selected
   return source.some((message, index) => message.text !== selected[index]?.text);
 }
 
+type ScopedContextMessage = MessageDto | ConversationMessageDto;
+
+function mergeScopedContextSources(
+  sources: Array<{ items: ScopedContextMessage[]; hasMore: boolean }>,
+  limit: number,
+): { newest: ScopedContextMessage[]; hasMore: boolean } {
+  const deduped = new Map<string, ScopedContextMessage>();
+  for (const source of sources) for (const message of source.items) {
+    const key = message.communicationEventId ?? `${message.createdAt}\0${message.role}\0${message.text}`;
+    const current = deduped.get(key);
+    if (!current || message.id > current.id) deduped.set(key, message);
+  }
+  const ordered = [...deduped.values()].sort((left, right) =>
+    right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+  return {
+    newest: ordered.slice(0, limit),
+    hasMore: sources.some((source) => source.hasMore) || ordered.length > limit,
+  };
+}
+
+// Reserve response-envelope room so the complete serialized tool page remains
+// below 64 KiB, not merely the sum of message bodies.
+const MAX_CONTEXT_PAGE_UTF8_BYTES = 60 * 1024;
+
+function byteBoundScopedContext(
+  newest: ScopedContextMessage[],
+  maximumBytes = MAX_CONTEXT_PAGE_UTF8_BYTES,
+): { messages: ScopedContextMessage[]; consumed: number; truncated: boolean } {
+  const selected: ScopedContextMessage[] = [];
+  let used = 0;
+  for (const message of newest) {
+    const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
+    if (used + bytes <= maximumBytes) {
+      selected.push(message);
+      used += bytes;
+      continue;
+    }
+    if (selected.length > 0) break;
+    const marker = "\n[Content clipped to keep this context page byte-bounded]";
+    const shellBytes = Buffer.byteLength(JSON.stringify({ ...message, text: marker }), "utf8");
+    const allowance = Math.max(0, maximumBytes - shellBytes);
+    const source = Buffer.from(message.text, "utf8");
+    let end = Math.min(source.length, allowance);
+    while (end > 0) {
+      try {
+        const prefix = new TextDecoder("utf-8", { fatal: true }).decode(source.subarray(0, end));
+        const clipped = { ...message, text: `${prefix}${marker}` };
+        const serializedBytes = Buffer.byteLength(JSON.stringify(clipped), "utf8");
+        if (serializedBytes <= maximumBytes) {
+          selected.push(clipped);
+          break;
+        }
+        end = Math.max(0, end - (serializedBytes - maximumBytes) - 1);
+      } catch { end -= 1; }
+    }
+    if (selected.length === 0) selected.push({ ...message, text: marker.trim() });
+    return { messages: selected, consumed: 1, truncated: true };
+  }
+  return { messages: selected, consumed: selected.length, truncated: selected.length < newest.length };
+}
+
 function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents: AgentDto[]): string {
   const names = new Map(agents.map((agent) => [agent.id, agent.title]));
   return [
@@ -3587,14 +3648,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     };
   }
 
-  /** Provider context must read canonical room history, never a UI projection window. */
+  /** Provider context loads only room metadata here. Canonical messages are
+   * selected separately through bounded indexed source readers. */
   function canonicalConversationContext(conversationId: string): ConversationDetailDto | undefined {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
     return {
       conversation,
       agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
-      messages: store.getCanonicalConversationContextMessages(conversationId, "main"),
+      messages: [],
     };
   }
 
@@ -3752,16 +3814,33 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
 
     const decisionLimit = input.limit ?? 300;
-    const decisionCandidates = workspace.listDecisions({
+    const recentDecisionPage = workspace.listDecisionPage({
       projectId: input.projectId,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
-    }).filter((decision) => {
-      if (!input.agentId || decision.agentId === input.agentId) return true;
-      return items.some((item) => item.kind === "run" && item.referenceIds.includes(decision.runId))
-        || items.some((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`));
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+      limit: decisionLimit + 1,
     });
-    const decisionsTruncated = decisionCandidates.length > decisionLimit;
-    const decisions = decisionCandidates.slice(0, decisionLimit);
+    const relatedRunIds = new Set(items.flatMap((item) => item.kind === "run" ? [item.recordId] : []));
+    const relatedDecisionIds = new Set(items.flatMap((item) => item.kind === "activation"
+      ? item.referenceIds.flatMap((reference) => /^decision:([^:]+):response$/u.exec(reference)?.[1] ?? [])
+      : []));
+    const decisionCandidates = new Map<string, NonNullable<ReturnType<WorkspaceStore["getDecision"]>>>();
+    for (const decision of recentDecisionPage.decisions) decisionCandidates.set(decision.id, decision);
+    for (const decision of workspace.decisionsForRuns(relatedRunIds)) {
+      if (decision.projectId === input.projectId && (!input.conversationId || decision.conversationId === input.conversationId)) {
+        decisionCandidates.set(decision.id, decision);
+      }
+    }
+    for (const decisionId of relatedDecisionIds) {
+      const decision = workspace.getDecision(decisionId);
+      if (decision?.projectId === input.projectId && (!input.conversationId || decision.conversationId === input.conversationId)) {
+        decisionCandidates.set(decision.id, decision);
+      }
+    }
+    const orderedDecisions = [...decisionCandidates.values()].sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    const decisionsTruncated = recentDecisionPage.hasMore || orderedDecisions.length > decisionLimit;
+    const decisions = orderedDecisions.slice(0, decisionLimit);
     for (const decision of decisions) {
       const runItem = items.find((item) => item.kind === "run" && item.referenceIds.includes(decision.runId));
       const responseActivation = items.find((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`));
@@ -5729,53 +5808,29 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(400).send({ error: "invalid context cursor" });
     }
 
-    const scopedAgentMessages = agentMessages(agent.id).filter((message) =>
-      capability.conversationId
-        ? message.conversationId === capability.conversationId
-        : message.conversationId === undefined,
-    );
-    const importedHistory = store.getImportedHistory(agent.id);
-    const importedMessages: MessageDto[] = (importedHistory?.messages ?? []).map((message, index) => ({
-      id: `imported:${agent.id}:${index}`,
-      agentId: agent.id,
-      seq: -(index + 1),
-      role: message.role === "assistant" ? "assistant" : "user",
-      text: message.role === "system" ? `[Imported private context]\n${message.text}` : message.text,
-      createdAt: message.createdAt ?? importedHistory!.importedAt,
-    }));
-    const sharedMessages = capability.conversationId
-      ? organizationalMasterMessages(
-          store.getConversationMessages(capability.conversationId, "main"),
-          store.readCommunicationEvents(agent.projectId),
-          agent.projectId,
-          agent.id,
-          store.listAgents(agent.projectId),
-        ).map((message) => ({
-          id: message.id,
-          communicationEventId: message.communicationEventId,
-          conversationId: message.conversationId,
-          agentId: agent.id,
-          seq: 0,
-          role: message.role === "assistant" ? "assistant" as const : "user" as const,
-          text: message.text,
-          createdAt: message.createdAt,
-          authorAgentId: message.authorAgentId,
-          attachments: message.attachments,
-        }))
-      : [];
-    const deduped = new Map<string, MessageDto>();
-    for (const message of [...importedMessages, ...scopedAgentMessages, ...sharedMessages]) {
-      const key = message.communicationEventId ?? `${message.createdAt}\0${message.role}\0${message.text}`;
-      if (!deduped.has(key)) deduped.set(key, message);
-    }
-    const newest = [...deduped.values()]
-      .filter((message) => !boundary || message.createdAt < boundary.createdAt ||
-        (message.createdAt === boundary.createdAt && message.id < boundary.id))
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
-      .slice(0, rawLimit + 1);
-    const hasMore = newest.length > rawLimit;
-    const selected = newest.slice(0, rawLimit);
-    const messages = selected.reverse();
+    const sourceLimit = rawLimit + 1;
+    const privatePage = store.getAgentPrivateContextSourcePage(agent.id, {
+      limit: sourceLimit,
+      ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
+      ...(boundary ? { before: boundary } : {}),
+      includeAuthoredBroadcasts: true,
+    });
+    const importedPage = store.getImportedHistoryMessagePage(agent.id, {
+      limit: sourceLimit,
+      ...(boundary ? { before: boundary } : {}),
+    });
+    const sharedPage = capability.conversationId
+      ? store.getOrganizationalConversationContextSourcePage(capability.conversationId, {
+          limit: sourceLimit,
+          ...(boundary ? { before: boundary } : {}),
+        })
+      : { items: [], hasMore: false };
+    const merged = mergeScopedContextSources([privatePage, importedPage, sharedPage], sourceLimit);
+    const rowBounded = merged.newest.slice(0, rawLimit);
+    const byteBounded = byteBoundScopedContext(rowBounded);
+    const selected = byteBounded.messages;
+    const hasMore = selected.length > 0 && (merged.hasMore || merged.newest.length > rawLimit || byteBounded.truncated);
+    const messages = [...selected].reverse();
     const oldest = selected.at(-1);
     return {
       scope: capability.conversationId
@@ -9975,11 +10030,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       const directMessageConversationId = sourceConversationId ?? agent.conversationId;
       const directReplyTarget = request.body.replyToMessageId
-        ? agentMessages(agent.id).find((message) => message.id === request.body.replyToMessageId)
+        ? store.getProjectedAgentMessageById(agent.id, request.body.replyToMessageId)
         : undefined;
       const sourceMasterReply = request.body.replyToMessageId && directMessageConversationId
-        ? store.getConversationMessages(directMessageConversationId, "main")
-            .find((message) => message.id === request.body.replyToMessageId)
+        ? store.getProjectedConversationMessageById(directMessageConversationId, "main", request.body.replyToMessageId)
         : undefined;
       if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply) {
         return reply.code(400).send({ error: "reply target was not found in this conversation" });
@@ -10108,8 +10162,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       if (communicationEventId && directMessageConversationId) {
         if (internalV3Dispatch || v3Intake?.replayed) {
-          sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
-            .find((message) => message.communicationEventId === communicationEventId);
+          sourceMasterMessage = store.getProjectedConversationMessageById(
+            directMessageConversationId, "main", communicationEventId,
+          );
         } else {
           sourceMasterMessage = store.appendConversationMessage(directMessageConversationId, {
             role: "user",
@@ -10121,8 +10176,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
       }
       if (!sourceMasterMessage && communication && directMessageConversationId) {
-        sourceMasterMessage = store.getConversationMessages(directMessageConversationId, "main")
-          .find((message) => message.communicationEventId === communication.eventId);
+        sourceMasterMessage = store.getProjectedConversationMessageById(
+          directMessageConversationId, "main", communication.eventId,
+        );
       }
       const mentionDepth = request.body.agentMentionDepth;
       if (
@@ -10191,14 +10247,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(409).send({ error: "agent already has an active run", retryable: true });
       }
 
-      const projectArtifacts = store.getProjectArtifacts(agent.projectId);
-      const allGeneratedArtifacts = projectArtifacts.filter((artifact) =>
-        artifact.kind !== "generated_file" || Boolean(assets.authoritativeGeneratedArtifact(agent.projectId, artifact))
-      );
       const routingConversationId = sourceConversationId ?? agent.conversationId;
-      const contextArtifacts = allGeneratedArtifacts.filter((artifact) =>
-        artifact.kind === "generated_file" && (artifact.pinned || artifact.visibility === "published")
-      );
+      const sourceChannel: AgentMessageChannel = request.body.sourceChannel === "main"
+        ? "main"
+        : "individual";
       const generatedArtifactReference = (artifact: ArtifactDto) => ({
         name: artifact.summary ?? path.basename(artifact.path),
         mediaType: artifact.mediaType ?? "application/octet-stream",
@@ -10206,61 +10258,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         available: false,
         artifactId: artifact.id,
         retrievalUrl: `ponderosa://artifact/${artifact.id}`,
-      });
-      const importedHistory = store.getImportedHistory(agent.id)?.messages ?? [];
-      const fullHistory: ChatMessage[] = [
-        ...importedHistory.map((message) => {
-          const referencedArtifacts = allGeneratedArtifacts.filter((artifact) => message.text.includes(artifact.id));
-          return {
-            role: message.role === "system" ? "user" as const : message.role,
-            text: message.role === "system" ? `[Imported private context]\n${message.text}` : message.text,
-            createdAt: message.createdAt,
-            attachments: referencedArtifacts.map(generatedArtifactReference),
-          };
-        }),
-        ...agentMessages(agent.id)
-        .filter((message) => {
-          // Fresh sessions receive only this Project chat's private/audit
-          // history. Other chat histories remain durable and retrievable through
-          // the run-scoped context capability instead of arriving flattened.
-          if (routingConversationId && message.conversationId !== routingConversationId) return false;
-          if (!routingConversationId && message.conversationId !== undefined) return false;
-          // The current authored message is already represented by the durable
-          // Activation. Do not pay for it a second time in seeded history.
-          if (communicationEventId && message.communicationEventId === communicationEventId) return false;
-          if (!message.communicationEventId) return true;
-          const communication = store.getCommunicationEvent(project.id, message.communicationEventId);
-          if (communication?.intent !== "broadcast") return true;
-          // Conversation supplies shared Broadcast context explicitly. Individual
-          // history retains only Broadcasts actually authored by this agent.
-          return request.body.sourceChannel !== "main" && communication.sender.kind === "agent" &&
-            communication.sender.agentId === agent.id;
-        })
-        .map((message) => {
-        const referencedArtifacts = allGeneratedArtifacts.filter((artifact) =>
-          message.text.includes(artifact.id)
-        );
-        return ({
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        attachments: [
-          ...(message.attachments?.map((item) => ({
-          name: item.name,
-          mediaType: item.mediaType,
-          size: item.size,
-          localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
-          available: existsSync(path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`)),
-          })) ?? []),
-          ...referencedArtifacts.map(generatedArtifactReference),
-        ],
-        });
-        }),
-      ];
-      if (contextArtifacts.length) fullHistory.push({
-        role: "assistant",
-        text: "Pinned or published project artifacts available to this session:",
-        attachments: contextArtifacts.map(generatedArtifactReference),
       });
       const runId = v3SchedulerRunId ?? randomUUID();
       const controller = new AbortController();
@@ -10300,7 +10297,65 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const resumeSessionId = resumeSessionState?.sessionId;
       const retainedSessionArtifactIds = resumeSessionState?.artifactIds ?? [];
       const mode = resumeSessionId ? "continue" : "seed";
+      const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
+      const privateHistoryPage = resumeSessionId
+        ? { items: [], hasMore: false }
+        : store.getAgentPrivateContextSourcePage(agent.id, {
+            limit: historySourceLimit,
+            ...(routingConversationId ? { conversationId: routingConversationId } : {}),
+            ...(communicationEventId ? { excludeCommunicationEventId: communicationEventId } : {}),
+            includeAuthoredBroadcasts: sourceChannel !== "main",
+          });
+      const importedHistoryPage = resumeSessionId
+        ? { items: [], hasMore: false }
+        : store.getImportedHistoryMessagePage(agent.id, { limit: historySourceLimit });
+      const mergedPrivateHistory = mergeScopedContextSources(
+        [privateHistoryPage, importedHistoryPage],
+        historySourceLimit,
+      );
+      const referencedProjectArtifacts = (message: ScopedContextMessage): ArtifactDto[] => {
+        const ids = collectReachableArtifactIds(message);
+        let tokens = 0;
+        for (const match of message.text.matchAll(/[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?/gu)) {
+          if (tokens >= 200) break;
+          ids.add(match[0]);
+          tokens += 1;
+        }
+        return [...ids].slice(0, 200).flatMap((id) => {
+          const artifact = store.getProjectArtifact(project.id, id);
+          if (!artifact || (artifact.kind === "generated_file" &&
+              !assets.authoritativeGeneratedArtifact(project.id, artifact))) return [];
+          return [artifact];
+        });
+      };
+      const fullHistory: ChatMessage[] = [...mergedPrivateHistory.newest].reverse().map((message) => ({
+        role: message.role === "assistant" ? "assistant" : "user",
+        text: message.text,
+        createdAt: message.createdAt,
+        attachments: [
+          ...(message.attachments?.map((item) => ({
+            name: item.name,
+            mediaType: item.mediaType,
+            size: item.size,
+            localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
+            available: existsSync(path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`)),
+          })) ?? []),
+          ...referencedProjectArtifacts(message).map(generatedArtifactReference),
+        ],
+      }));
+      if (!resumeSessionId) {
+        const contextArtifacts = store.getProjectContextArtifacts(project.id, 100).filter((artifact) =>
+          artifact.kind === "generated_file" && Boolean(assets.authoritativeGeneratedArtifact(project.id, artifact)));
+        if (contextArtifacts.length) fullHistory.push({
+          role: "assistant",
+          text: "Pinned or published project artifacts available to this session:",
+          attachments: contextArtifacts.map(generatedArtifactReference),
+        });
+      }
       const history = boundedSeedHistory(fullHistory);
+      const privateHistoryOmitted = !resumeSessionId && (
+        mergedPrivateHistory.hasMore || boundedHistoryOmitted(fullHistory, history)
+      );
       // An omitted model/effort means "keep this agent's current provider
       // identity", not "forget how this run should be attributed". Recover the
       // latest explicit selection so collaboration wake-ups and restarts remain
@@ -10311,9 +10366,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const conversation = routingConversationId
         ? canonicalConversationContext(routingConversationId)
         : undefined;
-      const sourceChannel: AgentMessageChannel = request.body.sourceChannel === "main"
-          ? "main"
-          : "individual";
       const contextAgents = conversation?.agents ?? [agent];
       const sourceAuthor = communication?.sender.kind === "agent"
         ? store.getAgent(communication.sender.agentId)?.title ?? communication.sender.agentId
@@ -10347,39 +10399,31 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const sameEngineModelEpoch = !latestSessionCursor ||
         (latestSessionCursor.engine === agent.activeEngine && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
-      const allRoomMessagesIncludingCurrent = conversation && sourceChannel === "main"
-          ? organizationalMasterMessages(
-              conversation.messages,
-              store.readCommunicationEvents(project.id),
-              project.id,
-              agent.id,
-              conversation.agents,
-            )
-          : [];
-      const allRoomMessages = pendingTurn.communicationEventId
-        ? allRoomMessagesIncludingCurrent.filter((message) => message.communicationEventId !== pendingTurn.communicationEventId)
-        : allRoomMessagesIncludingCurrent;
-      const previousIndex = previousCursor?.lastMessageId
-        ? allRoomMessages.findIndex((message) => message.id === previousCursor.lastMessageId)
-        : -1;
+      const contextSourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
+      const roomDeltaPage = conversation && sourceChannel === "main" && previousCursor
+        ? store.getOrganizationalConversationDeltaPage(routingConversationId!, {
+            limit: contextSourceLimit,
+            ...(previousCursor.lastMessageId ? { afterMessageId: previousCursor.lastMessageId } : {}),
+            ...(pendingTurn.communicationEventId ? { excludeCommunicationEventId: pendingTurn.communicationEventId } : {}),
+          })
+        : undefined;
       // A missing cursor target means canonical history was cleared or replaced;
       // reseed rather than assuming that later rows were already delivered.
-      const incremental = previousCursor !== undefined && (!previousCursor.lastMessageId || previousIndex >= 0);
+      const incremental = Boolean(previousCursor && roomDeltaPage?.cursorFound);
+      const roomSeedPage = conversation && sourceChannel === "main" && !incremental
+        ? store.getOrganizationalConversationContextSourcePage(routingConversationId!, {
+            limit: contextSourceLimit,
+            ...(pendingTurn.communicationEventId ? { excludeCommunicationEventId: pendingTurn.communicationEventId } : {}),
+          })
+        : undefined;
       const pendingRoomMessages = incremental
-        ? allRoomMessages.slice(previousCursor?.lastMessageId ? previousIndex + 1 : 0)
-        : allRoomMessages;
+        ? roomDeltaPage!.items
+        : [...(roomSeedPage?.items ?? [])].reverse();
       const roomMessages = incremental
         ? boundedContinuationHistory(pendingRoomMessages)
-        : boundedSeedHistory(allRoomMessages);
-      const allBroadcastMessages = conversation && sourceChannel !== "main"
-        ? organizationalMasterMessages(
-            conversation.messages,
-            store.readCommunicationEvents(project.id),
-            project.id,
-            agent.id,
-            conversation.agents,
-          )
-        : [];
+        : boundedSeedHistory(pendingRoomMessages);
+      const roomCanonicalTipId = roomDeltaPage?.latestMessageId
+        ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : roomSeedPage?.items[0]?.id);
       const broadcastCursorScope = resumeSessionId && routingConversationId && sourceChannel !== "main"
         ? {
             agentId: agent.id,
@@ -10391,21 +10435,34 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }
         : undefined;
       const previousBroadcastCursor = broadcastCursorScope ? contextCursors.get(broadcastCursorScope) : undefined;
-      const previousBroadcastIndex = previousBroadcastCursor?.lastMessageId
-        ? allBroadcastMessages.findIndex((message) => message.id === previousBroadcastCursor.lastMessageId)
-        : -1;
-      const broadcastIncremental = previousBroadcastCursor !== undefined &&
-        (!previousBroadcastCursor.lastMessageId || previousBroadcastIndex >= 0);
+      const broadcastDeltaPage = conversation && sourceChannel !== "main" && previousBroadcastCursor
+        ? store.getOrganizationalConversationDeltaPage(routingConversationId!, {
+            limit: contextSourceLimit,
+            ...(previousBroadcastCursor.lastMessageId ? { afterMessageId: previousBroadcastCursor.lastMessageId } : {}),
+            ...(pendingTurn.communicationEventId ? { excludeCommunicationEventId: pendingTurn.communicationEventId } : {}),
+          })
+        : undefined;
+      const broadcastIncremental = Boolean(previousBroadcastCursor && broadcastDeltaPage?.cursorFound);
+      const broadcastSeedPage = conversation && sourceChannel !== "main" && !broadcastIncremental
+        ? store.getOrganizationalConversationContextSourcePage(routingConversationId!, {
+            limit: contextSourceLimit,
+            ...(pendingTurn.communicationEventId ? { excludeCommunicationEventId: pendingTurn.communicationEventId } : {}),
+          })
+        : undefined;
       const pendingBroadcastMessages = broadcastIncremental
-        ? allBroadcastMessages.slice(previousBroadcastCursor?.lastMessageId ? previousBroadcastIndex + 1 : 0)
-        : allBroadcastMessages;
+        ? broadcastDeltaPage!.items
+        : [...(broadcastSeedPage?.items ?? [])].reverse();
       const initialBroadcastContext = broadcastIncremental
         ? boundedContinuationHistory(pendingBroadcastMessages)
-        : boundedSeedHistory(allBroadcastMessages);
-      const roomDeltaOmitted = boundedHistoryOmitted(pendingRoomMessages, roomMessages);
-      const broadcastDeltaOmitted = boundedHistoryOmitted(pendingBroadcastMessages, initialBroadcastContext);
+        : boundedSeedHistory(pendingBroadcastMessages);
+      const broadcastCanonicalTipId = broadcastDeltaPage?.latestMessageId
+        ?? (sharedCommunication && sourceMasterMessage ? sourceMasterMessage.id : broadcastSeedPage?.items[0]?.id);
+      const roomDeltaOmitted = Boolean(roomDeltaPage?.hasMore || roomSeedPage?.hasMore) ||
+        boundedHistoryOmitted(pendingRoomMessages, roomMessages);
+      const broadcastDeltaOmitted = Boolean(broadcastDeltaPage?.hasMore || broadcastSeedPage?.hasMore) ||
+        boundedHistoryOmitted(pendingBroadcastMessages, initialBroadcastContext);
       const hasOmittedScopedContext = (
-        (!resumeSessionId && boundedHistoryOmitted(fullHistory, history)) ||
+        privateHistoryOmitted ||
         roomDeltaOmitted ||
         broadcastDeltaOmitted
       );
@@ -11244,7 +11301,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 // accepts the newest bounded tail and records the canonical tip.
                 lastMessageId: incremental && roomDeltaOmitted
                   ? roomMessages.at(-1)?.id ?? previousCursor?.lastMessageId
-                  : allRoomMessagesIncludingCurrent.at(-1)?.id,
+                  : roomCanonicalTipId,
                 routingHash,
               });
             }
@@ -11258,7 +11315,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 channel: "broadcast",
                 lastMessageId: broadcastIncremental && broadcastDeltaOmitted
                   ? initialBroadcastContext.at(-1)?.id ?? previousBroadcastCursor?.lastMessageId
-                  : allBroadcastMessages.at(-1)?.id,
+                  : broadcastCanonicalTipId,
                 routingHash,
               });
             }

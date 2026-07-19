@@ -145,4 +145,37 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.getDecision(abandoned.id)).toMatchObject({ status: "cancelled" });
     expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
   });
+
+  it("indexes bounded Decision pages and exact Run relationships across replay", () => {
+    const { dir, store } = fixture();
+    const decisions = Array.from({ length: 7 }, (_, index) => store.createDecision({
+      idempotencyKey: `bounded-${index}`,
+      projectId: "project",
+      conversationId: index === 0 ? "other-chat" : "chat",
+      agentId: index % 2 ? "agent-a" : "agent-b",
+      runId: index < 2 ? "shared-run" : `run-${index}`,
+      mode: "text",
+      question: `Question ${index}`,
+      options: [],
+      allowOther: true,
+      blocking: false,
+    }));
+    const first = store.listDecisionPage({ projectId: "project", conversationId: "chat", limit: 2 });
+    expect(first.decisions).toHaveLength(2);
+    expect(first.hasMore).toBe(true);
+    const oldest = first.decisions.at(-1)!;
+    const second = store.listDecisionPage({
+      projectId: "project", conversationId: "chat", limit: 10,
+      before: { createdAt: oldest.createdAt, id: oldest.id },
+    });
+    expect(new Set([...first.decisions, ...second.decisions].map((decision) => decision.id)).size).toBe(6);
+    expect(store.decisionsForRuns(new Set(["shared-run"])).map((decision) => decision.id).sort())
+      .toEqual(decisions.slice(0, 2).map((decision) => decision.id).sort());
+
+    const restarted = new WorkspaceStore(dir);
+    expect(restarted.listDecisionPage({
+      projectId: "project", conversationId: "chat", agentId: "agent-a", limit: 10,
+    }).decisions.every((decision) => decision.agentId === "agent-a")).toBe(true);
+    expect(restarted.decisionsForRuns(new Set(["shared-run"]))).toHaveLength(2);
+  });
 });

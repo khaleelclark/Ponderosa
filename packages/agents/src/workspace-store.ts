@@ -69,6 +69,11 @@ export class WorkspaceStore {
   private readonly notifications = new Map<string, WorkspaceNotificationDto>();
   private readonly decisions = new Map<string, DecisionDto>();
   private readonly decisionIdempotency = new Map<string, string>();
+  private readonly decisionIdsByProject = new Map<string, string[]>();
+  private readonly decisionIdsByConversation = new Map<string, string[]>();
+  private readonly decisionIdsByAgent = new Map<string, string[]>();
+  private readonly decisionIdsByConversationAgent = new Map<string, string[]>();
+  private readonly decisionIdsByRun = new Map<string, Set<string>>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private preferences = DEFAULT_PREFERENCES;
@@ -152,8 +157,10 @@ export class WorkspaceStore {
       });
     }
     if (record.mutation?.kind === "decision") {
+      const isNew = !this.decisions.has(record.mutation.decision.id);
       this.decisions.set(record.mutation.decision.id, record.mutation.decision);
       this.decisionIdempotency.set(record.mutation.idempotencyKey, record.mutation.decision.id);
+      if (isNew) this.indexDecision(record.mutation.decision);
       for (const [id, notification] of this.notifications) {
         if (notification.decision?.id !== record.mutation.decision.id) continue;
         this.notifications.set(id, {
@@ -171,6 +178,35 @@ export class WorkspaceStore {
       const delivery = record.mutation.delivery;
       this.pushDeliveries.set(this.pushDeliveryKey(delivery.notificationId, delivery.deviceId), delivery);
     }
+  }
+
+  private decisionOrder(leftId: string, rightId: string): number {
+    const left = this.decisions.get(leftId)!;
+    const right = this.decisions.get(rightId)!;
+    return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+  }
+
+  private insertDecisionId(index: Map<string, string[]>, key: string, decisionId: string): void {
+    const ids = index.get(key) ?? [];
+    ids.push(decisionId);
+    ids.sort((left, right) => this.decisionOrder(left, right));
+    index.set(key, ids);
+  }
+
+  private indexDecision(decision: DecisionDto): void {
+    this.insertDecisionId(this.decisionIdsByProject, decision.projectId, decision.id);
+    this.insertDecisionId(this.decisionIdsByAgent, decision.agentId, decision.id);
+    if (decision.conversationId) {
+      this.insertDecisionId(this.decisionIdsByConversation, decision.conversationId, decision.id);
+      this.insertDecisionId(
+        this.decisionIdsByConversationAgent,
+        `${decision.conversationId}\u0000${decision.agentId}`,
+        decision.id,
+      );
+    }
+    const runIds = this.decisionIdsByRun.get(decision.runId) ?? new Set<string>();
+    runIds.add(decision.id);
+    this.decisionIdsByRun.set(decision.runId, runIds);
   }
 
   append(event: WorkspaceEvent, mutation?: CanonicalWorkspaceEvent["mutation"]): WorkspaceEventEnvelope {
@@ -379,6 +415,45 @@ export class WorkspaceStore {
       (!filter.agentId || decision.agentId === filter.agentId) &&
       (!filter.status || decision.status === filter.status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  listDecisionPage(input: {
+    projectId: string;
+    conversationId?: string;
+    agentId?: string;
+    limit: number;
+    before?: { createdAt: string; id: string };
+  }): { decisions: DecisionDto[]; hasMore: boolean } {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const ids = input.conversationId && input.agentId
+      ? this.decisionIdsByConversationAgent.get(`${input.conversationId}\u0000${input.agentId}`) ?? []
+      : input.agentId
+        ? this.decisionIdsByAgent.get(input.agentId) ?? []
+        : input.conversationId
+          ? this.decisionIdsByConversation.get(input.conversationId) ?? []
+          : this.decisionIdsByProject.get(input.projectId) ?? [];
+    const selected: DecisionDto[] = [];
+    let hasMore = false;
+    for (const id of ids) {
+      const decision = this.decisions.get(id);
+      if (!decision || decision.projectId !== input.projectId ||
+          (input.conversationId && decision.conversationId !== input.conversationId) ||
+          (input.agentId && decision.agentId !== input.agentId) ||
+          (input.before && !(decision.createdAt < input.before.createdAt ||
+            (decision.createdAt === input.before.createdAt && decision.id < input.before.id)))) continue;
+      if (selected.length === limit) { hasMore = true; break; }
+      selected.push(decision);
+    }
+    return { decisions: selected, hasMore };
+  }
+
+  decisionsForRuns(runIds: ReadonlySet<string>): DecisionDto[] {
+    const ids = new Set<string>();
+    for (const runId of runIds) for (const decisionId of this.decisionIdsByRun.get(runId) ?? []) ids.add(decisionId);
+    return [...ids].flatMap((id) => {
+      const decision = this.decisions.get(id);
+      return decision ? [decision] : [];
+    }).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
   }
 
   getDecision(id: string): DecisionDto | undefined { return this.decisions.get(id); }

@@ -7,7 +7,7 @@ import { AgentDeletionConflictError, AgentStore } from "../src/store.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, importedAgentHistoryPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -37,6 +37,10 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "work_items",
     "artifacts",
     "events",
+    "imported_history_messages",
+    "activity_projection",
+    "changed_file_projection",
+    "managed_artifact_projection",
   ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
@@ -46,6 +50,14 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
         ? "agent_id, id"
         : t === "chat_search_messages"
           ? "row_key"
+        : t === "imported_history_messages"
+          ? "agent_id, message_id"
+        : t === "activity_projection"
+          ? "agent_id, seq"
+        : t === "changed_file_projection"
+          ? "agent_id, path"
+        : t === "managed_artifact_projection"
+          ? "project_id, artifact_id"
         : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
@@ -1014,6 +1026,60 @@ describe("AgentStore — append + projection", () => {
       .toThrow("invalid history focus");
     expect(() => store.getRunPage(agentId, { limit: 2, cursor: detail.telemetryHistory!.activity!.cursor }))
       .toThrow("invalid history cursor");
+  });
+
+  it("reads long-history context, activity, files, and managed artifacts from bounded projections", () => {
+    const { projectId, agentId } = seedAgent();
+    const tiedAt = "2026-07-19T00:00:00.000Z";
+    store.setImportedHistory(agentId, "large import", Array.from({ length: 12 }, (_, index) => ({
+      role: "system" as const,
+      text: `import-${String(index).padStart(2, "0")}`,
+      createdAt: tiedAt,
+    })));
+    const firstImported = store.getImportedHistoryMessagePage(agentId, { limit: 5 });
+    expect(firstImported.items.map((message) => message.text)).toEqual([
+      "[Imported private context]\nimport-11",
+      "[Imported private context]\nimport-10",
+      "[Imported private context]\nimport-09",
+      "[Imported private context]\nimport-08",
+      "[Imported private context]\nimport-07",
+    ]);
+    expect(firstImported.hasMore).toBe(true);
+    const importedBoundary = firstImported.items.at(-1)!;
+    expect(store.getImportedHistoryMessagePage(agentId, {
+      limit: 5,
+      before: { createdAt: importedBoundary.createdAt, id: importedBoundary.id },
+    }).items[0]?.text).toContain("import-06");
+
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-long" });
+    const tool = store.appendEvent(agentId, { type: "tool_result", id: "large-tool", output: `${"x".repeat(20_000)}-exact` });
+    store.appendEvent(agentId, { type: "file_change", path: "src/large.ts", kind: "edit", diff: "+".repeat(20_000) });
+    store.sqlite.prepare("UPDATE events SET payload_json = ? WHERE agent_id = ? AND seq = ?")
+      .run('{"type":"tool_result","id":"poisoned","output":"poisoned"}', agentId, tool.seq);
+    const activity = store.getActivityPage(agentId, { limit: 10 });
+    expect(activity.items.find((item) => item.seq === tool.seq)).toMatchObject({
+      event: { type: "tool_result", id: "large-tool", output: expect.not.stringContaining("exact") },
+      outputPreview: { totalUtf8Bytes: 20_006, sha256: expect.any(String) },
+    });
+    expect(store.getChangedFiles(agentId)).toEqual([expect.objectContaining({
+      path: "src/large.ts", executionIds: ["run-long"], diff: expect.not.stringContaining("+".repeat(5_000)),
+    })]);
+
+    const artifact = {
+      id: "managed-long-history", projectId, agentId, originAgentId: agentId, executionId: "run-long",
+      kind: "generated_file" as const, path: "generated/managed-long-history.txt", sourcePath: "managed.txt",
+      summary: "managed.txt", createdAt: tiedAt, mediaType: "text/plain", visibility: "published" as const,
+      pinned: true, size: 4, sha256: "a".repeat(64),
+    };
+    store.recordProjectArtifact(artifact);
+    renameSync(managedArtifactsLogPath(dir, projectId), `${managedArtifactsLogPath(dir, projectId)}.offline`);
+    expect(store.getProjectArtifactPage(projectId, { limit: 5 }).items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: artifact.id, visibility: "published", pinned: true }),
+    ]));
+    expect(store.getProjectContextArtifacts(projectId)).toEqual([
+      expect.objectContaining({ id: artifact.id }),
+    ]);
+    expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
   });
 
   it("resolves stable focused items across every Agent telemetry stream", () => {
