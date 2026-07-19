@@ -241,6 +241,27 @@ describe("Communication V3 agent deletion", () => {
         id: "project-delete-communication", projectId: project.id,
         sender: { kind: "user" }, intent: "broadcast", audience: { projectId: project.id }, payload: { text: "FYI" },
       });
+      const retryable = coordination.recordRuntimeCommunication({
+        id: "project-delete-retryable", projectId: project.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+        audience: { agentId: recipient.id },
+        payload: {
+          communication: { eventId: "project-delete-retryable", conversationId: chat.id },
+          dispatch: { text: "Retryable before Project deletion" },
+        },
+        activation: {
+          agentId: recipient.id, kind: "ordinary_message", priority: 50,
+          dispatchPolicy: "next_run", promptClass: "ordinary",
+        },
+      });
+      agents.sqlite.prepare(`UPDATE agent_activations SET state = 'failed' WHERE id = ?`)
+        .run(retryable.activationId);
+      coordination.retryMessageDelivery({
+        activationId: retryable.activationId!, idempotencyKey: "project-delete-retry",
+      });
+      expect(agents.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM activation_delivery_retry_lineage
+      `).get()).toEqual({ count: 1 });
       coordination.createTriggerDefinition({
         id: "project-delete-trigger", projectId: project.id, conversationId: chat.id, agentId: recipient.id,
         name: "Project trigger", instructions: "Handle it", sourceKind: "webhook",
@@ -258,6 +279,7 @@ describe("Communication V3 agent deletion", () => {
       for (const table of [
         "runtime_communications", "coordination_requests", "coordination_request_updates",
         "coordination_joins", "coordination_join_members", "agent_activations", "activation_sources",
+        "activation_delivery_retry_lineage",
         "activation_outbox", "scheduler_runs", "scheduler_run_activations",
         "scheduler_prompt_injections", "scheduler_cancellation_receipts",
         "provider_operation_outbox", "coordination_idempotency", "scheduler_agent_fences",

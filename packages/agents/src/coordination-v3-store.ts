@@ -689,11 +689,15 @@ export class CoordinationV3Store {
   deliveryReceiptsForCommunication(communicationEventId: string): MessageDeliveryReceiptDto[] {
     if (!communicationEventId.trim()) return [];
     const activations = this.sqlite.prepare(`
-      SELECT DISTINCT activation.id, activation.agent_id, activation.state, activation.updated_at,
-        activation.rowid AS row_sequence
+      SELECT DISTINCT activation.id, activation.project_id, activation.agent_id,
+        activation.scope_key, activation.state, activation.updated_at,
+        activation.rowid AS row_sequence,
+        COALESCE(retry_lineage.attempt_number, 0) AS attempt_number
       FROM activation_sources source
       JOIN runtime_communications runtime ON runtime.id = source.source_id
       JOIN agent_activations activation ON activation.id = source.activation_id
+      LEFT JOIN activation_delivery_retry_lineage retry_lineage
+        ON retry_lineage.successor_activation_id = activation.id
       WHERE source.source_kind = 'communication'
         AND (
           runtime.id = ? OR
@@ -702,15 +706,16 @@ export class CoordinationV3Store {
             ELSE NULL
           END = ?
         )
-      ORDER BY activation.created_at, row_sequence
+      ORDER BY attempt_number, row_sequence
     `).all(communicationEventId, communicationEventId) as Array<{
-      id: string; agent_id: string; state: string; updated_at: string; row_sequence: number;
+      id: string; project_id: string; agent_id: string; scope_key: string;
+      state: string; updated_at: string; row_sequence: number; attempt_number: number;
     }>;
     const latestByRecipient = new Map<string, { activation: typeof activations[number]; attemptCount: number }>();
     for (const activation of activations) {
       latestByRecipient.set(activation.agent_id, {
         activation,
-        attemptCount: (latestByRecipient.get(activation.agent_id)?.attemptCount ?? 0) + 1,
+        attemptCount: activation.attempt_number + 1,
       });
     }
     return [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
@@ -756,7 +761,11 @@ export class CoordinationV3Store {
         state,
         updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
         attemptCount,
-        ...((state === "undelivered" || state === "failed") && this.agentSurvives(activation.agent_id)
+        ...((state === "undelivered" || state === "failed") && this.recipientAuthorizedForActivationScope(
+          activation.project_id,
+          activation.agent_id,
+          activation.scope_key,
+        )
           ? { canRetry: true as const, ...(activation.state === "outcome_unknown" ? { retryMayDuplicate: true as const } : {}) }
           : {}),
         ...(injection ? { injectionId: injection.id } : {}),
@@ -818,21 +827,26 @@ export class CoordinationV3Store {
       if (!authoredByOperator) return {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_operator_message",
       };
-      if (!this.agentSurvives(original.agent_id)) return {
+      if (!this.recipientAuthorizedForActivationScope(
+        original.project_id,
+        original.agent_id,
+        original.scope_key,
+      )) return {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
       };
 
-      const placeholders = communicationSources.map(() => "?").join(", ");
-      const latest = this.sqlite.prepare(`
-        SELECT activation.id
-        FROM agent_activations activation
-        JOIN activation_sources source ON source.activation_id = activation.id
-        WHERE activation.agent_id = ? AND source.source_kind = 'communication'
-          AND source.source_id IN (${placeholders})
-        ORDER BY activation.created_at DESC, activation.rowid DESC
-        LIMIT 1
-      `).get(original.agent_id, ...communicationSources.map((source) => source.source_id)) as { id: string } | undefined;
-      if (latest?.id !== original.id) return {
+      const payload = JSON.parse(original.payload_json) as Record<string, unknown>;
+      const lineage = this.sqlite.prepare(`
+        SELECT root_activation_id, attempt_number
+        FROM activation_delivery_retry_lineage
+        WHERE successor_activation_id = ?
+      `).get(original.id) as { root_activation_id: string; attempt_number: number } | undefined;
+      const successor = this.sqlite.prepare(`
+        SELECT successor_activation_id
+        FROM activation_delivery_retry_lineage
+        WHERE predecessor_activation_id = ?
+      `).get(original.id) as { successor_activation_id: string } | undefined;
+      if (successor) return {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "stale_attempt",
       };
 
@@ -860,17 +874,13 @@ export class CoordinationV3Store {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_terminal",
       };
 
-      const payload = JSON.parse(original.payload_json) as Record<string, unknown>;
-      const priorRetry = payload.deliveryRetry && typeof payload.deliveryRetry === "object"
-        ? payload.deliveryRetry as { rootActivationId?: unknown }
-        : undefined;
+      const rootActivationId = lineage?.root_activation_id ?? original.id;
+      const attemptNumber = (lineage?.attempt_number ?? 0) + 1;
       const retryPayload = {
         ...payload,
         deliveryRetry: {
           previousActivationId: original.id,
-          rootActivationId: typeof priorRetry?.rootActivationId === "string"
-            ? priorRetry.rootActivationId
-            : original.id,
+          rootActivationId,
           previousState: original.state,
           requestedBy: "local-operator",
           requestedAt: now,
@@ -883,9 +893,6 @@ export class CoordinationV3Store {
       };
       const primarySource = communicationSources[0] ?? sources[0];
       if (!primarySource) throw new Error("delivery retry has no durable source");
-      const retryKey = createHash("sha256")
-        .update(`${original.id}\0${input.idempotencyKey}`)
-        .digest("hex");
       const activationId = this.createActivation({
         projectId: original.project_id,
         agentId: original.agent_id,
@@ -894,13 +901,19 @@ export class CoordinationV3Store {
         priority: Math.max(original.priority, PRIORITY.human),
         dispatchPolicy: original.dispatch_policy,
         promptClass: original.prompt_class,
-        dedupeKey: `delivery-retry:${retryKey}`,
+        dedupeKey: `delivery-retry-successor:${original.id}`,
         payload: retryPayload,
         sourceKind: primarySource.source_kind,
         sourceId: primarySource.source_id,
         now,
         externalIntake: true,
       });
+      this.sqlite.prepare(`
+        INSERT INTO activation_delivery_retry_lineage (
+          predecessor_activation_id, successor_activation_id,
+          root_activation_id, attempt_number, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `).run(original.id, activationId, rootActivationId, attemptNumber, now);
       for (const source of sources) this.sqlite.prepare(`
         INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
         VALUES (?, ?, ?)
@@ -1347,10 +1360,6 @@ export class CoordinationV3Store {
         this.requireConversation(input.projectId, input.conversationId);
         if (input.requesterAgentId) this.requireConversationMember(input.conversationId, input.requesterAgentId);
       }
-      const scopeKey = input.conversationId
-        ? `conversation:${input.conversationId}`
-        : `agent:${input.requesterAgentId ?? input.requests[0]?.recipientAgentId ?? "system"}`;
-
       const requestIds: string[] = [];
       for (const request of input.requests) {
         this.requireAgent(input.projectId, request.recipientAgentId);
@@ -1393,7 +1402,7 @@ export class CoordinationV3Store {
         this.createActivation({
           projectId: input.projectId,
           agentId: request.recipientAgentId,
-          scopeKey,
+          scopeKey: this.coordinationScopeKey(input.conversationId ?? null, request.recipientAgentId),
           kind: "coordination_request",
           priority: PRIORITY.request,
           dedupeKey: `request:${requestId}:created`,
@@ -3067,6 +3076,11 @@ export class CoordinationV3Store {
       this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id IN (
         SELECT id FROM agent_activations WHERE project_id = ?
       )`).run(projectId);
+      this.sqlite.prepare(`DELETE FROM activation_delivery_retry_lineage
+        WHERE root_activation_id IN (
+          SELECT id FROM agent_activations WHERE project_id = ?
+        )
+      `).run(projectId);
       this.sqlite.prepare(`DELETE FROM agent_activations WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM coordination_join_members WHERE join_id IN (
         SELECT id FROM coordination_joins WHERE project_id = ?
@@ -3103,6 +3117,7 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       this.recoverExpiredUninjectedRuns(now);
       this.resetExpiredTriggerBudgets(now);
+      this.settleUnauthorizedPendingActivations(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
@@ -3183,6 +3198,14 @@ export class CoordinationV3Store {
                 : triggerId(activation) === undefined))
             .slice(0, limit);
       if (activations.length === 0) return undefined;
+      if (!this.recipientAuthorizedForActivationScope(
+        candidate.project_id,
+        candidate.agent_id,
+        candidate.scope_key,
+      )) {
+        this.settleUnauthorizedPendingActivations(now);
+        return undefined;
+      }
       if (candidateTriggerId) {
         const charged = this.sqlite.prepare(`
           UPDATE trigger_definitions
@@ -3247,6 +3270,7 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
     return this.sqlite.transaction(() => {
+      this.settleUnauthorizedPendingActivations(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key, r.id AS run_id, r.fencing_token, r.provider_session_id
         FROM agent_activations a
@@ -3283,6 +3307,14 @@ export class CoordinationV3Store {
         ORDER BY priority DESC, created_at, id LIMIT ?
       `).all(candidate.agent_id, candidate.scope_key, now, limit) as ActivationRow[];
       if (activations.length === 0) return undefined;
+      if (!this.recipientAuthorizedForActivationScope(
+        candidate.project_id,
+        candidate.agent_id,
+        candidate.scope_key,
+      )) {
+        this.settleUnauthorizedPendingActivations(now);
+        return undefined;
+      }
       const injectionId = randomUUID();
       const sequence = (this.sqlite.prepare(`
         SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
@@ -4129,6 +4161,64 @@ export class CoordinationV3Store {
       }
     }
     return `agent:${agentId}`;
+  }
+
+  /** One fail-closed authority boundary for every Activation consumer. */
+  private recipientAuthorizedForActivationScope(
+    projectId: string,
+    agentId: string,
+    scopeKey: string,
+  ): boolean {
+    const activeAgent = this.sqlite.prepare(`
+      SELECT 1 FROM agents
+      WHERE id = ? AND project_id = ? AND archived = 0
+    `).get(agentId, projectId);
+    if (!activeAgent) return false;
+    if (scopeKey === `agent:${agentId}`) return true;
+    const conversationPrefix = "conversation:";
+    if (!scopeKey.startsWith(conversationPrefix)) return false;
+    const conversationId = scopeKey.slice(conversationPrefix.length);
+    if (!conversationId) return false;
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM conversations conversation
+      JOIN agent_conversation_memberships membership
+        ON membership.conversation_id = conversation.id
+      WHERE conversation.id = ? AND conversation.project_id = ?
+        AND conversation.archived = 0 AND membership.agent_id = ?
+    `).get(conversationId, projectId, agentId));
+  }
+
+  private settleUnauthorizedPendingActivations(now: string): number {
+    const pending = this.sqlite.prepare(`
+      SELECT id, project_id, agent_id, scope_key
+      FROM agent_activations
+      WHERE state IN ('pending', 'retry_pending')
+      ORDER BY rowid
+    `).all() as Array<{
+      id: string; project_id: string; agent_id: string; scope_key: string;
+    }>;
+    const fail = this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+        terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
+      WHERE id = ? AND state IN ('pending', 'retry_pending')
+    `);
+    let settled = 0;
+    for (const activation of pending) {
+      if (this.recipientAuthorizedForActivationScope(
+        activation.project_id,
+        activation.agent_id,
+        activation.scope_key,
+      )) continue;
+      settled += fail.run(
+        now,
+        "activation recipient is no longer authorized for its scope",
+        now,
+        activation.id,
+      ).changes;
+    }
+    return settled;
   }
 
   private agentSurvives(agentId: string): boolean {
