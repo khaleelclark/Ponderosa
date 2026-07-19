@@ -5506,8 +5506,14 @@ describe("server chunk F", () => {
       name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
     });
     expect(replayAgain.text).toBe(replay.text);
+    const base64urlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const finalCharacter = firstPage.nextCursor.at(-1)!;
+    const alternateFinalCharacter = base64urlAlphabet[base64urlAlphabet.indexOf(finalCharacter) ^ 1]!;
+    const nonCanonicalCursor = `${firstPage.nextCursor.slice(0, -1)}${alternateFinalCharacter}`;
+    expect(Buffer.from(nonCanonicalCursor.split(".")[1]!, "base64url"))
+      .toEqual(Buffer.from(firstPage.nextCursor.split(".")[1]!, "base64url"));
     const tampered = await runtime.handleDynamicToolCall!({
-      name: "ponderosa_result", arguments: { refs: [ref], cursor: `${firstPage.nextCursor.slice(0, -1)}x` },
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: nonCanonicalCursor },
     });
     expect(tampered.success).toBe(false);
     expect(JSON.parse(tampered.text)).toMatchObject({ error: expect.stringContaining("tampered") });

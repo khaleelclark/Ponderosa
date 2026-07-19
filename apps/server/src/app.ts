@@ -221,11 +221,18 @@ function decodeResultCursor(value: string, secret: Buffer): ResultCursorState | 
   if (!payload || !suppliedSignature || extra !== undefined) return undefined;
   const expectedSignature = createHmac("sha256", secret).update(payload).digest();
   let supplied: Buffer;
-  try { supplied = Buffer.from(suppliedSignature, "base64url"); }
+  let payloadBytes: Buffer;
+  try {
+    supplied = Buffer.from(suppliedSignature, "base64url");
+    payloadBytes = Buffer.from(payload, "base64url");
+  }
   catch { return undefined; }
+  // Node accepts alternate Base64URL spellings whose unused trailing bits
+  // decode to the same bytes. Cursors have one stable textual identity.
+  if (supplied.toString("base64url") !== suppliedSignature || payloadBytes.toString("base64url") !== payload) return undefined;
   if (supplied.length !== expectedSignature.length || !timingSafeEqual(supplied, expectedSignature)) return undefined;
   try {
-    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<ResultCursorState>;
+    const parsed = JSON.parse(payloadBytes.toString("utf8")) as Partial<ResultCursorState>;
     if (typeof parsed.runId !== "string" || typeof parsed.refsHash !== "string" ||
         typeof parsed.versionsHash !== "string" || !Number.isSafeInteger(parsed.maxBytes) ||
         !Number.isSafeInteger(parsed.itemIndex) || !Number.isSafeInteger(parsed.byteOffset) ||
