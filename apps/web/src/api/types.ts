@@ -63,6 +63,10 @@ import type {
   SseEventEnvelope,
   AgentStreamStatusDto,
   AgentDetailDto,
+  AgentActivityOutputDto,
+  AgentTelemetryPageDto,
+  AgentTelemetryStream,
+  HistoryPageDto,
   AgentDto,
   TokenUsageScope,
   TokenUsageRangeDto,
@@ -147,7 +151,7 @@ export interface PonderosaApi {
   listConversations(projectId: string): Promise<ConversationDto[]>;
   createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto>;
   getConversation(conversationId: string, limit?: number, cursor?: string, focusId?: string): Promise<ConversationDetailDto>;
-  getCollaborationView(conversationId: string, limit?: number, cursor?: string, focusId?: string): Promise<CollaborationViewDto>;
+  getCollaborationView(conversationId: string, limit?: number, cursor?: string, focusId?: string, operationCursor?: string): Promise<CollaborationViewDto>;
   updateConversation(conversationId: string, patch: UpdateConversationRequest): Promise<ConversationDto>;
   deleteConversation(conversationId: string): Promise<void>;
   sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void>;
@@ -196,7 +200,9 @@ export interface PonderosaApi {
   previewAgentDeletion(projectId: string, request: AgentDeletionPreviewRequest): Promise<AgentDeletionPreviewDto>;
   commitAgentDeletion(projectId: string, request: CommitAgentDeletionRequest): Promise<CommitAgentDeletionResponse>;
   getAgent(agentId: string, limit?: number, cursor?: string, focusId?: string): Promise<AgentDetailDto>;
-  listProjectArtifacts(projectId: string): Promise<ArtifactDto[]>;
+  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit?: number, cursor?: string): Promise<AgentTelemetryPageDto>;
+  getActivityOutput(retrievalUrl: string): Promise<AgentActivityOutputDto>;
+  listProjectArtifacts(projectId: string, limit?: number, cursor?: string): Promise<HistoryPageDto<ArtifactDto>>;
   exportAgent(agentId: string, mode: AgentExportMode, organization?: boolean): Promise<AgentPortablePackageDto>;
   importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse>;
   listTriggers(agentId: string): Promise<TriggerDefinitionDto[]>;

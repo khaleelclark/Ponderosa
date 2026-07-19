@@ -1363,11 +1363,33 @@ export function ActivityPane({ activity, connected, running, activeExecutionId }
           {group.items.map((item) => <Paper component="details" key={item.id} variant="outlined" sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
             <Box component="summary"><EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} /></Box>
             <Typography variant="caption" color="text.secondary" sx={{ pl: 1.25 }}>{new Date(item.createdAt).toLocaleString()}</Typography>
+            {item.outputPreview ? <ExactActivityOutput item={item} /> : null}
           </Paper>)}
         </Stack>
       </Paper>;
     })}
   </Stack>;
+}
+
+function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const reference = item.outputPreview;
+  const query = useQuery({
+    queryKey: ["activity-output", item.agentId, item.seq, reference?.sha256],
+    queryFn: () => api.getActivityOutput(reference!.retrievalUrl),
+    enabled: open && Boolean(reference),
+  });
+  if (!reference) return null;
+  return <Box sx={{ pl: 1.25, pt: 0.5 }}>
+    <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>
+      {open ? "Hide full output" : `Load full output (${reference.totalUtf8Bytes.toLocaleString()} bytes)`}
+    </Button>
+    {open ? <Paper variant="outlined" sx={{ mt: 0.5, p: 1, maxHeight: 420, overflow: "auto" }}>
+      {query.isLoading ? <CircularProgress size={18} />
+        : query.isError ? <Alert severity="error">The complete canonical tool output could not be loaded.</Alert>
+          : <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{query.data?.output}</Typography>}
+    </Paper> : null}
+  </Box>;
 }
 
 export interface ActivityExecutionGroup {

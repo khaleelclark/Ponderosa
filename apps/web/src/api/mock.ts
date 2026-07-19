@@ -777,11 +777,25 @@ export const mockApi: PonderosaApi = {
       state: agent.state,
     });
   },
+  getAgentHistory(agentId, stream) {
+    const detail = {
+      runOutput: [],
+      activity: [],
+      runs: runs[agentId] ?? [],
+      workItems: workItems[agentId] ?? [],
+      artifacts: artifacts[agentId] ?? [],
+    }[stream];
+    return delay({ stream, items: detail, history: { limit: 100, hasMore: false } } as never);
+  },
+  getActivityOutput() {
+    return Promise.reject(new Error("Tool output not available in mock data"));
+  },
   listProjectArtifacts(projectId) {
     const projectAgentIds = new Set(agents.filter((agent) => agent.projectId === projectId).map((agent) => agent.id));
-    return delay(Object.entries(artifacts).flatMap(([agentId, entries]) => projectAgentIds.has(agentId)
+    const items = Object.entries(artifacts).flatMap(([agentId, entries]) => projectAgentIds.has(agentId)
       ? entries.filter((artifact) => artifact.kind === "generated_file").map((artifact) => ({ ...artifact, projectId }))
-      : []));
+      : []);
+    return delay({ items, history: { limit: 100, hasMore: false } });
   },
   exportAgent(agentId, mode, organization = false) {
     const agent = agents.find((candidate) => candidate.id === agentId)!;

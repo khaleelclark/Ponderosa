@@ -551,6 +551,8 @@ export interface CollaborationViewDto {
   agents: AgentDto[];
   operations?: TeamOperationalEventDto[];
   history?: HistoryWindowDto;
+  /** Team operational activity is paged independently from human messages. */
+  operationHistory?: HistoryWindowDto;
 }
 
 export interface HistoryWindowDto {
@@ -558,6 +560,12 @@ export interface HistoryWindowDto {
   hasMore: boolean;
   /** Opaque keyset cursor for the next older page. Absent at the beginning of history. */
   cursor?: string;
+}
+
+/** A stable keyset page. Items are returned oldest-first for direct timeline prepend. */
+export interface HistoryPageDto<T> {
+  items: T[];
+  history: HistoryWindowDto;
 }
 
 export interface TeamOperationalEventDto {
@@ -1390,7 +1398,34 @@ export interface AgentActivityDto {
   seq: number;
   createdAt: string;
   event: AgentActivityEvent;
+  /** Structured proof that a tool result is a bounded preview, with an exact
+   * authorized retrieval route for the immutable canonical event. */
+  outputPreview?: {
+    truncated: true;
+    previewUtf8Bytes: number;
+    totalUtf8Bytes: number;
+    sha256: string;
+    retrievalUrl: string;
+  };
 }
+
+export interface AgentActivityOutputDto {
+  agentId: string;
+  activityId: string;
+  seq: number;
+  output: string;
+  utf8Bytes: number;
+  sha256: string;
+}
+
+export type AgentTelemetryStream = "runOutput" | "activity" | "runs" | "workItems" | "artifacts";
+
+export type AgentTelemetryPageDto =
+  | ({ stream: "runOutput" } & HistoryPageDto<RunOutputDto>)
+  | ({ stream: "activity" } & HistoryPageDto<AgentActivityDto>)
+  | ({ stream: "runs" } & HistoryPageDto<AgentRunDto>)
+  | ({ stream: "workItems" } & HistoryPageDto<WorkItemDto>)
+  | ({ stream: "artifacts" } & HistoryPageDto<ArtifactDto>);
 
 /** Latest state of a path touched by this agent, rebuilt from canonical file-change events. */
 export interface ChangedFileDto {
@@ -1517,8 +1552,9 @@ export interface AgentDetailDto {
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;
-  /** Bounded execution/activity streams, independent from chat-history pagination. */
-  telemetryHistory?: HistoryWindowDto;
+  /** Every execution stream advances independently; loading old activity must
+   * not rehydrate or widen unrelated Runs, files, or results. */
+  telemetryHistory?: Partial<Record<AgentTelemetryStream, HistoryWindowDto>>;
   history?: HistoryWindowDto;
 }
 

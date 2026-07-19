@@ -10,7 +10,7 @@ import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, ConversationDetailDto, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, ArtifactDto, CommunicationEvent, ContinueOptions, ConversationDetailDto, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -3975,7 +3975,7 @@ describe("server chunk F", () => {
     store.rebuildProjections();
     expect(readFileSync(legacyFile)).toEqual(body);
     expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
-    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json())
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json<{ items: ArtifactDto[] }>().items)
       .toContainEqual(expect.objectContaining({ id: artifactId, projectId: project.id, originAgentId: agent.id }));
     const downloaded = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download` });
     expect(downloaded.statusCode).toBe(200);
@@ -4001,7 +4001,7 @@ describe("server chunk F", () => {
     });
     store.appendEvent(agent.id, { type: "test_result", passed: true, summary: "Accessibility checks passed" });
 
-    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json())
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json<{ items: ArtifactDto[] }>().items)
       .toEqual(expect.arrayContaining([
         expect.objectContaining({ id: artifactId, kind: "generated_file" }),
         expect.objectContaining({ agentId: agent.id, kind: "test_report" }),
@@ -6454,6 +6454,63 @@ describe("server chunk F", () => {
     expect(focused.messages.at(-1)).toMatchObject({ communicationEventId: "history-010", text: "History 10" });
     expect(focused.messages).toHaveLength(11);
     expect((await app.inject({ method: "GET", url: `/api/conversations/${room.id}?cursor=not-a-cursor` })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("pages Agent telemetry and Team operations independently and retrieves exact large tool output", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 } });
+    const project = store.createProject({ label: "Paged telemetry", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Long operations" });
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex", conversationId: room.id });
+    const largeOutput = `${"full-output-".repeat(500)}END`;
+    for (let index = 0; index < 3; index += 1) {
+      store.appendEvent(agent.id, { type: "tool_result", id: `tool-${index}`, output: index === 2 ? largeOutput : `output-${index}` });
+    }
+
+    const detail = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}?limit=2` })).json<{
+      activity: Array<{ seq: number; outputPreview?: { retrievalUrl: string; sha256: string } }>;
+      telemetryHistory: { activity: { cursor: string; hasMore: boolean } };
+    }>();
+    expect(detail.activity).toHaveLength(2);
+    expect(detail.telemetryHistory.activity).toMatchObject({ hasMore: true, cursor: expect.any(String) });
+    const large = detail.activity.at(-1)!;
+    expect(large.outputPreview).toMatchObject({ retrievalUrl: expect.any(String), sha256: createHash("sha256").update(largeOutput).digest("hex") });
+    const exact = (await app.inject({ method: "GET", url: large.outputPreview!.retrievalUrl })).json<{ output: string }>();
+    expect(exact.output).toBe(largeOutput);
+    const older = (await app.inject({
+      method: "GET",
+      url: `/api/agents/${agent.id}/history/activity?limit=2&cursor=${encodeURIComponent(detail.telemetryHistory.activity.cursor)}`,
+    })).json<{ items: Array<{ event: { id: string } }>; history: { hasMore: boolean } }>();
+    expect(older.items.map((item) => item.event.id)).toEqual(["tool-0"]);
+    expect(older.history.hasMore).toBe(false);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/agents/${agent.id}/history/runs?cursor=${encodeURIComponent(detail.telemetryHistory.activity.cursor)}`,
+    })).statusCode).toBe(400);
+
+    const coordination = new CoordinationV3Store(store.sqlite);
+    for (let index = 0; index < 3; index += 1) {
+      coordination.recordRuntimeCommunication({
+        id: `team-operation-${index}`, projectId: project.id, sender: { kind: "user" }, intent: "user_dm",
+        scopeKey: `conversation:${room.id}`,
+        audience: { kind: "agent", id: agent.id }, payload: { text: `Work ${index}` },
+        now: `2026-07-18T00:00:0${index}.000Z`,
+        activation: { agentId: agent.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
+      });
+    }
+    const team = (await app.inject({ method: "GET", url: `/api/conversations/${room.id}/collaboration?limit=2` })).json<{
+      operations: Array<{ id: string }>;
+      operationHistory: { cursor: string; hasMore: boolean };
+    }>();
+    expect(team.operations).toHaveLength(2);
+    expect(team.operationHistory).toMatchObject({ hasMore: true, cursor: expect.any(String) });
+    const earlierTeam = (await app.inject({
+      method: "GET",
+      url: `/api/conversations/${room.id}/collaboration?limit=2&operationCursor=${encodeURIComponent(team.operationHistory.cursor)}`,
+    })).json<{ operations: Array<{ id: string }>; operationHistory: { hasMore: boolean } }>();
+    expect(earlierTeam.operations).toHaveLength(1);
+    expect(earlierTeam.operationHistory.hasMore).toBe(false);
+    expect(new Set([...team.operations, ...earlierTeam.operations].map((item) => item.id)).size).toBe(3);
     await app.close();
   });
 

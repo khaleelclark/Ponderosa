@@ -42,7 +42,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto, AgentTelemetryStream, HistoryWindowDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -68,6 +68,22 @@ import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
+
+type TelemetryPageState = {
+  [K in AgentTelemetryStream]?: {
+    items: AgentDetailDto[K extends "runOutput" ? "runOutput"
+      : K extends "activity" ? "activity"
+        : K extends "runs" ? "runs"
+          : K extends "workItems" ? "workItems" : "artifacts"];
+    history: HistoryWindowDto;
+  };
+};
+
+const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
+  tab === "runOutput" ? ["runOutput"]
+    : tab === "activity" ? ["activity"]
+      : tab === "runs" ? ["runs", "workItems"]
+        : tab === "artifacts" ? ["artifacts"] : [];
 
 export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
   const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
@@ -201,9 +217,9 @@ export function AgentDetail({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [telemetryLimit, setTelemetryLimit] = useState(100);
-  const agentQuery = useAgent(agentId, telemetryLimit);
+  const agentQuery = useAgent(agentId, 100);
   const [olderMessages, setOlderMessages] = useState<{ messages: MessageDto[]; cursor?: string; hasMore: boolean }>();
+  const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
@@ -258,7 +274,7 @@ export function AgentDetail({
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
     setOlderMessages(undefined);
-    setTelemetryLimit(100);
+    setOlderTelemetry({});
     focusedMessage.current = undefined;
   }, [agentId]);
 
@@ -266,16 +282,32 @@ export function AgentDetail({
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
   }, [agentId, tab]);
 
-  const detail = useMemo(() => agentQuery.data ? {
-    ...agentQuery.data,
-    messages: [...new Map([...(olderMessages?.messages ?? []), ...agentQuery.data.messages].map((message) => [message.id, message] as const)).values()]
-      .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
-    history: olderMessages ? {
-      limit: agentQuery.data.history?.limit ?? 100,
-      hasMore: olderMessages.hasMore,
-      ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
-    } : agentQuery.data.history,
-  } : undefined, [agentQuery.data, olderMessages]);
+  const detail = useMemo(() => {
+    if (!agentQuery.data) return undefined;
+    const mergeBy = <T,>(current: T[], older: T[] | undefined, id: (item: T) => string, compare: (a: T, b: T) => number): T[] =>
+      [...new Map([...(older ?? []), ...current].map((item) => [id(item), item] as const)).values()].sort(compare);
+    return {
+      ...agentQuery.data,
+      messages: [...new Map([...(olderMessages?.messages ?? []), ...agentQuery.data.messages].map((message) => [message.id, message] as const)).values()]
+        .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+      runOutput: mergeBy(agentQuery.data.runOutput, olderTelemetry.runOutput?.items, (item) => item.id, (a, b) => a.seq - b.seq),
+      activity: mergeBy(agentQuery.data.activity, olderTelemetry.activity?.items, (item) => item.id, (a, b) => a.seq - b.seq),
+      runs: mergeBy(agentQuery.data.runs, olderTelemetry.runs?.items, (item) => item.id, (a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id)),
+      workItems: mergeBy(agentQuery.data.workItems, olderTelemetry.workItems?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+      artifacts: mergeBy(agentQuery.data.artifacts, olderTelemetry.artifacts?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+      telemetryHistory: Object.fromEntries(([
+        "runOutput", "activity", "runs", "workItems", "artifacts",
+      ] satisfies AgentTelemetryStream[]).map((stream) => [
+        stream,
+        olderTelemetry[stream]?.history ?? agentQuery.data.telemetryHistory?.[stream],
+      ]).filter((entry) => entry[1] !== undefined)) as AgentDetailDto["telemetryHistory"],
+      history: olderMessages ? {
+        limit: agentQuery.data.history?.limit ?? 100,
+        hasMore: olderMessages.hasMore,
+        ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
+      } : agentQuery.data.history,
+    };
+  }, [agentQuery.data, olderMessages, olderTelemetry]);
 
   useEffect(() => {
     if (!focusMessageId || focusedMessage.current === focusMessageId || focusedMessage.current === `missing:${focusMessageId}`) return;
@@ -497,6 +529,44 @@ export function AgentDetail({
     }
   };
 
+  const loadOlderTelemetry = async () => {
+    const streams = telemetryStreamsForTab(tab).filter((stream) => detail?.telemetryHistory?.[stream]?.hasMore);
+    if (!detail || streams.length === 0 || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const pages = await Promise.all(streams.map((stream) =>
+        api.getAgentHistory(agentId, stream, 100, detail.telemetryHistory?.[stream]?.cursor)));
+      setOlderTelemetry((current) => {
+        const next = { ...current };
+        for (const page of pages) {
+          if (page.stream === "runOutput") next.runOutput = {
+            items: [...new Map([...page.items, ...(current.runOutput?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+            history: page.history,
+          };
+          else if (page.stream === "activity") next.activity = {
+            items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+            history: page.history,
+          };
+          else if (page.stream === "runs") next.runs = {
+            items: [...new Map([...page.items, ...(current.runs?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+            history: page.history,
+          };
+          else if (page.stream === "workItems") next.workItems = {
+            items: [...new Map([...page.items, ...(current.workItems?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+            history: page.history,
+          };
+          else next.artifacts = {
+            items: [...new Map([...page.items, ...(current.artifacts?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+            history: page.history,
+          };
+        }
+        return next;
+      });
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
+
   if (agentQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
@@ -529,6 +599,9 @@ export function AgentDetail({
       </Box>
     );
   }
+
+  const activeTelemetryStreams = telemetryStreamsForTab(tab);
+  const hasOlderTelemetry = activeTelemetryStreams.some((stream) => detail.telemetryHistory?.[stream]?.hasMore);
 
   const advertisedModels = engine?.models.filter((option) => option.id) ?? [];
   const models = engine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
@@ -879,9 +952,9 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : detail.telemetryHistory?.hasMore) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older history"}</Button> : null}
-        {tab !== "chat" && detail.telemetryHistory?.hasMore ? <Button size="small" color="inherit" onClick={() => setTelemetryLimit((current) => current + 100)} sx={{ justifySelf: "center", my: .5 }}>Load older records</Button> : null}
+        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older records"}</Button> : null}
         {panes[tab]}
       </Box>
 

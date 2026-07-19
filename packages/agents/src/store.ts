@@ -24,6 +24,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type {
   ArtifactDto,
   AgentActivityDto,
+  AgentActivityOutputDto,
   ChangedFileDto,
   AgentOrganizationEvent,
   CommunicationEvent,
@@ -54,6 +55,7 @@ import type {
   AgentLifecycleReason,
   AgentRunStatus,
   AgentDetailDto,
+  HistoryPageDto,
   AgentDto,
   AgentDeletionPreviewDto,
   PortableAgentHistoryMessageDto,
@@ -969,11 +971,11 @@ export class AgentStore {
       .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
   }
 
-  private encodeChatHistoryCursor(input: { chatKind: string; chatId: string; orderKey: string; rowKey: string }): string {
+  private encodeHistoryCursor(input: { stream: string; scope: string; orderKey: string; rowKey: string }): string {
     return Buffer.from(JSON.stringify({ v: 1, ...input }), "utf8").toString("base64url");
   }
 
-  private decodeChatHistoryCursor(cursor: string, chatKind: string, chatId: string): { orderKey: string; rowKey: string } {
+  private decodeHistoryCursor(cursor: string, stream: string, scope: string): { orderKey: string; rowKey: string } {
     let parsed: unknown;
     try {
       const decoded = Buffer.from(cursor, "base64url");
@@ -984,11 +986,19 @@ export class AgentStore {
     }
     if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
     const value = parsed as Record<string, unknown>;
-    if (value.v !== 1 || value.chatKind !== chatKind || value.chatId !== chatId ||
+    if (value.v !== 1 || value.stream !== stream || value.scope !== scope ||
       typeof value.orderKey !== "string" || typeof value.rowKey !== "string") {
       throw new Error("invalid history cursor");
     }
     return { orderKey: value.orderKey, rowKey: value.rowKey };
+  }
+
+  private encodeChatHistoryCursor(input: { chatKind: string; chatId: string; orderKey: string; rowKey: string }): string {
+    return this.encodeHistoryCursor({ stream: `chat:${input.chatKind}`, scope: input.chatId, orderKey: input.orderKey, rowKey: input.rowKey });
+  }
+
+  private decodeChatHistoryCursor(cursor: string, chatKind: string, chatId: string): { orderKey: string; rowKey: string } {
+    return this.decodeHistoryCursor(cursor, `chat:${chatKind}`, chatId);
   }
 
   readProjectedCommunicationMessagePage(
@@ -2379,28 +2389,32 @@ export class AgentStore {
   getAgentDetail(id: string, limit?: number, includeMessages = true): AgentDetailDto | undefined {
     const agent = this.rowToAgentDto(id);
     if (!agent) return undefined;
-    const bounded = <T>(items: T[]): T[] => limit === undefined ? items : items.slice(-limit);
     const messages = includeMessages ? this.getMessages(id) : [];
-    const runOutput = this.getRunOutputs(id);
-    const activity = this.getActivity(id);
-    const runs = this.getRuns(id);
-    const workItems = this.getWorkItems(id);
-    const artifacts = this.getArtifacts(id);
-    const hasMore = limit !== undefined && [runOutput, activity, runs, workItems, artifacts]
-      .some((items) => items.length > limit);
+    const runOutputPage = limit === undefined ? undefined : this.getRunOutputPage(id, { limit });
+    const activityPage = limit === undefined ? undefined : this.getActivityPage(id, { limit });
+    const runPage = limit === undefined ? undefined : this.getRunPage(id, { limit });
+    const workItemPage = limit === undefined ? undefined : this.getWorkItemPage(id, { limit });
+    const artifactPage = limit === undefined ? undefined : this.getArtifactPage(id, { limit });
     return {
       agent,
-      messages: bounded(messages),
-      runOutput: bounded(runOutput),
-      activity: bounded(activity).map((item) => item.event.type === "tool_result" && item.event.output.length > 16_000
-        ? { ...item, event: { ...item.event, output: `${item.event.output.slice(0, 16_000)}\n\n[Full output retained in the canonical Run log.]` } }
-        : item),
+      messages: limit === undefined ? messages : messages.slice(-limit),
+      runOutput: runOutputPage?.items ?? this.getRunOutputs(id),
+      activity: activityPage?.items ?? this.getActivity(id),
       changedFiles: this.getChangedFiles(id),
-      runs: bounded(runs),
-      workItems: bounded(workItems),
-      artifacts: bounded(artifacts),
+      runs: runPage?.items ?? this.getRuns(id),
+      workItems: workItemPage?.items ?? this.getWorkItems(id),
+      artifacts: artifactPage?.items ?? this.getArtifacts(id),
       state: agent.state,
-      ...(limit !== undefined ? { history: { limit, hasMore } } : {}),
+      ...(limit !== undefined ? {
+        history: { limit, hasMore: messages.length > limit },
+        telemetryHistory: {
+          runOutput: runOutputPage!.history,
+          activity: activityPage!.history,
+          runs: runPage!.history,
+          workItems: workItemPage!.history,
+          artifacts: artifactPage!.history,
+        },
+      } : {}),
     };
   }
 
@@ -2460,6 +2474,69 @@ export class AgentStore {
     return entries.sort((a, b) => a.seq - b.seq);
   }
 
+  private eventSeqBoundary(cursor: string | undefined, stream: string, agentId: string): number | undefined {
+    if (!cursor) return undefined;
+    const decoded = this.decodeHistoryCursor(cursor, stream, agentId);
+    const seq = Number(decoded.orderKey);
+    if (!Number.isSafeInteger(seq) || seq < 1 || decoded.rowKey !== String(seq)) throw new Error("invalid history cursor");
+    return seq;
+  }
+
+  getRunOutputPage(
+    agentId: string,
+    input: { limit: number; cursor?: string },
+  ): HistoryPageDto<RunOutputDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
+    const rows = this.client.prepare(`
+      SELECT seq, payload_json, created_at
+      FROM events
+      WHERE agent_id = ? AND type = 'agent_output' ${boundary === undefined ? "" : "AND seq < ?"}
+      ORDER BY seq DESC LIMIT ?
+    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
+      seq: number; payload_json: string; created_at: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const executionIds = new Set(selected.flatMap((row) => {
+      const event = JSON.parse(row.payload_json) as LogEvent;
+      return event.type === "agent_output" ? [event.executionId] : [];
+    }));
+    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed", executionIds);
+    const items = selected.flatMap((row) => {
+      const event = JSON.parse(row.payload_json) as LogEvent;
+      if (event.type !== "agent_output" || !event.text.trim()) return [];
+      const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
+      return [{
+        id: `${agentId}:runOutput:${row.seq}`,
+        agentId,
+        executionId: event.executionId,
+        kind: "response" as const,
+        text: event.text,
+        completed: true,
+        seq: row.seq,
+        sourceSeqStart: event.sourceSeqStart,
+        sourceSeqEnd: event.sourceSeqEnd,
+        createdAt: row.created_at,
+        ...(fileActivity.length ? { fileActivity } : {}),
+      }];
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? {
+          cursor: this.encodeHistoryCursor({
+            stream: "agent:runOutput", scope: agentId,
+            orderKey: String(oldest.seq), rowKey: String(oldest.seq),
+          }),
+        } : {}),
+      },
+    };
+  }
+
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
   getActivity(agentId: string): AgentActivityDto[] {
     const activityTypes = new Set([
@@ -2490,10 +2567,121 @@ export class AgentStore {
     return result;
   }
 
+  private executionIdAtEvent(agentId: string, seq: number, event: LogEvent): string | undefined {
+    if ("executionId" in event && typeof event.executionId === "string") return event.executionId;
+    const lifecycle = this.client.prepare(`
+      SELECT payload_json
+      FROM events
+      WHERE agent_id = ? AND type = 'agent_lifecycle' AND seq < ?
+      ORDER BY seq DESC LIMIT 1
+    `).get(agentId, seq) as { payload_json: string } | undefined;
+    if (!lifecycle) return undefined;
+    const candidate = JSON.parse(lifecycle.payload_json) as LogEvent;
+    return candidate.type === "agent_lifecycle" && ["running", "compacting"].includes(candidate.status)
+      ? candidate.executionId : undefined;
+  }
+
+  private activityDto(agentId: string, row: { seq: number; payload_json: string; created_at: string }): AgentActivityDto | undefined {
+    const event = JSON.parse(row.payload_json) as LogEvent;
+    const activityTypes = new Set([
+      "command", "file_change", "test_result", "tool_call", "tool_result", "error",
+      "browser_session", "browser_action", "browser_console", "browser_screenshot",
+    ]);
+    if (!activityTypes.has(event.type)) return undefined;
+    const executionId = this.executionIdAtEvent(agentId, row.seq, event);
+    const base: AgentActivityDto = {
+      id: `${agentId}:activity:${row.seq}`,
+      agentId,
+      ...(executionId ? { executionId } : {}),
+      seq: row.seq,
+      createdAt: row.created_at,
+      event: event as AgentActivityDto["event"],
+    };
+    if (event.type !== "tool_result") return base;
+    const totalUtf8Bytes = Buffer.byteLength(event.output, "utf8");
+    const previewLimit = 4_096;
+    if (totalUtf8Bytes <= previewLimit) return base;
+    const preview = Buffer.from(event.output, "utf8").subarray(0, previewLimit).toString("utf8").replace(/\uFFFD$/u, "");
+    const previewUtf8Bytes = Buffer.byteLength(preview, "utf8");
+    return {
+      ...base,
+      event: { ...event, output: preview },
+      outputPreview: {
+        truncated: true,
+        previewUtf8Bytes,
+        totalUtf8Bytes,
+        sha256: createHash("sha256").update(event.output).digest("hex"),
+        retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/activity/${row.seq}/output`,
+      },
+    };
+  }
+
+  getActivityPage(
+    agentId: string,
+    input: { limit: number; cursor?: string },
+  ): HistoryPageDto<AgentActivityDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = this.eventSeqBoundary(input.cursor, "agent:activity", agentId);
+    const rows = this.client.prepare(`
+      SELECT seq, payload_json, created_at
+      FROM events
+      WHERE agent_id = ?
+        AND type IN ('command', 'file_change', 'test_result', 'tool_call', 'tool_result', 'error',
+          'browser_session', 'browser_action', 'browser_console', 'browser_screenshot')
+        ${boundary === undefined ? "" : "AND seq < ?"}
+      ORDER BY seq DESC LIMIT ?
+    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
+      seq: number; payload_json: string; created_at: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.flatMap((row) => {
+      const item = this.activityDto(agentId, row);
+      return item ? [item] : [];
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? {
+          cursor: this.encodeHistoryCursor({
+            stream: "agent:activity", scope: agentId,
+            orderKey: String(oldest.seq), rowKey: String(oldest.seq),
+          }),
+        } : {}),
+      },
+    };
+  }
+
+  getActivityOutput(agentId: string, seq: number): AgentActivityOutputDto | undefined {
+    const row = this.client.prepare(`
+      SELECT payload_json FROM events WHERE agent_id = ? AND seq = ? AND type = 'tool_result'
+    `).get(agentId, seq) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    const event = JSON.parse(row.payload_json) as LogEvent;
+    if (event.type !== "tool_result") return undefined;
+    return {
+      agentId,
+      activityId: `${agentId}:activity:${seq}`,
+      seq,
+      output: event.output,
+      utf8Bytes: Buffer.byteLength(event.output, "utf8"),
+      sha256: createHash("sha256").update(event.output).digest("hex"),
+    };
+  }
+
   /** One persistent row per touched path, retaining the latest canonical change and executions. */
   getChangedFiles(agentId: string): ChangedFileDto[] {
     const byPath = new Map<string, ChangedFileDto>();
-    for (const item of this.getActivity(agentId)) {
+    const rows = this.client.prepare(`
+      SELECT seq, payload_json, created_at FROM events
+      WHERE agent_id = ? AND type = 'file_change' ORDER BY seq
+    `).all(agentId) as Array<{ seq: number; payload_json: string; created_at: string }>;
+    for (const row of rows) {
+      const item = this.activityDto(agentId, row);
+      if (!item) continue;
       if (item.event.type !== "file_change") continue;
       const previous = byPath.get(item.event.path);
       const executionIds = [...(previous?.executionIds ?? [])];
@@ -2527,16 +2715,41 @@ export class AgentStore {
   private responseFileActivityByExecution(
     agentId: string,
     status: ResponseFileActivityDto["status"],
+    executionFilter?: ReadonlySet<string>,
   ): Map<string, ResponseFileActivityDto[]> {
-    const artifacts = this.getArtifacts(agentId);
-    const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact] as const));
-    const generatedByExecutionAndPath = new Map(artifacts.flatMap((artifact) =>
+    const scopedArtifacts = executionFilter
+      ? executionFilter.size ? (this.client.prepare(`
+          SELECT id, agent_id, execution_id, kind, path, summary, created_at
+          FROM artifacts WHERE agent_id = ? AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
+          ORDER BY created_at, id
+        `).all(agentId, ...executionFilter) as Array<{
+          id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
+          summary: string | null; created_at: string;
+        }>).flatMap((row) => {
+          const artifact = this.artifactDtoFromProjectionRow(agentId, row);
+          return artifact ? [artifact] : [];
+        })
+        : []
+      : this.getArtifacts(agentId);
+    const artifactById = new Map(scopedArtifacts.map((artifact) => [artifact.id, artifact] as const));
+    const generatedByExecutionAndPath = new Map(scopedArtifacts.flatMap((artifact) =>
       artifact.kind === "generated_file" && artifact.executionId && artifact.sourcePath
         ? [[`${artifact.executionId}\0${artifact.sourcePath}`, artifact] as const]
         : []));
     const byExecution = new Map<string, Map<string, ResponseFileActivityDto>>();
-    for (const item of this.getActivity(agentId)) {
+    const activity = executionFilter
+      ? (this.client.prepare(`
+          SELECT seq, payload_json, created_at FROM events
+          WHERE agent_id = ? AND type = 'file_change' ORDER BY seq
+        `).all(agentId) as Array<{ seq: number; payload_json: string; created_at: string }>)
+          .flatMap((row) => {
+            const item = this.activityDto(agentId, row);
+            return item ? [item] : [];
+          })
+      : this.getActivity(agentId);
+    for (const item of activity) {
       if (!item.executionId || item.event.type !== "file_change") continue;
+      if (executionFilter && !executionFilter.has(item.executionId)) continue;
       const projectedArtifactId = artifactId(agentId, item.seq, 0);
       const artifact = generatedByExecutionAndPath.get(`${item.executionId}\0${item.event.path}`)
         ?? artifactById.get(projectedArtifactId);
@@ -2804,6 +3017,71 @@ export class AgentStore {
       });
   }
 
+  getRunPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<AgentRunDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:runs", agentId) : undefined;
+    const rows = this.client.prepare(`
+      SELECT id, agent_id, title, status, reason, engine, model, effort, communication_event_id, wake_cause,
+        input_tokens, cached_input_tokens, cache_write_input_tokens, output_tokens, reasoning_output_tokens, total_tokens,
+        started_at, updated_at, completed_at
+      FROM runs
+      WHERE agent_id = ?
+        ${boundary ? "AND (started_at < ? OR (started_at = ? AND id < ?))" : ""}
+      ORDER BY started_at DESC, id DESC LIMIT ?
+    `).all(...(boundary
+      ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [agentId, limit + 1])) as Array<{
+      id: string; agent_id: string; title: string; status: string; reason: string; engine: AgentRunDto["engine"];
+      model: string | null; effort: string | null; communication_event_id: string | null; wake_cause: string | null;
+      input_tokens: number | null; cached_input_tokens: number | null; cache_write_input_tokens: number | null;
+      output_tokens: number | null; reasoning_output_tokens: number | null; total_tokens: number | null;
+      started_at: string; updated_at: string; completed_at: string | null;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.map((row): AgentRunDto => {
+      const providerInput = this.client.prepare(`
+        SELECT prompt_hash, source_manifest_json FROM provider_inputs WHERE execution_id = ? AND agent_id = ?
+      `).get(row.id, agentId) as { prompt_hash: string; source_manifest_json: string } | undefined;
+      return {
+        id: row.id, agentId: row.agent_id, title: row.title,
+        status: row.status as AgentRunStatus, reason: row.reason as AgentLifecycleReason,
+        engine: row.engine,
+        ...(row.model ? { model: row.model } : {}),
+        ...(row.effort ? { effort: row.effort } : {}),
+        ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
+        ...(row.wake_cause ? { wakeCause: row.wake_cause as AgentRunDto["wakeCause"] } : {}),
+        ...([row.input_tokens, row.cached_input_tokens, row.cache_write_input_tokens, row.output_tokens, row.reasoning_output_tokens, row.total_tokens].some((value) => value !== null)
+          ? { usage: {
+              ...(row.input_tokens !== null ? { inputTokens: row.input_tokens } : {}),
+              ...(row.cached_input_tokens !== null ? { cachedInputTokens: row.cached_input_tokens } : {}),
+              ...(row.cache_write_input_tokens !== null ? { cacheWriteInputTokens: row.cache_write_input_tokens } : {}),
+              ...(row.output_tokens !== null ? { outputTokens: row.output_tokens } : {}),
+              ...(row.reasoning_output_tokens !== null ? { reasoningOutputTokens: row.reasoning_output_tokens } : {}),
+              ...(row.total_tokens !== null ? { totalTokens: row.total_tokens } : {}),
+            } }
+          : {}),
+        startedAt: row.started_at, updatedAt: row.updated_at,
+        ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+        ...(providerInput ? { providerInput: {
+          promptHash: providerInput.prompt_hash,
+          sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,
+          exactPromptAvailable: true as const,
+        } } : {}),
+      };
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit, hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "agent:runs", scope: agentId, orderKey: oldest.started_at, rowKey: oldest.id,
+        }) } : {}),
+      },
+    };
+  }
+
   getProviderInput(executionId: string, includeExactPrompt = false): ProviderInputDto | undefined {
     const row = this.client.prepare(`
       SELECT execution_id, scheduler_run_id, provider_prompt, prompt_hash,
@@ -2996,6 +3274,41 @@ export class AgentStore {
       }));
   }
 
+  getWorkItemPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<WorkItemDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:workItems", agentId) : undefined;
+    const rows = this.client.prepare(`
+      SELECT id, agent_id, execution_id, title, status, created_at, updated_at
+      FROM work_items
+      WHERE agent_id = ?
+        ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `).all(...(boundary
+      ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [agentId, limit + 1])) as Array<{
+      id: string; agent_id: string; execution_id: string | null; title: string; status: string;
+      created_at: string; updated_at: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.map((row): WorkItemDto => ({
+      id: row.id, agentId: row.agent_id,
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
+      title: row.title, status: row.status as WorkItemStatus,
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    })).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit, hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "agent:workItems", scope: agentId, orderKey: oldest.created_at, rowKey: oldest.id,
+        }) } : {}),
+      },
+    };
+  }
+
   getArtifacts(agentId: string): ArtifactDto[] {
     const eventLog = this.readEvents(agentId);
     const capturedSourcePaths = new Set(eventLog.flatMap((stored) =>
@@ -3065,6 +3378,111 @@ export class AgentStore {
       });
   }
 
+  private artifactDtoFromProjectionRow(agentId: string, row: {
+    id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
+    summary: string | null; created_at: string;
+  }): ArtifactDto | undefined {
+    const agent = this.getAgent(agentId);
+    if (!agent) return undefined;
+    const legacySeqText = row.id.startsWith(`${agentId}:a:`) ? row.id.slice(`${agentId}:a:`.length).split(":", 1)[0] : undefined;
+    const legacySeq = legacySeqText && /^\d+$/u.test(legacySeqText) ? Number(legacySeqText) : undefined;
+    const generatedRow = this.client.prepare(`
+      SELECT payload_json FROM events
+      WHERE agent_id = ? AND type = 'generated_artifact'
+        AND (json_extract(payload_json, '$.artifactId') = ?
+          ${legacySeq === undefined ? "" : "OR (json_extract(payload_json, '$.artifactId') IS NULL AND seq = ?)"})
+      ORDER BY seq DESC LIMIT 1
+    `).get(...(legacySeq === undefined ? [agentId, row.id] : [agentId, row.id, legacySeq])) as { payload_json: string } | undefined;
+    const generated = generatedRow ? JSON.parse(generatedRow.payload_json) as LogEvent : undefined;
+    if (generated?.type === "generated_artifact") {
+      const visibilityRow = this.client.prepare(`
+        SELECT payload_json FROM events
+        WHERE agent_id = ? AND type = 'artifact_visibility' AND json_extract(payload_json, '$.artifactId') = ?
+        ORDER BY seq DESC LIMIT 1
+      `).get(agentId, row.id) as { payload_json: string } | undefined;
+      const visibilityEvent = visibilityRow ? JSON.parse(visibilityRow.payload_json) as LogEvent : undefined;
+      const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
+      return {
+        id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
+        kind: "generated_file", path: generated.path, sourcePath: generated.sourcePath,
+        summary: generated.name, createdAt: row.created_at, mediaType: generated.mediaType,
+        visibility: visibilityEvent?.type === "artifact_visibility" ? visibilityEvent.visibility : generated.visibility,
+        pinned: visibilityEvent?.type === "artifact_visibility" ? visibilityEvent.pinned : generated.pinned ?? false,
+        size: generated.size, previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+      };
+    }
+    if (row.kind === "diff" && row.summary) {
+      const sourcePath = /^(?:create|edit) (.+)$/u.exec(row.summary)?.[1];
+      if (sourcePath) {
+        const captured = this.client.prepare(`
+          SELECT 1 FROM events
+          WHERE agent_id = ? AND type = 'generated_artifact' AND json_extract(payload_json, '$.sourcePath') = ?
+          LIMIT 1
+        `).get(agentId, sourcePath);
+        if (captured) return undefined;
+      }
+    }
+    if (legacySeq !== undefined) {
+      const source = this.client.prepare(`
+        SELECT payload_json FROM events WHERE agent_id = ? AND seq = ? AND type = 'file_change'
+      `).get(agentId, legacySeq) as { payload_json: string } | undefined;
+      const event = source ? JSON.parse(source.payload_json) as LogEvent : undefined;
+      if (event?.type === "file_change" && event.path.toLowerCase().endsWith(".pdf")) {
+        const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
+        return {
+          id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
+          kind: "document", path: event.path, summary: event.path, createdAt: row.created_at,
+          mediaType: "application/pdf", previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+        };
+      }
+    }
+    if (row.kind === "screenshot") {
+      const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(row.id)}`;
+      return {
+        id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
+        kind: "screenshot", path: row.path, summary: row.summary ?? undefined, createdAt: row.created_at,
+        mediaType: "image/png", previewUrl: root, downloadUrl: `${root}?download=1`,
+      };
+    }
+    return {
+      id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
+      kind: row.kind as ArtifactKind, path: row.path, summary: row.summary ?? undefined, createdAt: row.created_at,
+    };
+  }
+
+  getArtifactPage(agentId: string, input: { limit: number; cursor?: string }): HistoryPageDto<ArtifactDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:artifacts", agentId) : undefined;
+    const rows = this.client.prepare(`
+      SELECT id, agent_id, execution_id, kind, path, summary, created_at
+      FROM artifacts
+      WHERE agent_id = ?
+        ${boundary ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : ""}
+      ORDER BY created_at DESC, id DESC LIMIT ?
+    `).all(...(boundary
+      ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [agentId, limit + 1])) as Array<{
+      id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
+      summary: string | null; created_at: string;
+    }>;
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.flatMap((row) => {
+      const artifact = this.artifactDtoFromProjectionRow(agentId, row);
+      return artifact ? [artifact] : [];
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit, hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "agent:artifacts", scope: agentId, orderKey: oldest.created_at, rowKey: oldest.id,
+        }) } : {}),
+      },
+    };
+  }
+
   /** Durable Project-owned generated-artifact catalog. */
   getProjectArtifacts(projectId: string): ArtifactDto[] {
     const resolved = new Map<string, ArtifactDto & { projectId: string; originAgentId: string }>();
@@ -3082,6 +3500,51 @@ export class AgentStore {
       const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
       return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
     }).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  /** Bounded Project-wide file/result catalog. SQLite applies the boundary to
+   * Agent execution artifacts; the usually-small authored catalog is merged by
+   * the same stable key before the response page is formed. */
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string }): HistoryPageDto<ArtifactDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "project:artifacts", projectId) : undefined;
+    const rows = this.client.prepare(`
+      SELECT artifact.id, artifact.agent_id, artifact.execution_id, artifact.kind, artifact.path,
+        artifact.summary, artifact.created_at
+      FROM artifacts artifact
+      JOIN agents agent ON agent.id = artifact.agent_id
+      WHERE agent.project_id = ?
+        ${boundary ? "AND (artifact.created_at < ? OR (artifact.created_at = ? AND artifact.id < ?))" : ""}
+      ORDER BY artifact.created_at DESC, artifact.id DESC LIMIT ?
+    `).all(...(boundary
+      ? [projectId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [projectId, limit + 1])) as Array<{
+      id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
+      summary: string | null; created_at: string;
+    }>;
+    const executionArtifacts = rows.flatMap((row) => {
+      const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
+      return artifact ? [{ ...artifact, projectId }] : [];
+    });
+    const managed = this.getProjectArtifacts(projectId).filter((artifact) => !boundary ||
+      artifact.createdAt < boundary.orderKey || (artifact.createdAt === boundary.orderKey && artifact.id < boundary.rowKey));
+    const merged = new Map<string, ArtifactDto>();
+    for (const artifact of executionArtifacts) merged.set(artifact.id, artifact);
+    for (const artifact of managed) merged.set(artifact.id, artifact);
+    const ordered = [...merged.values()].sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
+    const hasMore = ordered.length > limit || rows.length > limit;
+    const selected = ordered.slice(0, limit);
+    const oldest = selected.at(-1);
+    return {
+      items: selected.reverse(),
+      history: {
+        limit, hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "project:artifacts", scope: projectId, orderKey: oldest.createdAt, rowKey: oldest.id,
+        }) } : {}),
+      },
+    };
   }
 
   getProjectArtifact(projectId: string, artifactIdValue: string): ArtifactDto | undefined {

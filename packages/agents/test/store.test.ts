@@ -923,14 +923,31 @@ describe("AgentStore — append + projection", () => {
 
     const detail = store.getAgentDetail(agentId, 2)!;
     expect(detail.history).toEqual({ limit: 2, hasMore: true });
+    expect(detail.telemetryHistory?.activity).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
     expect(detail.messages.map((message) => message.text)).toEqual(["Message 1", "Message 2"]);
     expect(detail.activity).toHaveLength(2);
     expect(detail.activity.at(-1)?.event).toMatchObject({
       type: "tool_result",
-      output: expect.stringContaining("[Full output retained in the canonical Run log.]"),
+      output: expect.not.stringContaining("end-marker"),
     });
+    expect(detail.activity.at(-1)?.outputPreview).toMatchObject({
+      truncated: true,
+      totalUtf8Bytes: Buffer.byteLength(largeOutput),
+      retrievalUrl: expect.stringContaining(`/activity/${detail.activity.at(-1)!.seq}/output`),
+    });
+    expect(store.getActivityOutput(agentId, detail.activity.at(-1)!.seq)).toMatchObject({
+      output: largeOutput,
+      sha256: detail.activity.at(-1)!.outputPreview!.sha256,
+    });
+    expect(Buffer.byteLength(JSON.stringify(detail), "utf8")).toBeLessThan(12_000);
     expect(store.readEvents(agentId).find((item) => item.event.type === "tool_result" && item.event.id === "tool-2")?.event)
       .toMatchObject({ output: largeOutput });
+
+    const older = store.getActivityPage(agentId, { limit: 2, cursor: detail.telemetryHistory!.activity!.cursor });
+    expect(older.items.map((item) => item.event.type === "tool_result" ? item.event.id : item.id)).toEqual(["tool-0"]);
+    expect(older.history).toEqual({ limit: 2, hasMore: false });
+    expect(() => store.getRunPage(agentId, { limit: 2, cursor: detail.telemetryHistory!.activity!.cursor }))
+      .toThrow("invalid history cursor");
   });
 
   it("rebuilds usage per run and aggregates agent, project, and overall with honest coverage", () => {

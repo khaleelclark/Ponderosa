@@ -107,6 +107,7 @@ import type {
   AgentWorkInspectorDto,
   AgentWorkItemDto,
   AgentWorkItemDetailsDto,
+  AgentTelemetryStream,
   AgentPortablePackageDto,
   AgentExportMode,
   ImportAgentPackageRequest,
@@ -208,6 +209,23 @@ interface ResultCursorState {
   maxBytes: number;
   itemIndex: number;
   byteOffset: number;
+}
+
+function encodeTimelineCursor(stream: string, scope: string, updatedAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ v: 1, stream, scope, updatedAt, id }), "utf8").toString("base64url");
+}
+
+function decodeTimelineCursor(value: string, stream: string, scope: string): { updatedAt: string; id: string } {
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
+    const parsed = JSON.parse(decoded.toString("utf8")) as Record<string, unknown>;
+    if (parsed.v !== 1 || parsed.stream !== stream || parsed.scope !== scope ||
+        typeof parsed.updatedAt !== "string" || typeof parsed.id !== "string") throw new Error("invalid cursor scope");
+    return { updatedAt: parsed.updatedAt, id: parsed.id };
+  } catch {
+    throw new Error("invalid history cursor");
+  }
 }
 
 function encodeResultCursor(state: ResultCursorState, secret: Buffer): string {
@@ -3412,78 +3430,56 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   function collaborationViewDetail(
     conversationId: string,
-    input: { limit?: number; cursor?: string; focusId?: string } = {},
+    input: { limit?: number; cursor?: string; focusId?: string; operationCursor?: string } = {},
   ): CollaborationViewDto | undefined {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
     const limit = input.limit ?? 100;
     const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId));
     const names = new Map(agents.map((agent) => [agent.id, agent.title]));
-    const operations: NonNullable<CollaborationViewDto["operations"]> = [];
-    for (const agent of agents) {
-      const snapshot = coordinationV3.agentSnapshot(agent.id);
-      const recentRuns = store.getRuns(agent.id);
-      for (const run of recentRuns) operations.push({
-        id: `execution:${run.id}`,
-        kind: "run",
-        state: run.status,
-        text: run.status === "running" ? `${agent.title} is running`
-          : run.status === "completed" ? `${agent.title} finished`
-            : run.status === "cancelled" || run.status === "interrupted" ? `${agent.title} stopped`
-              : `${agent.title} failed`,
-        agentIds: [agent.id],
-        createdAt: run.startedAt,
-        updatedAt: run.completedAt ?? run.updatedAt,
-      });
-      if (snapshot.activeRun && !recentRuns.some((run) => run.status === "running")) operations.push({
-        id: `run:${snapshot.activeRun.id}`,
-        kind: "run",
-        state: snapshot.activeRun.status,
-        text: `${agent.title} is running`,
-        agentIds: [agent.id],
-        createdAt: agent.updatedAt,
-        updatedAt: agent.updatedAt,
-      });
-      for (const activation of snapshot.activations.filter((item) => ["pending", "retry_pending", "attached"].includes(item.state))) operations.push({
-        id: `activation:${activation.id}`,
-        kind: activation.kind === "trigger_occurrence" ? "trigger" : "activation",
-        state: activation.state,
-        text: activation.kind === "trigger_occurrence" ? `${agent.title} was triggered and has automatic work queued` : `${agent.title} has work queued`,
-        agentIds: [agent.id],
-        createdAt: activation.createdAt,
-        updatedAt: activation.createdAt,
-      });
-      for (const request of snapshot.requests.filter((item) => item.direction === "outbound")) {
-        const recipient = request.counterpartyAgentId ? names.get(request.counterpartyAgentId) ?? "another Agent" : "another Agent";
-        const terminal = ["completed", "blocked", "cancelled", "expired", "outcome_unknown"].includes(request.state);
-        operations.push({
-          id: `request:${request.id}`,
-          kind: "request",
-          state: request.state,
-          text: request.state === "completed" ? `${recipient} finished work for ${agent.title}`
-            : terminal ? `${recipient}'s work for ${agent.title} ended ${request.state.replaceAll("_", " ")}`
-              : `${agent.title} asked ${recipient} to work`,
-          agentIds: [agent.id, ...(request.counterpartyAgentId ? [request.counterpartyAgentId] : [])],
-          createdAt: request.updatedAt,
-          updatedAt: request.updatedAt,
-        });
-      }
-      for (const join of snapshot.joins) operations.push({
-        id: `join:${join.id}`,
-        kind: "join",
-        state: join.state,
-        text: join.state === "open" ? `${agent.title} is waiting for ${Math.max(0, join.total - join.completed)} more result${join.total - join.completed === 1 ? "" : "s"}`
-          : join.state === "satisfied" ? `${agent.title} received every result it was waiting for`
-            : `${agent.title}'s wait ended ${join.state}`,
-        agentIds: [agent.id],
-        createdAt: join.updatedAt,
-        updatedAt: join.updatedAt,
-      });
-    }
+    const operationBoundary = input.operationCursor
+      ? decodeTimelineCursor(input.operationCursor, "team:operations", conversationId)
+      : undefined;
+    const coordinationRecords = coordinationV3.teamOperationalRecords({
+      projectId: conversation.projectId,
+      conversationId,
+      limit: limit + 1,
+      ...(operationBoundary ? { before: operationBoundary } : {}),
+    });
+    const operations: NonNullable<CollaborationViewDto["operations"]> = coordinationRecords.map((record) => {
+      const owner = names.get(record.primaryAgentId) ?? "An Agent";
+      const recipient = record.secondaryAgentId ? names.get(record.secondaryAgentId) ?? "another Agent" : "another Agent";
+      const terminal = ["completed", "blocked", "cancelled", "expired", "outcome_unknown"].includes(record.state);
+      const text = record.kind === "run"
+        ? ["leased", "running"].includes(record.state) ? `${owner} is running`
+          : record.state === "completed" ? `${owner} finished`
+            : ["cancelled", "interrupted"].includes(record.state) ? `${owner} stopped` : `${owner} failed`
+        : record.kind === "activation"
+          ? record.subtype === "trigger_occurrence" ? `${owner} was triggered and has automatic work queued` : `${owner} has work queued`
+          : record.kind === "request"
+            ? record.state === "completed" ? `${recipient} finished work for ${owner}`
+              : terminal ? `${recipient}'s work for ${owner} ended ${record.state.replaceAll("_", " ")}`
+                : `${owner} asked ${recipient} to work`
+            : record.kind === "join"
+              ? record.state === "open" ? `${owner} is waiting for ${Math.max(0, (record.total ?? 0) - (record.completed ?? 0))} more result${(record.total ?? 0) - (record.completed ?? 0) === 1 ? "" : "s"}`
+                : record.state === "satisfied" ? `${owner} received every result it was waiting for`
+                  : `${owner}'s wait ended ${record.state}`
+              : record.state === "activated" ? `${record.subtype ?? "A trigger"} woke ${owner}`
+                : record.state === "pending" ? `${record.subtype ?? "A trigger"} is waiting to wake ${owner}`
+                  : `${record.subtype ?? "A trigger"} ended ${record.state.replaceAll("_", " ")}`;
+      return {
+        id: record.id, kind: record.kind, state: record.state, text,
+        agentIds: [record.primaryAgentId, ...(record.secondaryAgentId ? [record.secondaryAgentId] : [])],
+        createdAt: record.createdAt, updatedAt: record.updatedAt,
+      };
+    });
     for (const decision of workspace.listDecisions({ conversationId })) {
+      const decisionId = `decision:${decision.id}`;
+      if (operationBoundary && !(decision.updatedAt < operationBoundary.updatedAt ||
+        (decision.updatedAt === operationBoundary.updatedAt && decisionId < operationBoundary.id))) continue;
       const agentName = names.get(decision.agentId) ?? "An Agent";
       operations.push({
-        id: `decision:${decision.id}`,
+        id: decisionId,
         kind: "decision",
         state: decision.status,
         text: decision.status === "pending" ? `${agentName} is waiting for your decision` : `You answered ${agentName}'s decision`,
@@ -3493,9 +3489,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       });
     }
     for (const plan of managementPlans.values()) if (plan.conversationId === conversationId) {
+      const planId = `management:${plan.id}`;
+      const planUpdatedAt = plan.appliedAt ?? plan.createdAt;
+      if (operationBoundary && !(planUpdatedAt < operationBoundary.updatedAt ||
+        (planUpdatedAt === operationBoundary.updatedAt && planId < operationBoundary.id))) continue;
       const agentName = names.get(plan.agentId) ?? "An Agent";
       operations.push({
-        id: `management:${plan.id}`,
+        id: planId,
         kind: "organization",
         state: plan.appliedAt ? "applied" : "planned",
         text: plan.appliedAt
@@ -3506,13 +3506,22 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         updatedAt: plan.appliedAt ?? plan.createdAt,
       });
     }
-    operations.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
+    operations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    const hasMoreOperations = operations.length > limit;
+    const selectedOperations = operations.slice(0, limit);
+    const oldestOperation = selectedOperations.at(-1);
     const messagePage = store.getProjectedConversationMessagePage(conversationId, "collaboration", { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       agents,
-      operations: operations.slice(-limit),
+      operations: selectedOperations.reverse(),
       messages: withMessagePresentation(conversation.projectId, messagePage.messages),
       history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
+      operationHistory: {
+        limit, hasMore: hasMoreOperations,
+        ...(hasMoreOperations && oldestOperation ? {
+          cursor: encodeTimelineCursor("team:operations", conversationId, oldestOperation.updatedAt, oldestOperation.id),
+        } : {}),
+      },
     };
   }
 
@@ -3529,7 +3538,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return {
       ...detail,
       messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
-      telemetryHistory: detail.history,
       history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
@@ -8103,10 +8111,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string; operationCursor?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
     try {
-      const detail = collaborationViewDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
+      const detail = collaborationViewDetail(request.params.id, {
+        limit, cursor: request.query.cursor, focusId: request.query.focusId,
+        operationCursor: request.query.operationCursor,
+      });
       return detail ?? reply.code(404).send({ error: "conversation not found" });
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
@@ -8830,6 +8841,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
     }
+  });
+
+  app.get<{
+    Params: { id: string; stream: AgentTelemetryStream };
+    Querystring: { limit?: string; cursor?: string };
+  }>("/api/agents/:id/history/:stream", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "runs", "workItems", "artifacts"]);
+    if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
+    try {
+      const input = { limit, cursor: request.query.cursor };
+      switch (request.params.stream) {
+        case "runOutput": return { stream: "runOutput" as const, ...store.getRunOutputPage(request.params.id, input) };
+        case "activity": return { stream: "activity" as const, ...store.getActivityPage(request.params.id, input) };
+        case "runs": return { stream: "runs" as const, ...store.getRunPage(request.params.id, input) };
+        case "workItems": return { stream: "workItems" as const, ...store.getWorkItemPage(request.params.id, input) };
+        case "artifacts": return { stream: "artifacts" as const, ...store.getArtifactPage(request.params.id, input) };
+      }
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
+    }
+  });
+
+  app.get<{ Params: { id: string; seq: string } }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    const seq = Number(request.params.seq);
+    if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
+    return store.getActivityOutput(request.params.id, seq) ?? reply.code(404).send({ error: "tool output not found" });
   });
 
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
@@ -11391,18 +11431,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/artifacts", async (request, reply) => {
+  app.get<{ Params: { projectId: string }; Querystring: { limit?: string; cursor?: string } }>("/api/projects/:projectId/artifacts", async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    // One Project-level index replaces the old N full-Agent-detail requests.
-    // Keep execution artifacts visible without hydrating messages, Runs, or
-    // tool output for every Agent in the browser.
-    const artifacts = new Map(store.getProjectArtifacts(request.params.projectId).map((artifact) => [artifact.id, artifact]));
-    for (const agent of store.listAgents(request.params.projectId)) {
-      for (const artifact of store.getArtifacts(agent.id)) {
-        if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, { ...artifact, projectId: request.params.projectId });
-      }
+    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    try {
+      return store.getProjectArtifactPage(request.params.projectId, { limit, cursor: request.query.cursor });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
     }
-    return [...artifacts.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   });
 
   app.patch<{ Params: { projectId: string; aid: string }; Body: { pinned?: boolean; visibility?: "project" | "published" } }>(
