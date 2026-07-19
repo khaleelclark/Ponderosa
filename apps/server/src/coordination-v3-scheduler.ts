@@ -48,6 +48,9 @@ export class CoordinationV3Scheduler {
       clearTimer?: (timer: NodeJS.Timeout) => void;
       dispatchSteering?: (lease: SteeringLease, prompt: string) => Promise<CoordinationV3DispatchResult>;
       dispatchProviderOperation?: (operation: ProviderOperation) => Promise<CoordinationV3DispatchResult>;
+      /** Project authoritative SQLite outbox effects before the related
+       * Activation can be leased. Handlers must be idempotent across retries. */
+      processOutbox?: (item: { eventKind: string; payload: unknown }) => void | Promise<void>;
       onMessageDeliveryChanged?: (agentId: string) => void;
       onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
@@ -109,8 +112,15 @@ export class CoordinationV3Scheduler {
         this.options.onMessageDeliveryChanged?.(agentId);
       }
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
-        this.store.completeOutbox(item.id, this.options.workerId, now);
-        this.metrics.outboxSignals += 1;
+        try {
+          await this.options.processOutbox?.({ eventKind: item.eventKind, payload: item.payload });
+          this.store.completeOutbox(item.id, this.options.workerId, now);
+          this.metrics.outboxSignals += 1;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          this.metrics.lastDispatchError = message;
+          this.store.failOutbox(item.id, this.options.workerId, message);
+        }
       }
       if (!this.leasingPaused && this.options.dispatchProviderOperation) {
         for (const operation of this.store.claimProviderOperations(this.options.workerId, 50, now)) {

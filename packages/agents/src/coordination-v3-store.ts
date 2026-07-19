@@ -904,11 +904,16 @@ export class CoordinationV3Store {
   editPendingActivationText(input: {
     activationId: string;
     projectId: string;
+    /** Stable operator-authored replacement used for idempotency. Prepared
+     * document metadata may contain a first-attempt timestamp. */
+    requestText: string;
     text: string;
     document?: Record<string, unknown>;
     artifactId?: string;
     resultRef?: string;
-    commitRevision?: () => void;
+    revisionOwnerId: string;
+    artifact?: RuntimeArtifactInputV3;
+    revisionOutboxPayload: unknown;
     idempotencyKey: string;
     now?: string;
   }): { edited: boolean; replayed: boolean; status: "edited" | "delivery_started" } {
@@ -916,10 +921,7 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     const hash = payloadHash({
       activationId: input.activationId,
-      text: input.text,
-      document: input.document,
-      artifactId: input.artifactId,
-      resultRef: input.resultRef,
+      requestText: input.requestText,
     });
     return this.sqlite.transaction(() => {
       const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
@@ -965,7 +967,26 @@ export class CoordinationV3Store {
           UPDATE agent_activations SET payload_json = ?, updated_at = ?
           WHERE id = ? AND project_id = ? AND state IN ('pending', 'retry_pending')
         `).run(stableJson(nextPayload), now, input.activationId, input.projectId).changes === 1;
-        if (edited) input.commitRevision?.();
+        if (edited) {
+          if (input.artifact) {
+            if (!runtimeArtifactMetadataIsValid(input.artifact)) throw new Error("queued edit artifact metadata is invalid");
+            this.sqlite.prepare(`
+              INSERT INTO runtime_artifacts (
+                id, owner_kind, owner_id, project_id, role, title, media_type,
+                blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+              ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              input.artifact.id, input.revisionOwnerId, input.projectId,
+              input.artifact.role, input.artifact.title, input.artifact.mediaType,
+              input.artifact.blobPath, input.artifact.blobHash.toLowerCase(), input.artifact.byteLength,
+              input.artifact.originAgentId ?? null, input.artifact.executionId ?? null, now,
+            );
+          }
+          this.sqlite.prepare(`
+            INSERT INTO activation_outbox (activation_id, event_kind, payload_json, created_at)
+            VALUES (?, 'communication_revision', ?, ?)
+          `).run(input.activationId, stableJson(input.revisionOutboxPayload), now);
+        }
       }
       const result = edited
         ? { edited: true, status: "edited" as const }
@@ -2890,6 +2911,11 @@ export class CoordinationV3Store {
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
           ${excludedClause}
           AND NOT EXISTS (
+            SELECT 1 FROM activation_outbox audit
+            WHERE audit.activation_id = a.id AND audit.event_kind = 'communication_revision'
+              AND audit.processed_at IS NULL
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM trigger_occurrences occurrence
             JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
             WHERE occurrence.activation_id = a.id
@@ -2908,6 +2934,11 @@ export class CoordinationV3Store {
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM activation_outbox audit
+            WHERE audit.activation_id = agent_activations.id AND audit.event_kind = 'communication_revision'
+              AND audit.processed_at IS NULL
+          )
         ORDER BY priority DESC, created_at, rowid LIMIT 64
       `).all(candidate.agent_id, candidate.scope_key, now) as ActivationRow[];
       // A new inbound request starts a fresh provider task context. Human
@@ -3025,6 +3056,11 @@ export class CoordinationV3Store {
         WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (
+            SELECT 1 FROM activation_outbox audit
+            WHERE audit.activation_id = a.id AND audit.event_kind = 'communication_revision'
+              AND audit.processed_at IS NULL
+          )
+          AND NOT EXISTS (
             SELECT 1 FROM scheduler_prompt_injections injection
             WHERE injection.run_id = r.id AND injection.kind = 'steer'
               AND injection.state IN ('pending', 'submitted')
@@ -3041,6 +3077,11 @@ export class CoordinationV3Store {
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
+          AND NOT EXISTS (
+            SELECT 1 FROM activation_outbox audit
+            WHERE audit.activation_id = agent_activations.id AND audit.event_kind = 'communication_revision'
+              AND audit.processed_at IS NULL
+          )
         ORDER BY priority DESC, created_at, id LIMIT ?
       `).all(candidate.agent_id, candidate.scope_key, now, limit) as ActivationRow[];
       if (activations.length === 0) return undefined;

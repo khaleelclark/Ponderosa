@@ -376,6 +376,10 @@ export interface CreateServerOptions {
       ownerId: string;
       artifactIds: string[];
     }) => void | Promise<void>;
+    /** Crash seams around queued-edit outbox reconciliation. SQLite has
+     * already committed before either hook can run. */
+    afterQueuedEditSqliteCommit?: (context: { activationId: string; revisionId: string }) => void | Promise<void>;
+    afterQueuedEditRevisionAppend?: (context: { activationId: string; revisionId: string }) => void | Promise<void>;
   };
   /** Deterministic Project-file replacement seam; never enabled in production configuration. */
   projectFilePreviewFaults?: {
@@ -1476,6 +1480,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     originAgentId?: string;
     executionId?: string;
     createdAt: string;
+  };
+  type QueuedEditRevisionOutboxPayload = {
+    activationId: string;
+    agentId: string;
+    conversationId: string;
+    revision: CommunicationRevisionEvent;
+    artifact?: PreparedCommunicationArtifact;
   };
   const stageCommunicationArtifact = async (input: {
     projectId: string;
@@ -3755,6 +3766,32 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (terminationError) return { accepted: false, retryable: true, error: terminationError };
         if (activeRuns.get(agentId) === run) activeRuns.delete(agentId);
         return { accepted: true };
+      },
+      processOutbox: async (item) => {
+        if (item.eventKind !== "communication_revision") return;
+        const payload = item.payload as Partial<QueuedEditRevisionOutboxPayload> | null;
+        if (!payload || typeof payload.activationId !== "string" || typeof payload.agentId !== "string"
+          || typeof payload.conversationId !== "string" || !payload.revision
+          || typeof payload.revision !== "object" || payload.revision.kind !== "edit") {
+          throw new Error("invalid queued-edit revision outbox payload");
+        }
+        store.appendCommunicationRevision(payload.revision);
+        await opts.messageLifecycleFaults?.afterQueuedEditRevisionAppend?.({
+          activationId: payload.activationId,
+          revisionId: payload.revision.eventId,
+        });
+        if (payload.artifact) projectCommunicationArtifact(
+          payload.revision.projectId,
+          "local-operator",
+          payload.artifact,
+        );
+        appendWorkspace({
+          type: "queued_message_changed",
+          conversationId: payload.conversationId,
+          deliveryId: payload.activationId,
+          action: "edited",
+        });
+        publishCoordinationV3Changed(payload.agentId);
       },
       blockedAgentIds: () => store.listProjects().flatMap((project) =>
         store.listAgents(project.id)
@@ -7691,20 +7728,32 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const result = coordinationV3.editPendingActivationText({
       activationId: activation.id,
       projectId: agent.projectId,
+      requestText: prepared.canonicalText,
       text: prepared.publishedText,
       ...(prepared.document ? { document: prepared.document as unknown as Record<string, unknown> } : {}),
       ...(prepared.artifact ? {
         artifactId: prepared.artifact.id,
         resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
       } : {}),
-      commitRevision: () => { store.appendCommunicationRevision(revision); },
+      revisionOwnerId: revisionId,
+      ...(prepared.artifact ? { artifact: prepared.artifact } : {}),
+      revisionOutboxPayload: {
+        activationId: activation.id,
+        agentId: agent.id,
+        conversationId,
+        revision,
+        ...(prepared.artifact ? { artifact: prepared.artifact } : {}),
+      } satisfies QueuedEditRevisionOutboxPayload,
       idempotencyKey,
       now: createdAt,
     });
     if (!result.edited) return reply.code(409).send(result satisfies EditQueuedMessageResponse);
-    if (prepared.artifact) projectCommunicationArtifact(agent.projectId, "local-operator", prepared.artifact);
-    if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "edited" });
+    if (!result.replayed) await opts.messageLifecycleFaults?.afterQueuedEditSqliteCommit?.({
+      activationId: activation.id,
+      revisionId,
+    });
     publishCoordinationV3Changed(agent.id);
+    coordinationV3Scheduler.notify();
     return result satisfies EditQueuedMessageResponse;
   });
 
@@ -11357,37 +11406,74 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const PROJECT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
   const PROJECT_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
-  const PROJECT_PREVIEW_GLOBAL_CONCURRENCY = 12;
-  const PROJECT_PREVIEW_PROJECT_CONCURRENCY = 4;
-  const PROJECT_PREVIEW_RATE_WINDOW_MS = 60_000;
-  const PROJECT_PREVIEW_RATE_LIMIT = 60;
-  let projectPreviewGlobalInFlight = 0;
-  const projectPreviewInFlight = new Map<string, number>();
-  const projectPreviewRequests = new Map<string, number[]>();
+  const PROJECT_FILE_GLOBAL_CAPACITY = 12;
+  const PROJECT_FILE_PROJECT_CAPACITY = 4;
+  const PROJECT_FILE_PREVIEW_WEIGHT = 1;
+  const PROJECT_FILE_DOWNLOAD_WEIGHT = 2;
+  const PROJECT_FILE_RATE_WINDOW_MS = 60_000;
+  const PROJECT_FILE_RATE_CAPACITY = 60;
+  const PROJECT_FILE_RATE_BUCKET_LIMIT = 512;
+  let projectFileGlobalInFlight = 0;
+  const projectFileInFlight = new Map<string, number>();
+  const projectFileRequests = new Map<string, { requests: Array<{ at: number; weight: number }>; lastSeen: number }>();
   const projectPreviewMediaTypes = new Set(["image/png", "image/jpeg", "image/webp", "application/pdf"]);
 
-  function acquireProjectPreview(projectId: string): (() => void) | undefined {
+  function acquireProjectFileTransfer(projectId: string, weight: number): (() => void) | undefined {
     const now = Date.now();
-    const recent = (projectPreviewRequests.get(projectId) ?? [])
-      .filter((timestamp) => timestamp > now - PROJECT_PREVIEW_RATE_WINDOW_MS);
-    if (recent.length >= PROJECT_PREVIEW_RATE_LIMIT || projectPreviewGlobalInFlight >= PROJECT_PREVIEW_GLOBAL_CONCURRENCY
-      || (projectPreviewInFlight.get(projectId) ?? 0) >= PROJECT_PREVIEW_PROJECT_CONCURRENCY) {
-      projectPreviewRequests.set(projectId, recent);
+    for (const [key, bucket] of projectFileRequests) {
+      const requests = bucket.requests.filter((entry) => entry.at > now - PROJECT_FILE_RATE_WINDOW_MS);
+      if (requests.length === 0 && !projectFileInFlight.has(key)) projectFileRequests.delete(key);
+      else if (requests.length !== bucket.requests.length) projectFileRequests.set(key, { requests, lastSeen: bucket.lastSeen });
+    }
+    while (!projectFileRequests.has(projectId) && projectFileRequests.size >= PROJECT_FILE_RATE_BUCKET_LIMIT) {
+      const oldest = [...projectFileRequests.entries()]
+        .filter(([key]) => !projectFileInFlight.has(key))
+        .sort((left, right) => left[1].lastSeen - right[1].lastSeen)[0];
+      if (!oldest) return undefined;
+      projectFileRequests.delete(oldest[0]);
+    }
+    const bucket = projectFileRequests.get(projectId) ?? { requests: [], lastSeen: now };
+    const rateUsed = bucket.requests.reduce((total, entry) => total + entry.weight, 0);
+    if (rateUsed + weight > PROJECT_FILE_RATE_CAPACITY || projectFileGlobalInFlight + weight > PROJECT_FILE_GLOBAL_CAPACITY
+      || (projectFileInFlight.get(projectId) ?? 0) + weight > PROJECT_FILE_PROJECT_CAPACITY) {
+      projectFileRequests.set(projectId, { ...bucket, lastSeen: now });
       return undefined;
     }
-    recent.push(now);
-    projectPreviewRequests.set(projectId, recent);
-    projectPreviewGlobalInFlight += 1;
-    projectPreviewInFlight.set(projectId, (projectPreviewInFlight.get(projectId) ?? 0) + 1);
+    bucket.requests.push({ at: now, weight });
+    projectFileRequests.set(projectId, { requests: bucket.requests, lastSeen: now });
+    projectFileGlobalInFlight += weight;
+    projectFileInFlight.set(projectId, (projectFileInFlight.get(projectId) ?? 0) + weight);
     let released = false;
     return () => {
       if (released) return;
       released = true;
-      projectPreviewGlobalInFlight = Math.max(0, projectPreviewGlobalInFlight - 1);
-      const next = Math.max(0, (projectPreviewInFlight.get(projectId) ?? 1) - 1);
-      if (next === 0) projectPreviewInFlight.delete(projectId);
-      else projectPreviewInFlight.set(projectId, next);
+      projectFileGlobalInFlight = Math.max(0, projectFileGlobalInFlight - weight);
+      const next = Math.max(0, (projectFileInFlight.get(projectId) ?? weight) - weight);
+      if (next === 0) projectFileInFlight.delete(projectId);
+      else projectFileInFlight.set(projectId, next);
     };
+  }
+
+  function bindProjectFileTransferLifecycle(
+    request: { raw: NodeJS.EventEmitter },
+    reply: { raw: NodeJS.EventEmitter },
+    body: Readable,
+    release: () => void,
+  ): void {
+    let settled = false;
+    const cleanup = (destroy: boolean) => {
+      if (settled) return;
+      settled = true;
+      request.raw.removeListener("aborted", aborted);
+      reply.raw.removeListener("close", closed);
+      if (destroy && !body.destroyed) body.destroy();
+      release();
+    };
+    const aborted = () => cleanup(true);
+    const closed = () => cleanup(!body.readableEnded);
+    request.raw.once("aborted", aborted);
+    reply.raw.once("close", closed);
+    body.once("end", () => cleanup(false)).once("close", () => cleanup(false)).once("error", () => cleanup(false));
   }
 
   function projectFileMediaType(input: string | undefined): string | undefined {
@@ -11467,11 +11553,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
     "/api/projects/:projectId/workspace-files/preview",
     async (request, reply) => {
+      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
       const mediaType = projectFileMediaType(request.query.path);
       if (!mediaType || !projectPreviewMediaTypes.has(mediaType)) {
         return reply.code(415).send({ error: "this project file does not support an inline preview" });
       }
-      const release = acquireProjectPreview(request.params.projectId);
+      const release = acquireProjectFileTransfer(request.params.projectId, PROJECT_FILE_PREVIEW_WEIGHT);
       if (!release) return reply.code(429).header("Retry-After", "1").send({ error: "project preview capacity exceeded" });
       const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
         maxBytes: PROJECT_PREVIEW_MAX_BYTES,
@@ -11481,7 +11568,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         release();
         return reply.code(404).send({ error: "project file not found" });
       }
-      file.body.once("end", release).once("close", release).once("error", release);
+      bindProjectFileTransferLifecycle(request, reply, file.body, release);
       return reply.type(file.mediaType)
         .header("Content-Length", String(file.size))
         .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
@@ -11495,10 +11582,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
     "/api/projects/:projectId/workspace-files/download",
     async (request, reply) => {
+      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      const release = acquireProjectFileTransfer(request.params.projectId, PROJECT_FILE_DOWNLOAD_WEIGHT);
+      if (!release) return reply.code(429).header("Retry-After", "1").send({ error: "project file capacity exceeded" });
       const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
         maxBytes: PROJECT_DOWNLOAD_MAX_BYTES,
       });
-      if (!file) return reply.code(404).send({ error: "project file not found" });
+      if (!file) {
+        release();
+        return reply.code(404).send({ error: "project file not found" });
+      }
+      bindProjectFileTransferLifecycle(request, reply, file.body, release);
       return reply.type("application/octet-stream")
         .header("Content-Length", String(file.size))
         .header("Content-Disposition", contentDisposition(file.name))
