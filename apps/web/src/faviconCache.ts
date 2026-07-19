@@ -12,6 +12,8 @@ export interface FaviconResourceCacheOptions {
   negativeTtlMs?: number;
   createObjectUrl?: (blob: Blob) => string;
   revokeObjectUrl?: (url: string) => void;
+  /** Internal deterministic test hook for unused-entry LRU mutations. */
+  onUnusedEntryLruOperation?: (cache: "positive" | "negative", operation: "touch" | "evict") => void;
 }
 
 /**
@@ -42,12 +44,71 @@ interface FaviconEntry {
   consumers: number;
   lastUsedAt: number;
   invalid: boolean;
+  lruPrevious?: FaviconEntry;
+  lruNext?: FaviconEntry;
+  inUnusedLru: boolean;
 }
 
 interface FaviconFailure {
+  identity: string;
   expiresAt: number;
   src: Promise<string>;
   lastUsedAt: number;
+  lruPrevious?: FaviconFailure;
+  lruNext?: FaviconFailure;
+  inUnusedLru: boolean;
+}
+
+interface UnusedLruNode<T> {
+  lruPrevious?: T;
+  lruNext?: T;
+  inUnusedLru: boolean;
+}
+
+/**
+ * The maps are the lookup authority; this list contains only entries safe to
+ * evict. Keeping it separate means a release never has to inspect active
+ * consumers or sort the whole cache just to find the least-recently-used item.
+ */
+class UnusedEntryLru<T extends UnusedLruNode<T>> {
+  private newest?: T;
+  private oldest?: T;
+  private count = 0;
+
+  constructor(private readonly onOperation?: (operation: "touch" | "evict") => void) {}
+
+  get size(): number { return this.count; }
+
+  touch(entry: T): void {
+    this.remove(entry);
+    entry.lruNext = this.newest;
+    if (this.newest) this.newest.lruPrevious = entry;
+    else this.oldest = entry;
+    this.newest = entry;
+    entry.inUnusedLru = true;
+    this.count += 1;
+    this.onOperation?.("touch");
+  }
+
+  remove(entry: T): void {
+    if (!entry.inUnusedLru) return;
+    if (entry.lruPrevious) entry.lruPrevious.lruNext = entry.lruNext;
+    else this.newest = entry.lruNext;
+    if (entry.lruNext) entry.lruNext.lruPrevious = entry.lruPrevious;
+    else this.oldest = entry.lruPrevious;
+    entry.lruPrevious = undefined;
+    entry.lruNext = undefined;
+    entry.inUnusedLru = false;
+    this.count -= 1;
+  }
+
+  takeOldest(): T | undefined {
+    const entry = this.oldest;
+    if (!entry) return undefined;
+    this.remove(entry);
+    this.onOperation?.("evict");
+    return entry;
+  }
 }
 
 /**
@@ -71,43 +132,36 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
   const revokeObjectUrl = options.revokeObjectUrl ?? URL.revokeObjectURL.bind(URL);
   const resources = new Map<string, FaviconEntry>();
   const failures = new Map<string, FaviconFailure>();
+  const unusedResources = new UnusedEntryLru<FaviconEntry>((operation) => options.onUnusedEntryLruOperation?.("positive", operation));
+  const unusedFailures = new UnusedEntryLru<FaviconFailure>((operation) => options.onUnusedEntryLruOperation?.("negative", operation));
 
   const retire = (entry: FaviconEntry) => {
     if (resources.get(entry.identity) === entry) resources.delete(entry.identity);
+    unusedResources.remove(entry);
     if (entry.objectUrl) {
       revokeObjectUrl(entry.objectUrl);
       entry.objectUrl = undefined;
     }
   };
 
-  const prune = () => {
-    const current = now();
-    for (const [identity, failure] of failures) {
-      if (failure.expiresAt <= current) failures.delete(identity);
-    }
-    for (const entry of resources.values()) {
-      if (entry.expiresAt !== undefined && entry.expiresAt <= current && entry.consumers === 0) retire(entry);
-    }
+  const removeFailure = (failure: FaviconFailure) => {
+    if (failures.get(failure.identity) === failure) failures.delete(failure.identity);
+    unusedFailures.remove(failure);
   };
 
-  const trim = () => {
-    prune();
-    while (resources.size > maxEntries) {
-      const candidate = [...resources.values()]
-        .filter((entry) => entry.consumers === 0)
-        .sort((left, right) => left.lastUsedAt - right.lastUsedAt)[0];
+  const trimUnusedResources = () => {
+    while (unusedResources.size > maxEntries) {
+      const candidate = unusedResources.takeOldest();
       if (!candidate) return;
       retire(candidate);
     }
   };
 
-  const trimFailures = () => {
-    prune();
-    while (failures.size > maxEntries) {
-      const candidate = [...failures.entries()]
-        .sort(([, left], [, right]) => left.lastUsedAt - right.lastUsedAt)[0];
+  const trimUnusedFailures = () => {
+    while (unusedFailures.size > maxEntries) {
+      const candidate = unusedFailures.takeOldest();
       if (!candidate) return;
-      failures.delete(candidate[0]);
+      removeFailure(candidate);
     }
   };
 
@@ -117,11 +171,16 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
     // Attach a handler so a failed image with no remaining mounted consumer is
     // not reported as an unhandled rejection by the browser/test runtime.
     void failure.catch(() => undefined);
-    failures.set(identity, { expiresAt: now() + negativeTtlMs, src: failure, lastUsedAt: now() });
-    trimFailures();
+    const previous = failures.get(identity);
+    if (previous) removeFailure(previous);
+    const entry: FaviconFailure = { identity, expiresAt: now() + negativeTtlMs, src: failure, lastUsedAt: now(), inUnusedLru: false };
+    failures.set(identity, entry);
+    unusedFailures.touch(entry);
+    trimUnusedFailures();
   };
 
   const handle = (entry: FaviconEntry): FaviconResource => {
+    unusedResources.remove(entry);
     entry.consumers += 1;
     entry.lastUsedAt = now();
     let released = false;
@@ -136,7 +195,8 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
         if (entry.invalid || resources.get(entry.identity) !== entry || (entry.expiresAt !== undefined && entry.expiresAt <= now())) {
           retire(entry);
         } else {
-          trim();
+          unusedResources.touch(entry);
+          trimUnusedResources();
         }
       },
     };
@@ -144,7 +204,6 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
 
   return {
     acquire(identity) {
-      prune();
       let entry = resources.get(identity);
       if (entry?.expiresAt !== undefined && entry.expiresAt <= now()) {
         resources.delete(identity);
@@ -155,8 +214,13 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
 
       const failure = failures.get(identity);
       if (failure) {
-        failure.lastUsedAt = now();
-        return { src: failure.src, release() {} };
+        if (failure.expiresAt <= now()) {
+          removeFailure(failure);
+        } else {
+          failure.lastUsedAt = now();
+          unusedFailures.touch(failure);
+          return { src: failure.src, release() {} };
+        }
       }
 
       entry = {
@@ -165,6 +229,7 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
         consumers: 0,
         lastUsedAt: now(),
         invalid: false,
+        inUnusedLru: false,
       };
       entry.src = fetchFavicon(faviconEndpoint(identity)).then(async (response) => {
         if (!response.ok) throw new Error("favicon unavailable");
@@ -172,10 +237,11 @@ export function createFaviconResourceCache(fetchFavicon: FaviconFetcher, options
         entry!.objectUrl = objectUrl;
         entry!.expiresAt = now() + positiveTtlMs;
         if (entry!.invalid || entry!.consumers === 0 || resources.get(identity) !== entry) retire(entry!);
-        else trim();
+        // A response that completed after its final consumer unmounted is not
+        // retained; the release path already protected any still-live entry.
         return objectUrl;
       }).catch((error: unknown) => {
-        if (resources.get(identity) === entry) resources.delete(identity);
+        retire(entry!);
         rememberFailure(identity, entry!.src);
         throw error;
       });

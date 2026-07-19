@@ -101,11 +101,84 @@ describe("chat link presentation", () => {
       { maxEntries: 2, createObjectUrl: () => `blob:icon-${++sequence}`, revokeObjectUrl: (url) => revoked.push(url) },
     );
     for (const host of ["one.example.com", "two.example.com", "three.example.com"]) {
+      if (host === "three.example.com") {
+        const recentlyUsed = cache.acquire(faviconIdentity("https://one.example.com/another-page")!);
+        await recentlyUsed.src;
+        recentlyUsed.release();
+      }
       const consumer = cache.acquire(faviconIdentity(`https://${host}/guide`)!);
       await consumer.src;
       consumer.release();
     }
-    expect(revoked).toEqual(["blob:icon-1"]);
+    expect(revoked).toEqual(["blob:icon-2"]);
+    const retained = cache.acquire(faviconIdentity("https://one.example.com/final-page")!);
+    await expect(retained.src).resolves.toBe("blob:icon-1");
+    retained.release();
+  });
+
+  it("keeps active icons protected while independently retaining positive and negative entries", async () => {
+    let sequence = 0;
+    const revoked: string[] = [];
+    const fetchFavicon = vi.fn(async (input: string) => input.includes("failed.example.com")
+      ? new Response(null, { status: 404 })
+      : new Response(new Blob(["icon"]), { status: 200 }));
+    const cache = createFaviconResourceCache(fetchFavicon, {
+      maxEntries: 2,
+      createObjectUrl: () => `blob:icon-${++sequence}`,
+      revokeObjectUrl: (url) => revoked.push(url),
+    });
+    const active = cache.acquire(faviconIdentity("https://active.example.com/guide")!);
+    const firstUnused = cache.acquire(faviconIdentity("https://first.example.com/guide")!);
+    const secondUnused = cache.acquire(faviconIdentity("https://second.example.com/guide")!);
+    await expect(active.src).resolves.toBe("blob:icon-1");
+    await expect(firstUnused.src).resolves.toBe("blob:icon-2");
+    await expect(secondUnused.src).resolves.toBe("blob:icon-3");
+    firstUnused.release();
+    secondUnused.release();
+
+    const failed = ["failed.example.com", "also-failed.example.com"]
+      .map((host) => cache.acquire(faviconIdentity(`https://${host}/guide`)!));
+    await expect(failed[0]!.src).rejects.toThrow("favicon unavailable");
+    await expect(failed[1]!.src).rejects.toThrow("favicon unavailable");
+    expect(revoked).toEqual([]); // The active entry does not compete for the unused-entry cap.
+
+    const stillCached = cache.acquire(faviconIdentity("https://first.example.com/another-page")!);
+    await expect(stillCached.src).resolves.toBe("blob:icon-2");
+    stillCached.release();
+    await expect(cache.acquire(faviconIdentity("https://failed.example.com/another-page")!).src).rejects.toThrow("favicon unavailable");
+    expect(fetchFavicon).toHaveBeenCalledTimes(5); // 3 positive plus 2 negative, without cross-cache eviction.
+
+    active.release();
+    expect(revoked).toEqual(["blob:icon-3"]);
+  });
+
+  it("uses a constant number of LRU mutations per release as distinct-host cardinality grows", async () => {
+    for (const hostCount of [64, 1_024]) {
+      const lruOperations: Array<["positive" | "negative", "touch" | "evict"]> = [];
+      const revoked: string[] = [];
+      let sequence = 0;
+      const cache = createFaviconResourceCache(
+        vi.fn(async () => new Response(new Blob(["icon"]), { status: 200 })),
+        {
+          maxEntries: 16,
+          createObjectUrl: () => `blob:icon-${++sequence}`,
+          revokeObjectUrl: (url) => revoked.push(url),
+          onUnusedEntryLruOperation: (cacheName, operation) => lruOperations.push([cacheName, operation]),
+        },
+      );
+      for (let index = 0; index < hostCount; index += 1) {
+        const consumer = cache.acquire(faviconIdentity(`https://host-${index}.example.com/guide`)!);
+        await consumer.src;
+        consumer.release();
+      }
+
+      const touches = lruOperations.filter(([cacheName, operation]) => cacheName === "positive" && operation === "touch");
+      const evictions = lruOperations.filter(([cacheName, operation]) => cacheName === "positive" && operation === "evict");
+      expect(touches).toHaveLength(hostCount);
+      expect(evictions).toHaveLength(hostCount - 16);
+      expect(lruOperations).toHaveLength(hostCount + (hostCount - 16));
+      expect(revoked).toHaveLength(hostCount - 16);
+    }
   });
 
   it("bounds short-lived negative entries with their own LRU", async () => {
