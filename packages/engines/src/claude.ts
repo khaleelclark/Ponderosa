@@ -17,6 +17,7 @@ import type {
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
+  RuntimeProcessHandle,
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
@@ -153,6 +154,7 @@ export class ClaudeAdapter implements Adapter {
       opts.signal,
       opts.environment,
       opts.onRuntimeRootExit,
+      opts.onRuntimeSpawned,
     );
   }
 
@@ -162,7 +164,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
   private run(
@@ -171,6 +173,7 @@ export class ClaudeAdapter implements Adapter {
     signal: AbortSignal,
     environment?: Record<string, string>,
     onRuntimeRootExit?: () => void,
+    onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
@@ -178,6 +181,7 @@ export class ClaudeAdapter implements Adapter {
       cwd,
       signal,
       onRuntimeRootExit,
+      onRuntimeSpawned,
       environment,
       spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,

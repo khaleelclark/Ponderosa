@@ -201,7 +201,8 @@ export function AgentDetail({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const agentQuery = useAgent(agentId);
+  const [historyLimit, setHistoryLimit] = useState(100);
+  const agentQuery = useAgent(agentId, historyLimit);
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
   const queuedMessagesQuery = useQuery({
@@ -227,6 +228,7 @@ export function AgentDetail({
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
+  useEffect(() => setHistoryLimit(100), [agentId]);
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
@@ -391,7 +393,7 @@ export function AgentDetail({
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
       queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
@@ -418,7 +420,7 @@ export function AgentDetail({
       primaryConversationId: membershipIds.length ? primaryConversationId : undefined,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
       void queryClient.invalidateQueries({ queryKey: ["agents"] });
@@ -430,7 +432,7 @@ export function AgentDetail({
   const updateOrganization = useMutation({
     mutationFn: () => api.updateAgentOrganization(agentId, { managerAgentId: organizationParentId || null }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
       void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
@@ -442,7 +444,7 @@ export function AgentDetail({
     mutationFn: (managementPermissions: AgentDto["managementPermissions"]) =>
       api.updateAgent(agentId, { managementPermissions }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
       queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
@@ -833,7 +835,10 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2 }}>{panes[tab]}</Box>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: detail.history?.hasMore ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+        {detail.history?.hasMore ? <Button size="small" color="inherit" onClick={() => setHistoryLimit((current) => Math.min(1_000, current + 100))} sx={{ justifySelf: "center", my: .5 }}>Load older history</Button> : null}
+        {panes[tab]}
+      </Box>
 
       {tab === "chat" ? <Box sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}

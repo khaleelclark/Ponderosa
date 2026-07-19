@@ -68,6 +68,20 @@ export class ClaudeStreamSession implements RuntimeSession {
       detached: process.platform !== "win32",
     });
     opts.onRuntimeSpawned(this);
+    let rootExitReported = false;
+    let postExitDrainTimer: NodeJS.Timeout | undefined;
+    const reportRootExit = () => {
+      if (rootExitReported) return;
+      rootExitReported = true;
+      opts.onRuntimeRootExit?.();
+      postExitDrainTimer = setTimeout(() => this.child.stdout?.destroy(), 1_000);
+    };
+    this.child.stdout?.once("close", () => {
+      if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
+      postExitDrainTimer = undefined;
+    });
+    this.child.once("error", reportRootExit);
+    this.child.once("exit", reportRootExit);
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {

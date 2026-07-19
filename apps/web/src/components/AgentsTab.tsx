@@ -24,14 +24,13 @@ import {
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { agentRoleProfile } from "@ponderosa/core";
-import type { ConversationDto, AgentDetailDto, AgentDto, AgentHealthDto, EngineDto } from "@ponderosa/core";
+import type { ConversationDto, AgentDto, AgentHealthDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import {
-  agentActivity,
   agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
@@ -49,7 +48,6 @@ export function AgentsTab({
   conversations,
   statusByAgentId,
   healthByAgentId,
-  detailByAgentId,
   onOpenAgent,
   onNewAgent,
 }: {
@@ -59,7 +57,6 @@ export function AgentsTab({
   conversations: ConversationDto[];
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
-  detailByAgentId: Map<string, AgentDetailDto | undefined>;
   onOpenAgent(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
 }): JSX.Element {
@@ -266,7 +263,6 @@ export function AgentsTab({
           <Stack spacing={1.25}>
             {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
-              const activity = agentActivity(detailByAgentId.get(agent.id));
               const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
                 ? agents.find((candidate) => candidate.id === agent.managerAgentId)
@@ -319,16 +315,6 @@ export function AgentsTab({
                         updated {relativeTime(agent.updatedAt)}
                       </Typography>
                     </Stack>
-                    {activity ? (
-                      <Typography
-                        variant="body2"
-                        color="text.secondary"
-                        sx={{ mt: 0.5, overflowWrap: "anywhere" }}
-                        noWrap
-                      >
-                        Current activity: {activity}
-                      </Typography>
-                    ) : null}
                   </ButtonBase>
                   {!selectionMode ? <Tooltip title="Delete agent">
                     <IconButton

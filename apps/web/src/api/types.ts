@@ -146,8 +146,8 @@ export interface PonderosaApi {
   searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto>;
   listConversations(projectId: string): Promise<ConversationDto[]>;
   createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto>;
-  getConversation(conversationId: string): Promise<ConversationDetailDto>;
-  getCollaborationView(conversationId: string): Promise<CollaborationViewDto>;
+  getConversation(conversationId: string, limit?: number): Promise<ConversationDetailDto>;
+  getCollaborationView(conversationId: string, limit?: number): Promise<CollaborationViewDto>;
   updateConversation(conversationId: string, patch: UpdateConversationRequest): Promise<ConversationDto>;
   deleteConversation(conversationId: string): Promise<void>;
   sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void>;
@@ -195,7 +195,7 @@ export interface PonderosaApi {
   updateAgentOrganization(agentId: string, request: UpdateAgentOrganizationRequest): Promise<AgentDto>;
   previewAgentDeletion(projectId: string, request: AgentDeletionPreviewRequest): Promise<AgentDeletionPreviewDto>;
   commitAgentDeletion(projectId: string, request: CommitAgentDeletionRequest): Promise<CommitAgentDeletionResponse>;
-  getAgent(agentId: string): Promise<AgentDetailDto>;
+  getAgent(agentId: string, limit?: number): Promise<AgentDetailDto>;
   listProjectArtifacts(projectId: string): Promise<ArtifactDto[]>;
   exportAgent(agentId: string, mode: AgentExportMode, organization?: boolean): Promise<AgentPortablePackageDto>;
   importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse>;

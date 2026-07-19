@@ -65,6 +65,7 @@ export class CodexAppServerSession implements RuntimeSession {
       spawnFn: opts.spawnFn,
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
+      onRuntimeRootExit: opts.onRuntimeRootExit,
       handleServerRequest: async (method, params) => {
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);

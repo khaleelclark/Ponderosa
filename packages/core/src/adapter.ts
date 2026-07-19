@@ -81,9 +81,12 @@ export interface RunOptionsBase {
   environment?: Record<string, string>;
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
+  /** Called synchronously after a one-shot provider process is spawned. The
+   * host retains this handle until whole-group termination is observed. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   /** Called when a non-persistent provider root exits, before descendant
    * termination or stdout drain completes. Hosts revoke Run capabilities here. */
-  onRuntimeRootExit?: () => void;
+  onRuntimeRootExit: () => void;
 }
 
 /** Options for continuing an agent's already-active runtime session. */
@@ -174,6 +177,9 @@ export interface OpenRuntimeSessionOptions {
    * before it awaits initialization/readiness. The host retains this authority
    * handle even when opening later rejects. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+  /** Exactly-once notification that the persistent provider root exited or
+   * failed to spawn. The host revokes any active Run before draining output. */
+  onRuntimeRootExit: () => void;
   signal: AbortSignal;
 }
 

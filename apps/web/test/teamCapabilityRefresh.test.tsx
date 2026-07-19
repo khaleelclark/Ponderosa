@@ -173,12 +173,12 @@ describe("Project composer runtime capability refresh", () => {
     client.setQueryData(["engine-capabilities", projectId], discovery(capability("skill:initial", "skill", "Initial skill")));
     client.setQueryData(["workspace-preferences"], { engineDefaults: {} });
     client.setQueryData(["projects"], [{ id: projectId, defaultEngine: runtimeId }]);
-    client.setQueryData<ConversationDetailDto>(["conversation", conversationId], {
+    client.setQueryData<ConversationDetailDto>(["conversation", conversationId, 100], {
       conversation,
       messages: [],
       agents: [agent],
     });
-    client.setQueryData(["collaboration-chat", conversationId], { messages: [], agents: [agent] });
+    client.setQueryData(["collaboration-chat", conversationId, 100], { messages: [], agents: [agent] });
     client.setQueryData(["queued-messages", conversationId], []);
 
     const view = create(<QueryClientProvider client={client}><CapabilityConversation /></QueryClientProvider>);

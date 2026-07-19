@@ -74,6 +74,7 @@ describe("Claude persistent stream-json runtime", () => {
   it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
     const controller = new AbortController();
     let child: ChildProcess | undefined;
+    let rootExitCount = 0;
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
       child = spawn(process.execPath, [fake], opts);
       return child;
@@ -82,6 +83,7 @@ describe("Claude persistent stream-json runtime", () => {
       agentId: "stubborn-claude", cwd: here, history: [], signal: controller.signal,
       bin: "claude", spawnFn, permissionMode: "bypassPermissions", killGraceMs: 80,
       onRuntimeSpawned: retainOpeningHandleForTest,
+      onRuntimeRootExit: () => { rootExitCount += 1; },
       environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
     });
     const pid = child!.pid!;
@@ -97,6 +99,7 @@ describe("Claude persistent stream-json runtime", () => {
     expect(processAlive(pid)).toBe(true);
     await shutdownClose;
     expect(processAlive(pid)).toBe(false);
+    expect(rootExitCount).toBe(1);
   });
 
   it("exposes Ponderosa messaging through a host-side stdio MCP server", async () => {

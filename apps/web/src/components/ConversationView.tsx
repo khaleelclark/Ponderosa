@@ -289,8 +289,9 @@ export function ConversationView({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const detailQuery = useConversation(conversationId);
-  const collaborationQuery = useCollaborationView(conversationId);
+  const [historyLimit, setHistoryLimit] = useState(100);
+  const detailQuery = useConversation(conversationId, historyLimit);
+  const collaborationQuery = useCollaborationView(conversationId, historyLimit);
   const queuedMessagesQuery = useQuery({
     queryKey: ["queued-messages", conversationId],
     queryFn: () => api.listQueuedConversationMessages(conversationId),
@@ -363,6 +364,7 @@ export function ConversationView({
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   useEffect(() => {
+    setHistoryLimit(100);
     setActiveView(readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main");
   }, [conversationId]);
 
@@ -389,7 +391,10 @@ export function ConversationView({
       return;
     }
     const projectedId = projectedMessageIdForFocus(messages, focusMessageId);
-    if (!projectedId) return;
+    if (!projectedId) {
+      if (detailQuery.data?.history?.hasMore && historyLimit < 1_000) setHistoryLimit((current) => Math.min(1_000, current + 100));
+      return;
+    }
     const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
     shouldFollowNewMessages.current = false;
@@ -397,7 +402,7 @@ export function ConversationView({
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
-  }, [activeView, focusMessageId, messages]);
+  }, [activeView, detailQuery.data?.history?.hasMore, focusMessageId, historyLimit, messages]);
   useLayoutEffect(() => {
     if (
       displayedConversationId.current !== conversationId ||
@@ -943,6 +948,16 @@ export function ConversationView({
           </Alert>)}
 
           <Stack spacing={0} sx={{ mb: 2 }}>
+            {(activeView === "collaboration" ? collaborationQuery.data?.history?.hasMore : detailQuery.data?.history?.hasMore) ? (
+              <Button
+                size="small"
+                color="inherit"
+                onClick={() => setHistoryLimit((current) => Math.min(1_000, current + 100))}
+                sx={{ alignSelf: "center", mb: 1 }}
+              >
+                Load older history
+              </Button>
+            ) : null}
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
               {operationalEvents.map((event) => {
                 const content = <>

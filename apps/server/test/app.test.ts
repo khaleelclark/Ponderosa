@@ -10,7 +10,7 @@ import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
+import type { Adapter, AgentEvent, AgentPortablePackageDto, ApiPriceProfile, CommunicationEvent, ContinueOptions, ConversationDetailDto, EffortOption, ModelOption, OpenRuntimeSessionOptions, ProjectEngineCapabilitiesDto, RuntimeSession, RuntimeTurnInput, SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -754,6 +754,10 @@ class SteerableMockAdapter extends MockAdapter {
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
   readonly queues: TestEventQueue[] = [];
 
+  crashRoot(sessionIndex: number): void {
+    this.openedOptions[sessionIndex]?.onRuntimeRootExit();
+  }
+
   completeTurn(sessionIndex: number): void {
     this.queues[sessionIndex]?.push({ type: "turn_done" });
   }
@@ -851,6 +855,8 @@ function stubbornOneShotAdapter(children: ChildProcess[], pidFile: string, killG
     args: [fake],
     cwd: opts.cwd,
     signal: opts.signal,
+    onRuntimeSpawned: opts.onRuntimeSpawned,
+    onRuntimeRootExit: opts.onRuntimeRootExit,
     environment: { ...opts.environment, PONDEROSA_TEST_DESCENDANT_PID_FILE: pidFile },
     killGraceMs,
     label: "stubborn one-shot",
@@ -2607,6 +2613,28 @@ describe("persistent engine steering", () => {
     expect(processAlive(pid)).toBe(false);
   });
 
+  it("synchronously revokes an active persistent Run when its provider root exits", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Persistent root exit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Root exit", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    const token = persistent.openedOptions[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+
+    persistent.crashRoot(0);
+    const rejected = await app.inject({
+      method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` },
+    });
+    expect(rejected.statusCode).toBe(401);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await vi.waitFor(() => expect(new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun).toBeUndefined());
+    await app.close();
+  });
+
   it("awaits non-persistent Run completion until a stubborn descendant exits", async () => {
     const children: ChildProcess[] = [];
     const pidFile = path.join(dataDir, "one-shot-descendant.json");
@@ -2629,6 +2657,64 @@ describe("persistent engine steering", () => {
     await closing;
     expect(processAlive(descendantPid.descendantPid)).toBe(false);
     expect(children[0]?.exitCode).not.toBeNull();
+  });
+
+  it("retains a failed one-shot termination handle and deletes the Project only after an exact retry succeeds", async () => {
+    const fallback = new MockAdapter();
+    let closeAttempts = 0;
+    let spawned = false;
+    let alive = true;
+    let closePromise: Promise<void> | undefined;
+    const handle = {
+      isAlive: () => alive,
+      close: () => {
+        if (closePromise) return closePromise;
+        closeAttempts += 1;
+        const attempt = closeAttempts;
+        const operation = Promise.resolve().then(() => {
+          if (attempt === 1) throw new Error("simulated one-shot process-group termination failure");
+          alive = false;
+        });
+        const shared = operation.catch((error) => {
+          if (closePromise === shared) closePromise = undefined;
+          throw error;
+        });
+        closePromise = shared;
+        return shared;
+      },
+    };
+    const execute = async function* (options: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> {
+      options.onRuntimeSpawned?.(handle);
+      spawned = true;
+      await new Promise<void>((resolve) => options.signal.addEventListener("abort", () => resolve(), { once: true }));
+    };
+    engines = [{
+      adapter: {
+        id: "codex", displayName: "Retrying one-shot runtime",
+        listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
+        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+      },
+      authStatus: async () => ({ authenticated: true }),
+    }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Retry one-shot deletion", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "One shot", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(spawned).toBe(true));
+
+    const blocked = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(store.getProject(project.id)).toBeDefined();
+    expect(alive).toBe(true);
+
+    const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(closeAttempts).toBe(2);
+    expect(alive).toBe(false);
+    await app.close();
   });
 
   it("drains a provider that finishes opening after Project deletion begins", async () => {
@@ -3711,6 +3797,49 @@ describe("server chunk F", () => {
     const downloaded = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download` });
     expect(downloaded.statusCode).toBe(200);
     expect(downloaded.rawPayload).toEqual(body);
+    await app.close();
+  });
+
+  it("serves active generated documents only inside an opaque restricted sandbox", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Sandboxed artifacts", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Visualizer", engine: "codex" });
+    const artifactId = randomUUID();
+    const relativePath = `generated/${artifactId}.html`;
+    const body = Buffer.from("<script>document.body.textContent = 'rendered'</script>");
+    const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
+    mkdirSync(path.dirname(managedFile), { recursive: true });
+    writeFileSync(managedFile, body);
+    store.recordProjectArtifact({
+      id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
+      executionId: "run-html", kind: "generated_file", path: relativePath, sourcePath: "report.html",
+      summary: "report.html", createdAt: new Date().toISOString(), mediaType: "text/html", size: body.length,
+      visibility: "project", pinned: false,
+    });
+    store.appendEvent(agent.id, { type: "test_result", passed: true, summary: "Accessibility checks passed" });
+
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: artifactId, kind: "generated_file" }),
+        expect.objectContaining({ agentId: agent.id, kind: "test_report" }),
+      ]));
+
+    const preview = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.headers["content-security-policy"]).toContain("sandbox allow-scripts");
+    expect(preview.headers["content-security-policy"]).not.toContain("allow-same-origin");
+    expect(preview.headers["content-security-policy"]).toContain("connect-src 'none'");
+    expect(preview.headers["cache-control"]).toBe("private, no-store");
+    expect(preview.headers["referrer-policy"]).toBe("no-referrer");
+    expect(preview.rawPayload).toEqual(body);
+
+    const download = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    });
+    expect(download.headers["content-disposition"]).toMatch(/^attachment/);
+    expect(download.headers["content-security-policy"]).not.toContain("sandbox");
     await app.close();
   });
 
@@ -6072,6 +6201,37 @@ describe("server chunk F", () => {
     const readiness = (await app.inject({ method: "GET", url: "/api/ready" })).json();
     expect(readiness, JSON.stringify({ readiness, reconciliation: store.reconcileCommunicationEvents(project.id) }))
       .toMatchObject({ status: "ready", checks: { communicationMigration: { ok: true } } });
+    await app.close();
+  });
+
+  it("bounds chat history by default and expands it only when explicitly requested", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Bounded history", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Long room" });
+    for (let index = 0; index < 125; index += 1) {
+      const createdAt = new Date(1_800_000_000_000 + index).toISOString();
+      const eventId = `history-${String(index).padStart(3, "0")}`;
+      store.appendCommunicationEvent({
+        eventId, schemaVersion: 2, projectId: project.id, conversationId: room.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id },
+        text: `History ${index}`, createdAt,
+      });
+      store.appendCommunicationProjection(project.id, {
+        eventId, surface: "conversation", projectionKey: room.id, projectedAt: createdAt,
+        message: { messageId: eventId, role: "user", renderedText: `History ${index}`, createdAt },
+      });
+    }
+
+    const bounded = (await app.inject({ method: "GET", url: `/api/conversations/${room.id}` })).json<ConversationDetailDto>();
+    expect(bounded.messages).toHaveLength(100);
+    expect(bounded.messages[0]?.text).toBe("History 25");
+    expect(bounded.history).toEqual({ limit: 100, hasMore: true });
+
+    const expanded = (await app.inject({ method: "GET", url: `/api/conversations/${room.id}?limit=200` })).json<ConversationDetailDto>();
+    expect(expanded.messages).toHaveLength(125);
+    expect(expanded.messages[0]?.text).toBe("History 0");
+    expect(expanded.history).toEqual({ limit: 200, hasMore: false });
     await app.close();
   });
 

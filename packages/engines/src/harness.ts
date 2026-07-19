@@ -142,6 +142,8 @@ async function main(): Promise<void> {
         model: args.model,
         effort: args.effort,
         signal: controller.signal,
+        onRuntimeSpawned: () => undefined,
+        onRuntimeRootExit: () => undefined,
       })
     : adapter.seed({
         agentId: "harness",
@@ -151,6 +153,8 @@ async function main(): Promise<void> {
         model: args.model,
         effort: args.effort,
         signal: controller.signal,
+        onRuntimeSpawned: () => undefined,
+        onRuntimeRootExit: () => undefined,
       });
 
   for await (const ev of stream) {

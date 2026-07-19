@@ -125,6 +125,12 @@ or Agent chat. They remain in Activity and Files & results.
 - no client-selected executable, DevTools endpoint, host, or profile path;
 - session close on Run completion, failure, cancellation, lease expiry, Agent or
   Project deletion, explicit close, or server shutdown;
+- Project deletion fences browser authority first, then drains every session by
+  immutable Project ID, including a factory still opening and a driver retained
+  after failed cleanup. A late driver is closed before storage deletion;
+- Chromium runs in a dedicated process group. Cleanup succeeds only after the
+  whole group is observed gone; SIGTERM/SIGKILL dispatch alone is not success,
+  and failed closes remain retryable and visible to shutdown/deletion;
 - reconnect creates a new browser process for the same immutable scope and
   restores only a fragment-free URL with no credential-bearing query; otherwise
   it opens a blank page;

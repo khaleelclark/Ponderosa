@@ -170,12 +170,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },
-  getConversation(conversationId) {
-    return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId));
+  getConversation(conversationId, limit = 100) {
+    return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId) + toQuery({ limit: String(limit) }));
   },
-  getCollaborationView(conversationId) {
+  getCollaborationView(conversationId, limit = 100) {
     return requestJson<CollaborationViewDto>(
-      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration",
+      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit) }),
     );
   },
   updateConversation(conversationId, patch) {
@@ -364,8 +364,8 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CommitAgentDeletionRequest),
     });
   },
-  getAgent(agentId) {
-    return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}`);
+  getAgent(agentId, limit = 100) {
+    return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit) })}`);
   },
   listProjectArtifacts(projectId) {
     return requestJson<ArtifactDto[]>(`/api/projects/${encodeURIComponent(projectId)}/artifacts`);

@@ -58,6 +58,7 @@ export interface JsonRpcProcessOptions {
   killGraceMs?: number;
   /** Register authority immediately after spawn, before transport setup. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+  onRuntimeRootExit: () => void;
   handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 
@@ -82,14 +83,34 @@ export class JsonRpcProcess {
       detached: process.platform !== "win32",
     });
     opts.onRuntimeSpawned(this);
+    let rootExitReported = false;
+    const reportRootExit = () => {
+      if (rootExitReported) return;
+      rootExitReported = true;
+      opts.onRuntimeRootExit?.();
+    };
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
     const lines = createInterface({ input: this.child.stdout! });
+    let postExitDrainTimer: NodeJS.Timeout | undefined;
+    const clearPostExitDrain = () => {
+      if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
+      postExitDrainTimer = undefined;
+    };
+    this.child.stdout?.once("close", clearPostExitDrain);
     lines.on("line", (line) => this.receive(line));
-    this.child.once("error", (error) => this.finish(new Error(`failed to spawn ${opts.bin}: ${error.message}`)));
+    const rootExited = () => {
+      reportRootExit();
+      // A descendant outside the owned process group can inherit stdout and
+      // otherwise keep the provider event stream open forever. Allow already
+      // buffered output to drain briefly, then close the transport locally.
+      postExitDrainTimer ??= setTimeout(() => this.child.stdout?.destroy(), 1_000);
+    };
+    this.child.once("error", (error) => { rootExited(); this.finish(new Error(`failed to spawn ${opts.bin}: ${error.message}`)); });
+    this.child.once("exit", rootExited);
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
       : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}`)));
