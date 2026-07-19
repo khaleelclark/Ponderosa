@@ -21,7 +21,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDetailDto, AgentDto, ArtifactDto } from "@ponderosa/core";
+import type { AgentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
@@ -43,12 +43,10 @@ const projectOutputKinds = new Set<ArtifactDto["kind"]>([
 export function ProjectArtifactsView({
   projectId,
   agents,
-  detailByAgentId,
   onOpenArtifact,
 }: {
   projectId: string;
   agents: AgentDto[];
-  detailByAgentId: Map<string, AgentDetailDto | undefined>;
   onOpenArtifact(agentId: string, artifactId: string): void;
 }): JSX.Element {
   const [filter, setFilter] = useState("");
@@ -61,18 +59,11 @@ export function ProjectArtifactsView({
   const records = useMemo(() => {
     const agentById = new Map(agents.map((agent) => [agent.id, agent] as const));
     const canonical = (projectArtifacts.data ?? []).filter((artifact) => projectOutputKinds.has(artifact.kind));
-    const seen = new Set(canonical.map((artifact) => artifact.id));
-    const agentOutputs = agents.flatMap((agent) => (detailByAgentId.get(agent.id)?.artifacts ?? [])
-      .filter((artifact) => projectOutputKinds.has(artifact.kind) && !seen.has(artifact.id))
-      .map((artifact) => ({ agent, artifact })));
-    return [
-      ...canonical.map((artifact) => ({
+    return canonical.map((artifact) => ({
         agent: agentById.get(artifact.originAgentId ?? artifact.agentId),
         artifact,
-      })),
-      ...agentOutputs,
-    ].sort((left, right) => right.artifact.createdAt.localeCompare(left.artifact.createdAt));
-  }, [agents, detailByAgentId, projectArtifacts.data]);
+      })).sort((left, right) => right.artifact.createdAt.localeCompare(left.artifact.createdAt));
+  }, [agents, projectArtifacts.data]);
   const filtered = useMemo(() => records.filter(({ agent, artifact }) => !normalizedFilter || [
     agent?.title,
     artifactDisplayLabel(artifact),
@@ -80,8 +71,7 @@ export function ProjectArtifactsView({
     artifact.summary,
     artifact.kind,
   ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter)), [records, normalizedFilter]);
-  const loading = projectArtifacts.isLoading
-    || agents.some((agent) => !detailByAgentId.has(agent.id) || detailByAgentId.get(agent.id) === undefined);
+  const loading = projectArtifacts.isLoading;
 
   return <Box sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
@@ -150,6 +140,8 @@ export function ProjectArtifactsView({
           data-testid="artifact-document-preview"
           src={previewArtifact.previewUrl}
           title={artifactDisplayLabel(previewArtifact)}
+          sandbox="allow-scripts"
+          referrerPolicy="no-referrer"
           sx={{ display: "block", width: "100%", height: "72dvh", border: 0, borderRadius: 1, bgcolor: "background.paper" }}
         /> : null}
       </DialogContent>

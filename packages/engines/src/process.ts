@@ -5,7 +5,7 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import type { AgentEvent } from "@ponderosa/core";
+import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { parseJsonlChunks } from "./jsonl.js";
 import { terminateProcessGroup } from "./process-termination.js";
 
@@ -33,6 +33,7 @@ export interface StreamProcessOptions {
   args: string[];
   cwd: string;
   signal: AbortSignal;
+  onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void;
   /** Fence host capabilities as soon as the provider root exits. */
   onRuntimeRootExit?: () => void;
   environment?: Record<string, string>;
@@ -63,6 +64,7 @@ export async function* streamProcess(
     args,
     cwd,
     signal,
+    onRuntimeSpawned,
     onRuntimeRootExit,
     environment,
     spawnFn,
@@ -106,15 +108,24 @@ export async function* streamProcess(
   let termination: Promise<void> | undefined;
   const terminate = (): Promise<void> => {
     if (termination) return termination;
-    termination = terminateProcessGroup(child, {
+    const attempt = terminateProcessGroup(child, {
       label: `${label} run`,
       termGraceMs: killGraceMs,
     });
+    const shared = attempt.catch((error) => {
+      if (termination === shared) termination = undefined;
+      throw error;
+    });
+    termination = shared;
     // The generator awaits this barrier below. Observe an early rejection now
     // so an AbortSignal callback cannot create an unhandled promise first.
     void termination.catch(() => undefined);
     return termination;
   };
+  onRuntimeSpawned?.({
+    isAlive: () => child.exitCode === null && child.signalCode === null,
+    close: terminate,
+  });
   const onAbort = (): void => {
     void terminate();
   };

@@ -560,6 +560,12 @@ export interface CollaborationViewDto {
   messages: ConversationMessageDto[];
   agents: AgentDto[];
   operations?: TeamOperationalEventDto[];
+  history?: HistoryWindowDto;
+}
+
+export interface HistoryWindowDto {
+  limit: number;
+  hasMore: boolean;
 }
 
 export interface TeamOperationalEventDto {
@@ -633,6 +639,7 @@ export interface ConversationDetailDto {
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   agents: AgentDto[];
+  history?: HistoryWindowDto;
 }
 
 /** POST /api/conversations/:id/messages body. */
@@ -1544,6 +1551,7 @@ export interface AgentDetailDto {
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;
+  history?: HistoryWindowDto;
 }
 
 // ─── Messaging / runs ────────────────────────────────────────────────────────

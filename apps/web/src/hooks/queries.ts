@@ -45,23 +45,19 @@ export function useAgentHealth(projectId: string | undefined) {
   });
 }
 
-export function useConversation(conversationId: string | undefined) {
+export function useConversation(conversationId: string | undefined, limit = 100) {
   return useQuery({
-    queryKey: ["conversation", conversationId],
-    queryFn: () => api.getConversation(conversationId ?? ""),
+    queryKey: ["conversation", conversationId, limit],
+    queryFn: () => api.getConversation(conversationId ?? "", limit),
     enabled: Boolean(conversationId),
-    // The group chat is the primary surface: poll so agent report-backs and new
-    // agents appear without a manual refresh.
-    refetchInterval: 4000,
   });
 }
 
-export function useCollaborationView(conversationId: string | undefined) {
+export function useCollaborationView(conversationId: string | undefined, limit = 100) {
   return useQuery({
-    queryKey: ["collaboration-chat", conversationId],
-    queryFn: () => api.getCollaborationView(conversationId ?? ""),
+    queryKey: ["collaboration-chat", conversationId, limit],
+    queryFn: () => api.getCollaborationView(conversationId ?? "", limit),
     enabled: Boolean(conversationId),
-    refetchInterval: 4000,
   });
 }
 
@@ -80,10 +76,10 @@ export function useAgentPresets(projectId: string | undefined) {
   return useQuery({ queryKey: ["agent-presets", projectId], queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
 }
 
-export function useAgent(agentId: string | undefined) {
+export function useAgent(agentId: string | undefined, limit = 100) {
   return useQuery({
-    queryKey: ["agent", agentId],
-    queryFn: () => api.getAgent(agentId ?? ""),
+    queryKey: ["agent", agentId, limit],
+    queryFn: () => api.getAgent(agentId ?? "", limit),
     enabled: Boolean(agentId),
   });
 }

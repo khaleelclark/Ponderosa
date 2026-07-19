@@ -243,6 +243,10 @@ Ordinary runtime output → execution-scoped Work log
 - Responding/typing state and elapsed time come from canonical execution
   ownership, not optimistic component state. They survive refresh and SSE
   reconnection and fail closed when ownership is ambiguous.
+- Project and Agent surfaces load a bounded recent history window by default.
+  Older canonical history remains durable and is expanded only by an explicit
+  user action or a focused deep-link lookup. Project shells and file indexes
+  must never hydrate every Agent's full detail merely to render a roster.
 - Every agent uses the same identity, runtime, communication, steering, and audit
   implementation. A subagent is an ordinary agent with a direct `managerAgentId`;
   do not create a second delegated-agent or assignment subsystem.
@@ -297,6 +301,11 @@ Ordinary runtime output → execution-scoped Work log
   exit synchronously revokes its Run callback capability and starts whole-group
   termination independently of stdout draining; inherited pipes receive only a
   bounded post-exit drain interval.
+  Persistent roots have the same exactly-once root-exit signal: synchronously
+  fence and abort the active Run, remove the session from reuse, and retain its
+  handle for retryable teardown. Non-persistent Adapters publish a spawn-time
+  termination handle too; failed close attempts remain registered after the Run
+  releases and participate in Project-deletion and daemon-shutdown fixed points.
   Project deletion and daemon shutdown must drain openings, active Run completion
   barriers, reusable sessions, and failed teardowns to a fixed point before
   deleting storage or exiting. Non-persistent Adapter Runs obey the same observed
@@ -307,6 +316,10 @@ Ordinary runtime output → execution-scoped Work log
   capabilities synchronously before browser cleanup. Browser and provider cleanup
   are independent bounded barriers; failure leaves the Project quarantined and
   retryable rather than restoring Agent authority.
+  Browser draining is Project-scoped and includes ready, opening, and retained
+  failed-close handles. A late browser factory result is fenced, closed, and
+  observed before Project storage can be deleted; browser process-group exit is
+  mandatory rather than best effort.
   Production SIGTERM/SIGINT must call and await Fastify close; shutdown attempts
   every process group before aggregating failures and closes canonical storage
   only after the complete policy succeeds. Persistent runtime hosting fails

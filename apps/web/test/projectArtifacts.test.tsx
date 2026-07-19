@@ -1,9 +1,11 @@
-import type { AgentDetailDto, AgentDto, ArtifactDto } from "@ponderosa/core";
+import type { AgentDto, ArtifactDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
 import { ProjectArtifactsView } from "../src/components/ProjectArtifactsView";
+
+const projectArtifactsSource = readFileSync(new URL("../src/components/ProjectArtifactsView.tsx", import.meta.url), "utf8");
 
 describe("project artifacts view", () => {
   it("indexes downloadable project outputs without showing command logs", async () => {
@@ -38,15 +40,14 @@ describe("project artifacts view", () => {
       previewUrl: "/api/projects/project-1/artifacts/download-1/preview",
       downloadUrl: "/api/projects/project-1/artifacts/download-1/download",
     } satisfies ArtifactDto;
-    vi.spyOn(api, "listProjectArtifacts").mockResolvedValue([download]);
-    const detail = { artifacts: [artifact, command, download] } as unknown as AgentDetailDto;
+    vi.spyOn(api, "listProjectArtifacts").mockResolvedValue([artifact, command, download]);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
-      view = create(<QueryClientProvider client={client}><ProjectArtifactsView projectId="project-1" agents={[agent]} detailByAgentId={new Map([[agent.id, detail]])} onOpenArtifact={onOpenArtifact} /></QueryClientProvider>);
+      view = create(<QueryClientProvider client={client}><ProjectArtifactsView projectId="project-1" agents={[agent]} onOpenArtifact={onOpenArtifact} /></QueryClientProvider>);
     });
+    await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("Accessibility audit"));
 
-    expect(JSON.stringify(view.toJSON())).toContain("Accessibility audit");
     expect(JSON.stringify(view.toJSON())).toContain("reports/accessibility-audit.md");
     expect(JSON.stringify(view.toJSON())).toContain("Final report.pdf");
     expect(JSON.stringify(view.toJSON())).toContain("Download");
@@ -58,7 +59,11 @@ describe("project artifacts view", () => {
     expect(previewButton.props.href).toBeUndefined();
     expect(previewButton.props.target).toBeUndefined();
     expect(onOpenArtifact).toHaveBeenCalledTimes(1);
+    expect(projectArtifactsSource).toContain('sandbox="allow-scripts"');
+    expect(projectArtifactsSource).not.toContain("allow-same-origin");
+    expect(projectArtifactsSource).toContain('referrerPolicy="no-referrer"');
     view.unmount();
     client.clear();
   });
 });
+import { readFileSync } from "node:fs";

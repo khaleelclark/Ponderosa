@@ -72,8 +72,16 @@ chronological command/test/tool/file feed, Changed Files for the canonical
 agent-attributed file set, Review for the current Git working tree and safe
 diff/file inspection, Runs for execution state, Files & results for durable outputs,
 and Triggers for Agent-owned automatic work.
-Sources remain attached to their message in a compact footer. Generated PDFs are
-previewable and downloadable as project-scoped artifacts.
+Sources remain attached to their message in a compact footer. Generated files are
+previewable and downloadable as project-scoped artifacts. Active HTML and SVG
+previews run only in an opaque-origin sandbox: local visualization scripts may
+execute, while same-origin access, network requests, forms, embedding, and
+navigation remain unavailable.
+
+Long-lived chats and Agents open on their latest bounded history window. Older
+canonical records remain intact and can be loaded on demand; Project navigation
+and the Files view use summary/Project indexes rather than fetching every
+Agent's complete execution history.
 
 Text through 10,000 Unicode code points remains inline. Longer user or Agent
 text is accepted through an 8 MiB UTF-8 ceiling and automatically becomes a
@@ -101,6 +109,11 @@ SIGTERM/SIGINT stops intake through Fastify shutdown, attempts every runtime
 group, and waits through SIGTERM grace and SIGKILL escalation before the daemon
 may exit. Persistent runtime hosting is explicitly unavailable on Windows until
 Ponderosa can contain and observe descendants with Job Objects.
+Persistent and one-shot runtimes both publish a host-owned handle at spawn. A
+persistent root exit immediately fences its active Run and removes the session
+from reuse; a one-shot close failure remains retryable after Run release. Project
+deletion also drains every Project browser state—including factories still
+opening and drivers retained after a failed close—before removing storage.
 
 A stop action is scoped to the exact Run the user or managing Agent observed.
 If that Run has already ended or been replaced, Ponderosa reports the stale

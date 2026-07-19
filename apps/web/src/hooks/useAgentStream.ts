@@ -402,7 +402,7 @@ export function useAgentStream(agentId: string | undefined): StreamState {
             : current.timeline,
         }));
 
-        queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (detail) =>
+        queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (detail) =>
           detail ? updateAgentDetail(agentId, envelope, detail) : detail,
         );
 

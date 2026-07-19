@@ -10,6 +10,7 @@ import type {
   BrowserSessionDto,
 } from "@ponderosa/core";
 import { artifactsDir } from "@ponderosa/agents";
+import { terminateProcessGroup } from "@ponderosa/engines";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
 const MAX_CONSOLE_TEXT = 4_000;
@@ -367,8 +368,10 @@ export class BrowserSessionManager {
         this.lifecycle(session, "opened");
         return publicDto(session);
       } catch (error) {
+        if (createdDriver) session.closingDriver = createdDriver;
         await this.closeDriver(createdDriver);
         if (session.driver === createdDriver) session.driver = undefined;
+        if (session.closingDriver === createdDriver) session.closingDriver = undefined;
         const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
         if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
           session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
@@ -436,7 +439,9 @@ export class BrowserSessionManager {
         this.lifecycle(session, "reconnected");
         return publicDto(session);
       } catch (error) {
+        if (createdDriver) session.closingDriver = createdDriver;
         await this.closeDriver(createdDriver);
+        if (session.closingDriver === createdDriver) session.closingDriver = undefined;
         if (session.driver === createdDriver) session.driver = undefined;
         const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
         if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
@@ -631,7 +636,8 @@ export class BrowserSessionManager {
 
   async close(scope: BrowserScope, reason = "explicit_close"): Promise<BrowserSessionDto> {
     const session = this.owned(scope);
-    if (session.dto.status === "closed" && !session.closingDriver) return publicDto(session);
+    if (session.dto.status === "closed" && !session.closingDriver && !session.opening) return publicDto(session);
+    const opening = session.opening;
     const driver = session.driver ?? session.closingDriver;
     session.driver = undefined;
     session.closingDriver = driver;
@@ -644,8 +650,14 @@ export class BrowserSessionManager {
       updatedAt: new Date().toISOString(),
     };
     this.lifecycle(session, reason);
-    await this.closeDriver(driver);
-    if (session.closingDriver === driver) session.closingDriver = undefined;
+    // Fence the lifecycle first, then wait for an in-flight factory. Its own
+    // status/epoch checks route any late driver into retained cleanup.
+    await opening?.catch(() => undefined);
+    const retained = session.driver ?? session.closingDriver ?? driver;
+    session.driver = undefined;
+    if (retained) session.closingDriver = retained;
+    await this.closeDriver(retained);
+    if (session.closingDriver === retained) session.closingDriver = undefined;
     return publicDto(session);
   }
 
@@ -656,7 +668,23 @@ export class BrowserSessionManager {
   }
 
   async closeAll(reason: string): Promise<void> {
-    await Promise.allSettled([...this.sessions.values()].map((session) => this.close(session.dto, reason)));
+    const results = await Promise.allSettled([...this.sessions.values()].map((session) => this.close(session.dto, reason)));
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, "browser cleanup did not complete");
+  }
+
+  async closeProject(projectId: string, reason: string): Promise<void> {
+    for (let pass = 0; pass < 20; pass += 1) {
+      const sessions = [...this.sessions.values()].filter((session) => session.dto.projectId === projectId);
+      if (!sessions.length) return;
+      const results = await Promise.allSettled(sessions.map((session) => this.close(session.dto, reason)));
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, `browser cleanup for Project ${projectId} did not complete`);
+      const pending = [...this.sessions.values()].some((session) => session.dto.projectId === projectId &&
+        Boolean(session.opening || session.driver || session.closingDriver));
+      if (!pending) return;
+    }
+    throw new Error(`browser cleanup for Project ${projectId} did not reach a fixed point`);
   }
 }
 
@@ -669,21 +697,12 @@ interface CdpReply {
   sessionId?: string;
 }
 
-async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return true;
-  return new Promise<boolean>((resolve) => {
-    const onExit = () => { clearTimeout(timer); resolve(true); };
-    const timer = setTimeout(() => { child.off("exit", onExit); resolve(false); }, timeoutMs);
-    child.once("exit", onExit);
-  });
-}
-
 async function terminateBrowserProcess(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  if (await waitForChildExit(child, 2_000)) return;
-  child.kill("SIGKILL");
-  await waitForChildExit(child, 2_000);
+  await terminateProcessGroup(child, {
+    label: "browser",
+    termGraceMs: 2_000,
+    killConfirmationMs: 2_000,
+  });
 }
 
 async function removeBrowserProfile(profileDir: string): Promise<void> {
@@ -790,6 +809,7 @@ class ChromeCdpDriver implements BrowserDriver {
       // Browser processes do not need Ponderosa/operator/runtime secrets.
       env: Object.fromEntries(["PATH", "HOME", "TMPDIR", "XDG_RUNTIME_DIR", "LANG", "LC_ALL"]
         .flatMap((name) => process.env[name] === undefined ? [] : [[name, process.env[name]!] as const])),
+      detached: process.platform !== "win32",
     });
     let launchError = "";
     child.stderr?.setEncoding("utf8");

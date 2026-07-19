@@ -2,14 +2,14 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDetailDto, AgentDto } from "@ponderosa/core";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { chatStateKey, writeChatState } from "../chatState";
 import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
+import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -68,6 +68,10 @@ export function ProjectShell({
     queryFn: () => api.getEngineCapabilities(projectId),
     staleTime: 60_000,
   });
+  // The review surface needs changed-file and Run detail for one Agent. Fetch
+  // that Agent only while the route is open instead of hydrating every roster
+  // member's full history from the Project shell.
+  const reviewAgentQuery = useAgent(route.kind === "review" ? route.agentId : undefined);
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
@@ -75,24 +79,9 @@ export function ProjectShell({
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [agentReturnContext, setAgentReturnContext] = useState<AgentReturnContext>();
 
-  // Per-agent detail powers live status + activity in the sidebar and Agents tab.
-  const agentDetailQueries = useQueries({
-    queries: agents.map((agent) => ({
-      queryKey: ["agent", agent.id],
-      queryFn: () => api.getAgent(agent.id),
-      staleTime: 30_000,
-    })),
-  });
-
-  const detailByAgentId = useMemo(() => {
-    const map = new Map<string, AgentDetailDto | undefined>();
-    agents.forEach((agent, index) => map.set(agent.id, agentDetailQueries[index]?.data));
-    return map;
-  }, [agents, agentDetailQueries]);
-
   const statusByAgentId = useMemo(() => {
-    return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], detailByAgentId);
-  }, [agents, detailByAgentId, healthQuery.data]);
+    return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], new Map());
+  }, [agents, healthQuery.data]);
   const healthByAgentId = useMemo(
     () => new Map<string, AgentHealthDto>((healthQuery.data?.agents ?? []).map((agent) => [agent.agentId, agent])),
     [healthQuery.data],
@@ -304,7 +293,6 @@ export function ProjectShell({
         conversations={conversations}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        detailByAgentId={detailByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
@@ -312,11 +300,11 @@ export function ProjectShell({
       />
     );
   } else if (route.kind === "review") {
-    const detail = detailByAgentId.get(route.agentId);
+    const detail = reviewAgentQuery.data;
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
     main = <WorkspaceReviewPane projectId={projectId} files={detail?.changedFiles ?? []} running={running} initialPath={route.path} />;
   } else if (route.kind === "project") {
-    main = <ProjectArtifactsView projectId={projectId} agents={agents} detailByAgentId={detailByAgentId} onOpenArtifact={openProjectArtifact} />;
+    main = <ProjectArtifactsView projectId={projectId} agents={agents} onOpenArtifact={openProjectArtifact} />;
   } else {
     main = (
       <Box sx={{ p: 3 }}>

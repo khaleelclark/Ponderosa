@@ -509,6 +509,16 @@ interface OpeningPersistentRuntime {
   lastError?: string;
 }
 
+interface OneShotRuntimeTeardown {
+  agentId: string;
+  projectId: string;
+  runId: string;
+  handle: RuntimeProcessHandle;
+  operation?: Promise<void>;
+  terminationConfirmed?: boolean;
+  lastError?: string;
+}
+
 /**
  * Collaboration room projections are a display timeline, not an authorization
  * boundary. Runtime context must be selected from the canonical audience:
@@ -1769,6 +1779,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // in-flight termination therefore retains the only process handle and fences
   // every replacement until the operating system confirms exit.
   const runtimeTeardowns = new Map<string, PersistentRuntimeTeardown>();
+  /** Spawn-time handles for non-persistent provider Runs. Entries survive Run
+   * release and failed close attempts until whole-group exit is observed. */
+  const oneShotRuntimeTeardowns = new Map<string, OneShotRuntimeTeardown>();
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
@@ -2459,6 +2472,66 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
+  function teardownOneShotRuntime(state: OneShotRuntimeTeardown, reason: string): Promise<void> {
+    if (state.terminationConfirmed) return Promise.resolve();
+    if (state.operation) return state.operation;
+    state.lastError = undefined;
+    const operation = Promise.resolve()
+      .then(() => state.handle.close())
+      .then(() => {
+        state.terminationConfirmed = true;
+        if (oneShotRuntimeTeardowns.get(state.runId) === state) oneShotRuntimeTeardowns.delete(state.runId);
+        try { resolveOperationalNotification(`provider-run-cleanup:${state.runId}`); }
+        catch { /* observed process-group exit remains authoritative */ }
+      })
+      .catch((error: unknown) => {
+        state.lastError = error instanceof Error ? error.message : String(error);
+        try {
+          createOperationalNotification({
+            dedupeKey: `provider-run-cleanup:${state.runId}`,
+            category: "system",
+            severity: "urgent",
+            title: "Provider Run cleanup needs attention",
+            body: `Ponderosa could not confirm that ${state.agentId}'s provider process group exited after ${reason}. Project cleanup remains blocked while termination retries. ${state.lastError}`.slice(0, 1_000),
+            projectId: state.projectId,
+          });
+        } catch { /* retained handle is the fail-closed authority */ }
+        throw error;
+      })
+      .finally(() => {
+        if (state.operation === operation) state.operation = undefined;
+      });
+    state.operation = operation;
+    return operation;
+  }
+
+  function persistentRootExited(agentId: string, run: ActiveRun): void {
+    if (!ownsActiveRun(agentId, run)) return;
+    agentMessageCapabilities.delete(run.messageCapability);
+    clearRunLeaseTimer(run);
+    clearRunLivenessTimer(run);
+    transitionRun(agentId, run, "cancelling");
+    try {
+      coordinationV3.failRun({
+        runId: run.v3SchedulerRunId!,
+        fencingToken: run.v3FencingToken!,
+        workerId: coordinationV3WorkerId,
+        sameRunResumable: false,
+        retryable: false,
+        error: "persistent provider root exited",
+      });
+    } catch { /* cancellation/deletion may already have advanced the fence */ }
+    const runtime = runtimeSessions.get(agentId);
+    if (runtime && runtime.session === run.runtimeSession) {
+      // Detach immediately so no later Run can reuse a process whose root has
+      // exited. The retained teardown registry owns retries until the complete
+      // provider process group is observed gone.
+      teardownPersistentRuntimeInBackground(agentId, runtime, "provider root exited");
+    }
+    run.controller.abort();
+    coordinationV3Scheduler?.notify();
+  }
+
   async function drainProviderRuntimeAuthority(
     reason: string,
     agentIds?: ReadonlySet<string>,
@@ -2523,6 +2596,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
 
       const completionSnapshot = [...activeRuns].filter(([agentId]) => relevant(agentId));
+      const oneShotEntries = [...oneShotRuntimeTeardowns.values()].filter((state) => relevant(state.agentId));
       const runtimes = new Map<string, PersistentRuntime>();
       for (const [agentId, state] of runtimeTeardowns) if (relevant(agentId)) runtimes.set(agentId, state.runtime);
       for (const [agentId, runtime] of runtimeSessions) if (relevant(agentId)) runtimes.set(agentId, runtime);
@@ -2532,12 +2606,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const completionOperation = Promise.allSettled(completionSnapshot.map(([, run]) =>
         run.completion ?? Promise.reject(new Error("active provider Run has no completion barrier"))
       ));
-      const terminationResults = await Promise.allSettled(runtimeEntries.map(([agentId, runtime]) =>
-        teardownPersistentRuntime(agentId, runtime, reason)
-      ));
+      const terminationResults = await Promise.allSettled([
+        ...runtimeEntries.map(([agentId, runtime]) => teardownPersistentRuntime(agentId, runtime, reason)),
+        ...oneShotEntries.map((state) => teardownOneShotRuntime(state, reason)),
+      ]);
       const terminationFailures = terminationResults.flatMap((result, index) =>
         result.status === "rejected"
-          ? [new Error(`${runtimeEntries[index]![0]} provider runtime did not terminate: ${
+          ? [new Error(`${index < runtimeEntries.length ? runtimeEntries[index]![0] : oneShotEntries[index - runtimeEntries.length]!.agentId} provider runtime did not terminate: ${
             result.reason instanceof Error ? result.reason.message : String(result.reason)
           }`)]
           : []
@@ -2572,7 +2647,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
       const pending = [...openingRuntimes.keys()].some(relevant) ||
         [...activeRuns.keys()].some(relevant) || [...runtimeSessions.keys()].some(relevant) ||
-        [...runtimeTeardowns.keys()].some(relevant);
+        [...runtimeTeardowns.keys()].some(relevant) ||
+        [...oneShotRuntimeTeardowns.values()].some((state) => relevant(state.agentId));
       if (!pending) return;
     }
     throw new Error("Provider runtime authority drain did not reach a fixed point");
@@ -3159,20 +3235,28 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
   }
 
-  function conversationDetail(conversationId: string): ConversationDetailDto | undefined {
-    const detail = store.getConversationDetail(conversationId);
-    if (!detail) return detail;
-    return { ...detail, messages: withMessagePresentation(detail.conversation.projectId, store.getProjectedConversationMessages(conversationId, "main")) };
+  function conversationDetail(conversationId: string, limit = 100): ConversationDetailDto | undefined {
+    const conversation = store.getConversation(conversationId);
+    if (!conversation) return undefined;
+    const window = store.getProjectedConversationMessages(conversationId, "main", limit + 1);
+    const hasMore = window.length > limit;
+    return {
+      conversation,
+      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
+      messages: withMessagePresentation(conversation.projectId, window.slice(-limit)),
+      history: { limit, hasMore },
+    };
   }
 
-  function collaborationViewDetail(conversationId: string): CollaborationViewDto | undefined {
-    const detail = store.getCollaborationViewDetail(conversationId);
-    if (!detail) return detail;
-    const names = new Map(detail.agents.map((agent) => [agent.id, agent.title]));
+  function collaborationViewDetail(conversationId: string, limit = 100): CollaborationViewDto | undefined {
+    const conversation = store.getConversation(conversationId);
+    if (!conversation) return undefined;
+    const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId));
+    const names = new Map(agents.map((agent) => [agent.id, agent.title]));
     const operations: NonNullable<CollaborationViewDto["operations"]> = [];
-    for (const agent of detail.agents) {
+    for (const agent of agents) {
       const snapshot = coordinationV3.agentSnapshot(agent.id);
-      const recentRuns = store.getRuns(agent.id).slice(-50);
+      const recentRuns = store.getRuns(agent.id);
       for (const run of recentRuns) operations.push({
         id: `execution:${run.id}`,
         kind: "run",
@@ -3257,15 +3341,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       });
     }
     operations.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
-    return { ...detail, operations, messages: withMessagePresentation(store.getConversation(conversationId)!.projectId, store.getProjectedConversationMessages(conversationId, "collaboration")) };
+    const messageWindow = store.getProjectedConversationMessages(conversationId, "collaboration", limit + 1);
+    const hasMore = messageWindow.length > limit || operations.length > limit;
+    return {
+      agents,
+      operations: operations.slice(-limit),
+      messages: withMessagePresentation(conversation.projectId, messageWindow.slice(-limit)),
+      history: { limit, hasMore },
+    };
   }
 
-  function agentDetail(agentId: string): import("@ponderosa/core").AgentDetailDto | undefined {
-    const detail = store.getAgentDetail(agentId);
+  function agentDetail(agentId: string, limit = 100): import("@ponderosa/core").AgentDetailDto | undefined {
+    const detail = store.getAgentDetail(agentId, limit);
     if (!detail) return detail;
+    const projectedWindow = store.getProjectedAgentMessages(agentId, limit + 1);
     return {
       ...detail,
-      messages: withMessagePresentation(detail.agent.projectId, store.getProjectedAgentMessages(agentId)),
+      messages: withMessagePresentation(detail.agent.projectId, projectedWindow.slice(-limit)),
+      history: { limit, hasMore: Boolean(detail.history?.hasMore || projectedWindow.length > limit) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
   }
@@ -3948,8 +4041,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");
-    reply.header("X-Frame-Options", "DENY");
-    reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    if (!reply.hasHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
+    if (!reply.hasHeader("Content-Security-Policy")) {
+      reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+    }
     if (request.url.startsWith("/api/link-previews/")) {
       // Local dev apps are untrusted content. A unique sandbox origin prevents
       // their scripts from inheriting the operator's authenticated API origin.
@@ -4078,6 +4173,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       runtimeSessions.clear();
       runtimeTeardowns.clear();
       openingRuntimes.clear();
+      oneShotRuntimeTeardowns.clear();
       activeRuns.clear();
       providerRuntimeShutdownFinalized = true;
     }
@@ -6684,7 +6780,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // authority, even when a browser close hangs or rejects.
       projectBrowserGrants.delete(project.id);
       coordinationV3.prepareProjectDeletion(project.id);
-      const browserClosures: Promise<void>[] = [];
       for (const agentId of agentIds) {
         closeLinkPreviewsForAgent(agentId, "project deleted");
         const active = activeRuns.get(agentId);
@@ -6693,19 +6788,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           clearRunLivenessTimer(active);
           agentMessageCapabilities.delete(active.messageCapability);
           active.controller.abort();
-          browserClosures.push(awaitProjectDeletionBarrier(
-            closeRunBrowser(agentId, active, "project_deleted"),
-            `${agentId} Run browser cleanup`,
-          ));
         }
       }
-      const projectBrowser = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
-      if (projectBrowser) {
-        browserClosures.push(awaitProjectDeletionBarrier(
-          projectBrowserSessions.close(projectBrowserScope(project.id), "project_deleted"),
-          "Project browser cleanup",
-        ));
-      }
+      // Drain by immutable Project identity rather than the current active-Run
+      // map. This includes ready, opening, and failed/closing browser handles.
+      const browserClosures = [
+        awaitProjectDeletionBarrier(browserSessions.closeProject(project.id, "project_deleted"), "Run browser cleanup"),
+        awaitProjectDeletionBarrier(projectBrowserSessions.closeProject(project.id, "project_deleted"), "Project browser cleanup"),
+      ];
       const barriers = await Promise.allSettled([
         ...browserClosures,
         drainProviderRuntimeAuthority("Project deletion", agentIds),
@@ -6716,7 +6806,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // The drain rescans after every late open/completion. Keep this explicit
       // final assertion beside the irreversible storage boundary.
       if ([...openingRuntimes.keys(), ...activeRuns.keys(), ...runtimeSessions.keys(), ...runtimeTeardowns.keys()]
-        .some((agentId) => agentIds.has(agentId))) {
+        .some((agentId) => agentIds.has(agentId)) ||
+        [...oneShotRuntimeTeardowns.values()].some((state) => agentIds.has(state.agentId))) {
         throw new Error("Project deletion provider authority changed after draining");
       }
 
@@ -6882,8 +6973,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return conversation;
   });
 
-  app.get<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
-    const detail = conversationDetail(request.params.id);
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/conversations/:id", async (request, reply) => {
+    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    const detail = conversationDetail(request.params.id, limit);
     return detail ?? reply.code(404).send({ error: "conversation not found" });
   });
 
@@ -7796,8 +7888,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
 
-  app.get<{ Params: { id: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
-    const detail = collaborationViewDetail(request.params.id);
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
+    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    const detail = collaborationViewDetail(request.params.id, limit);
     return detail ?? reply.code(404).send({ error: "conversation not found" });
   });
 
@@ -8510,8 +8603,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id", async (request, reply) => {
-    const detail = agentDetail(request.params.id);
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/agents/:id", async (request, reply) => {
+    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    const detail = agentDetail(request.params.id, limit);
     return detail ?? reply.code(404).send({ error: "agent not found" });
   });
 
@@ -9970,6 +10064,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 };
               },
               onRuntimeSpawned,
+              onRuntimeRootExit: () => persistentRootExited(agent.id, activeRun),
               signal: controller.signal,
             });
             return {
@@ -10045,6 +10140,22 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             scheduleRuntimeLivenessHeartbeat(agent.id, activeRun);
           }
           let persistentTurnStarted = false;
+          const registerOneShotRuntime = (handle: RuntimeProcessHandle): void => {
+            const existing = oneShotRuntimeTeardowns.get(runId);
+            if (existing && existing.handle !== handle) {
+              void handle.close().catch((error) => app.log.error({ err: error, runId }, "duplicate one-shot runtime failed to terminate"));
+              throw new Error(`provider adapter registered multiple one-shot handles for ${runId}`);
+            }
+            if (existing) return;
+            const state: OneShotRuntimeTeardown = { agentId: agent.id, projectId: project.id, runId, handle };
+            oneShotRuntimeTeardowns.set(runId, state);
+            if (closed || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) ||
+                controller.signal.aborted || !ownsActiveRun(agent.id, activeRun)) {
+              void teardownOneShotRuntime(state, "spawn lost Run authority").catch((error) => {
+                app.log.error({ err: error, agentId: agent.id, runId }, "late one-shot runtime termination remains pending");
+              });
+            }
+          };
           const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
             ? persistentRuntime
               ? {
@@ -10081,6 +10192,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   environment,
                   signal: controller.signal,
                   onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
+                  onRuntimeSpawned: registerOneShotRuntime,
                 })
             : persistentRuntime
               ? {
@@ -10117,6 +10229,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   environment,
                   signal: controller.signal,
                   onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
+                  onRuntimeSpawned: registerOneShotRuntime,
                 });
 
           const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
@@ -10364,7 +10477,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
       })();
       activeRun.completion = execution;
-      void execution;
+      const cleanup = execution.finally(async () => {
+        const oneShot = oneShotRuntimeTeardowns.get(runId);
+        if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
+      });
+      void cleanup.catch((error) => app.log.error({ err: error, agentId: agent.id, runId }, "provider Run cleanup remains pending"));
 
       return { queued: false, runId, mode, communicationEventId };
     },
@@ -11035,7 +11152,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.get<{ Params: { projectId: string } }>("/api/projects/:projectId/artifacts", async (request, reply) => {
     if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    return store.getProjectArtifacts(request.params.projectId);
+    // One Project-level index replaces the old N full-Agent-detail requests.
+    // Keep execution artifacts visible without hydrating messages, Runs, or
+    // tool output for every Agent in the browser.
+    const artifacts = new Map(store.getProjectArtifacts(request.params.projectId).map((artifact) => [artifact.id, artifact]));
+    for (const agent of store.listAgents(request.params.projectId)) {
+      for (const artifact of store.getArtifacts(agent.id)) {
+        if (!artifacts.has(artifact.id)) artifacts.set(artifact.id, { ...artifact, projectId: request.params.projectId });
+      }
+    }
+    return [...artifacts.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   });
 
   app.patch<{ Params: { projectId: string; aid: string }; Body: { pinned?: boolean; visibility?: "project" | "published" } }>(
@@ -11122,13 +11248,36 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   }
 
+  function sendGeneratedPreview(
+    reply: import("fastify").FastifyReply,
+    file: { body: Buffer; name: string; mediaType: string },
+  ) {
+    const activeDocument = file.mediaType === "text/html" || file.mediaType === "image/svg+xml";
+    // The web app frames previews from this authenticated same-origin route;
+    // the iframe/CSP sandbox supplies the untrusted document's opaque origin.
+    reply.header("X-Frame-Options", "SAMEORIGIN");
+    if (activeDocument) {
+      reply
+        // Scripts may power an exported visualization, but the omitted
+        // allow-same-origin token gives it an opaque origin. Network, forms,
+        // embedding, and top-level navigation remain unavailable.
+        .header("Content-Security-Policy", "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'")
+        .header("Cache-Control", "private, no-store")
+        .header("Referrer-Policy", "no-referrer")
+        .header("X-Content-Type-Options", "nosniff");
+    }
+    return reply.type(file.mediaType)
+      .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
+      .send(file.body);
+  }
+
   app.get<{ Params: { projectId: string; aid: string } }>(
     "/api/projects/:projectId/artifacts/:aid/preview",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
       const file = artifact ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id) : undefined;
       if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return reply.type(file.mediaType).header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline")).send(file.body);
+      return sendGeneratedPreview(reply, file);
     },
   );
 
@@ -11147,7 +11296,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     async (request, reply) => {
       const file = await generatedFile(request.params.projectId, request.params.id, request.params.aid);
       if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return reply.type(file.mediaType).header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline")).send(file.body);
+      return sendGeneratedPreview(reply, file);
     },
   );
 

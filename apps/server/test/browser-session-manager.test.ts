@@ -258,9 +258,14 @@ describe("run-scoped browser sessions", () => {
     await Promise.resolve();
     expect(create).toHaveBeenCalledTimes(1);
     const rejected = expect(first).rejects.toThrow(/closed while it was opening/);
-    await manager.close(scope, "run_completed");
+    const closing = manager.close(scope, "run_completed");
+    let closeSettled = false;
+    void closing.then(() => { closeSettled = true; });
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
     factory.resolve(driver);
     await rejected;
+    await closing;
     expect(driver.close).toHaveBeenCalledTimes(1);
     expect(manager.get(scope.agentId)).toMatchObject({ status: "closed" });
   });

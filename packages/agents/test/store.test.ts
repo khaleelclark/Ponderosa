@@ -922,6 +922,28 @@ describe("AgentStore — append + projection", () => {
     expect(store.resumeSessionId(agentId)).toBe("sess-abc");
   });
 
+  it("returns a bounded Agent history window while retaining full canonical tool output", () => {
+    const { agentId } = seedAgent();
+    const largeOutput = `${"x".repeat(20_000)}-end-marker`;
+    for (let index = 0; index < 3; index += 1) {
+      store.appendEvent(agentId, { type: "user_message", text: `Message ${index}` });
+      store.appendEvent(agentId, {
+        type: "tool_result", id: `tool-${index}`, output: index === 2 ? largeOutput : `Output ${index}`,
+      });
+    }
+
+    const detail = store.getAgentDetail(agentId, 2)!;
+    expect(detail.history).toEqual({ limit: 2, hasMore: true });
+    expect(detail.messages.map((message) => message.text)).toEqual(["Message 1", "Message 2"]);
+    expect(detail.activity).toHaveLength(2);
+    expect(detail.activity.at(-1)?.event).toMatchObject({
+      type: "tool_result",
+      output: expect.stringContaining("[Full output retained in the canonical Run log.]"),
+    });
+    expect(store.readEvents(agentId).find((item) => item.event.type === "tool_result" && item.event.id === "tool-2")?.event)
+      .toMatchObject({ output: largeOutput });
+  });
+
   it("rebuilds usage per run and aggregates agent, project, and overall with honest coverage", () => {
     const { projectId, agentId } = seedAgent();
     const unmetered = store.createAgent(projectId, { title: "Legacy", engine: "codex" });

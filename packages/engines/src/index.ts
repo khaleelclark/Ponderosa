@@ -14,6 +14,7 @@ export { mapCodexEvent, mapFileChangeKind } from "./events.js";
 export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
+export { terminateProcessGroup } from "./process-termination.js";
 export type { ProcessStreamSnapshot, RuntimeProcessFaults } from "./process.js";
 export { LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
 export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";

@@ -21,6 +21,7 @@ import type {
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
+  RuntimeProcessHandle,
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
@@ -242,7 +243,7 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, prompt, opts.onRuntimeRootExit);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
   continue(opts: ContinueOptions): AsyncIterable<AgentEvent> {
@@ -255,7 +256,7 @@ export class CodexAdapter implements Adapter {
       ...this.configArgs(opts.model, opts.effort),
       "-",
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit);
+    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
   /** Spawn codex, stream JSONL, and yield mapped AgentEvents. */
@@ -266,6 +267,7 @@ export class CodexAdapter implements Adapter {
     environment?: Record<string, string>,
     stdin?: string,
     onRuntimeRootExit?: () => void,
+    onRuntimeSpawned?: (handle: RuntimeProcessHandle) => void,
   ): AsyncIterable<AgentEvent> {
     return streamProcess({
       bin: this.bin,
@@ -273,6 +275,7 @@ export class CodexAdapter implements Adapter {
       cwd,
       signal,
       onRuntimeRootExit,
+      onRuntimeSpawned,
       environment,
       spawnFn: this.spawnFn,
       killGraceMs: this.killGraceMs,

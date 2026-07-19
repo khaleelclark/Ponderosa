@@ -17,7 +17,7 @@ export function useSendMessage(agentId: string | undefined) {
         return undefined;
       }
       await queryClient.cancelQueries({ queryKey: ["agent", agentId] });
-      const previous = queryClient.getQueryData<AgentDetailDto>(["agent", agentId]);
+      const previous = queryClient.getQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] });
       const optimistic: MessageDto = {
         id: `optimistic-user-${Date.now()}`,
         agentId,
@@ -26,14 +26,14 @@ export function useSendMessage(agentId: string | undefined) {
         text: request.text,
         createdAt: new Date().toISOString(),
       };
-      queryClient.setQueryData<AgentDetailDto>(["agent", agentId], (detail) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (detail) =>
         detail ? { ...detail, messages: [...detail.messages, optimistic] } : detail,
       );
       return { previous };
     },
     onError: (_error, _request, context) => {
       if (agentId && context?.previous) {
-        queryClient.setQueryData(["agent", agentId], context.previous);
+        for (const [queryKey, value] of context.previous) queryClient.setQueryData(queryKey, value);
       }
     },
     onSettled: () => {

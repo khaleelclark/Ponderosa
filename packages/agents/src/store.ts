@@ -958,12 +958,14 @@ export class AgentStore {
     projectId: string,
     surface: CommunicationProjection["surface"],
     projectionKey: string,
+    limit?: number,
   ): ProjectedCommunicationMessage[] {
     const events = this.communicationIndex(projectId).byId;
     const revisions = this.communicationRevisionIndex(projectId).byTarget;
-    return this.projectionIndex(projectId).projections
+    const matching = this.projectionIndex(projectId).projections
       .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey &&
-        projection.message && this.communicationProjectionAllowed(projectId, projection))
+        projection.message && this.communicationProjectionAllowed(projectId, projection));
+    return (limit === undefined ? matching : matching.slice(-limit))
       .flatMap((projection) => {
         const event = events.get(projection.eventId);
         const message = projection.message;
@@ -1669,11 +1671,12 @@ export class AgentStore {
   getProjectedConversationMessages(
     conversationId: string,
     channel: ConversationChannel = "main",
+    limit?: number,
   ): ConversationMessageDto[] {
     const master = this.getConversation(conversationId);
     if (!master) return [];
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
+    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId, limit);
     const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
     const activityByAgentAndStatus = new Map<string, Map<string, ResponseFileActivityDto[]>>();
     const runsByAgent = new Map<string, AgentRunDto[]>();
@@ -2313,19 +2316,31 @@ export class AgentStore {
   }
 
   /** Full agent-detail hydration for GET /api/agents/:id (SPEC §8). */
-  getAgentDetail(id: string): AgentDetailDto | undefined {
+  getAgentDetail(id: string, limit?: number): AgentDetailDto | undefined {
     const agent = this.rowToAgentDto(id);
     if (!agent) return undefined;
+    const bounded = <T>(items: T[]): T[] => limit === undefined ? items : items.slice(-limit);
+    const messages = this.getMessages(id);
+    const runOutput = this.getRunOutputs(id);
+    const activity = this.getActivity(id);
+    const runs = this.getRuns(id);
+    const workItems = this.getWorkItems(id);
+    const artifacts = this.getArtifacts(id);
+    const hasMore = limit !== undefined && [messages, runOutput, activity, runs, workItems, artifacts]
+      .some((items) => items.length > limit);
     return {
       agent,
-      messages: this.getMessages(id),
-      runOutput: this.getRunOutputs(id),
-      activity: this.getActivity(id),
+      messages: bounded(messages),
+      runOutput: bounded(runOutput),
+      activity: bounded(activity).map((item) => item.event.type === "tool_result" && item.event.output.length > 16_000
+        ? { ...item, event: { ...item.event, output: `${item.event.output.slice(0, 16_000)}\n\n[Full output retained in the canonical Run log.]` } }
+        : item),
       changedFiles: this.getChangedFiles(id),
-      runs: this.getRuns(id),
-      workItems: this.getWorkItems(id),
-      artifacts: this.getArtifacts(id),
+      runs: bounded(runs),
+      workItems: bounded(workItems),
+      artifacts: bounded(artifacts),
       state: agent.state,
+      ...(limit !== undefined ? { history: { limit, hasMore } } : {}),
     };
   }
 
@@ -2484,10 +2499,11 @@ export class AgentStore {
     ]));
   }
 
-  getProjectedAgentMessages(agentId: string): MessageDto[] {
+  getProjectedAgentMessages(agentId: string, limit?: number): MessageDto[] {
     const agent = this.getAgent(agentId);
     if (!agent) return [];
-    return this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId)
+    const projected = this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId, limit);
+    return projected
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];
         return [{
