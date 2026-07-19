@@ -5,6 +5,7 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle,
@@ -19,11 +20,12 @@ import type { WorkspaceTabState } from "../workspaceTabs";
 import { TokenUsageButton } from "./TokenUsageButton";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
-  if (kind === "conversation") return <ChatBubbleOutlineIcon fontSize="small" />;
+  if (kind === "conversation" || kind === "allChat") return <ChatBubbleOutlineIcon fontSize="small" />;
   if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
   if (kind === "agents" || kind === "allAgents") return <GroupsOutlinedIcon fontSize="small" />;
   if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
   if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
+  if (kind === "wiki") return <MenuBookOutlinedIcon fontSize="small" />;
   return <HomeOutlinedIcon fontSize="small" />;
 }
 
@@ -86,7 +88,9 @@ export function WorkspaceTabs({
               ? tabRoute.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"} review`
               : tabRoute.kind === "agents" ? "Agents"
                 : tabRoute.kind === "allAgents" ? "All Agents"
+                  : tabRoute.kind === "allChat" ? "All Chat"
                   : tabRoute.kind === "project" ? "Project files"
+                    : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";
         const label = tab.title ?? generatedLabel;
         const selected = tab.key === activeKey;

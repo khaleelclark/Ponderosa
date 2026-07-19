@@ -66,6 +66,8 @@ import type {
   TokenUsage,
   GlobalChatSearchAuthorDto,
   GlobalChatSearchResponseDto,
+  AllChatItemDto,
+  AllChatPageDto,
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
@@ -113,6 +115,10 @@ import {
   conversations,
   messages,
   chatSearchMessages,
+  importedHistoryMessages,
+  activityProjection,
+  changedFileProjection,
+  managedArtifactProjection,
   projects,
   runs,
   workItems,
@@ -122,6 +128,58 @@ import {
   agentManagementApprovals,
   agentConversationMemberships,
 } from "./schema.js";
+
+export interface ContextReadBoundary {
+  createdAt: string;
+  id: string;
+}
+
+export interface ContextSourcePage<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
+interface ActivityProjectionReadRow {
+  seq: number;
+  execution_id: string | null;
+  event_json: string;
+  created_at: string;
+  output_preview_utf8_bytes: number | null;
+  output_total_utf8_bytes: number | null;
+  output_sha256: string | null;
+}
+
+interface ArtifactProjectionReadRow {
+  id: string;
+  agent_id: string;
+  execution_id: string | null;
+  kind: string;
+  path: string;
+  summary: string | null;
+  created_at: string;
+  source_path: string | null;
+  media_type: string | null;
+  visibility: string | null;
+  pinned: number | null;
+  size: number | null;
+}
+
+const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
+const ACTIVITY_EVENT_TYPES = new Set([
+  "command", "file_change", "test_result", "tool_call", "tool_result", "error",
+  "browser_session", "browser_action", "browser_console", "browser_screenshot",
+]);
+
+function utf8Prefix(text: string, maximumBytes: number): string {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maximumBytes) return text;
+  let end = maximumBytes;
+  while (end > 0) {
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)); }
+    catch { end -= 1; }
+  }
+  return "";
+}
 import {
   artifactsDir,
   artifactContentPath,
@@ -574,6 +632,7 @@ export class AgentStore {
         ? "user"
         : message.role;
     const authorAgentId = event.sender.kind === "agent" ? event.sender.agentId : message.authorAgentId;
+    const behavior = deriveCommunicationBehavior(event);
     this.db.insert(chatSearchMessages).values({
       rowKey,
       projectId,
@@ -586,6 +645,11 @@ export class AgentStore {
       timestamp: message.createdAt,
       orderKey: message.orderKey ?? message.createdAt,
       text: message.renderedText ?? event.text,
+      conversationId: event.conversationId ?? null,
+      communicationIntent: event.intent,
+      senderKind: event.sender.kind,
+      senderAgentId: event.sender.kind === "agent" ? event.sender.agentId : null,
+      contextPolicy: behavior.contextPolicy,
     }).onConflictDoUpdate({
       target: chatSearchMessages.rowKey,
       set: {
@@ -599,6 +663,11 @@ export class AgentStore {
         timestamp: message.createdAt,
         orderKey: message.orderKey ?? message.createdAt,
         text: message.renderedText ?? event.text,
+        conversationId: event.conversationId ?? null,
+        communicationIntent: event.intent,
+        senderKind: event.sender.kind,
+        senderAgentId: event.sender.kind === "agent" ? event.sender.agentId : null,
+        contextPolicy: behavior.contextPolicy,
       },
     }).run();
   }
@@ -1729,6 +1798,103 @@ export class AgentStore {
     return this.projectedConversationMessageDtos(conversationId, projected, false);
   }
 
+  /** Newest canonical organizational messages for bounded provider/context
+   * selection. The keyset is the public `(createdAt, stable message ID)` order,
+   * independent of delivery timestamps used by the UI timeline. */
+  getOrganizationalConversationContextSourcePage(
+    conversationId: string,
+    input: { limit: number; before?: ContextReadBoundary; excludeCommunicationEventId?: string },
+  ): ContextSourcePage<ConversationMessageDto> {
+    const master = this.getConversation(conversationId);
+    if (!master) return { items: [], hasMore: false };
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const rows = this.client.prepare(`
+      SELECT communication_event_id AS eventId, timestamp AS createdAt, message_id AS messageId
+      FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
+        AND context_policy = 'organizational'
+        ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
+        ${input.before ? "AND (timestamp < ? OR (timestamp = ? AND message_id < ?))" : ""}
+      ORDER BY timestamp DESC, message_id DESC LIMIT ?
+    `).all(...[
+      master.projectId,
+      conversationId,
+      ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
+      ...(input.before ? [input.before.createdAt, input.before.createdAt, input.before.id] : []),
+      limit + 1,
+    ]) as Array<{ eventId: string; createdAt: string; messageId: string }>;
+    const selected = rows.slice(0, limit);
+    const index = this.projectionIndex(master.projectId);
+    const projected = selected.flatMap((row) => {
+      const projection = index.byTuple.get(`${row.eventId}\u0000conversation\u0000${conversationId}`);
+      return projection ? [projection] : [];
+    });
+    return {
+      hasMore: rows.length > limit,
+      items: this.projectedConversationMessageDtos(
+        conversationId,
+        this.materializeProjectedCommunicationMessages(master.projectId, projected),
+        false,
+      ).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
+    };
+  }
+
+  /** FIFO organizational delta after one previously accepted delivery cursor.
+   * The lookup and source page are both indexed; a missing cursor target is
+   * reported so the caller can deliberately reseed instead of skipping work. */
+  getOrganizationalConversationDeltaPage(
+    conversationId: string,
+    input: { limit: number; afterMessageId?: string; excludeCommunicationEventId?: string },
+  ): ContextSourcePage<ConversationMessageDto> & { cursorFound: boolean; latestMessageId?: string } {
+    const master = this.getConversation(conversationId);
+    if (!master) return { items: [], hasMore: false, cursorFound: false };
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const cursor = input.afterMessageId ? this.client.prepare(`
+      SELECT order_key AS orderKey, row_key AS rowKey FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
+        AND context_policy = 'organizational' AND message_id = ?
+      LIMIT 1
+    `).get(master.projectId, conversationId, input.afterMessageId) as { orderKey: string; rowKey: string } | undefined : undefined;
+    if (input.afterMessageId && !cursor) return { items: [], hasMore: false, cursorFound: false };
+    const latest = this.client.prepare(`
+      SELECT message_id AS messageId FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
+        AND context_policy = 'organizational'
+      ORDER BY order_key DESC, row_key DESC LIMIT 1
+    `).get(master.projectId, conversationId) as { messageId: string } | undefined;
+    const rows = this.client.prepare(`
+      SELECT communication_event_id AS eventId
+      FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
+        AND context_policy = 'organizational'
+        ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
+        ${cursor ? "AND (order_key > ? OR (order_key = ? AND row_key > ?))" : ""}
+      ORDER BY order_key, row_key LIMIT ?
+    `).all(...[
+      master.projectId,
+      conversationId,
+      ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
+      ...(cursor ? [cursor.orderKey, cursor.orderKey, cursor.rowKey] : []),
+      limit + 1,
+    ]) as Array<{ eventId: string }>;
+    const selected = rows.slice(0, limit);
+    const index = this.projectionIndex(master.projectId);
+    const projected = selected.flatMap((row) => {
+      const projection = index.byTuple.get(`${row.eventId}\u0000conversation\u0000${conversationId}`);
+      return projection ? [projection] : [];
+    });
+    return {
+      cursorFound: true,
+      hasMore: rows.length > limit,
+      ...(latest ? { latestMessageId: latest.messageId } : {}),
+      items: this.projectedConversationMessageDtos(
+        conversationId,
+        this.materializeProjectedCommunicationMessages(master.projectId, projected),
+        false,
+      ),
+    };
+  }
+
   getProjectedConversationMessagePage(
     conversationId: string,
     channel: ConversationChannel,
@@ -1739,6 +1905,32 @@ export class AgentStore {
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
     const page = this.readProjectedCommunicationMessagePage(master.projectId, surface, conversationId, input);
     return { ...page, messages: this.projectedConversationMessageDtos(conversationId, page.messages) };
+  }
+
+  getProjectedConversationMessageById(
+    conversationId: string,
+    channel: ConversationChannel,
+    id: string,
+  ): ConversationMessageDto | undefined {
+    const master = this.getConversation(conversationId);
+    if (!master) return undefined;
+    const chatKind = channel === "collaboration" ? "collaboration" : "conversation";
+    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
+    const row = this.client.prepare(`
+      SELECT communication_event_id AS eventId FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = ? AND chat_id = ?
+        AND (message_id = ? OR communication_event_id = ?)
+      ORDER BY order_key DESC, row_key DESC LIMIT 1
+    `).get(master.projectId, chatKind, conversationId, id, id) as { eventId: string } | undefined;
+    if (!row) return undefined;
+    const projection = this.projectionIndex(master.projectId).byTuple.get(
+      `${row.eventId}\u0000${surface}\u0000${conversationId}`,
+    );
+    if (!projection) return undefined;
+    return this.projectedConversationMessageDtos(
+      conversationId,
+      this.materializeProjectedCommunicationMessages(master.projectId, [projection]),
+    )[0];
   }
 
   private projectedConversationMessageDtos(
@@ -1891,7 +2083,9 @@ export class AgentStore {
       text: message.text.slice(0, 100_000),
       ...(message.createdAt ? { createdAt: message.createdAt } : {}),
     }));
-    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded });
+    const imported = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded };
+    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported);
+    this.projectImportedHistory(agent.id, imported);
   }
 
   getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[] } | undefined {
@@ -1900,6 +2094,56 @@ export class AgentStore {
     const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
     if (!existsSync(file)) return undefined;
     return readJson(file);
+  }
+
+  private projectImportedHistory(
+    agentId: string,
+    imported: { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[] },
+  ): void {
+    this.db.transaction((tx) => {
+      tx.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
+      imported.messages.forEach((message, sequence) => {
+        tx.insert(importedHistoryMessages).values({
+          agentId,
+          messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
+          sequence,
+          role: message.role,
+          text: message.text,
+          createdAt: message.createdAt ?? imported.importedAt,
+        }).run();
+      });
+    });
+  }
+
+  getImportedHistoryMessagePage(
+    agentId: string,
+    input: { limit: number; before?: ContextReadBoundary },
+  ): ContextSourcePage<MessageDto> {
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const rows = this.client.prepare(`
+      SELECT message_id, sequence, role, text, created_at
+      FROM imported_history_messages
+      WHERE agent_id = ?
+        ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
+      ORDER BY created_at DESC, message_id DESC
+      LIMIT ?
+    `).all(...(input.before
+      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
+      : [agentId, limit + 1])) as Array<{
+      message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
+      text: string; created_at: string;
+    }>;
+    return {
+      hasMore: rows.length > limit,
+      items: rows.slice(0, limit).map((row) => ({
+        id: row.message_id,
+        agentId,
+        seq: -(row.sequence + 1),
+        role: row.role === "assistant" ? "assistant" : "user",
+        text: row.role === "system" ? `[Imported private context]\n${row.text}` : row.text,
+        createdAt: row.created_at,
+      })),
+    };
   }
 
   listAgentSubtree(id: string): AgentDto[] {
@@ -2553,78 +2797,34 @@ export class AgentStore {
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
   getActivity(agentId: string): AgentActivityDto[] {
-    const activityTypes = new Set([
-      "command", "file_change", "test_result", "tool_call", "tool_result", "error",
-      "browser_session", "browser_action", "browser_console", "browser_screenshot",
-    ]);
-    let activeExecutionId: string | undefined;
-    const result: AgentActivityDto[] = [];
-    for (const stored of this.readEvents(agentId)) {
-      const event = stored.event;
-      if (event.type === "agent_lifecycle" && (event.status === "running" || event.status === "compacting")) activeExecutionId = event.executionId;
-      if (activityTypes.has(event.type)) {
-        result.push({
-          id: `${agentId}:activity:${stored.seq}`,
-          agentId,
-          ...("executionId" in event && typeof event.executionId === "string"
-            ? { executionId: event.executionId }
-            : activeExecutionId ? { executionId: activeExecutionId } : {}),
-          seq: stored.seq,
-          createdAt: stored.ts,
-          event: event as AgentActivityDto["event"],
-        });
-      }
-      if (event.type === "turn_done" || (event.type === "agent_lifecycle" && ["cancelled", "completed", "failed", "interrupted"].includes(event.status))) {
-        activeExecutionId = undefined;
-      }
-    }
-    return result;
+    const rows = this.client.prepare(`
+      SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
+        output_total_utf8_bytes, output_sha256
+      FROM activity_projection WHERE agent_id = ? ORDER BY seq
+    `).all(agentId) as ActivityProjectionReadRow[];
+    return rows.map((row) => this.activityDtoFromProjectionRow(agentId, row));
   }
 
-  private executionIdAtEvent(agentId: string, seq: number, event: LogEvent): string | undefined {
-    if ("executionId" in event && typeof event.executionId === "string") return event.executionId;
-    const lifecycle = this.client.prepare(`
-      SELECT payload_json
-      FROM events
-      WHERE agent_id = ? AND type = 'agent_lifecycle' AND seq < ?
-      ORDER BY seq DESC LIMIT 1
-    `).get(agentId, seq) as { payload_json: string } | undefined;
-    if (!lifecycle) return undefined;
-    const candidate = JSON.parse(lifecycle.payload_json) as LogEvent;
-    return candidate.type === "agent_lifecycle" && ["running", "compacting"].includes(candidate.status)
-      ? candidate.executionId : undefined;
-  }
-
-  private activityDto(agentId: string, row: { seq: number; payload_json: string; created_at: string }): AgentActivityDto | undefined {
-    const event = JSON.parse(row.payload_json) as LogEvent;
-    const activityTypes = new Set([
-      "command", "file_change", "test_result", "tool_call", "tool_result", "error",
-      "browser_session", "browser_action", "browser_console", "browser_screenshot",
-    ]);
-    if (!activityTypes.has(event.type)) return undefined;
-    const executionId = this.executionIdAtEvent(agentId, row.seq, event);
+  private activityDtoFromProjectionRow(agentId: string, row: ActivityProjectionReadRow): AgentActivityDto {
+    const event = JSON.parse(row.event_json) as AgentActivityDto["event"];
     const base: AgentActivityDto = {
       id: `${agentId}:activity:${row.seq}`,
       agentId,
-      ...(executionId ? { executionId } : {}),
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
       seq: row.seq,
       createdAt: row.created_at,
-      event: event as AgentActivityDto["event"],
+      event,
     };
-    if (event.type !== "tool_result") return base;
-    const totalUtf8Bytes = Buffer.byteLength(event.output, "utf8");
-    const previewLimit = 4_096;
-    if (totalUtf8Bytes <= previewLimit) return base;
-    const preview = Buffer.from(event.output, "utf8").subarray(0, previewLimit).toString("utf8").replace(/\uFFFD$/u, "");
-    const previewUtf8Bytes = Buffer.byteLength(preview, "utf8");
+    if (event.type !== "tool_result" || row.output_total_utf8_bytes === null ||
+        row.output_preview_utf8_bytes === null || !row.output_sha256 ||
+        row.output_preview_utf8_bytes >= row.output_total_utf8_bytes) return base;
     return {
       ...base,
-      event: { ...event, output: preview },
       outputPreview: {
         truncated: true,
-        previewUtf8Bytes,
-        totalUtf8Bytes,
-        sha256: createHash("sha256").update(event.output).digest("hex"),
+        previewUtf8Bytes: row.output_preview_utf8_bytes,
+        totalUtf8Bytes: row.output_total_utf8_bytes,
+        sha256: row.output_sha256,
         retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/activity/${row.seq}/output`,
       },
     };
@@ -2639,25 +2839,19 @@ export class AgentStore {
     const focusSeq = this.eventSeqFocus(input.focusId, "activity", agentId);
     const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:activity", agentId);
     const rows = this.client.prepare(`
-      SELECT seq, payload_json, created_at
-      FROM events
+      SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
+        output_total_utf8_bytes, output_sha256
+      FROM activity_projection
       WHERE agent_id = ?
-        AND type IN ('command', 'file_change', 'test_result', 'tool_call', 'tool_result', 'error',
-          'browser_session', 'browser_action', 'browser_console', 'browser_screenshot')
         ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
       ORDER BY seq DESC LIMIT ?
-    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
-      seq: number; payload_json: string; created_at: string;
-    }>;
+    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as ActivityProjectionReadRow[];
     if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
       return { items: [], history: { limit, hasMore: false } };
     }
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
-    const items = selected.flatMap((row) => {
-      const item = this.activityDto(agentId, row);
-      return item ? [item] : [];
-    }).reverse();
+    const items = selected.map((row) => this.activityDtoFromProjectionRow(agentId, row)).reverse();
     const oldest = selected.at(-1);
     return {
       items,
@@ -2742,28 +2936,21 @@ export class AgentStore {
 
   /** One persistent row per touched path, retaining the latest canonical change and executions. */
   getChangedFiles(agentId: string): ChangedFileDto[] {
-    const byPath = new Map<string, ChangedFileDto>();
     const rows = this.client.prepare(`
-      SELECT seq, payload_json, created_at FROM events
-      WHERE agent_id = ? AND type = 'file_change' ORDER BY seq
-    `).all(agentId) as Array<{ seq: number; payload_json: string; created_at: string }>;
-    for (const row of rows) {
-      const item = this.activityDto(agentId, row);
-      if (!item) continue;
-      if (item.event.type !== "file_change") continue;
-      const previous = byPath.get(item.event.path);
-      const executionIds = [...(previous?.executionIds ?? [])];
-      if (item.executionId && !executionIds.includes(item.executionId)) executionIds.push(item.executionId);
-      byPath.set(item.event.path, {
-        path: item.event.path,
-        kind: item.event.kind,
-        lastSeq: item.seq,
-        lastChangedAt: item.createdAt,
-        executionIds,
-        ...(item.event.diff ? { diff: item.event.diff } : {}),
-      });
-    }
-    return [...byPath.values()].sort((a, b) => a.lastSeq - b.lastSeq);
+      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, diff
+      FROM changed_file_projection WHERE agent_id = ? ORDER BY last_seq, path
+    `).all(agentId) as Array<{
+      path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
+      execution_ids_json: string; diff: string | null;
+    }>;
+    return rows.map((row) => ({
+      path: row.path,
+      kind: row.kind,
+      lastSeq: row.last_seq,
+      lastChangedAt: row.last_changed_at,
+      executionIds: JSON.parse(row.execution_ids_json) as string[],
+      ...(row.diff ? { diff: row.diff } : {}),
+    }));
   }
 
   /**
@@ -2787,13 +2974,11 @@ export class AgentStore {
   ): Map<string, ResponseFileActivityDto[]> {
     const scopedArtifacts = executionFilter
       ? executionFilter.size ? (this.client.prepare(`
-          SELECT id, agent_id, execution_id, kind, path, summary, created_at
+          SELECT id, agent_id, execution_id, kind, path, summary, created_at,
+            source_path, media_type, visibility, pinned, size
           FROM artifacts WHERE agent_id = ? AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
           ORDER BY created_at, id
-        `).all(agentId, ...executionFilter) as Array<{
-          id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
-          summary: string | null; created_at: string;
-        }>).flatMap((row) => {
+        `).all(agentId, ...executionFilter) as ArtifactProjectionReadRow[]).flatMap((row) => {
           const artifact = this.artifactDtoFromProjectionRow(agentId, row);
           return artifact ? [artifact] : [];
         })
@@ -2806,14 +2991,16 @@ export class AgentStore {
         : []));
     const byExecution = new Map<string, Map<string, ResponseFileActivityDto>>();
     const activity = executionFilter
-      ? (this.client.prepare(`
-          SELECT seq, payload_json, created_at FROM events
-          WHERE agent_id = ? AND type = 'file_change' ORDER BY seq
-        `).all(agentId) as Array<{ seq: number; payload_json: string; created_at: string }>)
-          .flatMap((row) => {
-            const item = this.activityDto(agentId, row);
-            return item ? [item] : [];
-          })
+      ? executionFilter.size ? (this.client.prepare(`
+          SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
+            output_total_utf8_bytes, output_sha256
+          FROM activity_projection
+          WHERE agent_id = ? AND event_type = 'file_change'
+            AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
+          ORDER BY seq
+        `).all(agentId, ...executionFilter) as ActivityProjectionReadRow[])
+          .map((row) => this.activityDtoFromProjectionRow(agentId, row))
+        : []
       : this.getActivity(agentId);
     for (const item of activity) {
       if (!item.executionId || item.event.type !== "file_change") continue;
@@ -2855,6 +3042,78 @@ export class AgentStore {
     if (!agent) return { messages: [], hasMore: false };
     const page = this.readProjectedCommunicationMessagePage(agent.projectId, "direct_agent_audit", agentId, input);
     return { ...page, messages: this.projectedAgentMessageDtos(agentId, page.messages) };
+  }
+
+  getProjectedAgentMessageById(agentId: string, id: string): MessageDto | undefined {
+    const agent = this.getAgent(agentId);
+    if (!agent) return undefined;
+    const row = this.client.prepare(`
+      SELECT communication_event_id AS eventId FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = 'agent' AND chat_id = ?
+        AND (message_id = ? OR communication_event_id = ?)
+      ORDER BY order_key DESC, row_key DESC LIMIT 1
+    `).get(agent.projectId, agentId, id, id) as { eventId: string } | undefined;
+    if (!row) return undefined;
+    const projection = this.projectionIndex(agent.projectId).byTuple.get(
+      `${row.eventId}\u0000direct_agent_audit\u0000${agentId}`,
+    );
+    if (!projection) return undefined;
+    return this.projectedAgentMessageDtos(
+      agentId,
+      this.materializeProjectedCommunicationMessages(agent.projectId, [projection]),
+    )[0];
+  }
+
+  getAgentPrivateContextSourcePage(
+    agentId: string,
+    input: {
+      limit: number;
+      conversationId?: string;
+      before?: ContextReadBoundary;
+      excludeCommunicationEventId?: string;
+      includeAuthoredBroadcasts: boolean;
+    },
+  ): ContextSourcePage<MessageDto> {
+    const agent = this.getAgent(agentId);
+    if (!agent) return { items: [], hasMore: false };
+    const limit = Math.max(1, Math.min(input.limit, 100));
+    const read = (intentPredicate: string, extra: unknown[] = []) => this.client.prepare(`
+        SELECT communication_event_id AS eventId, timestamp AS createdAt, message_id AS messageId
+        FROM chat_search_messages
+        WHERE project_id = ? AND chat_kind = 'agent' AND chat_id = ?
+          AND ${input.conversationId ? "conversation_id = ?" : "conversation_id IS NULL"}
+          AND ${intentPredicate}
+          ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
+          ${input.before ? "AND (timestamp < ? OR (timestamp = ? AND message_id < ?))" : ""}
+        ORDER BY timestamp DESC, message_id DESC LIMIT ?
+      `).all(...[
+        agent.projectId,
+        agentId,
+        ...(input.conversationId ? [input.conversationId] : []),
+        ...extra,
+        ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
+        ...(input.before ? [input.before.createdAt, input.before.createdAt, input.before.id] : []),
+        limit + 1,
+      ]) as Array<{ eventId: string; createdAt: string; messageId: string }>;
+    const privateRows = read("communication_intent IN ('user_dm', 'collaboration')");
+    const authoredBroadcastRows = input.includeAuthoredBroadcasts
+      ? read("communication_intent = 'broadcast' AND sender_agent_id = ?", [agentId])
+      : [];
+    const rows = [...privateRows, ...authoredBroadcastRows]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.messageId.localeCompare(left.messageId));
+    const selected = rows.slice(0, limit);
+    const index = this.projectionIndex(agent.projectId);
+    const projected = selected.flatMap((row) => {
+      const projection = index.byTuple.get(`${row.eventId}\u0000direct_agent_audit\u0000${agentId}`);
+      return projection ? [projection] : [];
+    });
+    return {
+      hasMore: privateRows.length > limit || authoredBroadcastRows.length > limit || rows.length > limit,
+      items: this.projectedAgentMessageDtos(
+        agentId,
+        this.materializeProjectedCommunicationMessages(agent.projectId, projected),
+      ).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
+    };
   }
 
   private projectedAgentMessageDtos(agentId: string, projected: ProjectedCommunicationMessage[]): MessageDto[] {
@@ -3038,6 +3297,147 @@ export class AgentStore {
     return {
       ...searched,
       recentChats: query ? [] : recentChats,
+    };
+  }
+
+  /**
+   * Read one deduplicated, workspace-wide page of authored communication.
+   * Project and Team placements are preferred over their duplicate Agent audit
+   * projections. The rebuildable index supplies only bounded placement keys;
+   * text is rematerialized from the canonical Communication ledger so edits are
+   * reflected without making SQLite authoritative.
+   */
+  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
+    const limit = Math.max(1, Math.min(100, input.limit ?? 50));
+    const boundary = input.cursor
+      ? this.decodeHistoryCursor(input.cursor, "all-chat", "workspace")
+      : undefined;
+    type AllChatRow = {
+      rowKey: string;
+      projectId: string;
+      projectLabel: string;
+      chatKind: "conversation" | "collaboration" | "agent";
+      chatId: string;
+      chatTitle: string;
+      messageId: string;
+      eventId: string;
+      role: "user" | "assistant" | "system";
+      authorAgentId: string | null;
+      authorTitle: string | null;
+      orderKey: string;
+    };
+    const rows = this.client.prepare(`
+      WITH eligible AS (
+        SELECT
+          search.row_key AS rowKey,
+          search.project_id AS projectId,
+          project.label AS projectLabel,
+          search.chat_kind AS chatKind,
+          search.chat_id AS chatId,
+          COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+          search.message_id AS messageId,
+          search.communication_event_id AS eventId,
+          search.role AS role,
+          search.author_agent_id AS authorAgentId,
+          author_agent.title AS authorTitle,
+          search.order_key AS orderKey
+        FROM chat_search_messages search
+        JOIN projects project ON project.id = search.project_id
+        LEFT JOIN conversations conversation
+          ON search.chat_kind IN ('conversation', 'collaboration')
+          AND conversation.id = search.chat_id AND conversation.archived = 0
+        LEFT JOIN agents chat_agent
+          ON search.chat_kind = 'agent'
+          AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+        LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
+        WHERE conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL
+      ), ranked AS (
+        SELECT eligible.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY projectId, eventId
+            ORDER BY CASE chatKind
+              WHEN 'conversation' THEN 0
+              WHEN 'collaboration' THEN 1
+              ELSE CASE WHEN chatId = authorAgentId THEN 2 ELSE 3 END
+            END, chatId ASC, rowKey ASC
+          ) AS sourceRank
+        FROM eligible
+      )
+      SELECT rowKey, projectId, projectLabel, chatKind, chatId, chatTitle,
+        messageId, eventId, role, authorAgentId, authorTitle, orderKey
+      FROM ranked
+      WHERE sourceRank = 1
+        ${boundary ? "AND (orderKey < ? OR (orderKey = ? AND rowKey < ?))" : ""}
+      ORDER BY orderKey DESC, rowKey DESC
+      LIMIT ?
+    `).all(...(boundary
+      ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [limit + 1])) as AllChatRow[];
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const items = selected.flatMap((row): AllChatItemDto[] => {
+      const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
+        ? "conversation"
+        : row.chatKind === "collaboration"
+          ? "collaboration_view"
+          : "direct_agent_audit";
+      const projection = this.projectionIndex(row.projectId).byTuple.get(
+        `${row.eventId}\u0000${surface}\u0000${row.chatId}`,
+      );
+      const message = projection
+        ? this.materializeProjectedCommunicationMessages(row.projectId, [projection])[0]
+        : undefined;
+      const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
+      if (!message || !event) return [];
+      const activeAgents = this.listAgents(row.projectId).filter((agent) => !agent.archived);
+      const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
+        ? event.audience.kind === "user_agent"
+          ? event.audience.agentId
+          : event.audience.agentIds.length === 1 ? event.audience.agentIds[0] : undefined
+        : undefined;
+      const targetAgentId = row.chatKind === "agent"
+        ? row.chatId
+        : row.authorAgentId ?? exactAudienceAgentId;
+      const directMessageAgent = targetAgentId
+        ? activeAgents.find((agent) => agent.id === targetAgentId)
+        : undefined;
+      const author: GlobalChatSearchAuthorDto = row.authorAgentId
+        ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
+        : row.role === "user"
+          ? { kind: "user", label: "User" }
+          : row.role === "system"
+            ? { kind: "system", label: "System" }
+            : { kind: "agent", label: "Agent" };
+      const source: AllChatItemDto["source"] = row.chatKind === "conversation"
+        ? { kind: "project", conversationId: row.chatId, title: row.chatTitle }
+        : row.chatKind === "collaboration"
+          ? { kind: "team", conversationId: row.chatId, title: row.chatTitle }
+          : { kind: "agent", agentId: row.chatId, title: row.chatTitle };
+      return [{
+        communicationEventId: row.eventId,
+        messageId: message.messageId,
+        project: { id: row.projectId, label: row.projectLabel },
+        source,
+        author,
+        text: message.text,
+        createdAt: message.createdAt,
+        ...(directMessageAgent ? {
+          directMessageAgent: { id: directMessageAgent.id, title: directMessageAgent.title },
+        } : {}),
+      }];
+    }).reverse();
+    const oldest = selected.at(-1);
+    return {
+      items,
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? {
+          cursor: this.encodeHistoryCursor({
+            stream: "all-chat", scope: "workspace", orderKey: oldest.orderKey, rowKey: oldest.rowKey,
+          }),
+        } : {}),
+      },
     };
   }
 
@@ -3390,131 +3790,44 @@ export class AgentStore {
   }
 
   getArtifacts(agentId: string): ArtifactDto[] {
-    const eventLog = this.readEvents(agentId);
-    const capturedSourcePaths = new Set(eventLog.flatMap((stored) =>
-      stored.event.type === "generated_artifact" ? [stored.event.sourcePath] : [],
-    ));
-    const generatedPdfs = new Map(eventLog.flatMap((stored) =>
-      stored.event.type === "file_change" && stored.event.path.toLowerCase().endsWith(".pdf")
-        && !capturedSourcePaths.has(stored.event.path)
-        ? [[artifactId(agentId, stored.seq, 0), stored.event.path] as const]
-        : [],
-    ));
-    const agent = this.getAgent(agentId);
-    const generatedFiles = new Map(eventLog.flatMap((stored) =>
-      stored.event.type === "generated_artifact"
-        ? [[stored.event.artifactId ?? artifactId(agentId, stored.seq, 0), stored.event] as const]
-        : [],
-    ));
-    const visibility = new Map<string, { visibility: "project" | "published"; pinned: boolean }>();
-    for (const stored of eventLog) if (stored.event.type === "artifact_visibility") {
-      visibility.set(stored.event.artifactId, { visibility: stored.event.visibility, pinned: stored.event.pinned });
-    }
-    return this.db
-      .select()
-      .from(artifacts)
-      .where(eq(artifacts.agentId, agentId))
-      .orderBy(asc(artifacts.createdAt))
-      .all()
-      .filter((row) => !(row.kind === "diff" && [...capturedSourcePaths].some((source) => row.summary === `create ${source}` || row.summary === `edit ${source}`)))
-      .map((r) => {
-        const generated = generatedFiles.get(r.id);
-        if (generated && agent) {
-          const scope = visibility.get(r.id);
-          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
-          return {
-            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
-            kind: "generated_file" as const, path: generated.path, sourcePath: generated.sourcePath,
-            summary: generated.name, createdAt: r.createdAt, mediaType: generated.mediaType,
-            visibility: scope?.visibility ?? generated.visibility, pinned: scope?.pinned ?? generated.pinned ?? false,
-            size: generated.size,
-            previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
-          };
-        }
-        const generatedPath = generatedPdfs.get(r.id);
-        if (generatedPath && agent) {
-          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(r.id)}`;
-          return {
-            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
-            kind: "document" as const, path: generatedPath, summary: generatedPath,
-            createdAt: r.createdAt, mediaType: "application/pdf" as const,
-            previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
-          };
-        }
-        if (r.kind === "screenshot" && agent) {
-          const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(r.id)}`;
-          return {
-            id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
-            kind: "screenshot" as const, path: r.path, summary: r.summary ?? undefined,
-            createdAt: r.createdAt, mediaType: "image/png" as const,
-            previewUrl: root, downloadUrl: `${root}?download=1`,
-          };
-        }
-        return {
-          id: r.id, agentId: r.agentId, executionId: r.executionId ?? undefined,
-          kind: r.kind as ArtifactKind, path: r.path, summary: r.summary ?? undefined,
-          createdAt: r.createdAt,
-        };
-      });
+    const rows = this.client.prepare(`
+      SELECT id, agent_id, execution_id, kind, path, summary, created_at,
+        source_path, media_type, visibility, pinned, size
+      FROM artifacts WHERE agent_id = ? ORDER BY created_at, id
+    `).all(agentId) as ArtifactProjectionReadRow[];
+    return rows.flatMap((row) => {
+      const artifact = this.artifactDtoFromProjectionRow(agentId, row);
+      return artifact ? [artifact] : [];
+    });
   }
 
-  private artifactDtoFromProjectionRow(agentId: string, row: {
-    id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
-    summary: string | null; created_at: string;
-  }): ArtifactDto | undefined {
+  private artifactDtoFromProjectionRow(agentId: string, row: ArtifactProjectionReadRow): ArtifactDto | undefined {
     const agent = this.getAgent(agentId);
     if (!agent) return undefined;
-    const legacySeqText = row.id.startsWith(`${agentId}:a:`) ? row.id.slice(`${agentId}:a:`.length).split(":", 1)[0] : undefined;
-    const legacySeq = legacySeqText && /^\d+$/u.test(legacySeqText) ? Number(legacySeqText) : undefined;
-    const generatedRow = this.client.prepare(`
-      SELECT payload_json FROM events
-      WHERE agent_id = ? AND type = 'generated_artifact'
-        AND (json_extract(payload_json, '$.artifactId') = ?
-          ${legacySeq === undefined ? "" : "OR (json_extract(payload_json, '$.artifactId') IS NULL AND seq = ?)"})
-      ORDER BY seq DESC LIMIT 1
-    `).get(...(legacySeq === undefined ? [agentId, row.id] : [agentId, row.id, legacySeq])) as { payload_json: string } | undefined;
-    const generated = generatedRow ? JSON.parse(generatedRow.payload_json) as LogEvent : undefined;
-    if (generated?.type === "generated_artifact") {
-      const visibilityRow = this.client.prepare(`
-        SELECT payload_json FROM events
-        WHERE agent_id = ? AND type = 'artifact_visibility' AND json_extract(payload_json, '$.artifactId') = ?
-        ORDER BY seq DESC LIMIT 1
-      `).get(agentId, row.id) as { payload_json: string } | undefined;
-      const visibilityEvent = visibilityRow ? JSON.parse(visibilityRow.payload_json) as LogEvent : undefined;
+    if (row.kind === "generated_file" && row.source_path && row.media_type && row.size !== null) {
       const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
       return {
         id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
-        kind: "generated_file", path: generated.path, sourcePath: generated.sourcePath,
-        summary: generated.name, createdAt: row.created_at, mediaType: generated.mediaType,
-        visibility: visibilityEvent?.type === "artifact_visibility" ? visibilityEvent.visibility : generated.visibility,
-        pinned: visibilityEvent?.type === "artifact_visibility" ? visibilityEvent.pinned : generated.pinned ?? false,
-        size: generated.size, previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+        kind: "generated_file", path: row.path, sourcePath: row.source_path,
+        summary: row.summary ?? row.path, createdAt: row.created_at, mediaType: row.media_type,
+        visibility: row.visibility === "published" ? "published" : "project",
+        pinned: row.pinned === 1,
+        size: row.size, previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
       };
     }
-    if (row.kind === "diff" && row.summary) {
-      const sourcePath = /^(?:create|edit) (.+)$/u.exec(row.summary)?.[1];
-      if (sourcePath) {
-        const captured = this.client.prepare(`
-          SELECT 1 FROM events
-          WHERE agent_id = ? AND type = 'generated_artifact' AND json_extract(payload_json, '$.sourcePath') = ?
-          LIMIT 1
-        `).get(agentId, sourcePath);
-        if (captured) return undefined;
-      }
+    if (row.kind === "diff" && row.source_path) {
+      const captured = this.client.prepare(`
+        SELECT 1 FROM artifacts WHERE agent_id = ? AND kind = 'generated_file' AND source_path = ? LIMIT 1
+      `).get(agentId, row.source_path);
+      if (captured) return undefined;
     }
-    if (legacySeq !== undefined) {
-      const source = this.client.prepare(`
-        SELECT payload_json FROM events WHERE agent_id = ? AND seq = ? AND type = 'file_change'
-      `).get(agentId, legacySeq) as { payload_json: string } | undefined;
-      const event = source ? JSON.parse(source.payload_json) as LogEvent : undefined;
-      if (event?.type === "file_change" && event.path.toLowerCase().endsWith(".pdf")) {
-        const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
-        return {
-          id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
-          kind: "document", path: event.path, summary: event.path, createdAt: row.created_at,
-          mediaType: "application/pdf", previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
-        };
-      }
+    if (row.kind === "diff" && row.source_path?.toLowerCase().endsWith(".pdf")) {
+      const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
+      return {
+        id: row.id, agentId: row.agent_id, executionId: row.execution_id ?? undefined,
+        kind: "document", path: row.source_path, summary: row.source_path, createdAt: row.created_at,
+        mediaType: "application/pdf", previewUrl: `${root}/preview`, downloadUrl: `${root}/download`,
+      };
     }
     if (row.kind === "screenshot") {
       const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(row.id)}`;
@@ -3540,17 +3853,15 @@ export class AgentStore {
     if (focusId && !focusBoundary) return { items: [], history: { limit, hasMore: false } };
     const boundary = focusBoundary ?? (input.cursor ? this.decodeHistoryCursor(input.cursor, "agent:artifacts", agentId) : undefined);
     const rows = this.client.prepare(`
-      SELECT id, agent_id, execution_id, kind, path, summary, created_at
+      SELECT id, agent_id, execution_id, kind, path, summary, created_at,
+        source_path, media_type, visibility, pinned, size
       FROM artifacts
       WHERE agent_id = ?
         ${boundary ? `AND (created_at < ? OR (created_at = ? AND id ${focusBoundary ? "<=" : "<"} ?))` : ""}
       ORDER BY created_at DESC, id DESC LIMIT ?
     `).all(...(boundary
       ? [agentId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-      : [agentId, limit + 1])) as Array<{
-      id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
-      summary: string | null; created_at: string;
-    }>;
+      : [agentId, limit + 1])) as ArtifactProjectionReadRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
     const items = selected.flatMap((row) => {
@@ -3571,21 +3882,56 @@ export class AgentStore {
 
   /** Durable Project-owned generated-artifact catalog. */
   getProjectArtifacts(projectId: string): ArtifactDto[] {
-    const resolved = new Map<string, ArtifactDto & { projectId: string; originAgentId: string }>();
+    const rows = this.client.prepare(`
+      SELECT artifact_json FROM managed_artifact_projection
+      WHERE project_id = ? ORDER BY created_at, artifact_id
+    `).all(projectId) as Array<{ artifact_json: string }>;
+    return rows.map((row) => JSON.parse(row.artifact_json) as ArtifactDto & { projectId: string; originAgentId: string }).map((artifact) => {
+      const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
+      return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
+    });
+  }
+
+  private projectManagedArtifactEvent(projectId: string, event: ManagedArtifactEvent): void {
+    if (event.type === "created") {
+      this.client.prepare(`
+        INSERT INTO managed_artifact_projection(project_id, artifact_id, created_at, visibility, pinned, artifact_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(project_id, artifact_id) DO UPDATE SET
+          created_at = excluded.created_at, visibility = excluded.visibility,
+          pinned = excluded.pinned, artifact_json = excluded.artifact_json
+      `).run(
+        projectId, event.artifact.id, event.artifact.createdAt,
+        event.artifact.visibility ?? "project", event.artifact.pinned ? 1 : 0,
+        JSON.stringify(event.artifact),
+      );
+      return;
+    }
+    if (event.type === "deleted") {
+      this.client.prepare(`DELETE FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?`)
+        .run(projectId, event.artifactId);
+      return;
+    }
+    const row = this.client.prepare(`
+      SELECT artifact_json FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+    `).get(projectId, event.artifactId) as { artifact_json: string } | undefined;
+    if (!row) return;
+    const artifact = JSON.parse(row.artifact_json) as ArtifactDto & { projectId: string; originAgentId: string };
+    this.client.prepare(`
+      UPDATE managed_artifact_projection SET visibility = ?, pinned = ?, artifact_json = ?
+      WHERE project_id = ? AND artifact_id = ?
+    `).run(
+      event.visibility, event.pinned ? 1 : 0,
+      JSON.stringify({ ...artifact, visibility: event.visibility, pinned: event.pinned }),
+      projectId, event.artifactId,
+    );
+  }
+
+  private rebuildManagedArtifactProjection(projectId: string): void {
     for (const event of readRepairableJsonl<ManagedArtifactEvent>(
       managedArtifactsLogPath(this.dataDir, projectId),
       `managed artifacts for project ${projectId}`,
-    )) {
-      if (event.type === "created") resolved.set(event.artifact.id, event.artifact);
-      else if (event.type === "visibility") {
-        const current = resolved.get(event.artifactId);
-        if (current) resolved.set(event.artifactId, { ...current, visibility: event.visibility, pinned: event.pinned });
-      } else resolved.delete(event.artifactId);
-    }
-    return [...resolved.values()].map((artifact) => {
-      const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
-      return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
-    }).sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
+    )) this.projectManagedArtifactEvent(projectId, event);
   }
 
   /** Bounded Project-wide file/result catalog. SQLite applies the boundary to
@@ -3596,7 +3942,8 @@ export class AgentStore {
     const boundary = input.cursor ? this.decodeHistoryCursor(input.cursor, "project:artifacts", projectId) : undefined;
     const rows = this.client.prepare(`
       SELECT artifact.id, artifact.agent_id, artifact.execution_id, artifact.kind, artifact.path,
-        artifact.summary, artifact.created_at
+        artifact.summary, artifact.created_at, artifact.source_path, artifact.media_type,
+        artifact.visibility, artifact.pinned, artifact.size
       FROM artifacts artifact
       JOIN agents agent ON agent.id = artifact.agent_id
       WHERE agent.project_id = ?
@@ -3604,22 +3951,30 @@ export class AgentStore {
       ORDER BY artifact.created_at DESC, artifact.id DESC LIMIT ?
     `).all(...(boundary
       ? [projectId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
-      : [projectId, limit + 1])) as Array<{
-      id: string; agent_id: string; execution_id: string | null; kind: string; path: string;
-      summary: string | null; created_at: string;
-    }>;
+      : [projectId, limit + 1])) as ArtifactProjectionReadRow[];
     const executionArtifacts = rows.flatMap((row) => {
       const artifact = this.artifactDtoFromProjectionRow(row.agent_id, row);
       return artifact ? [{ ...artifact, projectId }] : [];
     });
-    const managed = this.getProjectArtifacts(projectId).filter((artifact) => !boundary ||
-      artifact.createdAt < boundary.orderKey || (artifact.createdAt === boundary.orderKey && artifact.id < boundary.rowKey));
+    const managedRows = this.client.prepare(`
+      SELECT artifact_json FROM managed_artifact_projection
+      WHERE project_id = ?
+        ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
+      ORDER BY created_at DESC, artifact_id DESC LIMIT ?
+    `).all(...(boundary
+      ? [projectId, boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
+      : [projectId, limit + 1])) as Array<{ artifact_json: string }>;
+    const managed = managedRows.map((row) => {
+      const artifact = JSON.parse(row.artifact_json) as ArtifactDto & { projectId: string; originAgentId: string };
+      const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
+      return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
+    });
     const merged = new Map<string, ArtifactDto>();
     for (const artifact of executionArtifacts) merged.set(artifact.id, artifact);
     for (const artifact of managed) merged.set(artifact.id, artifact);
     const ordered = [...merged.values()].sort((left, right) =>
       right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
-    const hasMore = ordered.length > limit || rows.length > limit;
+    const hasMore = ordered.length > limit || rows.length > limit || managedRows.length > limit;
     const selected = ordered.slice(0, limit);
     const oldest = selected.at(-1);
     return {
@@ -3634,7 +3989,27 @@ export class AgentStore {
   }
 
   getProjectArtifact(projectId: string, artifactIdValue: string): ArtifactDto | undefined {
-    return this.getProjectArtifacts(projectId).find((artifact) => artifact.id === artifactIdValue);
+    const row = this.client.prepare(`
+      SELECT artifact_json FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+    `).get(projectId, artifactIdValue) as { artifact_json: string } | undefined;
+    if (!row) return undefined;
+    const artifact = JSON.parse(row.artifact_json) as ArtifactDto & { projectId: string; originAgentId: string };
+    const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
+    return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
+  }
+
+  getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
+    const boundedLimit = Math.max(1, Math.min(limit, 500));
+    const rows = this.client.prepare(`
+      SELECT artifact_json FROM managed_artifact_projection
+      WHERE project_id = ? AND (pinned = 1 OR visibility = 'published')
+      ORDER BY created_at DESC, artifact_id DESC LIMIT ?
+    `).all(projectId, boundedLimit) as Array<{ artifact_json: string }>;
+    return rows.map((row) => {
+      const artifact = JSON.parse(row.artifact_json) as ArtifactDto & { projectId: string; originAgentId: string };
+      const root = `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifact.id)}`;
+      return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
+    });
   }
 
   recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
@@ -3644,14 +4019,18 @@ export class AgentStore {
           !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? ""))) {
       throw new Error("generated artifact immutable metadata is required");
     }
-    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [{ type: "created", artifact } satisfies ManagedArtifactEvent]);
+    const event = { type: "created", artifact } satisfies ManagedArtifactEvent;
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [event]);
+    this.projectManagedArtifactEvent(artifact.projectId, event);
   }
 
   deleteProjectArtifact(projectId: string, artifactIdValue: string, reason: string): boolean {
     if (!this.getProjectArtifact(projectId, artifactIdValue)) return false;
-    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [{
+    const event = {
       type: "deleted", artifactId: artifactIdValue, at: new Date().toISOString(), reason: reason.slice(0, 240),
-    } satisfies ManagedArtifactEvent]);
+    } satisfies ManagedArtifactEvent;
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [event]);
+    this.projectManagedArtifactEvent(projectId, event);
     return true;
   }
 
@@ -3662,9 +4041,11 @@ export class AgentStore {
     pinned: boolean,
   ): ArtifactDto | undefined {
     if (!this.getProjectArtifact(projectId, artifactIdValue)) return undefined;
-    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [{
+    const event = {
       type: "visibility", artifactId: artifactIdValue, visibility, pinned, at: new Date().toISOString(),
-    } satisfies ManagedArtifactEvent]);
+    } satisfies ManagedArtifactEvent;
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), [event]);
+    this.projectManagedArtifactEvent(projectId, event);
     return this.getProjectArtifact(projectId, artifactIdValue);
   }
 
@@ -3688,21 +4069,12 @@ export class AgentStore {
   }
 
   getArtifact(agentId: string, artifactId: string): ArtifactDto | undefined {
-    const r = this.db
-      .select()
-      .from(artifacts)
-      .where(eq(artifacts.id, artifactId))
-      .get();
-    if (!r || r.agentId !== agentId) return undefined;
-    return {
-      id: r.id,
-      agentId: r.agentId,
-      executionId: r.executionId ?? undefined,
-      kind: r.kind as ArtifactKind,
-      path: r.path,
-      summary: r.summary ?? undefined,
-      createdAt: r.createdAt,
-    };
+    const row = this.client.prepare(`
+      SELECT id, agent_id, execution_id, kind, path, summary, created_at,
+        source_path, media_type, visibility, pinned, size
+      FROM artifacts WHERE agent_id = ? AND id = ?
+    `).get(agentId, artifactId) as ArtifactProjectionReadRow | undefined;
+    return row ? this.artifactDtoFromProjectionRow(agentId, row) : undefined;
   }
 
   // ─── Event log (append-only) + projection ──────────────────────────────────
@@ -3813,6 +4185,10 @@ export class AgentStore {
   rebuildProjections(): void {
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM tool_output_projection`).run();
+    this.db.delete(activityProjection).run();
+    this.db.delete(changedFileProjection).run();
+    this.db.delete(managedArtifactProjection).run();
+    this.db.delete(importedHistoryMessages).run();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -3885,6 +4261,8 @@ export class AgentStore {
         }
       }
 
+      this.rebuildManagedArtifactProjection(projectId);
+
       const tDir = agentsDir(this.dataDir, projectId);
       if (!existsSync(tDir)) continue;
       for (const agentId of readdirSync(tDir)) {
@@ -3927,6 +4305,11 @@ export class AgentStore {
         });
         if (t.conversationIds === undefined || t.conversationId !== primaryConversationId) {
           writeJson(tj, { ...t, conversationId: primaryConversationId, conversationIds: membershipIds });
+        }
+
+        const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);
+        if (existsSync(importedHistoryFile)) {
+          this.projectImportedHistory(agentId, readJson(importedHistoryFile));
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);
@@ -3976,15 +4359,63 @@ export class AgentStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
-            if (op.row.type === "tool_result") {
+            if (ACTIVITY_EVENT_TYPES.has(op.row.type)) {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
+              let eventJson = op.row.payloadJson;
+              let previewUtf8Bytes: number | null = null;
+              let totalUtf8Bytes: number | null = null;
+              let outputSha256: string | null = null;
               if (event.type === "tool_result") {
                 const output = Buffer.from(event.output, "utf8");
+                const preview = utf8Prefix(event.output, ACTIVITY_OUTPUT_PREVIEW_BYTES);
+                previewUtf8Bytes = Buffer.byteLength(preview, "utf8");
+                totalUtf8Bytes = output.length;
+                outputSha256 = createHash("sha256").update(output).digest("hex");
+                eventJson = JSON.stringify({ ...event, output: preview });
                 this.client.prepare(`
                   INSERT OR IGNORE INTO tool_output_projection
                     (agent_id, seq, output, total_utf8_bytes, sha256)
                   VALUES (?, ?, ?, ?, ?)
-                `).run(agentId, op.row.seq, output, output.length, createHash("sha256").update(output).digest("hex"));
+                `).run(agentId, op.row.seq, output, output.length, outputSha256);
+              }
+              this.client.prepare(`
+                INSERT OR IGNORE INTO activity_projection(
+                  agent_id, seq, event_type, execution_id, event_json, created_at,
+                  output_preview_utf8_bytes, output_total_utf8_bytes, output_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `).run(
+                agentId, op.row.seq, op.row.type, op.executionId ?? null, eventJson, op.row.createdAt,
+                previewUtf8Bytes, totalUtf8Bytes, outputSha256,
+              );
+              if (event.type === "file_change") {
+                const existing = this.client.prepare(`
+                  SELECT execution_ids_json FROM changed_file_projection WHERE agent_id = ? AND path = ?
+                `).get(agentId, event.path) as { execution_ids_json: string } | undefined;
+                const executionIds = existing ? JSON.parse(existing.execution_ids_json) as string[] : [];
+                if (op.executionId && !executionIds.includes(op.executionId)) executionIds.push(op.executionId);
+                const boundedDiff = event.diff ? utf8Prefix(event.diff, ACTIVITY_OUTPUT_PREVIEW_BYTES) : null;
+                this.client.prepare(`
+                  INSERT INTO changed_file_projection(
+                    agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, diff
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                  ON CONFLICT(agent_id, path) DO UPDATE SET
+                    kind = excluded.kind,
+                    last_seq = excluded.last_seq,
+                    last_changed_at = excluded.last_changed_at,
+                    execution_ids_json = excluded.execution_ids_json,
+                    diff = excluded.diff
+                `).run(
+                  agentId, event.path, event.kind, op.row.seq, op.row.createdAt,
+                  JSON.stringify(executionIds), boundedDiff,
+                );
+              }
+            }
+            if (op.row.type === "artifact_visibility") {
+              const visibility = JSON.parse(op.row.payloadJson) as LogEvent;
+              if (visibility.type === "artifact_visibility") {
+                this.client.prepare(`
+                  UPDATE artifacts SET visibility = ?, pinned = ? WHERE agent_id = ? AND id = ?
+                `).run(visibility.visibility, visibility.pinned ? 1 : 0, agentId, visibility.artifactId);
               }
             }
             break;

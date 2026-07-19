@@ -7,6 +7,7 @@ import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import InboxOutlinedIcon from "@mui/icons-material/InboxOutlined";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SearchIcon from "@mui/icons-material/Search";
@@ -297,10 +298,12 @@ export function WorkspaceSidebar({
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25, objectFit: "contain" }} /></Tooltip>
       <RailButton label="Home" selected={sidebarSection === "navigation" && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
+      <RailButton label="All Chat" selected={sidebarSection === "navigation" && route.kind === "allChat"} onClick={() => showNavigation({ kind: "allChat" })}><ChatBubbleOutlineIcon /></RailButton>
       <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Inbox" badge={counts.unread || undefined} badgeColor="error" onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
+      <RailButton label="Wiki" selected={sidebarSection === "navigation" && route.kind === "wiki"} onClick={() => showNavigation({ kind: "wiki" })}><MenuBookOutlinedIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>

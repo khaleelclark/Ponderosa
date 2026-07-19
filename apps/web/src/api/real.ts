@@ -55,6 +55,7 @@ import type {
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
+  AllChatPageDto,
   HistoryPageDto,
   HostFolderBrowseDto,
   ImageAttachmentDto,
@@ -99,6 +100,9 @@ import type {
   WorkspacePreferencesDto,
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
+  WikiArticleDto,
+  WikiIndexDto,
+  WikiSearchResponseDto,
 } from "@ponderosa/core";
 import {
   ApiRequestError,
@@ -157,6 +161,15 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  getWikiIndex(): Promise<WikiIndexDto> {
+    return requestJson<WikiIndexDto>("/api/wiki");
+  },
+  getWikiArticle(id: string): Promise<WikiArticleDto> {
+    return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
+  },
+  searchWiki(query: string, limit = 20): Promise<WikiSearchResponseDto> {
+    return requestJson<WikiSearchResponseDto>(`/api/wiki/search${toQuery({ q: query, limit })}`);
+  },
   listProjects(): Promise<ProjectDto[]> {
     return requestJson<ProjectDto[]>("/api/projects");
   },
@@ -206,6 +219,9 @@ export const realApi = {
   },
   searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto> {
     return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
+  },
+  getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
+    return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");

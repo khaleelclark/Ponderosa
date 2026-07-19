@@ -86,6 +86,8 @@ export interface WorkspacePreferencesDto {
   engineDefaults?: Record<string, { model: string; effort?: string }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
+  /** Workspace-wide admission limit for concurrently active Agent Runs. */
+  maxConcurrentAgentRuns: number;
   profile: OperatorProfileDto;
   updatedAt: string;
 }
@@ -1873,4 +1875,29 @@ export interface GlobalChatSearchResponseDto {
   recentChats: RecentGlobalChatDto[];
   scannedMessages: number;
   truncated: boolean;
+}
+
+// ─── All Chat ───────────────────────────────────────────────────────────────────────
+
+export type AllChatSourceDto =
+  | { kind: "project" | "team"; conversationId: string; title: string }
+  | { kind: "agent"; agentId: string; title: string };
+
+/** One canonical authored communication in the workspace-wide aggregate view. */
+export interface AllChatItemDto {
+  communicationEventId: string;
+  messageId: string;
+  project: Pick<ProjectDto, "id" | "label">;
+  source: AllChatSourceDto;
+  author: GlobalChatSearchAuthorDto;
+  text: string;
+  createdAt: string;
+  /** Present only when this source item determines one exact active DM target. */
+  directMessageAgent?: Pick<AgentDto, "id" | "title">;
+}
+
+/** GET /api/all-chat response. Canonical items are oldest-first for timeline prepend. */
+export interface AllChatPageDto {
+  items: AllChatItemDto[];
+  history: HistoryWindowDto;
 }

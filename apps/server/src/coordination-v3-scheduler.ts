@@ -23,6 +23,7 @@ export class CoordinationV3Scheduler {
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
+  private maxConcurrentRuns: number;
   private readonly stopWaiters = new Set<() => void>();
   private readonly metrics: CoordinationV3SchedulerMetrics = {
     claimedRuns: 0,
@@ -56,7 +57,9 @@ export class CoordinationV3Scheduler {
       /** Keep durable work queued while its provider is known unavailable. */
       blockedAgentIds?: () => readonly string[];
     },
-  ) {}
+  ) {
+    this.maxConcurrentRuns = options.maxConcurrentRuns ?? 8;
+  }
 
   start(): void {
     if (this.stopped) throw new Error("scheduler has been stopped");
@@ -70,6 +73,22 @@ export class CoordinationV3Scheduler {
 
   isLeasingRuns(): boolean {
     return !this.stopped && !this.leasingPaused;
+  }
+
+  /** Apply the operator's workspace-wide admission budget without disturbing
+   * active Runs. Increasing the budget wakes leasing immediately; decreasing
+   * it takes effect before the next lease while existing Runs finish normally. */
+  setMaxConcurrentRuns(maxConcurrentRuns: number): void {
+    if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns < 0) {
+      throw new Error("maxConcurrentRuns must be a non-negative integer");
+    }
+    const increased = maxConcurrentRuns > this.maxConcurrentRuns;
+    this.maxConcurrentRuns = maxConcurrentRuns;
+    if (increased) this.schedule(0);
+  }
+
+  getMaxConcurrentRuns(): number {
+    return this.maxConcurrentRuns;
   }
 
   /** Stop all new provider work while durable intake and maintenance remain
@@ -185,8 +204,7 @@ export class CoordinationV3Scheduler {
           this.options.onMessageDeliveryChanged?.(steering.agentId);
         }
       }
-      const maximum = this.options.maxConcurrentRuns ?? 8;
-      while (!this.leasingPaused && this.store.activeRunCount() < maximum) {
+      while (!this.leasingPaused && this.store.activeRunCount() < this.maxConcurrentRuns) {
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,7 +16,7 @@ function fixture() {
 describe("WorkspaceStore canonical replay", () => {
   it("persists synced preferences and revisioned drafts with deterministic conflicts", () => {
     const { dir, store } = fixture();
-    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340 });
+    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5 });
     const first = store.putDraft("chat", { text: "first", attachmentIds: ["asset"], expectedRevision: 0, clientId: "tab-a" });
     expect(first.revision).toBe(1);
     let conflict: unknown;
@@ -25,10 +25,24 @@ describe("WorkspaceStore canonical replay", () => {
 
     const restarted = new WorkspaceStore(dir);
     expect(restarted.instanceId()).toBe(store.instanceId());
-    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340 });
+    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5 });
     expect(restarted.getDraft("chat")).toEqual(first);
     expect(restarted.listDraftConflicts("chat").conflicts).toEqual([expect.objectContaining({ current: first, displaced: expect.objectContaining({ text: "stale" }) })]);
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));
+  });
+
+  it("defaults Agent Run concurrency when replaying a preferences event without the field", () => {
+    const { dir, store } = fixture();
+    store.updatePreferences({ projectSort: "custom" });
+    const eventsFile = path.join(dir, "workspace-events.jsonl");
+    const record = JSON.parse(readFileSync(eventsFile, "utf8")) as { event: { preferences: Record<string, unknown> } };
+    delete record.event.preferences.maxConcurrentAgentRuns;
+    writeFileSync(eventsFile, `${JSON.stringify(record)}\n`);
+
+    expect(new WorkspaceStore(dir).getPreferences()).toMatchObject({
+      projectSort: "custom",
+      maxConcurrentAgentRuns: 8,
+    });
   });
 
   it("deduplicates notifications and rotates/removes one device subscription", () => {
@@ -130,5 +144,38 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.getNotification(decisionNotification.id)?.decision?.status).toBe("resolved");
     expect(restarted.getDecision(abandoned.id)).toMatchObject({ status: "cancelled" });
     expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
+  });
+
+  it("indexes bounded Decision pages and exact Run relationships across replay", () => {
+    const { dir, store } = fixture();
+    const decisions = Array.from({ length: 7 }, (_, index) => store.createDecision({
+      idempotencyKey: `bounded-${index}`,
+      projectId: "project",
+      conversationId: index === 0 ? "other-chat" : "chat",
+      agentId: index % 2 ? "agent-a" : "agent-b",
+      runId: index < 2 ? "shared-run" : `run-${index}`,
+      mode: "text",
+      question: `Question ${index}`,
+      options: [],
+      allowOther: true,
+      blocking: false,
+    }));
+    const first = store.listDecisionPage({ projectId: "project", conversationId: "chat", limit: 2 });
+    expect(first.decisions).toHaveLength(2);
+    expect(first.hasMore).toBe(true);
+    const oldest = first.decisions.at(-1)!;
+    const second = store.listDecisionPage({
+      projectId: "project", conversationId: "chat", limit: 10,
+      before: { createdAt: oldest.createdAt, id: oldest.id },
+    });
+    expect(new Set([...first.decisions, ...second.decisions].map((decision) => decision.id)).size).toBe(6);
+    expect(store.decisionsForRuns(new Set(["shared-run"])).map((decision) => decision.id).sort())
+      .toEqual(decisions.slice(0, 2).map((decision) => decision.id).sort());
+
+    const restarted = new WorkspaceStore(dir);
+    expect(restarted.listDecisionPage({
+      projectId: "project", conversationId: "chat", agentId: "agent-a", limit: 10,
+    }).decisions.every((decision) => decision.agentId === "agent-a")).toBe(true);
+    expect(restarted.decisionsForRuns(new Set(["shared-run"]))).toHaveLength(2);
   });
 });

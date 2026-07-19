@@ -34,7 +34,7 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto, TeamOperationalEventDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationChannel, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto, TeamOperationalEventDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -270,6 +270,7 @@ export function ConversationMessage({
 export function ConversationView({
   conversationId,
   focusMessageId,
+  initialView,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -287,6 +288,7 @@ export function ConversationView({
 }: {
   conversationId: string;
   focusMessageId?: string;
+  initialView?: ConversationChannel;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(): Promise<unknown> | unknown;
@@ -330,9 +332,8 @@ export function ConversationView({
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
     },
   });
-  const [activeView, setActiveView] = useState<"main" | "collaboration">(() =>
-    readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main",
-  );
+  const [activeView, setActiveView] = useState<"main" | "collaboration">(() => initialView ??
+    (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -390,8 +391,9 @@ export function ConversationView({
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
-    setActiveView(readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main");
-  }, [conversationId]);
+    setActiveView(initialView ??
+      (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
+  }, [conversationId, initialView]);
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `conversation.${conversationId}`), activeView);
@@ -467,22 +469,38 @@ export function ConversationView({
   };
   useEffect(() => {
     if (!focusMessageId || focusedMessage.current === focusMessageId || focusedMessage.current === `missing:${focusMessageId}`) return;
-    if (activeView !== "main") {
-      setActiveView("main");
+    const focusView = initialView ?? "main";
+    if (activeView !== focusView) {
+      setActiveView(focusView);
       return;
     }
-    const projectedId = projectedMessageIdForFocus(messages, focusMessageId);
+    const focusedMessages = focusView === "collaboration" ? collaborationMessages : messages;
+    const projectedId = projectedMessageIdForFocus(focusedMessages, focusMessageId);
     if (!projectedId) {
       if (focusedMessage.current !== `loading:${focusMessageId}`) {
         focusedMessage.current = `loading:${focusMessageId}`;
-        void api.getConversation(conversationId, 100, undefined, focusMessageId).then((page) => {
-          setOlderMain((current) => ({
-            messages: mergeConversationMessages(page.messages, current?.messages ?? [], detailQuery.data?.messages ?? []),
-            cursor: page.history?.cursor,
-            hasMore: page.history?.hasMore ?? false,
-          }));
-          focusedMessage.current = page.messages.length ? undefined : `missing:${focusMessageId}`;
-        }).catch(() => { focusedMessage.current = undefined; });
+        if (focusView === "collaboration") {
+          void api.getCollaborationView(conversationId, 100, undefined, focusMessageId).then((page) => {
+            setOlderCollaboration((current) => ({
+              messages: mergeConversationMessages(page.messages, current?.messages ?? [], collaborationQuery.data?.messages ?? []),
+              operations: current?.operations ?? [],
+              cursor: page.history?.cursor,
+              operationCursor: current?.operationCursor,
+              hasMore: page.history?.hasMore ?? false,
+              operationHasMore: current?.operationHasMore ?? false,
+            }));
+            focusedMessage.current = page.messages.length ? undefined : `missing:${focusMessageId}`;
+          }).catch(() => { focusedMessage.current = undefined; });
+        } else {
+          void api.getConversation(conversationId, 100, undefined, focusMessageId).then((page) => {
+            setOlderMain((current) => ({
+              messages: mergeConversationMessages(page.messages, current?.messages ?? [], detailQuery.data?.messages ?? []),
+              cursor: page.history?.cursor,
+              hasMore: page.history?.hasMore ?? false,
+            }));
+            focusedMessage.current = page.messages.length ? undefined : `missing:${focusMessageId}`;
+          }).catch(() => { focusedMessage.current = undefined; });
+        }
       }
       return;
     }
@@ -493,7 +511,7 @@ export function ConversationView({
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
-  }, [activeView, conversationId, focusMessageId, messages]);
+  }, [activeView, collaborationMessages, collaborationQuery.data?.messages, conversationId, detailQuery.data?.messages, focusMessageId, initialView, messages]);
   useLayoutEffect(() => {
     if (
       displayedConversationId.current !== conversationId ||

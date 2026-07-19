@@ -39,7 +39,7 @@ export type ProjectionOp =
   | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; providerRequestUsage?: TokenUsage[] }
   | { kind: "insert_work_item"; row: WorkItemRow }
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
-  | { kind: "insert_event"; row: EventRow }
+  | { kind: "insert_event"; row: EventRow; executionId?: string }
   | { kind: "set_session"; sessionId: string | null; toolContractHash: string | null; artifactIds: string[] }
   | { kind: "set_state"; branch?: string; commit?: string }
   | { kind: "touch_agent"; updatedAt: string };
@@ -80,6 +80,9 @@ export function projectEvent(
   // Every event lands in the searchable index.
   ops.push({
     kind: "insert_event",
+    ...(("executionId" in event && typeof event.executionId === "string") || state.activeExecutionId
+      ? { executionId: "executionId" in event && typeof event.executionId === "string" ? event.executionId : state.activeExecutionId }
+      : {}),
     row: {
       id: eventRowId(agentId, seq),
       agentId,
@@ -216,6 +219,7 @@ export function projectEvent(
           path: artifactPath(seq, "command.md"),
           summary: event.command,
           createdAt: ts,
+          sourcePath: null, mediaType: null, visibility: null, pinned: null, size: null,
         },
         content: `# Command\n\n\`\`\`bash\n${event.command}\n\`\`\`\n\ncwd: \`${event.cwd}\`\n`,
       });
@@ -234,6 +238,8 @@ export function projectEvent(
           path: artifactPath(seq, "diff.patch"),
           summary: `${event.kind} ${event.path}`,
           createdAt: ts,
+          sourcePath: event.path,
+          mediaType: null, visibility: null, pinned: null, size: null,
         },
         content:
           event.diff ??
@@ -254,6 +260,7 @@ export function projectEvent(
           path: artifactPath(seq, "test.md"),
           summary: `${event.passed ? "pass" : "fail"}: ${event.summary}`,
           createdAt: ts,
+          sourcePath: null, mediaType: null, visibility: null, pinned: null, size: null,
         },
         content: `# Test Result\n\nStatus: ${event.passed ? "passed" : "failed"}\n\n${event.summary}\n`,
       });
@@ -272,6 +279,8 @@ export function projectEvent(
           path: event.path,
           summary: `Browser screenshot (${event.width}×${event.height})`,
           createdAt: ts,
+          mediaType: "image/png",
+          sourcePath: null, visibility: null, pinned: null, size: null,
         },
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });
@@ -284,6 +293,8 @@ export function projectEvent(
         row: {
           id: event.artifactId ?? artifactId(agentId, seq, 0), agentId, executionId: event.executionId,
           kind: "generated_file", path: event.path, summary: event.name, createdAt: ts,
+          sourcePath: event.sourcePath, mediaType: event.mediaType,
+          visibility: event.visibility ?? null, pinned: event.pinned ? 1 : 0, size: event.size,
         },
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });

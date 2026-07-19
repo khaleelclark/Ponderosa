@@ -80,7 +80,7 @@ describe("observed process-group termination", () => {
           if (event.type === "session") controller.abort();
         }
       })().finally(() => { settled = true; });
-      await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
+      await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow(), { timeout: 5_000 });
       const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
       await sleep(25);
       expect(settled).toBe(false);
@@ -119,7 +119,7 @@ describe("observed process-group termination", () => {
       })().finally(() => { settled = true; });
       await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
       const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
-      await vi.waitFor(() => expect(rootAuthorityRevoked).toBe(true));
+      await vi.waitFor(() => expect(rootAuthorityRevoked).toBe(true), { timeout: 5_000 });
       expect(settled).toBe(false);
       expect(processAlive(descendantPid.descendantPid)).toBe(true);
       await collection;

@@ -191,6 +191,46 @@ describe("Communication V3 central scheduler", () => {
     expect(leases[1]!.agentId).not.toBe(leases[0]!.agentId);
   });
 
+  it("applies live concurrency changes without cancelling active Runs or reordering queued work", async () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const base = Date.parse(now);
+    const agentC = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO agents (id, project_id, title, active_engine, created_at, updated_at, archived)
+      VALUES (?, ?, 'C', 'codex', ?, ?, 0)
+    `).run(agentC, projectId, now, now);
+    opened.client.prepare(`INSERT INTO agent_conversation_memberships (agent_id, conversation_id, position) VALUES (?, ?, 0)`)
+      .run(agentC, conversationId);
+    store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "first", kind: "ordinary", payload: {}, now: new Date(base).toISOString() });
+    store.enqueueMessageActivation({ projectId, agentId: agentB, messageId: "second", kind: "ordinary", payload: {}, now: new Date(base + 1).toISOString() });
+    store.enqueueMessageActivation({ projectId, agentId: agentC, messageId: "third", kind: "ordinary", payload: {}, now: new Date(base + 2).toISOString() });
+    const leases: SchedulerLease[] = [];
+    const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
+      leases.push(lease);
+      store.markRunStarted(lease.runId, lease.fencingToken);
+      store.markPromptSubmitted({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      store.acknowledgePromptInjection({
+        injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken,
+      });
+      return { accepted: true };
+    }, { workerId: "scheduler", now: () => base + 100, maxConcurrentRuns: 1 });
+
+    expect(await scheduler.drainOnce()).toBe(1);
+    scheduler.setMaxConcurrentRuns(2);
+    expect(scheduler.getMaxConcurrentRuns()).toBe(2);
+    expect(await scheduler.drainOnce()).toBe(1);
+    scheduler.setMaxConcurrentRuns(1);
+    expect(await scheduler.drainOnce()).toBe(0);
+    expect(store.activeRunCount()).toBe(2);
+    store.completeRun(leases[0]!.runId, leases[0]!.fencingToken, now);
+    expect(await scheduler.drainOnce()).toBe(0);
+    store.completeRun(leases[1]!.runId, leases[1]!.fencingToken, now);
+    expect(await scheduler.drainOnce()).toBe(1);
+    expect(leases.map((lease) => lease.agentId)).toEqual([agentA, agentB, agentC]);
+  });
+
   it("dead-letters a non-retryable provider operation instead of polling forever", async () => {
     store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "cancel", kind: "human", payload: {} });
     const lease = store.leaseNextRun({ workerId: "scheduler" })!;

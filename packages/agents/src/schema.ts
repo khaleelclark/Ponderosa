@@ -138,7 +138,52 @@ export const chatSearchMessages = sqliteTable("chat_search_messages", {
   timestamp: text("timestamp").notNull(),
   orderKey: text("order_key").notNull(),
   text: text("text").notNull(),
+  conversationId: text("conversation_id"),
+  communicationIntent: text("communication_intent"),
+  senderKind: text("sender_kind"),
+  senderAgentId: text("sender_agent_id"),
+  contextPolicy: text("context_policy"),
 });
+
+export const importedHistoryMessages = sqliteTable("imported_history_messages", {
+  agentId: text("agent_id").notNull(),
+  messageId: text("message_id").notNull(),
+  sequence: integer("sequence").notNull(),
+  role: text("role").notNull(),
+  text: text("text").notNull(),
+  createdAt: text("created_at").notNull(),
+}, (table) => [primaryKey({ columns: [table.agentId, table.messageId] })]);
+
+export const activityProjection = sqliteTable("activity_projection", {
+  agentId: text("agent_id").notNull(),
+  seq: integer("seq").notNull(),
+  eventType: text("event_type").notNull(),
+  executionId: text("execution_id"),
+  eventJson: text("event_json").notNull(),
+  createdAt: text("created_at").notNull(),
+  outputPreviewUtf8Bytes: integer("output_preview_utf8_bytes"),
+  outputTotalUtf8Bytes: integer("output_total_utf8_bytes"),
+  outputSha256: text("output_sha256"),
+}, (table) => [primaryKey({ columns: [table.agentId, table.seq] })]);
+
+export const changedFileProjection = sqliteTable("changed_file_projection", {
+  agentId: text("agent_id").notNull(),
+  path: text("path").notNull(),
+  kind: text("kind").notNull(),
+  lastSeq: integer("last_seq").notNull(),
+  lastChangedAt: text("last_changed_at").notNull(),
+  executionIdsJson: text("execution_ids_json").notNull(),
+  diff: text("diff"),
+}, (table) => [primaryKey({ columns: [table.agentId, table.path] })]);
+
+export const managedArtifactProjection = sqliteTable("managed_artifact_projection", {
+  projectId: text("project_id").notNull(),
+  artifactId: text("artifact_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  visibility: text("visibility").notNull(),
+  pinned: integer("pinned").notNull(),
+  artifactJson: text("artifact_json").notNull(),
+}, (table) => [primaryKey({ columns: [table.projectId, table.artifactId] })]);
 
 export const runs = sqliteTable("runs", {
   id: text("id").notNull(),
@@ -181,6 +226,11 @@ export const artifacts = sqliteTable("artifacts", {
   path: text("path").notNull(),
   summary: text("summary"),
   createdAt: text("created_at").notNull(),
+  sourcePath: text("source_path"),
+  mediaType: text("media_type"),
+  visibility: text("visibility"),
+  pinned: integer("pinned"),
+  size: integer("size"),
 });
 
 /** Searchable index over the log (SPEC §7). One row per stored event. */

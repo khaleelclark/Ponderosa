@@ -977,6 +977,42 @@ async function createProjectAndAgent() {
   return { app, project, agent };
 }
 
+describe("runtime settings API", () => {
+  it("validates and persists the workspace-wide Agent Run concurrency limit", async () => {
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+
+    const initial = await app.inject({ method: "GET", url: "/api/workspace/preferences" });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json()).toMatchObject({ maxConcurrentAgentRuns: 8 });
+
+    for (const maxConcurrentAgentRuns of [0, 65, 1.5, "4"]) {
+      const rejected = await app.inject({
+        method: "PATCH",
+        url: "/api/workspace/preferences",
+        payload: { maxConcurrentAgentRuns },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json()).toMatchObject({ error: expect.stringContaining("integer from 1 to 64") });
+    }
+
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: { maxConcurrentAgentRuns: 3 },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toMatchObject({ maxConcurrentAgentRuns: 3 });
+    expect(new WorkspaceStore(dataDir).getPreferences()).toMatchObject({ maxConcurrentAgentRuns: 3 });
+    await app.close();
+  });
+});
+
 describe("notification panel actions", () => {
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
@@ -3656,7 +3692,11 @@ describe("server chunk F", () => {
       .toMatchObject({ agentId: child.id, managerAgentId: parent.id });
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DIRECTORY_URL).toContain("/api/agent-directory");
     expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_CONTEXT_URL).toContain("/api/agent-context");
+    expect(adapter.seeds[0]!.environment!.PONDEROSA_AGENT_DOCS_URL).toContain("/api/agent-docs");
     expect(adapter.seeds[0]!.prompt).toContain("[TEAM DIRECTORY | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("[PRODUCT DOCUMENTATION | ON-DEMAND REFERENCE]");
+    expect(adapter.seeds[0]!.prompt).toContain("ponderosa://docs/project-chat");
+    expect(adapter.seeds[0]!.prompt).not.toContain("A plain user message is a shared organizational message");
     expect(adapter.seeds[0]!.prompt).toContain("ponderosa_team_directory({})");
     expect(adapter.seeds[0]!.prompt).not.toContain("[OLDER SCOPED CONTEXT | ON-DEMAND REFERENCE]");
     expect(adapter.seeds[0]!.prompt).not.toContain("ponderosa_context({})");
@@ -3672,6 +3712,7 @@ describe("server chunk F", () => {
     await cancelAndWait(app, parent.id);
     expect((await app.inject({ method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/api/agent-context", headers: { authorization: `Bearer ${token}` } })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/api/agent-docs", headers: { authorization: `Bearer ${token}` }, payload: { refs: ["ponderosa://docs/project-chat"] } })).statusCode).toBe(401);
     await app.close();
   });
 
@@ -3700,6 +3741,16 @@ describe("server chunk F", () => {
       store.appendEvent(agent.id, { type: "user_message", text: `historical-${index}`, communicationEventId });
     }
 
+    const fullImportedReader = vi.spyOn(store, "getImportedHistory").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete imported history");
+    });
+    const fullAgentReader = vi.spyOn(store, "getProjectedAgentMessages").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete private history");
+    });
+    const fullConversationReader = vi.spyOn(store, "getCanonicalConversationContextMessages").mockImplementation(() => {
+      throw new Error("provider/context selection must not materialize complete shared history");
+    });
+
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Use history if needed" } });
     await waitForSeedCount(1);
 
@@ -3720,6 +3771,10 @@ describe("server chunk F", () => {
     expect(retrieved.json<{ messages: Array<{ text: string }> }>().messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ text: "[Imported private context]\nIMPORTED-EFFECTIVE-HISTORY" }),
     ]));
+
+    fullImportedReader.mockRestore();
+    fullAgentReader.mockRestore();
+    fullConversationReader.mockRestore();
 
     await cancelAndWait(app, agent.id);
     await app.close();
@@ -3760,6 +3815,46 @@ describe("server chunk F", () => {
       "[Imported private context]\nTIED-CONTEXT-00",
       "[Imported private context]\nTIED-CONTEXT-50",
     ]));
+    await cancelAndWait(app, agent.id);
+    await app.close();
+  });
+
+  it("keeps older-context source merges byte-bounded while advancing the stable cursor", async () => {
+    adapter.mode = "hang";
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Byte-bounded context", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex" });
+    store.setImportedHistory(agent.id, "oversized-history", [{
+      role: "system",
+      text: `OVERSIZED-${"x".repeat(100_000)}`,
+      createdAt: "2026-07-16T23:59:59.000Z",
+    }]);
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Inspect bounded context" } });
+    await waitForSeedCount(1);
+    const token = adapter.seeds[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    let cursor: string | undefined;
+    const cursors = new Set<string>();
+    let sawClipped = false;
+    do {
+      const page = await app.inject({
+        method: "GET",
+        url: `/api/agent-context?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(page.statusCode, page.body).toBe(200);
+      expect(Buffer.byteLength(page.body, "utf8")).toBeLessThan(66 * 1024);
+      const body = page.json<{ messages: Array<{ text: string }>; hasMore: boolean; nextCursor?: string }>();
+      sawClipped ||= body.messages.some((message) => message.text.includes("Content clipped"));
+      cursor = body.nextCursor;
+      if (cursor) {
+        expect(cursors.has(cursor)).toBe(false);
+        cursors.add(cursor);
+      }
+      expect(body.hasMore).toBe(Boolean(cursor));
+    } while (cursor);
+    expect(sawClipped).toBe(true);
+
     await cancelAndWait(app, agent.id);
     await app.close();
   });
@@ -6445,8 +6540,13 @@ describe("server chunk F", () => {
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result",
+      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result", "ponderosa_docs",
     ]));
+    const providerDocs = await requesterRuntime.handleDynamicToolCall!({
+      name: "ponderosa_docs", arguments: { refs: ["ponderosa://docs/project-chat"], maxBytes: 4096 },
+    });
+    expect(providerDocs.success, providerDocs.text).toBe(true);
+    expect(JSON.parse(providerDocs.text)).toMatchObject({ items: [expect.objectContaining({ ref: "ponderosa://docs/project-chat" })] });
     const providerDirectory = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_team_directory", arguments: { agentId: recipient.id },
     });
@@ -7747,6 +7847,41 @@ describe("server chunk F", () => {
     expect(focused.messages.at(-1)).toMatchObject({ communicationEventId: "history-010", text: "History 10" });
     expect(focused.messages).toHaveLength(11);
     expect((await app.inject({ method: "GET", url: `/api/conversations/${room.id}?cursor=not-a-cursor` })).statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("serves bounded All Chat pages and rejects cursors from another history scope", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "All Chat API", hostPath: repoDir });
+    const room = store.createConversation(project.id, { title: "Workspace timeline" });
+    for (let index = 0; index < 3; index += 1) {
+      const createdAt = new Date(Date.UTC(2026, 6, 19, 12, 0, index)).toISOString();
+      const eventId = `all-chat-api-${index}`;
+      store.appendCommunicationEvent({
+        eventId, schemaVersion: 2, projectId: project.id, conversationId: room.id,
+        sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, text: `All Chat ${index}`, createdAt,
+      });
+      store.appendCommunicationProjection(project.id, {
+        eventId, surface: "conversation", projectionKey: room.id, projectedAt: createdAt,
+        message: { messageId: eventId, role: "user", createdAt },
+      });
+    }
+
+    const recentResponse = await app.inject({ method: "GET", url: "/api/all-chat?limit=2" });
+    expect(recentResponse.statusCode, recentResponse.body).toBe(200);
+    const recent = recentResponse.json<{ items: Array<{ communicationEventId: string }>; history: { cursor: string; hasMore: boolean; limit: number } }>();
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["all-chat-api-1", "all-chat-api-2"]);
+    expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
+
+    const older = (await app.inject({
+      method: "GET", url: `/api/all-chat?limit=2&cursor=${encodeURIComponent(recent.history.cursor)}`,
+    })).json<{ items: Array<{ communicationEventId: string }>; history: { hasMore: boolean } }>();
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["all-chat-api-0"]);
+    expect(older.history.hasMore).toBe(false);
+
+    const conversationCursor = store.getProjectedConversationMessagePage(room.id, "main", { limit: 1 }).cursor!;
+    expect((await app.inject({ method: "GET", url: `/api/all-chat?cursor=${encodeURIComponent(conversationCursor)}` })).statusCode).toBe(400);
     await app.close();
   });
 
