@@ -34,7 +34,7 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto, TeamOperationalEventDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
@@ -63,6 +63,12 @@ function mergeConversationMessages(...groups: ConversationMessageDto[][]): Conve
   const byId = new Map<string, ConversationMessageDto>();
   for (const message of groups.flat()) byId.set(message.id, message);
   return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
+function mergeOperationalEvents(...groups: TeamOperationalEventDto[][]): TeamOperationalEventDto[] {
+  const byId = new Map<string, TeamOperationalEventDto>();
+  for (const event of groups.flat()) byId.set(event.id, event);
+  return [...byId.values()].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
 }
 
 export function conversationComposerRuntime(
@@ -298,7 +304,14 @@ export function ConversationView({
   const detailQuery = useConversation(conversationId);
   const collaborationQuery = useCollaborationView(conversationId);
   const [olderMain, setOlderMain] = useState<{ messages: ConversationMessageDto[]; cursor?: string; hasMore: boolean }>();
-  const [olderCollaboration, setOlderCollaboration] = useState<{ messages: ConversationMessageDto[]; cursor?: string; hasMore: boolean }>();
+  const [olderCollaboration, setOlderCollaboration] = useState<{
+    messages: ConversationMessageDto[];
+    operations: TeamOperationalEventDto[];
+    cursor?: string;
+    operationCursor?: string;
+    hasMore: boolean;
+    operationHasMore: boolean;
+  }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const queuedMessagesQuery = useQuery({
     queryKey: ["queued-messages", conversationId],
@@ -388,7 +401,10 @@ export function ConversationView({
   const messages = mergeConversationMessages(olderMain?.messages ?? [], compactDefined(detailQuery.data?.messages ?? []));
   const agents = compactDefined(detailQuery.data?.agents ?? []);
   const collaborationMessages = mergeConversationMessages(olderCollaboration?.messages ?? [], compactDefined(collaborationQuery.data?.messages ?? []));
-  const operationalEvents = compactDefined(collaborationQuery.data?.operations ?? []).slice(-150);
+  const operationalEvents = mergeOperationalEvents(
+    olderCollaboration?.operations ?? [],
+    compactDefined(collaborationQuery.data?.operations ?? []),
+  );
   const messageLayoutKey = chatMessageLayoutKey(messages);
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
   const operationalLayoutKey = operationalEvents.length
@@ -401,27 +417,46 @@ export function ConversationView({
   };
   const collaborationHistory = olderCollaboration ?? {
     messages: [],
+    operations: [],
     cursor: collaborationQuery.data?.history?.cursor,
+    operationCursor: collaborationQuery.data?.operationHistory?.cursor,
     hasMore: collaborationQuery.data?.history?.hasMore ?? false,
+    operationHasMore: collaborationQuery.data?.operationHistory?.hasMore ?? false,
   };
   const loadOlderHistory = async () => {
-    const history = activeView === "main" ? mainHistory : collaborationHistory;
-    if (!history.hasMore || !history.cursor || loadingOlder) return;
+    if (loadingOlder) return;
     setLoadingOlder(true);
     try {
       if (activeView === "main") {
-        const page = await api.getConversation(conversationId, 100, history.cursor);
+        if (!mainHistory.hasMore || !mainHistory.cursor) return;
+        const page = await api.getConversation(conversationId, 100, mainHistory.cursor);
         setOlderMain((current) => ({
           messages: mergeConversationMessages(page.messages, current?.messages ?? [], detailQuery.data?.messages ?? []),
           cursor: page.history?.cursor,
           hasMore: page.history?.hasMore ?? false,
         }));
       } else {
-        const page = await api.getCollaborationView(conversationId, 100, history.cursor);
+        const loadMessages = collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);
+        const loadOperations = collaborationHistory.operationHasMore && Boolean(collaborationHistory.operationCursor);
+        if (!loadMessages && !loadOperations) return;
+        const page = await api.getCollaborationView(
+          conversationId,
+          100,
+          loadMessages ? collaborationHistory.cursor : undefined,
+          undefined,
+          loadOperations ? collaborationHistory.operationCursor : undefined,
+        );
         setOlderCollaboration((current) => ({
-          messages: mergeConversationMessages(page.messages, current?.messages ?? [], collaborationQuery.data?.messages ?? []),
-          cursor: page.history?.cursor,
-          hasMore: page.history?.hasMore ?? false,
+          messages: loadMessages
+            ? mergeConversationMessages(page.messages, current?.messages ?? [], collaborationQuery.data?.messages ?? [])
+            : current?.messages ?? [],
+          operations: loadOperations
+            ? mergeOperationalEvents(page.operations ?? [], current?.operations ?? [], collaborationQuery.data?.operations ?? [])
+            : current?.operations ?? [],
+          cursor: loadMessages ? page.history?.cursor : current?.cursor,
+          operationCursor: loadOperations ? page.operationHistory?.cursor : current?.operationCursor,
+          hasMore: loadMessages ? page.history?.hasMore ?? false : false,
+          operationHasMore: loadOperations ? page.operationHistory?.hasMore ?? false : false,
         }));
       }
     } finally {
@@ -1002,7 +1037,7 @@ export function ConversationView({
           </Alert>)}
 
           <Stack spacing={0} sx={{ mb: 2 }}>
-            {(activeView === "collaboration" ? collaborationHistory.hasMore : mainHistory.hasMore) ? (
+            {(activeView === "collaboration" ? collaborationHistory.hasMore || collaborationHistory.operationHasMore : mainHistory.hasMore) ? (
               <Button
                 size="small"
                 color="inherit"

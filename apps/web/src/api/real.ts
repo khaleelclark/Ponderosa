@@ -173,9 +173,9 @@ export const realApi: PonderosaApi = {
   getConversation(conversationId, limit = 100, cursor, focusId) {
     return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId) + toQuery({ limit: String(limit), cursor, focusId }));
   },
-  getCollaborationView(conversationId, limit = 100, cursor, focusId) {
+  getCollaborationView(conversationId, limit = 100, cursor, focusId, operationCursor) {
     return requestJson<CollaborationViewDto>(
-      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit), cursor, focusId }),
+      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit), cursor, focusId, operationCursor }),
     );
   },
   updateConversation(conversationId, patch) {
@@ -367,8 +367,14 @@ export const realApi: PonderosaApi = {
   getAgent(agentId, limit = 100, cursor, focusId) {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
-  listProjectArtifacts(projectId) {
-    return requestJson<ArtifactDto[]>(`/api/projects/${encodeURIComponent(projectId)}/artifacts`);
+  getAgentHistory(agentId, stream, limit = 100, cursor) {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor })}`);
+  },
+  getActivityOutput(retrievalUrl) {
+    return requestJson(retrievalUrl);
+  },
+  listProjectArtifacts(projectId, limit = 100, cursor) {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
   exportAgent(agentId, mode, organization = false) {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);

@@ -1823,6 +1823,114 @@ export class CoordinationV3Store {
 
   /** Read-only projection of the authoritative coordination graph. Relationships
    * come from foreign-key/link tables, never from prompt or chat text. */
+  teamOperationalRecords(input: {
+    projectId: string;
+    conversationId: string;
+    limit: number;
+    before?: { updatedAt: string; id: string };
+  }): Array<{
+    id: string;
+    kind: "run" | "activation" | "request" | "join" | "trigger";
+    state: string;
+    primaryAgentId: string;
+    secondaryAgentId?: string;
+    subtype?: string;
+    completed?: number;
+    total?: number;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    const limit = Math.max(1, Math.min(input.limit, 1_000));
+    const scopeKey = `conversation:${input.conversationId}`;
+    const rows = this.sqlite.prepare(`
+      WITH request_records AS (
+        SELECT 'request:' || request.id AS id, 'request' AS kind, request.state,
+          COALESCE(request.requester_agent_id, request.recipient_agent_id) AS primary_agent_id,
+          CASE WHEN request.requester_agent_id IS NOT NULL THEN request.recipient_agent_id END AS secondary_agent_id,
+          NULL AS subtype, NULL AS completed, NULL AS total,
+          request.created_at, request.updated_at
+        FROM coordination_requests request
+        WHERE request.project_id = @projectId AND request.conversation_id = @conversationId
+          AND (@beforeUpdatedAt IS NULL OR request.updated_at < @beforeUpdatedAt
+            OR (request.updated_at = @beforeUpdatedAt AND 'request:' || request.id < @beforeId))
+        ORDER BY request.updated_at DESC, 'request:' || request.id DESC LIMIT @limit
+      ), join_records AS (
+        SELECT 'join:' || join_record.id, 'join', join_record.state, join_record.owner_agent_id, NULL, NULL,
+          SUM(CASE WHEN request.state = 'completed' THEN 1 ELSE 0 END), COUNT(member.request_id),
+          join_record.created_at, join_record.updated_at
+        FROM coordination_joins join_record
+        LEFT JOIN coordination_join_members member ON member.join_id = join_record.id
+        LEFT JOIN coordination_requests request ON request.id = member.request_id
+        WHERE join_record.project_id = @projectId AND join_record.conversation_id = @conversationId
+          AND (@beforeUpdatedAt IS NULL OR join_record.updated_at < @beforeUpdatedAt
+            OR (join_record.updated_at = @beforeUpdatedAt AND 'join:' || join_record.id < @beforeId))
+        GROUP BY join_record.id
+        ORDER BY join_record.updated_at DESC, 'join:' || join_record.id DESC LIMIT @limit
+      ), activation_records AS (
+        SELECT 'activation:' || activation.id, 'activation', activation.state, activation.agent_id, NULL,
+          activation.kind, NULL, NULL, activation.created_at, activation.updated_at
+        FROM agent_activations activation
+        WHERE activation.project_id = @projectId AND activation.scope_key = @scopeKey
+          AND (@beforeUpdatedAt IS NULL OR activation.updated_at < @beforeUpdatedAt
+            OR (activation.updated_at = @beforeUpdatedAt AND 'activation:' || activation.id < @beforeId))
+        ORDER BY activation.updated_at DESC, 'activation:' || activation.id DESC LIMIT @limit
+      ), run_records AS (
+        SELECT 'run:' || COALESCE(provider.execution_id, scheduler.id), 'run', scheduler.status,
+          scheduler.agent_id, NULL, NULL, NULL, NULL,
+          COALESCE(execution.started_at, scheduler.created_at), scheduler.updated_at
+        FROM scheduler_runs scheduler
+        LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
+        LEFT JOIN runs execution ON execution.id = provider.execution_id AND execution.agent_id = scheduler.agent_id
+        WHERE scheduler.project_id = @projectId AND scheduler.scope_key = @scopeKey
+          AND (@beforeUpdatedAt IS NULL OR scheduler.updated_at < @beforeUpdatedAt
+            OR (scheduler.updated_at = @beforeUpdatedAt
+              AND 'run:' || COALESCE(provider.execution_id, scheduler.id) < @beforeId))
+        ORDER BY scheduler.updated_at DESC, 'run:' || COALESCE(provider.execution_id, scheduler.id) DESC LIMIT @limit
+      ), trigger_records AS (
+        SELECT 'trigger:' || occurrence.id, 'trigger', occurrence.state, occurrence.agent_id, NULL,
+          COALESCE(definition.name,
+            CASE WHEN json_valid(occurrence.trigger_snapshot_json)
+              THEN json_extract(occurrence.trigger_snapshot_json, '$.name') END),
+          NULL, NULL, COALESCE(occurrence.occurred_at, occurrence.created_at), occurrence.updated_at
+        FROM trigger_occurrences occurrence
+        LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
+        WHERE occurrence.project_id = @projectId AND occurrence.scope_key = @scopeKey
+          AND (@beforeUpdatedAt IS NULL OR occurrence.updated_at < @beforeUpdatedAt
+            OR (occurrence.updated_at = @beforeUpdatedAt AND 'trigger:' || occurrence.id < @beforeId))
+        ORDER BY occurrence.updated_at DESC, 'trigger:' || occurrence.id DESC LIMIT @limit
+      )
+      SELECT * FROM (
+        SELECT * FROM request_records
+        UNION ALL SELECT * FROM join_records
+        UNION ALL SELECT * FROM activation_records
+        UNION ALL SELECT * FROM run_records
+        UNION ALL SELECT * FROM trigger_records
+      ) operation
+      ORDER BY operation.updated_at DESC, operation.id DESC LIMIT @limit
+    `).all({
+      projectId: input.projectId,
+      conversationId: input.conversationId,
+      scopeKey,
+      beforeUpdatedAt: input.before?.updatedAt ?? null,
+      beforeId: input.before?.id ?? null,
+      limit,
+    }) as Array<{
+      id: string; kind: "run" | "activation" | "request" | "join" | "trigger"; state: string;
+      primary_agent_id: string; secondary_agent_id: string | null; subtype: string | null;
+      completed: number | null; total: number | null; created_at: string; updated_at: string;
+    }>;
+    return rows.map((row) => ({
+      id: row.id, kind: row.kind, state: row.state, primaryAgentId: row.primary_agent_id,
+      ...(row.secondary_agent_id ? { secondaryAgentId: row.secondary_agent_id } : {}),
+      ...(row.subtype ? { subtype: row.subtype } : {}),
+      ...(row.completed !== null ? { completed: row.completed } : {}),
+      ...(row.total !== null ? { total: row.total } : {}),
+      createdAt: row.created_at, updatedAt: row.updated_at,
+    }));
+  }
+
+  /** Read-only projection of the authoritative coordination graph. Relationships
+   * come from foreign-key/link tables, never from prompt or chat text. */
   agentWorkItems(input: {
     projectId: string;
     conversationId?: string;

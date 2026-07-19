@@ -222,6 +222,33 @@ describe("CoordinationV3Store transactions", () => {
     ]);
   });
 
+  it("keyset-pages Team operational records without rebuilding per-Agent snapshots", () => {
+    for (let index = 0; index < 3; index += 1) {
+      store.recordRuntimeCommunication({
+        id: `team-page-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        scopeKey: `conversation:${conversationId}`,
+        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        now: `2026-07-15T00:00:0${index}.000Z`,
+        activation: {
+          agentId: recipientA, kind: "human_message", priority: 100,
+          dispatchPolicy: "steer_or_run", promptClass: "human",
+        },
+      });
+    }
+    const first = store.teamOperationalRecords({ projectId, conversationId, limit: 2 });
+    expect(first).toHaveLength(2);
+    expect(first.map((item) => item.updatedAt)).toEqual([
+      "2026-07-15T00:00:02.000Z", "2026-07-15T00:00:01.000Z",
+    ]);
+    const oldest = first.at(-1)!;
+    const second = store.teamOperationalRecords({
+      projectId, conversationId, limit: 2,
+      before: { updatedAt: oldest.updatedAt, id: oldest.id },
+    });
+    expect(second.map((item) => item.updatedAt)).toEqual(["2026-07-15T00:00:00.000Z"]);
+    expect(new Set([...first, ...second].map((item) => item.id)).size).toBe(3);
+  });
+
   it("reports truncation when one Agent has more same-kind seeds than the requested limit", () => {
     for (let index = 0; index < 5; index += 1) {
       store.recordRuntimeCommunication({

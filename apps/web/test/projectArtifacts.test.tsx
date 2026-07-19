@@ -40,7 +40,10 @@ describe("project artifacts view", () => {
       previewUrl: "/api/projects/project-1/artifacts/download-1/preview",
       downloadUrl: "/api/projects/project-1/artifacts/download-1/download",
     } satisfies ArtifactDto;
-    vi.spyOn(api, "listProjectArtifacts").mockResolvedValue([artifact, command, download]);
+    vi.spyOn(api, "listProjectArtifacts").mockResolvedValue({
+      items: [artifact, command, download],
+      history: { limit: 100, hasMore: false },
+    });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {

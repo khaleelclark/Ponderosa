@@ -23,7 +23,7 @@ import {
 } from "@mui/material";
 import type { AgentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { artifactDisplayLabel } from "./panes";
 
@@ -51,6 +51,12 @@ export function ProjectArtifactsView({
 }): JSX.Element {
   const [filter, setFilter] = useState("");
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
+  const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  useEffect(() => {
+    setOlderArtifacts(undefined);
+    setPreviewArtifact(undefined);
+  }, [projectId]);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
     queryKey: ["project-artifacts", projectId],
@@ -58,12 +64,16 @@ export function ProjectArtifactsView({
   });
   const records = useMemo(() => {
     const agentById = new Map(agents.map((agent) => [agent.id, agent] as const));
-    const canonical = (projectArtifacts.data ?? []).filter((artifact) => projectOutputKinds.has(artifact.kind));
+    const canonical = [...new Map([
+      ...(olderArtifacts?.items ?? []),
+      ...(projectArtifacts.data?.items ?? []),
+    ].map((artifact) => [artifact.id, artifact] as const)).values()]
+      .filter((artifact) => projectOutputKinds.has(artifact.kind));
     return canonical.map((artifact) => ({
         agent: agentById.get(artifact.originAgentId ?? artifact.agentId),
         artifact,
       })).sort((left, right) => right.artifact.createdAt.localeCompare(left.artifact.createdAt));
-  }, [agents, projectArtifacts.data]);
+  }, [agents, olderArtifacts?.items, projectArtifacts.data?.items]);
   const filtered = useMemo(() => records.filter(({ agent, artifact }) => !normalizedFilter || [
     agent?.title,
     artifactDisplayLabel(artifact),
@@ -89,6 +99,24 @@ export function ProjectArtifactsView({
         sx={{ maxWidth: 420 }}
       />
       <Typography variant="caption" color="text.secondary">{filtered.length === records.length ? `${records.length} project files` : `${filtered.length} of ${records.length} project files`}</Typography>
+      {(olderArtifacts?.hasMore ?? projectArtifacts.data?.history.hasMore) ? <Button
+        size="small"
+        color="inherit"
+        disabled={loadingOlder}
+        onClick={() => {
+          const cursor = olderArtifacts?.cursor ?? projectArtifacts.data?.history.cursor;
+          if (!cursor) return;
+          setLoadingOlder(true);
+          void api.listProjectArtifacts(projectId, 100, cursor).then((page) => {
+            setOlderArtifacts((current) => ({
+              items: [...new Map([...page.items, ...(current?.items ?? [])].map((artifact) => [artifact.id, artifact] as const)).values()],
+              cursor: page.history.cursor,
+              hasMore: page.history.hasMore,
+            }));
+          }).finally(() => setLoadingOlder(false));
+        }}
+        sx={{ alignSelf: "center" }}
+      >{loadingOlder ? "Loading…" : "Load older files"}</Button> : null}
       {loading && records.length === 0 ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 2 }}><CircularProgress size={18} /><Typography variant="body2" color="text.secondary">Loading project files…</Typography></Stack> : null}
       {projectArtifacts.isError ? <Alert severity="error">Project files could not be loaded. Try again.</Alert> : null}
       {!loading && records.length === 0 ? <Alert severity="info">No project files yet. Agent-created documents, images, downloads, and generated results will appear here.</Alert> : null}
