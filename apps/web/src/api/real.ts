@@ -1,66 +1,110 @@
 import type {
-  ArtifactDto,
-  ArtifactContentDto,
+  AgentActivityOutputDto,
+  AgentDeletionPreviewDto,
+  AgentDeletionPreviewRequest,
+  AgentDetailDto,
+  AgentDto,
+  AgentExportMode,
   AgentHealthProjectionDto,
+  AgentPortablePackageDto,
+  AgentPresetDto,
+  AgentStreamStatusDto,
+  AgentTelemetryPageDto,
+  AgentTelemetryStream,
+  AgentWorkInspectorDto,
+  AgentWorkItemDetailsDto,
+  AgentWorkItemDto,
+  ArtifactContentDto,
+  ArtifactDto,
+  BrowserControlRequest,
+  BrowserOperatorInputRequest,
+  BrowserSessionDto,
+  CancelAgentRunRequest,
+  CancelAgentRunResponse,
+  CancelQueuedMessageRequest,
+  CancelQueuedMessageResponse,
   CollaborationViewDto,
+  CommitAgentDeletionRequest,
+  CommitAgentDeletionResponse,
+  CommunicationDocumentContentDto,
+  ConversationDetailDto,
+  ConversationDraftConflictListDto,
+  ConversationDraftDto,
+  ConversationDto,
+  CorrectConversationMessageRequest,
+  CorrectConversationMessageResponse,
+  CreateAgentPresetRequest,
+  CreateAgentRequest,
   CreateCollaborationMessageRequest,
   CreateCollaborationMessageResponse,
   CreateConversationMessageRequest,
   CreateConversationRequest,
+  CreateDirectReplyRequest,
+  CreateMultiAgentDirectMessageRequest,
   CreateProjectRequest,
-  CreateAgentRequest,
-  ConversationDetailDto,
-  ConversationDto,
-  UpdateConversationRequest,
-  UpdateAgentRequest,
-  UpdateAgentConversationMembershipsRequest,
-  UpdateAgentOrganizationRequest,
-  EngineDto,
-  ImageAttachmentDto,
-  ProjectDto,
-  ProjectFolderOptionsDto,
-  WorkspaceFileReviewDto,
-  WorkspaceStatusDto,
-  WorkspacePreferencesDto,
-  UpdateWorkspacePreferencesRequest,
-  ConversationDraftDto,
-  ConversationDraftConflictListDto,
-  DraftAttachmentDto,
-  PutConversationDraftRequest,
-  GenerateConversationTitleResponse,
-  WorkspaceNotificationDto,
+  CreateTriggerRequest,
+  CreateTriggerResponse,
+  CreateUserReactionRequest,
+  CreateUserReactionResponse,
   DecisionDto,
-  ResolveDecisionRequest,
-  WorkspaceEventEnvelope,
-  HostFolderBrowseDto,
-  UpdateProjectRequest,
-  ProjectEngineCapabilitiesDto,
+  DirectReplyResponse,
+  DraftAttachmentDto,
+  EditQueuedMessageRequest,
+  EditQueuedMessageResponse,
+  EngineDto,
   FilesResponse,
+  GenerateConversationTitleResponse,
+  GlobalChatSearchResponseDto,
+  HistoryPageDto,
+  HostFolderBrowseDto,
+  ImageAttachmentDto,
+  ImportAgentPackageRequest,
+  ImportAgentPackageResponse,
+  LetCurrentRunFinishRequest,
+  LetCurrentRunFinishResponse,
+  MultiAgentDirectMessageResponse,
+  ProjectBrowserControlRequest,
+  ProjectBrowserSessionDto,
+  ProjectDto,
+  ProjectEngineCapabilitiesDto,
+  ProjectFolderOptionsDto,
+  PutConversationDraftRequest,
+  QueuedConversationMessageDto,
+  ResolveDecisionRequest,
   SendMessageRequest,
   SendMessageResponse,
   SseEventEnvelope,
-  AgentDetailDto,
-  AgentDto,
-  TokenUsageScope,
+  SteerQueuedMessageRequest,
+  SteerQueuedMessageResponse,
   TokenUsageRangeDto,
+  TokenUsageScope,
   TokenUsageSummaryDto,
-  CancelAgentRunResponse,
-  GlobalChatSearchResponseDto,
-  BrowserSessionDto,
-  BrowserControlRequest,
-  BrowserOperatorInputRequest,
-  ProjectBrowserSessionDto,
-  ProjectBrowserControlRequest,
-  AgentPortablePackageDto,
-  AgentExportMode,
-  ImportAgentPackageRequest,
-  ImportAgentPackageResponse,
-  AgentDeletionPreviewRequest,
-  AgentDeletionPreviewDto,
-  CommitAgentDeletionRequest,
-  CommitAgentDeletionResponse,
+  TriggerDefinitionDto,
+  TriggerOccurrenceDto,
+  UpdateAgentConversationMembershipsRequest,
+  UpdateAgentOrganizationRequest,
+  UpdateAgentPresetRequest,
+  UpdateAgentRequest,
+  UpdateConversationRequest,
+  UpdateProjectRequest,
+  UpdateTriggerRequest,
+  UpdateWorkspacePreferencesRequest,
+  WebPushStatusDto,
+  WebPushSubscriptionDto,
+  WorkspaceEventEnvelope,
+  WorkspaceFileReviewDto,
+  WorkspaceNotificationDto,
+  WorkspacePreferencesDto,
+  WorkspaceStatusDto,
+  WorkspaceStreamStatusDto,
 } from "@ponderosa/core";
-import { ApiRequestError, type PonderosaApi, type StreamHandlers, type StreamSubscription, type WorkspaceStreamHandlers } from "./types";
+import {
+  ApiRequestError,
+  type CreateAgentOptions,
+  type StreamHandlers,
+  type StreamSubscription,
+  type WorkspaceStreamHandlers,
+} from "./types";
 
 const API_BASE = "";
 
@@ -110,99 +154,99 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
   return `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(agentId)}/runs/${encodeURIComponent(runId)}/browser`;
 }
 
-export const realApi: PonderosaApi = {
-  listProjects() {
+export const realApi = {
+  listProjects(): Promise<ProjectDto[]> {
     return requestJson<ProjectDto[]>("/api/projects");
   },
-  createProject(request) {
+  createProject(request: CreateProjectRequest): Promise<ProjectDto> {
     return requestJson<ProjectDto>("/api/projects", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateProjectRequest),
     });
   },
-  getProjectFolders() {
+  getProjectFolders(): Promise<ProjectFolderOptionsDto> {
     return requestJson<ProjectFolderOptionsDto>("/api/project-folders");
   },
-  browseProjectFolders(path) {
+  browseProjectFolders(path?: string): Promise<HostFolderBrowseDto> {
     return requestJson<HostFolderBrowseDto>(`/api/project-folders/browse${toQuery({ path })}`);
   },
-  markProjectUsed(projectId, conversationId) {
+  markProjectUsed(projectId: string, conversationId?: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}/use`, { method: "POST", body: JSON.stringify({ conversationId }) });
   },
-  updateProject(projectId, patch) {
+  updateProject(projectId: string, patch: UpdateProjectRequest): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateProjectRequest),
     });
   },
-  deleteProject(projectId) {
+  deleteProject(projectId: string): Promise<void> {
     return requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });
   },
-  getAgentHealth(projectId) {
+  getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
-  getAgentWork(projectId, filter = {}) {
+  getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
       conversationId: filter.conversationId,
       agentId: filter.agentId,
       limit: filter.limit === undefined ? undefined : String(filter.limit),
     })}`);
   },
-  getAgentWorkItemDetails(projectId, kind, recordId, filter = {}) {
+  getAgentWorkItemDetails(projectId: string, kind: AgentWorkItemDto["kind"], recordId: string, filter: { conversationId?: string } = {}): Promise<AgentWorkItemDetailsDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work/items/${encodeURIComponent(kind)}/${encodeURIComponent(recordId)}${toQuery({
       conversationId: filter.conversationId,
     })}`);
   },
-  getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto) {
+  getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
   },
-  searchGlobalChats(query, limit) {
+  searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto> {
     return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
   },
-  listConversations(projectId) {
+  listConversations(projectId: string): Promise<ConversationDto[]> {
     return requestJson<ConversationDto[]>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
   },
-  createConversation(projectId, request) {
+  createConversation(projectId: string, request: CreateConversationRequest): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },
-  getConversation(conversationId, limit = 100, cursor, focusId) {
+  getConversation(conversationId: string, limit: number = 100, cursor?: string, focusId?: string): Promise<ConversationDetailDto> {
     return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId) + toQuery({ limit: String(limit), cursor, focusId }));
   },
-  getCollaborationView(conversationId, limit = 100, cursor, focusId, operationCursor) {
+  getCollaborationView(conversationId: string, limit: number = 100, cursor?: string, focusId?: string, operationCursor?: string): Promise<CollaborationViewDto> {
     return requestJson<CollaborationViewDto>(
       "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit), cursor, focusId, operationCursor }),
     );
   },
-  updateConversation(conversationId, patch) {
+  updateConversation(conversationId: string, patch: UpdateConversationRequest): Promise<ConversationDto> {
     return requestJson<ConversationDto>("/api/conversations/" + encodeURIComponent(conversationId), {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteConversation(conversationId) {
+  async deleteConversation(conversationId: string): Promise<void> {
     await requestJson("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
   },
-  async sendConversationMessage(conversationId, request) {
+  async sendConversationMessage(conversationId: string, request: CreateConversationMessageRequest): Promise<void> {
     await requestJson("/api/conversations/" + encodeURIComponent(conversationId) + "/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
   },
-  getConversationDraft(conversationId) {
+  getConversationDraft(conversationId: string): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`);
   },
-  getConversationDraftConflicts(conversationId) {
+  getConversationDraftConflicts(conversationId: string): Promise<ConversationDraftConflictListDto> {
     return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts`);
   },
-  putConversationDraft(conversationId, request) {
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
   },
-  uploadDraftAttachment(conversationId, file) {
+  uploadDraftAttachment(conversationId: string, file: File): Promise<DraftAttachmentDto> {
     return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
       method: "POST",
       headers: {
@@ -213,110 +257,110 @@ export const realApi: PonderosaApi = {
       body: file,
     });
   },
-  async downloadDraftAttachment(attachment) {
+  async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
     const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
-  async deleteDraftAttachment(conversationId, attachmentId) {
+  async deleteDraftAttachment(conversationId: string, attachmentId: string): Promise<void> {
     const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
     if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
-  generateConversationTitle(conversationId) {
+  generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse> {
     return requestJson<GenerateConversationTitleResponse>(`/api/conversations/${encodeURIComponent(conversationId)}/generate-title`, { method: "POST" });
   },
-  getWorkspacePreferences() { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
-  updateWorkspacePreferences(request) { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
-  listNotifications() { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
-  async clearConversationNotifications(conversationId) { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
-  async markAllNotificationsRead() { await requestJson("/api/notifications/read", { method: "POST" }); },
-  async clearAllNotifications() { await requestJson("/api/notifications", { method: "DELETE" }); },
-  setNotificationStatus(notificationId, status) { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
-  listDecisions(filter = {}) { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
-  respondDecision(decisionId, request) { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
-  getWebPushStatus(deviceId) { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
-  async upsertWebPushSubscription(subscription) {
+  getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
+  updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
+  listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
+  async clearConversationNotifications(conversationId: string): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
+  async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
+  async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
+  setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
+  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
+  respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
+  getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
+  async upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void> {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
   },
-  async deleteWebPushSubscription(deviceId) {
+  async deleteWebPushSubscription(deviceId: string): Promise<void> {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
   },
-  sendDirectReply(conversationId, request) {
+  sendDirectReply(conversationId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-replies`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  sendMultiAgentDirectMessage(conversationId, request) {
+  sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-messages`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  listQueuedConversationMessages(conversationId) {
+  listQueuedConversationMessages(conversationId: string): Promise<QueuedConversationMessageDto[]> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages`);
   },
-  cancelQueuedConversationMessage(conversationId, deliveryId, request) {
+  cancelQueuedConversationMessage(conversationId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  listQueuedAgentMessages(agentId) {
+  listQueuedAgentMessages(agentId: string): Promise<QueuedConversationMessageDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages`);
   },
-  cancelQueuedAgentMessage(agentId, deliveryId, request) {
+  cancelQueuedAgentMessage(agentId: string, deliveryId: string, request: CancelQueuedMessageRequest): Promise<CancelQueuedMessageResponse> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}/cancel`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  editQueuedAgentMessage(agentId, deliveryId, request) {
+  editQueuedAgentMessage(agentId: string, deliveryId: string, request: EditQueuedMessageRequest): Promise<EditQueuedMessageResponse> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}`, {
       method: "PATCH",
       body: JSON.stringify(request),
     });
   },
-  steerQueuedAgentMessage(agentId, deliveryId, request) {
+  steerQueuedAgentMessage(agentId: string, deliveryId: string, request: SteerQueuedMessageRequest): Promise<SteerQueuedMessageResponse> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/queued-messages/${encodeURIComponent(deliveryId)}/steer`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  letCurrentRunFinish(injectionId, request) {
+  letCurrentRunFinish(injectionId: string, request: LetCurrentRunFinishRequest): Promise<LetCurrentRunFinishResponse> {
     return requestJson(`/api/message-deliveries/${encodeURIComponent(injectionId)}/let-current-run-finish`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  correctConversationMessage(conversationId, messageId, request) {
+  correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/corrections`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  sendUserReaction(request) {
+  sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse> {
     return requestJson("/api/user-reactions", {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  async sendCollaborationMessage(conversationId, request) {
+  async sendCollaborationMessage(conversationId: string, request: CreateCollaborationMessageRequest): Promise<CreateCollaborationMessageResponse> {
     return requestJson<CreateCollaborationMessageResponse>("/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration/messages", {
       method: "POST",
       body: JSON.stringify(request satisfies CreateCollaborationMessageRequest),
     });
   },
-  listAgents(projectId) {
+  listAgents(projectId: string): Promise<AgentDto[]> {
     return requestJson<AgentDto[]>(`/api/projects/${encodeURIComponent(projectId)}/agents`);
   },
-  createAgentRecord(projectId, request) {
+  createAgentRecord(projectId: string, request: CreateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, {
       method: "POST",
       body: JSON.stringify(request satisfies CreateAgentRequest),
     });
   },
-  createAgent(projectId, conversationId, options) {
+  createAgent(projectId: string, conversationId: string | undefined, options: CreateAgentOptions): Promise<AgentDto> {
     return this.createAgentRecord(projectId, {
       title: options.title,
       engine: options.engine as CreateAgentRequest["engine"],
@@ -330,123 +374,123 @@ export const realApi: PonderosaApi = {
       managerAgentId: options.managerAgentId,
     });
   },
-  listAgentPresets(projectId) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
-  createAgentPreset(projectId, request) { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
-  updateAgentPreset(id, patch) { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
-  async deleteAgentPreset(id) { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
-  updateAgent(agentId, patch) {
+  listAgentPresets(projectId: string): Promise<AgentPresetDto[]> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`); },
+  createAgentPreset(projectId: string, request: CreateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", body: JSON.stringify(request) }); },
+  updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
+  async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
+  updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateAgentRequest),
     });
   },
-  updateAgentConversationMemberships(agentId, membership) {
+  updateAgentConversationMemberships(agentId: string, membership: UpdateAgentConversationMembershipsRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/conversation-memberships`, {
       method: "PUT",
       body: JSON.stringify(membership satisfies UpdateAgentConversationMembershipsRequest),
     });
   },
-  updateAgentOrganization(agentId, organization) {
+  updateAgentOrganization(agentId: string, organization: UpdateAgentOrganizationRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}/manager`, {
       method: "PUT",
       body: JSON.stringify(organization satisfies UpdateAgentOrganizationRequest),
     });
   },
-  previewAgentDeletion(projectId, request) {
+  previewAgentDeletion(projectId: string, request: AgentDeletionPreviewRequest): Promise<AgentDeletionPreviewDto> {
     return requestJson<AgentDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-deletions/preview`, {
       method: "POST",
       body: JSON.stringify(request satisfies AgentDeletionPreviewRequest),
     });
   },
-  commitAgentDeletion(projectId, request) {
+  commitAgentDeletion(projectId: string, request: CommitAgentDeletionRequest): Promise<CommitAgentDeletionResponse> {
     return requestJson<CommitAgentDeletionResponse>(`/api/projects/${encodeURIComponent(projectId)}/agent-deletions/commit`, {
       method: "POST",
       body: JSON.stringify(request satisfies CommitAgentDeletionRequest),
     });
   },
-  getAgent(agentId, limit = 100, cursor, focusId) {
+  getAgent(agentId: string, limit: number = 100, cursor?: string, focusId?: string): Promise<AgentDetailDto> {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
-  getAgentHistory(agentId, stream, limit = 100, cursor) {
+  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = 100, cursor?: string): Promise<AgentTelemetryPageDto> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor })}`);
   },
-  getActivityOutput(retrievalUrl) {
+  getActivityOutput(retrievalUrl: string): Promise<AgentActivityOutputDto> {
     return requestJson(retrievalUrl);
   },
-  listProjectArtifacts(projectId, limit = 100, cursor) {
+  listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
-  exportAgent(agentId, mode, organization = false) {
+  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<AgentPortablePackageDto> {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },
-  importAgents(projectId, request) {
+  importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, { method: "POST", body: JSON.stringify(request satisfies ImportAgentPackageRequest) });
   },
-  listTriggers(agentId) {
+  listTriggers(agentId: string): Promise<TriggerDefinitionDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);
   },
-  listAllTriggers() {
+  listAllTriggers(): Promise<TriggerDefinitionDto[]> {
     return requestJson("/api/triggers");
   },
-  createTrigger(agentId, request) {
+  createTrigger(agentId: string, request: CreateTriggerRequest): Promise<CreateTriggerResponse> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`, { method: "POST", body: JSON.stringify(request) });
   },
-  updateTrigger(triggerId, request) {
+  updateTrigger(triggerId: string, request: UpdateTriggerRequest): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "PATCH", body: JSON.stringify(request) });
   },
-  async deleteTrigger(triggerId) {
+  async deleteTrigger(triggerId: string): Promise<void> {
     await requestJson(`/api/triggers/${encodeURIComponent(triggerId)}`, { method: "DELETE" });
   },
-  rotateTriggerSecret(triggerId) {
+  rotateTriggerSecret(triggerId: string): Promise<CreateTriggerResponse> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/rotate-secret`, { method: "POST" });
   },
-  allowTriggerRuns(triggerId, additionalRuns) {
+  allowTriggerRuns(triggerId: string, additionalRuns: number): Promise<TriggerDefinitionDto> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/allow-runs`, { method: "POST", body: JSON.stringify({ additionalRuns }) });
   },
-  listTriggerOccurrences(triggerId, limit = 100) {
+  listTriggerOccurrences(triggerId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/triggers/${encodeURIComponent(triggerId)}/occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
-  listAgentTriggerOccurrences(agentId, limit = 100) {
+  listAgentTriggerOccurrences(agentId: string, limit: number = 100): Promise<TriggerOccurrenceDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/trigger-occurrences?limit=${encodeURIComponent(String(limit))}`);
   },
-  listEngines() {
+  listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");
   },
-  updateEngine(engineId, request) {
+  updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });
   },
-  recheckEngine(engineId) {
+  recheckEngine(engineId: string): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });
   },
-  getEngineCapabilities(projectId) {
+  getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]> {
     return requestJson<ProjectEngineCapabilitiesDto[]>(`/api/projects/${encodeURIComponent(projectId)}/engine-capabilities`);
   },
-  getFiles(projectId, path) {
+  getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
   },
-  getWorkspaceStatus(projectId) {
+  getWorkspaceStatus(projectId: string): Promise<WorkspaceStatusDto> {
     return requestJson<WorkspaceStatusDto>(`/api/projects/${encodeURIComponent(projectId)}/workspace`);
   },
-  getWorkspaceFile(projectId, path) {
+  getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto> {
     return requestJson<WorkspaceFileReviewDto>(
       `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
     );
   },
-  getArtifact(agentId, artifactId) {
+  getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto> {
     return requestJson<ArtifactContentDto>(
       `/api/agents/${encodeURIComponent(agentId)}/artifacts/${encodeURIComponent(artifactId)}`,
     );
   },
-  getCommunicationDocument(previewUrl) {
+  getCommunicationDocument(previewUrl: string): Promise<CommunicationDocumentContentDto> {
     return requestJson(previewUrl);
   },
-  sendMessage(agentId, request) {
+  sendMessage(agentId: string, request: SendMessageRequest): Promise<SendMessageResponse> {
     return requestJson<SendMessageResponse>(`/api/agents/${encodeURIComponent(agentId)}/messages`, {
       method: "POST",
       body: JSON.stringify(request satisfies SendMessageRequest),
     });
   },
-  uploadAttachment(agentId, file) {
+  uploadAttachment(agentId: string, file: File): Promise<ImageAttachmentDto> {
     return requestJson<ImageAttachmentDto>(`/api/agents/${encodeURIComponent(agentId)}/attachments`, {
       method: "POST",
       headers: {
@@ -457,81 +501,81 @@ export const realApi: PonderosaApi = {
       body: file,
     });
   },
-  async deleteAttachment(agentId, attachmentId) {
+  async deleteAttachment(agentId: string, attachmentId: string): Promise<void> {
     const response = await fetch(`/api/agents/${encodeURIComponent(agentId)}/attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
-  cancelRun(agentId, request) {
+  cancelRun(agentId: string, request: CancelAgentRunRequest): Promise<CancelAgentRunResponse> {
     return requestJson<CancelAgentRunResponse>(`/api/agents/${encodeURIComponent(agentId)}/cancel`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  compactSession(agentId) {
+  compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  getBrowserSession(projectId, agentId, runId) {
+  getBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId));
   },
-  openBrowserSession(projectId, agentId, runId) {
+  openBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "POST" });
   },
-  reconnectBrowserSession(projectId, agentId, runId) {
+  reconnectBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/reconnect`, { method: "POST" });
   },
-  closeBrowserSession(projectId, agentId, runId) {
+  closeBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId), { method: "DELETE" });
   },
-  setBrowserControl(projectId, agentId, runId, request) {
+  setBrowserControl(projectId: string, agentId: string, runId: string, request: BrowserControlRequest): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/control`, {
       method: "PUT", body: JSON.stringify(request satisfies BrowserControlRequest),
     });
   },
-  sendBrowserInput(projectId, agentId, runId, request) {
+  sendBrowserInput(projectId: string, agentId: string, runId: string, request: BrowserOperatorInputRequest): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(`${browserPath(projectId, agentId, runId)}/input`, {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getBrowserFrame(projectId, agentId, runId) {
+  async getBrowserFrame(projectId: string, agentId: string, runId: string): Promise<{ blob: Blob; revision: number }> {
     const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
   },
-  getProjectBrowser(projectId) {
+  getProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`);
   },
-  openProjectBrowser(projectId, url) {
+  openProjectBrowser(projectId: string, url?: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, {
       method: "POST", body: JSON.stringify(url ? { url } : {}),
     });
   },
-  navigateProjectBrowser(projectId, url) {
+  navigateProjectBrowser(projectId: string, url: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/navigate`, {
       method: "POST", body: JSON.stringify({ url }),
     });
   },
-  reconnectProjectBrowser(projectId) {
+  reconnectProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/reconnect`, { method: "POST" });
   },
-  closeProjectBrowser(projectId) {
+  closeProjectBrowser(projectId: string): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser`, { method: "DELETE" });
   },
-  setProjectBrowserControl(projectId, request) {
+  setProjectBrowserControl(projectId: string, request: ProjectBrowserControlRequest): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/control`, {
       method: "PUT", body: JSON.stringify(request satisfies ProjectBrowserControlRequest),
     });
   },
-  sendProjectBrowserInput(projectId, request) {
+  sendProjectBrowserInput(projectId: string, request: BrowserOperatorInputRequest): Promise<ProjectBrowserSessionDto> {
     return requestJson<ProjectBrowserSessionDto>(`/api/projects/${encodeURIComponent(projectId)}/browser/input`, {
       method: "POST", body: JSON.stringify(request satisfies BrowserOperatorInputRequest),
     });
   },
-  async getProjectBrowserFrame(projectId) {
+  async getProjectBrowserFrame(projectId: string): Promise<{ blob: Blob; revision: number }> {
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame`, { cache: "no-store" });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0) };
   },
-  subscribeAgent(agentId, lastSeenSeq, handlers): StreamSubscription {
+  subscribeAgent(agentId: string, lastSeenSeq: number | undefined, handlers: StreamHandlers): StreamSubscription {
     const url = `/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
       lastEventId: lastSeenSeq,
     })}`;
@@ -553,7 +597,7 @@ export const realApi: PonderosaApi = {
       },
     };
   },
-  subscribeWorkspace(lastSeenId, handlers: WorkspaceStreamHandlers): StreamSubscription {
+  subscribeWorkspace(lastSeenId: number | undefined, handlers: WorkspaceStreamHandlers): StreamSubscription {
     const source = new EventSource(`/api/workspace/stream${toQuery({ lastEventId: lastSeenId })}`);
     source.onopen = () => handlers.onOpen?.();
     source.onerror = (event) => handlers.onError?.(event);
@@ -562,3 +606,5 @@ export const realApi: PonderosaApi = {
     return { close: () => source.close() };
   },
 };
+
+export type PonderosaApi = typeof realApi;
