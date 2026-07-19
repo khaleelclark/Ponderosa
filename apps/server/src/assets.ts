@@ -5,7 +5,13 @@ import path from "node:path";
 import sharp from "sharp";
 import Database from "better-sqlite3";
 import { DEFAULT_ASSET_LIMITS, type ArtifactDto, type AssetDto, type AssetLimitsDto } from "@ponderosa/core";
-import { attachmentsDir, managedArtifactContentPath, managedArtifactsDir, type RuntimeArtifactInputV3 } from "@ponderosa/agents";
+import {
+  attachmentsDir,
+  managedArtifactContentPath,
+  managedArtifactsDir,
+  type RuntimeArtifactInputV3,
+  type RuntimeAttachmentReservationReceiptV3,
+} from "@ponderosa/agents";
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
@@ -150,7 +156,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 5) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 6) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -169,7 +175,7 @@ export class AssetAuthority {
       CREATE TABLE IF NOT EXISTS runtime_attachment_associations (
         communication_id TEXT NOT NULL, asset_id TEXT NOT NULL, project_id TEXT NOT NULL,
         agent_id TEXT NOT NULL, content_hash TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length > 0),
-        created_at INTEGER NOT NULL,
+        reservation_attempt_id TEXT NOT NULL, created_at INTEGER NOT NULL,
         PRIMARY KEY (communication_id, asset_id)
       );
       CREATE INDEX IF NOT EXISTS runtime_attachment_associations_owner
@@ -193,7 +199,7 @@ export class AssetAuthority {
       );
       CREATE INDEX IF NOT EXISTS generated_artifact_authority_owner
         ON generated_artifact_authority(project_id, origin_agent_id, id);
-      PRAGMA user_version=5;`);
+      PRAGMA user_version=6;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -307,18 +313,23 @@ export class AssetAuthority {
   assertOwned(id: string): void {
     try { this.db.exec("BEGIN IMMEDIATE"); const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
-  reserveRuntimeCommunication(communicationId: string, bindings: RuntimeAttachmentAssociation[]): void {
+  reserveRuntimeCommunication(
+    communicationId: string,
+    bindings: RuntimeAttachmentAssociation[],
+  ): RuntimeAttachmentReservationReceiptV3 {
     try {
       this.db.exec("BEGIN IMMEDIATE");
       const now = this.now();
+      const attemptId = randomUUID();
+      const inserted: RuntimeAttachmentReservationReceiptV3["bindings"][number][] = [];
       const find = this.db.prepare(`
         SELECT project_id projectId, agent_id agentId, content_hash contentHash, byte_length byteLength
         FROM runtime_attachment_associations WHERE communication_id=? AND asset_id=?
       `);
       const insert = this.db.prepare(`
         INSERT INTO runtime_attachment_associations(
-          communication_id,asset_id,project_id,agent_id,content_hash,byte_length,created_at
-        ) VALUES (?,?,?,?,?,?,?)
+          communication_id,asset_id,project_id,agent_id,content_hash,byte_length,reservation_attempt_id,created_at
+        ) VALUES (?,?,?,?,?,?,?,?)
       `);
       for (const binding of bindings) {
         const prior = find.get(communicationId, binding.attachmentId) as Omit<RuntimeAttachmentAssociation, "communicationId" | "attachmentId"> | undefined;
@@ -331,7 +342,45 @@ export class AssetAuthority {
         }
         insert.run(
           communicationId, binding.attachmentId, binding.projectId, binding.agentId,
-          binding.contentHash, binding.byteLength, now,
+          binding.contentHash, binding.byteLength, attemptId, now,
+        );
+        inserted.push(Object.freeze({ ...binding, communicationId, attemptId }));
+      }
+      this.db.exec("COMMIT");
+      return Object.freeze({ communicationId, attemptId, bindings: Object.freeze(inserted) });
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  compensateRuntimeCommunicationReservation(receipt: RuntimeAttachmentReservationReceiptV3): void {
+    try {
+      if (!receipt || typeof receipt !== "object" || !RUNTIME_UUID.test(receipt.attemptId) ||
+          typeof receipt.communicationId !== "string" || !receipt.communicationId ||
+          !Array.isArray(receipt.bindings)) {
+        throw new AssetError(409, "runtime Communication attachment compensation receipt is invalid");
+      }
+      this.db.exec("BEGIN IMMEDIATE");
+      const seen = new Set<string>();
+      const remove = this.db.prepare(`
+        DELETE FROM runtime_attachment_associations
+        WHERE communication_id=? AND asset_id=? AND project_id=? AND agent_id=?
+          AND content_hash=? AND byte_length=? AND reservation_attempt_id=?
+      `);
+      for (const binding of receipt.bindings) {
+        const key = `${binding.communicationId}\0${binding.attachmentId}`;
+        if (binding.communicationId !== receipt.communicationId || binding.attemptId !== receipt.attemptId ||
+            typeof binding.projectId !== "string" || !binding.projectId ||
+            typeof binding.agentId !== "string" || !binding.agentId ||
+            typeof binding.attachmentId !== "string" || !binding.attachmentId ||
+            typeof binding.contentHash !== "string" || !/^[a-f0-9]{64}$/u.test(binding.contentHash) ||
+            !Number.isSafeInteger(binding.byteLength) || binding.byteLength < 1 || seen.has(key)) {
+          throw new AssetError(409, "runtime Communication attachment compensation receipt is invalid");
+        }
+        seen.add(key);
+        remove.run(
+          binding.communicationId, binding.attachmentId, binding.projectId, binding.agentId,
+          binding.contentHash, binding.byteLength, binding.attemptId,
         );
       }
       this.db.exec("COMMIT");
@@ -763,10 +812,13 @@ export class AssetStore {
       const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, artifact.id);
       if (canonicalPath !== path.join(actualDirectory, artifact.id)) return undefined;
       contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const contentInfo = fstatSync(contentFd);
-      if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== artifact.byteLength ||
-          contentInfo.size < 1 || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+      const before = fstatSync(contentFd);
+      if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.byteLength ||
+          before.size < 1 || before.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
+      const after = fstatSync(contentFd);
+      if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
+          after.size !== before.size || body.length !== before.size) return undefined;
       const contentHash = createHash("sha256").update(body).digest("hex");
       try { new TextDecoder("utf-8", { fatal: true }).decode(body); }
       catch { return undefined; }
@@ -858,8 +910,15 @@ export class AssetStore {
   reserveRuntimeCommunication(
     communicationId: string,
     bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
-  ): void {
-    this.authority.reserveRuntimeCommunication(communicationId, bindings.map((binding) => ({ communicationId, ...binding })));
+  ): RuntimeAttachmentReservationReceiptV3 {
+    return this.authority.reserveRuntimeCommunication(
+      communicationId,
+      bindings.map((binding) => ({ communicationId, ...binding })),
+    );
+  }
+
+  compensateRuntimeCommunicationReservation(receipt: RuntimeAttachmentReservationReceiptV3): void {
+    this.authority.compensateRuntimeCommunicationReservation(receipt);
   }
 
   authoritativeRuntimeCommunicationAttachments(

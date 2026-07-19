@@ -177,6 +177,99 @@ describe("secure staged assets", () => {
     expect(await assets.read("p", "t", abandoned.id)).toBeUndefined();
   });
 
+  it("compensates only exact association rows created by one reservation receipt", async () => {
+    const first = await assets.stage({
+      projectId: "p", agentId: "t", body: Buffer.from("%PDF-1.7\nreceipt-first"),
+      name: "first.pdf", declaredType: "application/pdf",
+    });
+    const second = await assets.stage({
+      projectId: "p", agentId: "t", body: Buffer.from("%PDF-1.7\nreceipt-second"),
+      name: "second.pdf", declaredType: "application/pdf",
+    });
+    const firstAuthority = assets.authoritativeRuntimeAttachment("p", "t", first.id)!;
+    const secondAuthority = assets.authoritativeRuntimeAttachment("p", "t", second.id)!;
+    const binding = (attachmentId: string, contentHash: string, byteLength: number) => ({
+      projectId: "p", agentId: "t", attachmentId, contentHash, byteLength,
+    });
+    const preexisting = assets.reserveRuntimeCommunication("receipt-scope", [
+      binding(first.id, firstAuthority.contentHash, firstAuthority.byteLength),
+    ]);
+    const attempt = assets.reserveRuntimeCommunication("receipt-scope", [
+      binding(first.id, firstAuthority.contentHash, firstAuthority.byteLength),
+      binding(second.id, secondAuthority.contentHash, secondAuthority.byteLength),
+    ]);
+    expect(Object.isFrozen(attempt)).toBe(true);
+    expect(Object.isFrozen(attempt.bindings)).toBe(true);
+    expect(attempt.bindings).toEqual([expect.objectContaining({
+      communicationId: "receipt-scope",
+      projectId: "p",
+      agentId: "t",
+      attachmentId: second.id,
+      contentHash: secondAuthority.contentHash,
+      byteLength: secondAuthority.byteLength,
+      attemptId: attempt.attemptId,
+    })]);
+    expect(attempt.bindings[0]!.attemptId).not.toBe(preexisting.attemptId);
+
+    assets.compensateRuntimeCommunicationReservation(attempt);
+    assets.compensateRuntimeCommunicationReservation(attempt);
+    let authorityDb = new Database(path.join(dataDir, "asset-authority.sqlite"));
+    const rows = () => authorityDb.prepare(`
+      SELECT asset_id assetId, reservation_attempt_id attemptId, content_hash contentHash
+      FROM runtime_attachment_associations WHERE communication_id=? ORDER BY asset_id
+    `).all("receipt-scope") as Array<{ assetId: string; attemptId: string; contentHash: string }>;
+    expect(rows()).toEqual([{ assetId: first.id, attemptId: preexisting.attemptId, contentHash: firstAuthority.contentHash }]);
+
+    const changed = assets.reserveRuntimeCommunication("changed-scope", [
+      binding(second.id, secondAuthority.contentHash, secondAuthority.byteLength),
+    ]);
+    authorityDb.prepare(`
+      UPDATE runtime_attachment_associations SET content_hash=?
+      WHERE communication_id=? AND asset_id=?
+    `).run("0".repeat(64), "changed-scope", second.id);
+    assets.compensateRuntimeCommunicationReservation(changed);
+    expect(authorityDb.prepare(`
+      SELECT content_hash contentHash FROM runtime_attachment_associations
+      WHERE communication_id=? AND asset_id=?
+    `).get("changed-scope", second.id)).toEqual({ contentHash: "0".repeat(64) });
+
+    const shared = assets.reserveRuntimeCommunication("receipt-scope", [
+      binding(first.id, firstAuthority.contentHash, firstAuthority.byteLength),
+    ]);
+    expect(shared.bindings).toHaveLength(0);
+    assets.compensateRuntimeCommunicationReservation(shared);
+    expect(rows()).toEqual([{ assetId: first.id, attemptId: preexisting.attemptId, contentHash: firstAuthority.contentHash }]);
+
+    const retryable = assets.reserveRuntimeCommunication("retryable-compensation", [
+      binding(first.id, firstAuthority.contentHash, firstAuthority.byteLength),
+    ]);
+    expect(() => assets.compensateRuntimeCommunicationReservation({
+      ...retryable,
+      bindings: [{ ...retryable.bindings[0]!, projectId: "" }],
+    })).toThrowError(AssetError);
+    expect(authorityDb.prepare(`
+      SELECT COUNT(*) count FROM runtime_attachment_associations
+      WHERE communication_id='retryable-compensation'
+    `).get()).toEqual({ count: 1 });
+    assets.compensateRuntimeCommunicationReservation(retryable);
+    expect(authorityDb.prepare(`
+      SELECT COUNT(*) count FROM runtime_attachment_associations
+      WHERE communication_id='retryable-compensation'
+    `).get()).toEqual({ count: 0 });
+    authorityDb.close();
+
+    assets.close();
+    assets = new AssetStore(dataDir);
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 2, unavailable: 0 });
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 0, unavailable: 0 });
+    authorityDb = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+    expect((authorityDb.prepare("SELECT COUNT(*) count FROM runtime_attachment_associations").get() as { count: number }).count)
+      .toBe(0);
+    authorityDb.close();
+  });
+
   it("rejects trailing payloads, active markup, MIME/extension disagreement, and corrupt integrity", async () => {
     await expect(assets.stage({ projectId: "p", agentId: "t", body: Buffer.concat([PNG, Buffer.from("<script>")]), name: "x.png", declaredType: "image/png" })).rejects.toMatchObject({ statusCode: 415 });
     await expect(assets.stage({ projectId: "p", agentId: "t", body: Buffer.from("<svg><script/></svg>"), name: "x.svg", declaredType: "image/svg+xml" })).rejects.toBeInstanceOf(AssetError);

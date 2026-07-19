@@ -41,6 +41,37 @@ describe("renderSeedPrompt", () => {
     expect(out).toContain("Assistant: ok");
     expect(out).toContain("Current request:\nsecond");
   });
+  it("renders generated artifacts as revalidated result references without publishing a managed path", () => {
+    const out = renderSeedPrompt([{
+      role: "assistant",
+      text: "Pinned result",
+      attachments: [{
+        name: "result.txt",
+        mediaType: "text/plain",
+        size: 12,
+        available: false,
+        artifactId: "artifact-closed-reference",
+        retrievalUrl: "ponderosa://artifact/artifact-closed-reference",
+      }],
+    }], "inspect it");
+    expect(out).toContain("artifactId=artifact-closed-reference");
+    expect(out).toContain("retrieval=ponderosa://artifact/artifact-closed-reference");
+    expect(out).not.toContain("managedPath");
+    expect(out).not.toContain("/projects/");
+
+    const uploaded = renderSeedPrompt([{
+      role: "user",
+      text: "Uploaded evidence",
+      attachments: [{
+        name: "evidence.pdf",
+        mediaType: "application/pdf",
+        size: 8,
+        localPath: "/validated/attachment.pdf",
+        available: true,
+      }],
+    }], "inspect it");
+    expect(uploaded).toContain("/validated/attachment.pdf");
+  });
 });
 
 describe("CodexAdapter.seed (fake codex)", () => {

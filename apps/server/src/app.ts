@@ -1608,6 +1608,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         assets.authoritativeRuntimeAttachment(projectId, agentId, attachmentId),
       reserveCommunication: (communicationId, bindings) =>
         assets.reserveRuntimeCommunication(communicationId, bindings),
+      compensateCommunication: (receipt) =>
+        assets.compensateRuntimeCommunicationReservation(receipt),
     },
     artifactAuthority: (projectId, artifact) =>
       assets.authoritativeRuntimeArtifact(projectId, artifact),
@@ -10132,8 +10134,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const contextArtifacts = allGeneratedArtifacts.filter((artifact) =>
         artifact.kind === "generated_file" && (artifact.pinned || artifact.visibility === "published")
       );
-      const artifactLocalPath = (artifact: ArtifactDto): string =>
-        managedArtifactContentPath(opts.dataDir, artifact.projectId ?? agent.projectId, artifact.id);
+      const generatedArtifactReference = (artifact: ArtifactDto) => ({
+        name: artifact.summary ?? path.basename(artifact.path),
+        mediaType: artifact.mediaType ?? "application/octet-stream",
+        size: artifact.size ?? 0,
+        available: false,
+        artifactId: artifact.id,
+        retrievalUrl: `ponderosa://artifact/${artifact.id}`,
+      });
       const importedHistory = store.getImportedHistory(agent.id)?.messages ?? [];
       const fullHistory: ChatMessage[] = [
         ...importedHistory.map((message) => {
@@ -10142,15 +10150,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             role: message.role === "system" ? "user" as const : message.role,
             text: message.role === "system" ? `[Imported private context]\n${message.text}` : message.text,
             createdAt: message.createdAt,
-            attachments: referencedArtifacts.map((artifact) => ({
-              name: artifact.summary ?? path.basename(artifact.path),
-              mediaType: artifact.mediaType ?? "application/octet-stream",
-              size: artifact.size ?? 0,
-              localPath: artifactLocalPath(artifact),
-              available: existsSync(artifactLocalPath(artifact)),
-              artifactId: artifact.id,
-              retrievalUrl: artifact.downloadUrl ?? `/api/agents/${encodeURIComponent(agent.id)}/artifacts/${encodeURIComponent(artifact.id)}`,
-            })),
+            attachments: referencedArtifacts.map(generatedArtifactReference),
           };
         }),
         ...agentMessages(agent.id)
@@ -10187,11 +10187,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           localPath: path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`),
           available: existsSync(path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`)),
           })) ?? []),
-          ...referencedArtifacts.map((artifact) => ({
-            name: artifact.summary ?? path.basename(artifact.path), mediaType: artifact.mediaType ?? "application/octet-stream",
-            size: artifact.size ?? 0, localPath: artifactLocalPath(artifact), available: existsSync(artifactLocalPath(artifact)), artifactId: artifact.id,
-            retrievalUrl: artifact.downloadUrl ?? `/api/agents/${encodeURIComponent(agent.id)}/artifacts/${encodeURIComponent(artifact.id)}`,
-          })),
+          ...referencedArtifacts.map(generatedArtifactReference),
         ],
         });
         }),
@@ -10199,11 +10195,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (contextArtifacts.length) fullHistory.push({
         role: "assistant",
         text: "Pinned or published project artifacts available to this session:",
-        attachments: contextArtifacts.map((artifact) => ({
-          name: artifact.summary ?? path.basename(artifact.path), mediaType: artifact.mediaType ?? "application/octet-stream",
-          size: artifact.size ?? 0, localPath: artifactLocalPath(artifact), available: existsSync(artifactLocalPath(artifact)), artifactId: artifact.id,
-          retrievalUrl: artifact.downloadUrl ?? `/api/agents/${encodeURIComponent(agent.id)}/artifacts/${encodeURIComponent(artifact.id)}`,
-        })),
+        attachments: contextArtifacts.map(generatedArtifactReference),
       });
       const runId = v3SchedulerRunId ?? randomUUID();
       const controller = new AbortController();

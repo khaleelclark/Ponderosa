@@ -7,8 +7,8 @@ export function renderSeedPrompt(history: ChatMessage[], prompt: string): string
   const transcript = prior.map((message) => {
     const attachments = message.attachments?.map((item) => {
       const stable = item.artifactId
-        ? `artifactId=${item.artifactId}; managedPath=${item.available ? item.localPath : "unavailable"}; retrieval=${item.retrievalUrl ?? "unavailable"}`
-        : item.available ? item.localPath : "unavailable";
+        ? `artifactId=${item.artifactId}; retrieval=${item.retrievalUrl ?? "unavailable"}`
+        : item.available && item.localPath ? item.localPath : "unavailable";
       return `\n  [artifact: ${item.name}; ${item.mediaType}; ${item.size} bytes; ${stable}]`;
     }).join("") ?? "";
     return `${message.role === "user" ? "User" : "Assistant"}: ${message.text}${attachments}`;

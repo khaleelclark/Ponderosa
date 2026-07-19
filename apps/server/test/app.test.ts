@@ -4615,8 +4615,15 @@ describe("server chunk F", () => {
       payload: { text: `Retrieve ${artifactId}`, sourceChannel: "main", sourceConversationId: conversation.id },
     })).statusCode).toBe(202);
     await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
     const runtime = persistent.openedOptions[0]!;
     const resultRef = `ponderosa://artifact/${artifactId}`;
+    const providerInput = store.getProviderInput(store.getRuns(agent.id)[0]!.id, true)!;
+    expect(providerInput.exactPrompt).toContain(`artifactId=${artifactId}`);
+    expect(providerInput.exactPrompt).toContain(`retrieval=${resultRef}`);
+    expect(providerInput.exactPrompt).not.toContain(managedFile);
+    expect(providerInput.exactPrompt).not.toContain("managedPath");
+    expect(providerInput.sourceManifest.artifactIds).toContain(artifactId);
     const retrieve = () => runtime.handleDynamicToolCall!({
       name: "ponderosa_result", arguments: { refs: [resultRef], maxBytes: 4096 },
     });
@@ -6897,6 +6904,8 @@ describe("server chunk F", () => {
           recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          recoveryAssets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     recoveryCoordination.recordRuntimeCommunication({
@@ -6954,6 +6963,165 @@ describe("server chunk F", () => {
     await recoveredApp.close();
   });
 
+  it("compensates only this attempt's attachment reservation when the in-transaction Run fence rejects", async () => {
+    const project = store.createProject({ label: "Fence receipt", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const sender = store.createAgent(project.id, {
+      title: "Sender", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const assets = new AssetStore(dataDir);
+    const staged = await Promise.all(["preexisting", "new-attempt"].map((label) => assets.stage({
+      projectId: project.id,
+      agentId: recipient.id,
+      body: Buffer.from(`%PDF-1.7\n${label}`),
+      name: `${label}.pdf`,
+      declaredType: "application/pdf",
+    })));
+    const authorities = staged.map((attachment) =>
+      assets.authoritativeRuntimeAttachment(project.id, recipient.id, attachment.id)!);
+    const bindings = staged.map((attachment, index) => ({
+      projectId: project.id,
+      agentId: recipient.id,
+      attachmentId: attachment.id,
+      contentHash: authorities[index]!.contentHash,
+      byteLength: authorities[index]!.byteLength,
+    }));
+    const communicationId = "runtime-fence-reservation-receipt";
+    const preexistingReceipt = assets.reserveRuntimeCommunication(communicationId, [bindings[0]!]);
+
+    const seed = new CoordinationV3Store(store.sqlite);
+    seed.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: sender.id,
+      messageId: "fence-receipt-seed",
+      kind: "human",
+      payload: { text: "seed" },
+    });
+    const rejectedLease = seed.leaseNextRun({ workerId: "fence-receipt" })!;
+    const event: CommunicationEvent = {
+      eventId: communicationId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "fenced attachment delivery",
+      attachments: staged.map((attachment) => ({ ...attachment, state: "associated" as const })),
+      createdAt: "2026-07-19T00:00:00.000Z",
+    };
+    let rejectedReceipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3 | undefined;
+    let fencedBeforeReservation: ReturnType<typeof durableMutationState> | undefined;
+    const racing = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
+          store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(rejectedLease.runId);
+          fencedBeforeReservation = durableMutationState(store, dataDir, project.id);
+          rejectedReceipt = assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
+          return rejectedReceipt;
+        },
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    const input = {
+      id: communicationId,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: event.audience,
+      payload: { communication: event },
+      activation: {
+        agentId: recipient.id,
+        kind: "coordination_request",
+        priority: 60,
+        dispatchPolicy: "next_run" as const,
+        promptClass: "coordination" as const,
+      },
+    };
+    expect(() => racing.recordRuntimeCommunication({
+      ...input,
+      runAuthorization: {
+        runId: rejectedLease.runId,
+        agentId: sender.id,
+        fencingToken: rejectedLease.fencingToken,
+      },
+    })).toThrow("run is no longer authoritative");
+    expect(fencedBeforeReservation).toBeDefined();
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(fencedBeforeReservation);
+    expect(store.getCommunicationEvent(project.id, communicationId)).toBeUndefined();
+    expect(rejectedReceipt).toMatchObject({
+      communicationId,
+      bindings: [expect.objectContaining({
+        communicationId,
+        projectId: project.id,
+        agentId: recipient.id,
+        attachmentId: staged[1]!.id,
+        contentHash: authorities[1]!.contentHash,
+        byteLength: authorities[1]!.byteLength,
+      })],
+    });
+    expect(rejectedReceipt!.bindings[0]!.attemptId).toBe(rejectedReceipt!.attemptId);
+    assets.compensateRuntimeCommunicationReservation(rejectedReceipt!);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(fencedBeforeReservation);
+    const authorityDb = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+    expect(authorityDb.prepare(`
+      SELECT asset_id assetId, reservation_attempt_id attemptId
+      FROM runtime_attachment_associations WHERE communication_id=?
+    `).all(communicationId)).toEqual([{
+      assetId: staged[0]!.id,
+      attemptId: preexistingReceipt.attemptId,
+    }]);
+    authorityDb.close();
+
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 1, unavailable: 0 });
+    const afterSweep = durableMutationState(store, dataDir, project.id);
+    expect(await assets.recoverRuntimeCommunicationAssociations(() => false))
+      .toEqual({ associated: 0, released: 0, unavailable: 0 });
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(afterSweep);
+
+    store.sqlite.prepare("UPDATE scheduler_runs SET status='leased' WHERE id=?").run(rejectedLease.runId);
+    const valid = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) =>
+          assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings),
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    const authorization = {
+      runId: rejectedLease.runId,
+      agentId: sender.id,
+      fencingToken: rejectedLease.fencingToken,
+    };
+    expect(valid.recordRuntimeCommunication({ ...input, runAuthorization: authorization })).toMatchObject({
+      id: communicationId,
+      replayed: false,
+    });
+    const afterRetry = durableMutationState(store, dataDir, project.id);
+    expect(valid.recordRuntimeCommunication({ ...input, runAuthorization: authorization })).toMatchObject({
+      id: communicationId,
+      replayed: true,
+    });
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(afterRetry);
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) count FROM activation_sources
+      WHERE source_kind='communication' AND source_id=?
+    `).get(communicationId)).toEqual({ count: 1 });
+    const verificationAssets = new AssetStore(dataDir);
+    expect(verificationAssets.authoritativeRuntimeCommunicationAttachments(communicationId)).toHaveLength(2);
+    verificationAssets.close();
+    assets.close();
+  });
+
   it("keeps a canonical-only passive Broadcast attachment reachable across commit, crash, restart, and sweep", async () => {
     const project = store.createProject({ label: "Passive attachment recovery", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
@@ -6976,6 +7144,8 @@ describe("server chunk F", () => {
           staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           staging.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          staging.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     expect(coordination.recordRuntimeCommunication({
@@ -7030,6 +7200,8 @@ describe("server chunk F", () => {
           retryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           retryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          retryAssets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     expect(retryCoordination.recordRuntimeCommunication({
@@ -7089,6 +7261,8 @@ describe("server chunk F", () => {
           staging.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           staging.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          staging.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     const accepted = coordination.recordRuntimeCommunication({
@@ -7167,6 +7341,8 @@ describe("server chunk F", () => {
           recoveryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
         reserveCommunication: (communicationId, bindings) =>
           recoveryAssets.reserveRuntimeCommunication(communicationId, bindings),
+        compensateCommunication: (receipt) =>
+          recoveryAssets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
     const eventIds = new Map<string, string>();

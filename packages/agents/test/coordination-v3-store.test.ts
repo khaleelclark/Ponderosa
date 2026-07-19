@@ -15,6 +15,12 @@ let recipientA: string;
 let recipientB: string;
 let conversationId: string;
 
+const emptyReservationReceipt = (communicationId: string) => ({
+  communicationId,
+  attemptId: "00000000-0000-4000-8000-000000000001",
+  bindings: [],
+});
+
 function seed(): void {
   projectId = randomUUID();
   requesterId = randomUUID();
@@ -2348,7 +2354,8 @@ describe("CoordinationV3Store scheduler", () => {
                 byteLength: authoritative.size,
               }
             : undefined,
-        reserveCommunication: () => undefined,
+        reserveCommunication: (communicationId) => emptyReservationReceipt(communicationId),
+        compensateCommunication: () => undefined,
       },
     });
 
@@ -2387,7 +2394,8 @@ describe("CoordinationV3Store scheduler", () => {
             byteLength: resolved.attachment.size,
           } : undefined;
         },
-        reserveCommunication: () => undefined,
+        reserveCommunication: (communicationId) => emptyReservationReceipt(communicationId),
+        compensateCommunication: () => undefined,
       },
     });
     const snapshot = (attachment: import("@ponderosa/core").AssetDto, localPath?: string) => ({
@@ -2529,7 +2537,8 @@ describe("CoordinationV3Store scheduler", () => {
           calls.set(key, (calls.get(key) ?? 0) + 1);
           return authority.get(key);
         },
-        reserveCommunication: () => undefined,
+        reserveCommunication: (communicationId) => emptyReservationReceipt(communicationId),
+        compensateCommunication: () => undefined,
       },
     });
     const snapshot = (attachment: import("@ponderosa/core").AssetDto) => ({
@@ -2674,7 +2683,8 @@ describe("CoordinationV3Store scheduler", () => {
     store = new CoordinationV3Store(opened.client, {
       attachmentAuthority: {
         resolve: (candidateProjectId, owner, id) => authority.get(`${candidateProjectId}:${owner}:${id}`),
-        reserveCommunication: () => undefined,
+        reserveCommunication: (communicationId) => emptyReservationReceipt(communicationId),
+        compensateCommunication: () => undefined,
       },
     });
     const snapshot = (attachment: import("@ponderosa/core").AssetDto) => ({

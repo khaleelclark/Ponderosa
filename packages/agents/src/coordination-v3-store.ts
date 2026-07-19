@@ -314,6 +314,24 @@ export interface RuntimeAttachmentAuthorityV3 {
   byteLength: number;
 }
 
+export interface RuntimeAttachmentReservationBindingV3 {
+  communicationId: string;
+  projectId: string;
+  agentId: string;
+  attachmentId: string;
+  contentHash: string;
+  byteLength: number;
+  attemptId: string;
+}
+
+/** Exact immutable ownership receipt for association rows inserted by one
+ * reservation attempt. Matching rows that predated the attempt are excluded. */
+export interface RuntimeAttachmentReservationReceiptV3 {
+  communicationId: string;
+  attemptId: string;
+  bindings: readonly Readonly<RuntimeAttachmentReservationBindingV3>[];
+}
+
 /** Runtime attachment authority is deliberately richer than a lookup callback:
  * passive canonical Communications must reserve their staged assets durably
  * before the scheduler commits the Communication. */
@@ -322,7 +340,8 @@ export interface RuntimeAttachmentAuthorityProviderV3 {
   reserveCommunication(
     communicationId: string,
     bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
-  ): void;
+  ): RuntimeAttachmentReservationReceiptV3;
+  compensateCommunication(receipt: RuntimeAttachmentReservationReceiptV3): void;
 }
 
 export interface RuntimeArtifactAuthorityV3 {
@@ -718,8 +737,13 @@ export class CoordinationV3Store {
     if (preexisting && (preexisting.project_id !== input.projectId || preexisting.payload_hash !== hash)) {
       throw new Error("runtime communication ID collision");
     }
-    this.options.attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings);
-    const result = this.sqlite.transaction(() => {
+    const attachmentAuthority = this.options.attachmentAuthority;
+    const reservationReceipt = preparedAttachments.bindings.length
+      ? attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings)
+      : undefined;
+    let result: RuntimeCommunicationV3Result;
+    try {
+      result = this.sqlite.transaction(() => {
       if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
       this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
@@ -802,7 +826,29 @@ export class CoordinationV3Store {
         ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
         replayed: false,
       };
-    })();
+      })();
+    } catch (schedulerError) {
+      if (reservationReceipt && attachmentAuthority) {
+        try {
+          // Hold the scheduler write fence while compensating the separately
+          // committed authority rows. A concurrent attempt cannot publish this
+          // Communication between the absence check and exact-row deletion.
+          this.sqlite.transaction(() => {
+            const committed = this.sqlite.prepare(`
+              SELECT 1 FROM runtime_communications WHERE id = ?
+            `).get(input.id);
+            if (!committed) attachmentAuthority.compensateCommunication(reservationReceipt);
+          }).immediate();
+        } catch (compensationError) {
+          throw new AggregateError(
+            [schedulerError, compensationError],
+            "runtime Communication attachment compensation failed",
+            { cause: schedulerError },
+          );
+        }
+      }
+      throw schedulerError;
+    }
     // The filesystem-backed authority commits separately from scheduler SQLite.
     // Re-read every accepted attachment after the passive transaction commits;
     // callers must not project the canonical Communication when immutable bytes

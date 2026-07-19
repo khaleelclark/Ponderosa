@@ -24,6 +24,8 @@ export type {
   RuntimeArtifactAuthorityV3,
   RuntimeAttachmentAuthorityV3,
   RuntimeAttachmentAuthorityProviderV3,
+  RuntimeAttachmentReservationBindingV3,
+  RuntimeAttachmentReservationReceiptV3,
   ActivationDispatchPolicy,
   ActivationPromptClass,
   ActivationTerminalOutcome,
