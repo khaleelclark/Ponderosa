@@ -556,6 +556,8 @@ export interface CollaborationViewDto {
 export interface HistoryWindowDto {
   limit: number;
   hasMore: boolean;
+  /** Opaque keyset cursor for the next older page. Absent at the beginning of history. */
+  cursor?: string;
 }
 
 export interface TeamOperationalEventDto {
@@ -1515,6 +1517,8 @@ export interface AgentDetailDto {
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
   state: AgentState;
+  /** Bounded execution/activity streams, independent from chat-history pagination. */
+  telemetryHistory?: HistoryWindowDto;
   history?: HistoryWindowDto;
 }
 

@@ -4739,6 +4739,27 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("selects continued-session deltas from canonical history beyond the UI window", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Canonical context", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Long-running room" });
+    appendBroadcast(store, project.id, master.id, "accepted cursor marker");
+    const agent = store.createAgent(project.id, { title: "Historian", engine: "codex", conversationId: master.id });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed", sourceChannel: "main" } });
+    await waitForRun(agent.id);
+    for (let index = 0; index < 101; index += 1) {
+      appendBroadcast(store, project.id, master.id, `canonical delta ${index}`);
+    }
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue", sourceChannel: "main" } });
+    await waitForRun(agent.id, 2);
+    expect(adapter.continues[0]?.prompt).toContain("canonical delta 0");
+    expect(adapter.continues[0]?.prompt).toContain("canonical delta 100");
+    expect(adapter.continues[0]?.prompt).not.toContain("accepted cursor marker");
+    await app.close();
+  });
+
   it("does not advance context after a failed turn and reseeds a changed session epoch", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -5485,8 +5506,14 @@ describe("server chunk F", () => {
       name: "ponderosa_result", arguments: { refs: [ref], cursor: firstPage.nextCursor },
     });
     expect(replayAgain.text).toBe(replay.text);
+    const base64urlAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const finalCharacter = firstPage.nextCursor.at(-1)!;
+    const alternateFinalCharacter = base64urlAlphabet[base64urlAlphabet.indexOf(finalCharacter) ^ 1]!;
+    const nonCanonicalCursor = `${firstPage.nextCursor.slice(0, -1)}${alternateFinalCharacter}`;
+    expect(Buffer.from(nonCanonicalCursor.split(".")[1]!, "base64url"))
+      .toEqual(Buffer.from(firstPage.nextCursor.split(".")[1]!, "base64url"));
     const tampered = await runtime.handleDynamicToolCall!({
-      name: "ponderosa_result", arguments: { refs: [ref], cursor: `${firstPage.nextCursor.slice(0, -1)}x` },
+      name: "ponderosa_result", arguments: { refs: [ref], cursor: nonCanonicalCursor },
     });
     expect(tampered.success).toBe(false);
     expect(JSON.parse(tampered.text)).toMatchObject({ error: expect.stringContaining("tampered") });
@@ -6387,7 +6414,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("bounds chat history by default and expands it only when explicitly requested", async () => {
+  it("pages chat history with stable cursors and resolves exact historical message links", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Bounded history", hostPath: repoDir });
     const room = store.createConversation(project.id, { title: "Long room" });
@@ -6409,12 +6436,24 @@ describe("server chunk F", () => {
     const bounded = (await app.inject({ method: "GET", url: `/api/conversations/${room.id}` })).json<ConversationDetailDto>();
     expect(bounded.messages).toHaveLength(100);
     expect(bounded.messages[0]?.text).toBe("History 25");
-    expect(bounded.history).toEqual({ limit: 100, hasMore: true });
+    expect(bounded.history).toMatchObject({ limit: 100, hasMore: true, cursor: expect.any(String) });
 
-    const expanded = (await app.inject({ method: "GET", url: `/api/conversations/${room.id}?limit=200` })).json<ConversationDetailDto>();
-    expect(expanded.messages).toHaveLength(125);
-    expect(expanded.messages[0]?.text).toBe("History 0");
-    expect(expanded.history).toEqual({ limit: 200, hasMore: false });
+    const older = (await app.inject({
+      method: "GET",
+      url: `/api/conversations/${room.id}?limit=100&cursor=${encodeURIComponent(bounded.history!.cursor!)}`,
+    })).json<ConversationDetailDto>();
+    expect(older.messages).toHaveLength(25);
+    expect(older.messages[0]?.text).toBe("History 0");
+    expect(older.messages.at(-1)?.text).toBe("History 24");
+    expect(older.history).toEqual({ limit: 100, hasMore: false });
+
+    const focused = (await app.inject({
+      method: "GET",
+      url: `/api/conversations/${room.id}?focusId=history-010`,
+    })).json<ConversationDetailDto>();
+    expect(focused.messages.at(-1)).toMatchObject({ communicationEventId: "history-010", text: "History 10" });
+    expect(focused.messages).toHaveLength(11);
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${room.id}?cursor=not-a-cursor` })).statusCode).toBe(400);
     await app.close();
   });
 

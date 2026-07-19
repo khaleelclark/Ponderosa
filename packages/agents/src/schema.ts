@@ -122,9 +122,9 @@ export const messages = sqliteTable("messages", {
 
 /**
  * Rebuildable, human-facing global Chat search projection. This deliberately
- * excludes runtime events and collaboration-only surfaces. Search reads this
- * table newest-first through a bounded index instead of materializing every
- * conversation and agent timeline from the canonical JSONL files.
+ * excludes runtime events. Team Chat rows support bounded timeline reads but
+ * remain excluded by the global-search query. Search reads this table
+ * newest-first instead of materializing every canonical timeline.
  */
 export const chatSearchMessages = sqliteTable("chat_search_messages", {
   rowKey: text("row_key").primaryKey(),
@@ -136,6 +136,7 @@ export const chatSearchMessages = sqliteTable("chat_search_messages", {
   role: text("role").notNull(),
   authorAgentId: text("author_agent_id"),
   timestamp: text("timestamp").notNull(),
+  orderKey: text("order_key").notNull(),
   text: text("text").notNull(),
 });
 

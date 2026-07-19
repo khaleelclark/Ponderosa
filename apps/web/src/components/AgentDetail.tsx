@@ -201,8 +201,10 @@ export function AgentDetail({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [historyLimit, setHistoryLimit] = useState(100);
-  const agentQuery = useAgent(agentId, historyLimit);
+  const [telemetryLimit, setTelemetryLimit] = useState(100);
+  const agentQuery = useAgent(agentId, telemetryLimit);
+  const [olderMessages, setOlderMessages] = useState<{ messages: MessageDto[]; cursor?: string; hasMore: boolean }>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
   const queuedMessagesQuery = useQuery({
@@ -228,7 +230,6 @@ export function AgentDetail({
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
-  useEffect(() => setHistoryLimit(100), [agentId]);
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
@@ -256,28 +257,54 @@ export function AgentDetail({
   useEffect(() => {
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
+    setOlderMessages(undefined);
+    setTelemetryLimit(100);
+    focusedMessage.current = undefined;
   }, [agentId]);
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
   }, [agentId, tab]);
 
+  const detail = useMemo(() => agentQuery.data ? {
+    ...agentQuery.data,
+    messages: [...new Map([...(olderMessages?.messages ?? []), ...agentQuery.data.messages].map((message) => [message.id, message] as const)).values()]
+      .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+    history: olderMessages ? {
+      limit: agentQuery.data.history?.limit ?? 100,
+      hasMore: olderMessages.hasMore,
+      ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
+    } : agentQuery.data.history,
+  } : undefined, [agentQuery.data, olderMessages]);
+
   useEffect(() => {
-    if (!focusMessageId || focusedMessage.current === focusMessageId) return;
+    if (!focusMessageId || focusedMessage.current === focusMessageId || focusedMessage.current === `missing:${focusMessageId}`) return;
     if (tab !== "chat") {
       setTab("chat");
       return;
     }
-    const projectedId = projectedMessageIdForFocus(agentQuery.data?.messages ?? [], focusMessageId);
-    if (!projectedId) return;
+    const projectedId = projectedMessageIdForFocus(detail?.messages ?? [], focusMessageId);
+    if (!projectedId) {
+      if (focusedMessage.current !== `loading:${focusMessageId}`) {
+        focusedMessage.current = `loading:${focusMessageId}`;
+        void api.getAgent(agentId, 100, undefined, focusMessageId).then((page) => {
+          setOlderMessages((current) => ({
+            messages: [...new Map([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])].map((message) => [message.id, message] as const)).values()]
+              .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+            cursor: page.history?.cursor,
+            hasMore: page.history?.hasMore ?? false,
+          }));
+          focusedMessage.current = page.messages.length ? undefined : `missing:${focusMessageId}`;
+        }).catch(() => { focusedMessage.current = undefined; });
+      }
+      return;
+    }
     const target = document.getElementById(`message-${projectedId}`);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
-  }, [focusMessageId, tab, agentQuery.data?.messages]);
-
-  const detail = agentQuery.data;
+  }, [agentId, detail?.messages, focusMessageId, tab]);
   const decisionsQuery = useQuery({ queryKey: ["decisions", "agent", agentId], queryFn: () => api.listDecisions({ agentId, status: "pending" }) });
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
@@ -452,6 +479,23 @@ export function AgentDetail({
       );
     },
   });
+
+  const loadOlderMessages = async () => {
+    const cursor = detail?.history?.cursor;
+    if (!detail?.history?.hasMore || !cursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await api.getAgent(agentId, 100, cursor);
+      setOlderMessages((current) => ({
+        messages: [...new Map([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])].map((message) => [message.id, message] as const)).values()]
+          .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+        cursor: page.history?.cursor,
+        hasMore: page.history?.hasMore ?? false,
+      }));
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   if (agentQuery.isLoading) {
     return (
@@ -835,8 +879,9 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: detail.history?.hasMore ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {detail.history?.hasMore ? <Button size="small" color="inherit" onClick={() => setHistoryLimit((current) => Math.min(1_000, current + 100))} sx={{ justifySelf: "center", my: .5 }}>Load older history</Button> : null}
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : detail.telemetryHistory?.hasMore) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older history"}</Button> : null}
+        {tab !== "chat" && detail.telemetryHistory?.hasMore ? <Button size="small" color="inherit" onClick={() => setTelemetryLimit((current) => current + 100)} sx={{ justifySelf: "center", my: .5 }}>Load older records</Button> : null}
         {panes[tab]}
       </Box>
 

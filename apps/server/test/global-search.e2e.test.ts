@@ -76,13 +76,14 @@ describe("global chat search end to end", () => {
     const insert = store.sqlite.prepare(`
       INSERT INTO chat_search_messages (
         row_key, project_id, chat_kind, chat_id, message_id,
-        communication_event_id, role, timestamp, text
-      ) VALUES (?, ?, 'conversation', ?, ?, ?, 'user', ?, ?)
+        communication_event_id, role, timestamp, order_key, text
+      ) VALUES (?, ?, 'conversation', ?, ?, ?, 'user', ?, ?, ?)
     `);
     store.sqlite.transaction(() => {
       for (let index = 0; index < 10_025; index += 1) {
         const id = `api-bound-${String(index).padStart(5, "0")}`;
-        insert.run(id, project.id, conversationId, id, id, new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), `API bounded needle ${index}`);
+        const timestamp = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+        insert.run(id, project.id, conversationId, id, id, timestamp, timestamp, `API bounded needle ${index}`);
       }
     })();
     const app = createServer({ dataDir, store, engines: [], logger: false });

@@ -48,7 +48,9 @@ describe("global chat search", () => {
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     const agent = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     expect(conversation).toContain("projectedMessageIdForFocus(messages, focusMessageId)");
-    expect(agent).toContain("projectedMessageIdForFocus(agentQuery.data?.messages ?? [], focusMessageId)");
+    expect(agent).toContain("projectedMessageIdForFocus(detail?.messages ?? [], focusMessageId)");
+    expect(conversation).toContain("api.getConversation(conversationId, 100, undefined, focusMessageId)");
+    expect(agent).toContain("api.getAgent(agentId, 100, undefined, focusMessageId)");
     expect(conversation).toContain("target.focus({ preventScroll: true })");
   });
 
