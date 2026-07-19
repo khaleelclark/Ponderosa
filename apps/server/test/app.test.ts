@@ -7013,22 +7013,6 @@ describe("server chunk F", () => {
       attachments: staged.map((attachment) => ({ ...attachment, state: "associated" as const })),
       createdAt: "2026-07-19T00:00:00.000Z",
     };
-    let rejectedReceipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3 | undefined;
-    let fencedBeforeReservation: ReturnType<typeof durableMutationState> | undefined;
-    const racing = new CoordinationV3Store(store.sqlite, {
-      attachmentAuthority: {
-        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
-          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
-        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
-          store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(rejectedLease.runId);
-          fencedBeforeReservation = durableMutationState(store, dataDir, project.id);
-          rejectedReceipt = assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
-          return rejectedReceipt;
-        },
-        compensateCommunication: (receipt) =>
-          assets.compensateRuntimeCommunicationReservation(receipt),
-      },
-    });
     const input = {
       id: communicationId,
       projectId: project.id,
@@ -7044,16 +7028,55 @@ describe("server chunk F", () => {
         promptClass: "coordination" as const,
       },
     };
+    const authorization = {
+      runId: rejectedLease.runId,
+      agentId: sender.id,
+      fencingToken: rejectedLease.fencingToken,
+    };
+    const secondScheduler = new Database(path.join(dataDir, "ponderosa.db"), { timeout: 1 });
+    secondScheduler.pragma("foreign_keys = ON");
+    let concurrentReservationCalls = 0;
+    const concurrent = new CoordinationV3Store(secondScheduler, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
+          concurrentReservationCalls += 1;
+          return assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
+        },
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
+    let concurrentError: unknown;
+    let rejectedReceipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3 | undefined;
+    const beforeRejectedAttempt = durableMutationState(store, dataDir, project.id);
+    const racing = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (candidateCommunicationId, candidateBindings) => {
+          try {
+            concurrent.recordRuntimeCommunication({ ...input, runAuthorization: authorization });
+          } catch (error) {
+            concurrentError = error;
+          }
+          store.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled' WHERE id=?").run(rejectedLease.runId);
+          rejectedReceipt = assets.reserveRuntimeCommunication(candidateCommunicationId, candidateBindings);
+          return rejectedReceipt;
+        },
+        compensateCommunication: (receipt) =>
+          assets.compensateRuntimeCommunicationReservation(receipt),
+      },
+    });
     expect(() => racing.recordRuntimeCommunication({
       ...input,
-      runAuthorization: {
-        runId: rejectedLease.runId,
-        agentId: sender.id,
-        fencingToken: rejectedLease.fencingToken,
-      },
+      runAuthorization: authorization,
     })).toThrow("run is no longer authoritative");
-    expect(fencedBeforeReservation).toBeDefined();
-    expect(durableMutationState(store, dataDir, project.id)).toEqual(fencedBeforeReservation);
+    expect(String(concurrentError)).toMatch(/database is locked/);
+    expect(concurrentReservationCalls).toBe(0);
+    secondScheduler.close();
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeRejectedAttempt);
     expect(store.getCommunicationEvent(project.id, communicationId)).toBeUndefined();
     expect(rejectedReceipt).toMatchObject({
       communicationId,
@@ -7068,7 +7091,7 @@ describe("server chunk F", () => {
     });
     expect(rejectedReceipt!.bindings[0]!.attemptId).toBe(rejectedReceipt!.attemptId);
     assets.compensateRuntimeCommunicationReservation(rejectedReceipt!);
-    expect(durableMutationState(store, dataDir, project.id)).toEqual(fencedBeforeReservation);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeRejectedAttempt);
     const authorityDb = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
     expect(authorityDb.prepare(`
       SELECT asset_id assetId, reservation_attempt_id attemptId
@@ -7086,7 +7109,6 @@ describe("server chunk F", () => {
       .toEqual({ associated: 0, released: 0, unavailable: 0 });
     expect(durableMutationState(store, dataDir, project.id)).toEqual(afterSweep);
 
-    store.sqlite.prepare("UPDATE scheduler_runs SET status='leased' WHERE id=?").run(rejectedLease.runId);
     const valid = new CoordinationV3Store(store.sqlite, {
       attachmentAuthority: {
         resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
@@ -7097,11 +7119,6 @@ describe("server chunk F", () => {
           assets.compensateRuntimeCommunicationReservation(receipt),
       },
     });
-    const authorization = {
-      runId: rejectedLease.runId,
-      agentId: sender.id,
-      fencingToken: rejectedLease.fencingToken,
-    };
     expect(valid.recordRuntimeCommunication({ ...input, runAuthorization: authorization })).toMatchObject({
       id: communicationId,
       replayed: false,
@@ -7116,10 +7133,13 @@ describe("server chunk F", () => {
       SELECT COUNT(*) count FROM activation_sources
       WHERE source_kind='communication' AND source_id=?
     `).get(communicationId)).toEqual({ count: 1 });
+    assets.close();
     const verificationAssets = new AssetStore(dataDir);
+    expect(await verificationAssets.recoverRuntimeCommunicationAssociations((candidateId, candidateProjectId) =>
+      candidateProjectId === project.id && Boolean(new CoordinationV3Store(store.sqlite).runtimeCommunication(candidateId)),
+    )).toEqual({ associated: 2, released: 0, unavailable: 0 });
     expect(verificationAssets.authoritativeRuntimeCommunicationAttachments(communicationId)).toHaveLength(2);
     verificationAssets.close();
-    assets.close();
   });
 
   it("keeps a canonical-only passive Broadcast attachment reachable across commit, crash, restart, and sweep", async () => {
@@ -9196,11 +9216,15 @@ describe("V3.3 Decisions, management, and portability", () => {
     await waitForSeedCount(1);
     expect(adapter.seeds[0]!.prompt).toContain("Destination-safe Project rule");
     expect(JSON.stringify(adapter.seeds[0])).not.toContain("SOURCE-RULE-MUST-NOT-ENTER-PROVIDER-CONTEXT");
-    expect(adapter.seeds[0]!.history?.flatMap((message) => message.attachments ?? [])).toContainEqual(expect.objectContaining({
+    const importedHistoryAttachment = adapter.seeds[0]!.history
+      ?.flatMap((message) => message.attachments ?? [])
+      .find((attachment) => attachment.artifactId === importedArtifacts[0]!.id);
+    expect(importedHistoryAttachment).toEqual(expect.objectContaining({
       artifactId: importedArtifacts[0]!.id,
-      localPath: managedArtifactContentPath(dataDir, project.id, importedArtifacts[0]!.id),
-      available: true,
+      retrievalUrl: `ponderosa://artifact/${importedArtifacts[0]!.id}`,
+      available: false,
     }));
+    expect(importedHistoryAttachment).not.toHaveProperty("localPath");
     await app.inject({
       method: "POST", url: `/api/agents/${importedAgentId}/cancel`,
       payload: activeRunCancellationPayload(store, importedAgentId, "stop-import-inspection"),

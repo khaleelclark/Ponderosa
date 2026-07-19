@@ -738,117 +738,119 @@ export class CoordinationV3Store {
       throw new Error("runtime communication ID collision");
     }
     const attachmentAuthority = this.options.attachmentAuthority;
-    const reservationReceipt = preparedAttachments.bindings.length
-      ? attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings)
-      : undefined;
-    let result: RuntimeCommunicationV3Result;
-    try {
-      result = this.sqlite.transaction(() => {
-      if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
-      this.requireProject(input.projectId);
-      this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
-      if (!this.runtimeCommunicationAuthorityAgrees({
-        projectId: input.projectId,
-        sender: input.sender,
-        intent: input.intent,
-        audience: input.audience,
-        payload,
-        activations: activationInputs.map((activation, index) => ({
-          agentId: activation.agentId,
-          kind: activation.kind,
-          scopeKey: activationScopeKeys[index]!,
-        })),
-      })) throw new Error("runtime communication authority does not agree on one Project");
-      const existing = this.sqlite.prepare(`
-        SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
-      `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
-      if (existing) {
-        if (existing.project_id !== input.projectId || existing.payload_hash !== hash) {
-          throw new Error("runtime communication ID collision");
+    const result = this.sqlite.transaction((): RuntimeCommunicationV3Result => {
+      let reservationReceipt: RuntimeAttachmentReservationReceiptV3 | undefined;
+      try {
+        // The scheduler write fence must precede the separately committed asset
+        // reservation. Otherwise two attempts can share one association, let
+        // the rejected attempt compensate it, and commit the second attempt
+        // without durable attachment authority.
+        reservationReceipt = preparedAttachments.bindings.length
+          ? attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings)
+          : undefined;
+        if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
+        this.requireProject(input.projectId);
+        this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
+        if (!this.runtimeCommunicationAuthorityAgrees({
+          projectId: input.projectId,
+          sender: input.sender,
+          intent: input.intent,
+          audience: input.audience,
+          payload,
+          activations: activationInputs.map((activation, index) => ({
+            agentId: activation.agentId,
+            kind: activation.kind,
+            scopeKey: activationScopeKeys[index]!,
+          })),
+        })) throw new Error("runtime communication authority does not agree on one Project");
+        const existing = this.sqlite.prepare(`
+          SELECT project_id, payload_hash FROM runtime_communications WHERE id = ?
+        `).get(input.id) as { project_id: string; payload_hash: string } | undefined;
+        if (existing) {
+          if (existing.project_id !== input.projectId || existing.payload_hash !== hash) {
+            throw new Error("runtime communication ID collision");
+          }
+          const activations = this.sqlite.prepare(`
+            SELECT a.id FROM agent_activations a
+            JOIN activation_sources source ON source.activation_id = a.id
+            WHERE source.source_kind = 'communication' AND source.source_id = ?
+              AND a.project_id = ?
+            ORDER BY a.created_at, a.id
+          `).all(input.id, input.projectId) as Array<{ id: string }>;
+          return {
+            id: input.id,
+            ...(activations[0] ? { activationId: activations[0].id } : {}),
+            ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+            ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
+            replayed: true,
+          };
         }
-        const activations = this.sqlite.prepare(`
-          SELECT a.id FROM agent_activations a
-          JOIN activation_sources source ON source.activation_id = a.id
-          WHERE source.source_kind = 'communication' AND source.source_id = ?
-            AND a.project_id = ?
-          ORDER BY a.created_at, a.id
-        `).all(input.id, input.projectId) as Array<{ id: string }>;
+        this.sqlite.prepare(`
+          INSERT INTO runtime_communications (
+            id, project_id, sender_json, intent, audience_json, payload_json,
+            payload_hash, actionable, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          input.id, input.projectId, stableJson(input.sender), input.intent,
+          stableJson(input.audience), stableJson(payload), hash,
+          activationInputs.length ? 1 : 0, now,
+        );
+        const insertArtifact = this.sqlite.prepare(`
+          INSERT INTO runtime_artifacts (
+            id, owner_kind, owner_id, project_id, role, title, media_type,
+            blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+          ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const artifact of artifacts) {
+          insertArtifact.run(
+            artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
+            artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
+            artifact.originAgentId ?? null, artifact.executionId ?? null, now,
+          );
+        }
+        const activationIds = activationInputs.map((activation, index) => this.createActivation({
+          projectId: input.projectId,
+          agentId: activation.agentId,
+          scopeKey: activationScopeKeys[index]!,
+          kind: activation.kind,
+          priority: activation.priority,
+          dispatchPolicy: activation.dispatchPolicy,
+          promptClass: activation.promptClass,
+          dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
+          payload,
+          sourceKind: "communication",
+          sourceId: input.id,
+          externalIntake: true,
+          now,
+        }));
         return {
           id: input.id,
-          ...(activations[0] ? { activationId: activations[0].id } : {}),
-          ...(activations.length ? { activationIds: activations.map((activation) => activation.id) } : {}),
+          ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
+          ...(activationIds.length ? { activationIds } : {}),
           ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
-          replayed: true,
+          replayed: false,
         };
-      }
-      this.sqlite.prepare(`
-        INSERT INTO runtime_communications (
-          id, project_id, sender_json, intent, audience_json, payload_json,
-          payload_hash, actionable, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.id, input.projectId, stableJson(input.sender), input.intent,
-        stableJson(input.audience), stableJson(payload), hash,
-        activationInputs.length ? 1 : 0, now,
-      );
-      const insertArtifact = this.sqlite.prepare(`
-        INSERT INTO runtime_artifacts (
-          id, owner_kind, owner_id, project_id, role, title, media_type,
-          blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
-        ) VALUES (?, 'communication', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      for (const artifact of artifacts) {
-        insertArtifact.run(
-          artifact.id, input.id, input.projectId, artifact.role, artifact.title, artifact.mediaType,
-          artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
-          artifact.originAgentId ?? null, artifact.executionId ?? null, now,
-        );
-      }
-      const activationIds = activationInputs.map((activation, index) => this.createActivation({
-        projectId: input.projectId,
-        agentId: activation.agentId,
-        scopeKey: activationScopeKeys[index]!,
-        kind: activation.kind,
-        priority: activation.priority,
-        dispatchPolicy: activation.dispatchPolicy,
-        promptClass: activation.promptClass,
-        dedupeKey: activation.dedupeKey ?? `communication:${input.id}:${activation.agentId}:${index}`,
-        payload,
-        sourceKind: "communication",
-        sourceId: input.id,
-        externalIntake: true,
-        now,
-      }));
-      return {
-        id: input.id,
-        ...(activationIds[0] ? { activationId: activationIds[0] } : {}),
-        ...(activationIds.length ? { activationIds } : {}),
-        ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
-        replayed: false,
-      };
-      })();
-    } catch (schedulerError) {
-      if (reservationReceipt && attachmentAuthority) {
-        try {
-          // Hold the scheduler write fence while compensating the separately
-          // committed authority rows. A concurrent attempt cannot publish this
-          // Communication between the absence check and exact-row deletion.
-          this.sqlite.transaction(() => {
+      } catch (schedulerError) {
+        if (reservationReceipt && attachmentAuthority) {
+          try {
+            // Compensation remains inside the same scheduler fence as
+            // reservation and publication, so another attempt cannot observe
+            // or reuse an association that this attempt may release.
             const committed = this.sqlite.prepare(`
               SELECT 1 FROM runtime_communications WHERE id = ?
             `).get(input.id);
             if (!committed) attachmentAuthority.compensateCommunication(reservationReceipt);
-          }).immediate();
-        } catch (compensationError) {
-          throw new AggregateError(
-            [schedulerError, compensationError],
-            "runtime Communication attachment compensation failed",
-            { cause: schedulerError },
-          );
+          } catch (compensationError) {
+            throw new AggregateError(
+              [schedulerError, compensationError],
+              "runtime Communication attachment compensation failed",
+              { cause: schedulerError },
+            );
+          }
         }
+        throw schedulerError;
       }
-      throw schedulerError;
-    }
+    }).immediate();
     // The filesystem-backed authority commits separately from scheduler SQLite.
     // Re-read every accepted attachment after the passive transaction commits;
     // callers must not project the canonical Communication when immutable bytes
