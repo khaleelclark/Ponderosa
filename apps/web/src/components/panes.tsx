@@ -76,7 +76,7 @@ import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { useProjectBrowser } from "./ProjectBrowserContext";
-import { faviconIdentity, loadFavicon, markFaviconFailed } from "../faviconCache";
+import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../faviconCache";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -121,11 +121,12 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
     setFaviconSrc(undefined);
     setFaviconFailed(false);
     if (!favicon) return () => { current = false; };
-    void loadFavicon(favicon).then(
+    const resource = acquireFavicon(favicon);
+    void resource.src.then(
       (src) => { if (current) setFaviconSrc(src); },
       () => { if (current) setFaviconFailed(true); },
     );
-    return () => { current = false; };
+    return () => { current = false; resource.release(); };
   }, [favicon]);
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
@@ -145,7 +146,7 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   return <>
     <Box className="chat-text-navigation" component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       {!faviconFailed && faviconSrc
-        ? <Box component="img" src={faviconSrc} alt="" onError={() => { if (favicon) markFaviconFailed(favicon); setFaviconFailed(true); }} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
+        ? <Box component="img" src={faviconSrc} alt="" onError={() => { if (favicon) markFaviconFailed(favicon, faviconSrc); setFaviconFailed(true); }} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
         : <LanguageIcon aria-hidden fontSize="inherit" />}
       <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>{link.hostname}</strong> · {link.destination}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
