@@ -239,16 +239,22 @@ describe("Communication V3 agent deletion", () => {
       coordination.markRunStarted(lease.runId, lease.fencingToken);
       coordination.recordRuntimeCommunication({
         id: "project-delete-communication", projectId: project.id,
-        sender: { kind: "user" }, intent: "broadcast", audience: { projectId: project.id }, payload: { text: "FYI" },
+        sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
+        audience: { kind: "organization", organizationId: project.id }, payload: { text: "FYI" },
       });
+      const retryableCommunication = {
+        eventId: "project-delete-retryable", schemaVersion: 2 as const, projectId: project.id,
+        conversationId: chat.id, sender: { kind: "user" as const, userId: "local-operator" },
+        intent: "user_dm" as const,
+        audience: { kind: "user_agent" as const, userId: "local-operator", agentId: recipient.id },
+        text: "Retryable before Project deletion", createdAt: "2026-07-15T00:00:00.000Z",
+      };
       const retryable = coordination.recordRuntimeCommunication({
         id: "project-delete-retryable", projectId: project.id,
-        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-        audience: { agentId: recipient.id },
+        sender: retryableCommunication.sender, intent: retryableCommunication.intent,
+        audience: retryableCommunication.audience,
         payload: {
-          communication: {
-            eventId: "project-delete-retryable", projectId: project.id, conversationId: chat.id,
-          },
+          communication: retryableCommunication,
           dispatch: { text: "Retryable before Project deletion" },
         },
         activation: {
