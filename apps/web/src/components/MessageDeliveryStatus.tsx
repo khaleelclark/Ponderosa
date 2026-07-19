@@ -44,10 +44,12 @@ function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "war
 }
 
 export function MessageDeliveryStatus({
+  projectId,
   receipts,
   recipientName,
   onOpenAgent,
 }: {
+  projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
@@ -85,10 +87,11 @@ export function MessageDeliveryStatus({
     }
   };
   const retryDelivery = async (receipt: MessageDeliveryReceiptDto) => {
+    if (!projectId) return;
     setError(undefined);
     setPendingRetryId(receipt.activationId);
     try {
-      await api.retryMessageDelivery(receipt.activationId, {
+      await api.retryMessageDelivery(projectId, receipt.activationId, {
         idempotencyKey: `operator-delivery-retry:${receipt.activationId}`,
       });
       setConfirmRetry(undefined);
@@ -146,7 +149,7 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let current Run finish</Button> : null}
-        {receipt.canRetry ? <Button
+        {receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
           size="small"

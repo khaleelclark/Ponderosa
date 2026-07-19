@@ -238,6 +238,7 @@ export function ConversationMessage({
             showTimestamp={fromManager}
             value={message.createdAt}
             status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+              projectId={projectId}
               receipts={message.deliveryReceipts}
               recipientName={(agentId) => agentTitle(agentId)}
               onOpenAgent={onOpenAgent}

@@ -3510,7 +3510,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ? communication.audience.kind === "user_agent" ? [communication.audience.agentId] : communication.audience.agentIds
           : [];
       const agentMentions = resolveAgentMentionBindings(message.text, recipientAgentIds, projectAgents);
-      const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(message.communicationEventId);
+      const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(projectId, message.communicationEventId);
       return {
         ...message,
         reactions: userReactions.forCommunication(message.communicationEventId),
@@ -8117,16 +8117,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.post<{
-    Params: { activationId: string };
+    Params: { projectId: string; activationId: string };
     Body: RetryMessageDeliveryRequest;
-  }>("/api/message-deliveries/:activationId/retry", async (request, reply) => {
+  }>("/api/projects/:projectId/message-deliveries/:activationId/retry", async (request, reply) => {
+    const projectId = request.params.projectId?.trim() ?? "";
     const activationId = request.params.activationId?.trim() ?? "";
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!projectId) return reply.code(400).send({ error: "projectId is required" });
     if (!activationId) return reply.code(400).send({ error: "activationId is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) {
       return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     }
-    const result = coordinationV3.retryMessageDelivery({ activationId, idempotencyKey });
+    const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey });
     if (!result.accepted || !result.targetAgentId) {
       const status = result.rejectionReason === "not_found" ? 404 : 409;
       return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);

@@ -246,7 +246,9 @@ describe("Communication V3 agent deletion", () => {
         sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
         audience: { agentId: recipient.id },
         payload: {
-          communication: { eventId: "project-delete-retryable", conversationId: chat.id },
+          communication: {
+            eventId: "project-delete-retryable", projectId: project.id, conversationId: chat.id,
+          },
           dispatch: { text: "Retryable before Project deletion" },
         },
         activation: {
@@ -257,6 +259,7 @@ describe("Communication V3 agent deletion", () => {
       agents.sqlite.prepare(`UPDATE agent_activations SET state = 'failed' WHERE id = ?`)
         .run(retryable.activationId);
       coordination.retryMessageDelivery({
+        projectId: project.id,
         activationId: retryable.activationId!, idempotencyKey: "project-delete-retry",
       });
       expect(agents.sqlite.prepare(`

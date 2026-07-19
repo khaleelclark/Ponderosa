@@ -6,7 +6,7 @@ import { MessageDeliveryStatus } from "../src/components/MessageDeliveryStatus";
 function render(receipts: Parameters<typeof MessageDeliveryStatus>[0]["receipts"], link = false): string {
   const client = new QueryClient();
   const html = renderToStaticMarkup(<QueryClientProvider client={client}>
-    <MessageDeliveryStatus receipts={receipts} recipientName={() => "Manager"} onOpenAgent={link ? () => undefined : undefined} />
+    <MessageDeliveryStatus projectId="project-a" receipts={receipts} recipientName={() => "Manager"} onOpenAgent={link ? () => undefined : undefined} />
   </QueryClientProvider>);
   client.clear();
   return html;
