@@ -139,6 +139,9 @@ function runtimeMutationState() {
     idempotency: count("coordination_idempotency"),
     promptInjections: count("scheduler_prompt_injections"),
     runs: count("scheduler_runs"),
+    activeLeases: (opened.client.prepare(
+      "SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased','running')",
+    ).get() as { count: number }).count,
   };
 }
 
@@ -2571,7 +2574,7 @@ describe("CoordinationV3Store scheduler", () => {
     const second = register(recipientB);
     expect(store.recordRuntimeCommunication(communicationInput("bounded-resolver-work", [first, second])))
       .toMatchObject({ replayed: false, activationIds: expect.arrayContaining([expect.any(String), expect.any(String)]) });
-    expect([...calls.values()]).toEqual([1, 1]);
+    expect([...calls.values()]).toEqual([2, 2]);
     const persisted = store.runtimeCommunication("bounded-resolver-work")!.payload as {
       dispatch: { recipients: Array<{ attachments: Array<{ sha256: string; localPath: string }> }> };
     };
@@ -2591,10 +2594,24 @@ describe("CoordinationV3Store scheduler", () => {
       register(recipientB, 64, deterministicId(5)),
     ];
     const before = runtimeMutationState();
+    calls.clear();
     expect(() => store.recordRuntimeCommunication(communicationInput(
       "global-cross-owner-count", overCount, { omitCanonical: true },
     )))
       .toThrow("runtime communication attachments are invalid");
+    expect(calls.size).toBe(0);
+    expect(runtimeMutationState()).toEqual(before);
+
+    const four = overCount.slice(0, 4);
+    const fanout = communicationInput("bounded-structural-fanout", four, { omitCanonical: true });
+    fanout.payload.dispatch.recipients = Array.from({ length: 100 }, () => ({
+      agentId: recipientA,
+      attachments: four.map(snapshot),
+    }));
+    calls.clear();
+    expect(() => store.recordRuntimeCommunication(fanout))
+      .toThrow("runtime communication attachments are invalid");
+    expect(calls.size).toBe(0);
     expect(runtimeMutationState()).toEqual(before);
 
     const overBytes = [
@@ -2607,7 +2624,22 @@ describe("CoordinationV3Store scheduler", () => {
       "global-cross-owner-bytes", overBytes, { omitCanonical: true },
     )))
       .toThrow("runtime communication attachments are invalid");
+    expect(calls.size).toBe(4);
+    expect([...calls.values()]).toEqual([1, 1, 1, 1]);
     expect(runtimeMutationState()).toEqual(before);
+
+    calls.clear();
+    const exactBudget = [
+      register(recipientA, 6 * 1024 * 1024, deterministicId(10)),
+      register(recipientA, 6 * 1024 * 1024, deterministicId(11)),
+      register(recipientB, 6 * 1024 * 1024, deterministicId(12)),
+      register(recipientB, 6 * 1024 * 1024, deterministicId(13)),
+    ];
+    expect(store.recordRuntimeCommunication(communicationInput("exact-global-budget", exactBudget)))
+      .toMatchObject({ replayed: false });
+    expect(calls.size).toBe(4);
+    expect([...calls.values()]).toEqual([2, 2, 2, 2]);
+    const afterExactBudget = runtimeMutationState();
 
     const sharedId = randomUUID();
     const ownerA = register(recipientA, 64, sharedId);
@@ -2618,7 +2650,7 @@ describe("CoordinationV3Store scheduler", () => {
     };
     expect(() => store.recordRuntimeCommunication(contradictory))
       .toThrow(/attachment (authority mismatch|identity conflicts)/);
-    expect(runtimeMutationState()).toEqual(before);
+    expect(runtimeMutationState()).toEqual(afterExactBudget);
   });
 
   it("enforces the aggregate attachment budget when canonical attachments are absent", () => {

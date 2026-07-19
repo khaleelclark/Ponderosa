@@ -4,7 +4,7 @@ import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, type F
 import path from "node:path";
 import sharp from "sharp";
 import Database from "better-sqlite3";
-import { DEFAULT_ASSET_LIMITS, type AssetDto, type AssetLimitsDto } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type ArtifactDto, type AssetDto, type AssetLimitsDto } from "@ponderosa/core";
 import { attachmentsDir, managedArtifactContentPath, managedArtifactsDir, type RuntimeArtifactInputV3 } from "@ponderosa/agents";
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
@@ -44,6 +44,24 @@ export interface AuthoritativeRuntimeArtifact {
   byteLength: number;
 }
 
+export type RegisteredGeneratedArtifact = ArtifactDto & {
+  projectId: string;
+  originAgentId: string;
+  kind: "generated_file";
+  mediaType: string;
+  summary: string;
+  size: number;
+  sha256: string;
+};
+
+export interface AuthoritativeGeneratedArtifact {
+  artifact: RegisteredGeneratedArtifact;
+  body: Buffer;
+  localPath: string;
+  contentHash: string;
+  byteLength: number;
+}
+
 export interface RuntimeAttachmentAssociation {
   communicationId: string;
   projectId: string;
@@ -76,6 +94,51 @@ function runtimeArtifactIdentityMatches(
     (registered.executionId ?? null) === (expected.executionId ?? null);
 }
 
+function generatedArtifactIdentity(artifact: RegisteredGeneratedArtifact): Record<string, unknown> {
+  return {
+    id: artifact.id,
+    projectId: artifact.projectId,
+    agentId: artifact.agentId,
+    originAgentId: artifact.originAgentId,
+    executionId: artifact.executionId ?? null,
+    kind: artifact.kind,
+    path: artifact.path,
+    sourcePath: artifact.sourcePath ?? null,
+    summary: artifact.summary,
+    createdAt: artifact.createdAt,
+    mediaType: artifact.mediaType,
+    size: artifact.size,
+    sha256: artifact.sha256,
+  };
+}
+
+function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedArtifact): boolean {
+  if (!OWNER_ID.test(artifact.id) || !OWNER_ID.test(artifact.projectId) ||
+      !OWNER_ID.test(artifact.agentId) || !OWNER_ID.test(artifact.originAgentId) ||
+      artifact.kind !== "generated_file" || !artifact.summary.trim() ||
+      path.basename(artifact.summary) !== artifact.summary || !artifact.mediaType.trim() ||
+      !Number.isSafeInteger(artifact.size) || artifact.size < 1 || artifact.size > 64 * 1024 * 1024 ||
+      !/^[a-f0-9]{64}$/u.test(artifact.sha256) || !artifact.createdAt ||
+      path.isAbsolute(artifact.path) || artifact.path.includes("\\") || artifact.path.split("/").includes("..")) return false;
+  const normalized = path.posix.normalize(artifact.path);
+  if (normalized !== artifact.path || normalized.startsWith("../") || normalized === ".") return false;
+  const leaf = path.posix.basename(normalized);
+  if (leaf !== artifact.id && !leaf.startsWith(`${artifact.id}.`)) return false;
+  const extension = path.posix.extname(leaf).toLowerCase();
+  const nameExtension = path.extname(artifact.summary).toLowerCase();
+  const expectedMediaType = ({
+    ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
+    ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
+  } as Record<string, string>)[extension];
+  return Boolean(expectedMediaType && nameExtension === extension && artifact.mediaType === expectedMediaType &&
+    !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(artifact.summary));
+}
+
 export class AssetError extends Error {
   constructor(public statusCode: number, message: string) { super(message); }
 }
@@ -87,7 +150,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 4) throw new AssetError(409, "asset authority schema is incompatible");
+      if (version !== 0 && version !== 5) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -120,7 +183,17 @@ export class AssetAuthority {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS runtime_artifact_authority_owner_role
         ON runtime_artifact_authority(project_id, id, role);
-      PRAGMA user_version=4;`);
+      CREATE TABLE IF NOT EXISTS generated_artifact_authority (
+        id TEXT NOT NULL, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
+        origin_agent_id TEXT NOT NULL, execution_id TEXT, kind TEXT NOT NULL CHECK(kind = 'generated_file'),
+        artifact_path TEXT NOT NULL, source_path TEXT, summary TEXT NOT NULL, created_at TEXT NOT NULL,
+        media_type TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length > 0),
+        blob_hash TEXT NOT NULL,
+        PRIMARY KEY (project_id, id)
+      );
+      CREATE INDEX IF NOT EXISTS generated_artifact_authority_owner
+        ON generated_artifact_authority(project_id, origin_agent_id, id);
+      PRAGMA user_version=5;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -345,6 +418,50 @@ export class AssetAuthority {
   removeRuntimeArtifact(projectId: string, id: string): void {
     try { this.db.prepare("DELETE FROM runtime_artifact_authority WHERE project_id=? AND id=?").run(projectId, id); }
     catch (error) { throw this.mapped(error); }
+  }
+  registerGeneratedArtifact(artifact: RegisteredGeneratedArtifact): RegisteredGeneratedArtifact {
+    if (!generatedArtifactMetadataIsValid(artifact)) throw new AssetError(409, "generated artifact metadata is invalid");
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const prior = this.generatedArtifact(artifact.projectId, artifact.id);
+      if (prior && JSON.stringify(generatedArtifactIdentity(prior)) !== JSON.stringify(generatedArtifactIdentity(artifact))) {
+        throw new AssetError(409, "generated artifact identity collision");
+      }
+      if (!prior) this.db.prepare(`
+        INSERT INTO generated_artifact_authority(
+          id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,
+          source_path,summary,created_at,media_type,byte_length,blob_hash
+        ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)
+      `).run(
+        artifact.id, artifact.projectId, artifact.agentId, artifact.originAgentId,
+        artifact.executionId ?? null, artifact.path, artifact.sourcePath ?? null,
+        artifact.summary, artifact.createdAt, artifact.mediaType, artifact.size, artifact.sha256,
+      );
+      this.db.exec("COMMIT");
+      return this.generatedArtifact(artifact.projectId, artifact.id)!;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  generatedArtifact(projectId: string, id: string): RegisteredGeneratedArtifact | undefined {
+    try {
+      const row = this.db.prepare(`
+        SELECT id,project_id projectId,agent_id agentId,origin_agent_id originAgentId,
+          execution_id executionId,kind,artifact_path path,source_path sourcePath,summary,
+          created_at createdAt,media_type mediaType,byte_length size,blob_hash sha256
+        FROM generated_artifact_authority WHERE project_id=? AND id=?
+      `).get(projectId, id) as (RegisteredGeneratedArtifact & {
+        executionId: string | null; sourcePath: string | null;
+      }) | undefined;
+      if (!row) return undefined;
+      const { executionId, sourcePath, ...rest } = row;
+      return {
+        ...rest,
+        ...(executionId ? { executionId } : {}),
+        ...(sourcePath ? { sourcePath } : {}),
+      };
+    } catch (error) { throw this.mapped(error); }
   }
   close(): void { this.db.close(); }
 }
@@ -659,19 +776,54 @@ export class AssetStore {
     finally { if (contentFd !== undefined) closeSync(contentFd); }
   }
 
-  /** Read a non-runtime generated artifact from its Project-owned managed
-   * location without following a replacement leaf. Its catalog metadata still
-   * supplies the expected byte length at the route boundary. */
-  managedArtifactContent(
+  /** Commit one generated-file catalog identity only after its exact managed
+   * bytes are present. The immutable authority is separate from mutable
+   * visibility and survives origin-Agent deletion. */
+  registerGeneratedArtifact(artifact: RegisteredGeneratedArtifact): RegisteredGeneratedArtifact {
+    const readable = this.readGeneratedArtifact(artifact);
+    if (!readable) throw new AssetError(409, "generated artifact content is unavailable or changed");
+    return this.authority.registerGeneratedArtifact(artifact);
+  }
+
+  /** Resolve a generated file only when the current catalog and immutable
+   * authority agree exactly. Bytes come from the already-opened no-follow
+   * descriptor and the verified pathname is never reopened. */
+  authoritativeGeneratedArtifact(
     projectId: string,
-    id: string,
-    expectedByteLength: number,
-    maxBytes = 64 * 1024 * 1024,
-  ): Buffer | undefined {
+    expected: ArtifactDto,
+  ): AuthoritativeGeneratedArtifact | undefined {
+    if (expected.projectId !== projectId || expected.kind !== "generated_file" ||
+        !expected.originAgentId || !expected.summary || !expected.mediaType ||
+        expected.size === undefined || !expected.sha256) return undefined;
+    const candidate: RegisteredGeneratedArtifact = {
+      id: expected.id,
+      projectId,
+      agentId: expected.agentId,
+      originAgentId: expected.originAgentId,
+      ...(expected.executionId ? { executionId: expected.executionId } : {}),
+      kind: "generated_file",
+      path: expected.path,
+      ...(expected.sourcePath ? { sourcePath: expected.sourcePath } : {}),
+      summary: expected.summary,
+      createdAt: expected.createdAt,
+      mediaType: expected.mediaType,
+      size: expected.size,
+      sha256: expected.sha256,
+    };
+    if (!generatedArtifactMetadataIsValid(candidate)) return undefined;
+    const registered = this.authority.generatedArtifact(projectId, expected.id);
+    if (!registered || JSON.stringify(generatedArtifactIdentity(registered)) !==
+        JSON.stringify(generatedArtifactIdentity(candidate))) return undefined;
+    return this.readGeneratedArtifact(registered);
+  }
+
+  private readGeneratedArtifact(
+    artifact: RegisteredGeneratedArtifact,
+  ): AuthoritativeGeneratedArtifact | undefined {
     let contentFd: number | undefined;
     try {
-      if (!OWNER_ID.test(projectId) || !OWNER_ID.test(id) || !Number.isSafeInteger(expectedByteLength) ||
-          expectedByteLength < 1 || expectedByteLength > maxBytes) return undefined;
+      if (!generatedArtifactMetadataIsValid(artifact)) return undefined;
+      const { projectId, id } = artifact;
       const root = this.root ??= realpathSync(this.dataDir);
       const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
       const actualDirectory = realpathSync(contentDirectory);
@@ -689,14 +841,16 @@ export class AssetStore {
       if (canonicalPath !== path.join(actualDirectory, id)) return undefined;
       contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const before = fstatSync(contentFd);
-      if (!before.isFile() || before.nlink !== 1 || before.size !== expectedByteLength || before.size > maxBytes) {
+      if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.size || before.size > 64 * 1024 * 1024) {
         return undefined;
       }
       const body = readFileSync(contentFd);
       const after = fstatSync(contentFd);
       if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
-          after.size !== before.size || body.length !== expectedByteLength) return undefined;
-      return body;
+          after.size !== before.size || body.length !== artifact.size) return undefined;
+      const contentHash = createHash("sha256").update(body).digest("hex");
+      if (contentHash !== artifact.sha256) return undefined;
+      return { artifact, body, localPath: canonicalPath, contentHash, byteLength: body.length };
     } catch { return undefined; }
     finally { if (contentFd !== undefined) closeSync(contentFd); }
   }
@@ -706,6 +860,21 @@ export class AssetStore {
     bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
   ): void {
     this.authority.reserveRuntimeCommunication(communicationId, bindings.map((binding) => ({ communicationId, ...binding })));
+  }
+
+  authoritativeRuntimeCommunicationAttachments(
+    communicationId: string,
+  ): AuthoritativeRuntimeAttachment[] | undefined {
+    const rows = this.authority.runtimeCommunicationAssociations()
+      .filter((row) => row.communicationId === communicationId);
+    const resolved: AuthoritativeRuntimeAttachment[] = [];
+    for (const row of rows) {
+      const attachment = this.authoritativeRuntimeAttachment(row.projectId, row.agentId, row.attachmentId);
+      if (!attachment || attachment.attachment.agentId !== row.agentId ||
+          attachment.contentHash !== row.contentHash || attachment.byteLength !== row.byteLength) return undefined;
+      resolved.push(attachment);
+    }
+    return resolved;
   }
 
   async recoverRuntimeCommunicationAssociations(

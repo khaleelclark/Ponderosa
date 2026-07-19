@@ -7,7 +7,7 @@ import { BlockList, isIP, type Socket } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { Readable, Transform } from "node:stream";
 import { gzipSync } from "node:zlib";
-import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, promises as fs, realpathSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import webpush from "web-push";
@@ -146,7 +146,7 @@ import {
 } from "@ponderosa/core";
 import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
-import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition } from "./assets.js";
+import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
@@ -3161,27 +3161,43 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const root = realpathSync(project.hostPath);
           const candidate = realpathSync(path.isAbsolute(canonicalEvent.path) ? canonicalEvent.path : path.resolve(root, canonicalEvent.path));
           if (candidate === root || !candidate.startsWith(`${root}${path.sep}`)) throw new Error("generated artifact escaped project root");
-          const info = statSync(candidate);
-          if (!info.isFile() || info.size > 64 * 1024 * 1024) throw new Error("generated artifact is not a bounded file");
+          const sourceFd = openSync(candidate, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+          let body: Buffer;
+          try {
+            const info = fstatSync(sourceFd);
+            if (!info.isFile() || info.nlink !== 1 || info.size < 1 || info.size > 64 * 1024 * 1024) {
+              throw new Error("generated artifact is not a bounded file");
+            }
+            body = readFileSync(sourceFd);
+            const after = fstatSync(sourceFd);
+            if (after.dev !== info.dev || after.ino !== info.ino || after.size !== info.size || body.length !== info.size) {
+              throw new Error("generated artifact changed during capture");
+            }
+          } finally { closeSync(sourceFd); }
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(candidate).toLowerCase()}`;
           const legacyDestination = artifactContentPath(opts.dataDir, agent.projectId, agent.id, managedPath);
           const projectDestination = managedArtifactContentPath(opts.dataDir, agent.projectId, artifactId);
           mkdirSync(path.dirname(legacyDestination), { recursive: true });
           mkdirSync(path.dirname(projectDestination), { recursive: true });
-          copyFileSync(candidate, legacyDestination);
-          copyFileSync(candidate, projectDestination);
+          writeFileSync(legacyDestination, body, { flag: "wx", mode: 0o600 });
+          const destinationFd = openSync(projectDestination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
+          try { writeFileSync(destinationFd, body); fsyncSync(destinationFd); }
+          finally { closeSync(destinationFd); }
+          const contentHash = createHash("sha256").update(body).digest("hex");
           const captured = store.appendEvent(agent.id, {
             type: "generated_artifact", artifactId, executionId: run.executionId, path: managedPath,
-            sourcePath: canonicalEvent.path, name: path.basename(candidate), mediaType, size: info.size,
+            sourcePath: canonicalEvent.path, name: path.basename(candidate), mediaType, size: body.length,
             visibility: "project",
           });
-          store.recordProjectArtifact({
+          const catalogArtifact = {
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
             executionId: run.executionId, kind: "generated_file", path: managedPath,
             sourcePath: canonicalEvent.path, summary: path.basename(candidate), createdAt: captured.ts,
-            mediaType, size: info.size, visibility: "project", pinned: false,
-          });
+            mediaType, size: body.length, sha256: contentHash, visibility: "project" as const, pinned: false,
+          } as const;
+          assets.registerGeneratedArtifact(catalogArtifact);
+          store.recordProjectArtifact(catalogArtifact);
           publish(agent.id, captured);
         } catch (error) {
           app.log.warn({ err: error, agentId, path: canonicalEvent.path }, "generated artifact capture skipped");
@@ -4258,6 +4274,96 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ? payload.dispatch as Record<string, unknown>
         : undefined;
 
+      const recipientAgentIds = coordinationV3.communicationRecipientAgentIds(row.projectId, row.id);
+      const expectedAttachmentOwners = new Map<string, string>();
+      let attachmentEnvelopeValid = true;
+      const expectAttachment = (owner: unknown, raw: unknown): void => {
+        if (typeof owner !== "string" || !raw || typeof raw !== "object" || Array.isArray(raw)) {
+          attachmentEnvelopeValid = false;
+          return;
+        }
+        const expected = raw as Record<string, unknown>;
+        if (typeof expected.id !== "string" || typeof expected.name !== "string" ||
+            typeof expected.mediaType !== "string" || !Number.isSafeInteger(expected.size)) {
+          attachmentEnvelopeValid = false;
+          return;
+        }
+        const prior = expectedAttachmentOwners.get(expected.id);
+        if (prior !== undefined && prior !== owner) attachmentEnvelopeValid = false;
+        expectedAttachmentOwners.set(expected.id, owner);
+      };
+      for (const raw of event.attachments ?? []) expectAttachment(raw.agentId, raw);
+      if (Array.isArray(dispatch?.recipients)) {
+        for (const value of dispatch.recipients) {
+          if (!value || typeof value !== "object" || Array.isArray(value)) {
+            attachmentEnvelopeValid = false;
+            continue;
+          }
+          const recipient = value as Record<string, unknown>;
+          if (recipient.attachments === undefined) continue;
+          if (!Array.isArray(recipient.attachments)) {
+            attachmentEnvelopeValid = false;
+            continue;
+          }
+          for (const raw of recipient.attachments) expectAttachment(recipient.agentId, raw);
+        }
+      }
+      if (Array.isArray(dispatch?.attachments)) {
+        const canonicalOwners = new Set(dispatch.attachments.flatMap((raw) => {
+          const id = raw && typeof raw === "object" ? (raw as Record<string, unknown>).id : undefined;
+          const owner = typeof id === "string" ? expectedAttachmentOwners.get(id) : undefined;
+          return owner ? [owner] : [];
+        }));
+        const owner = recipientAgentIds.length === 1
+          ? recipientAgentIds[0]
+          : canonicalOwners.size === 1
+            ? [...canonicalOwners][0]
+            : undefined;
+        for (const raw of dispatch.attachments) expectAttachment(owner, raw);
+      }
+      const validateReservedAttachments = (): Map<string, AuthoritativeRuntimeAttachment> | undefined => {
+        if (!attachmentEnvelopeValid) return undefined;
+        const reserved = assets.authoritativeRuntimeCommunicationAttachments(row.id);
+        if (!reserved || reserved.length !== expectedAttachmentOwners.size) return undefined;
+        const byKey = new Map(reserved.map((item) =>
+          [`${item.attachment.agentId}\0${item.attachment.id}`, item] as const));
+        for (const [attachmentId, owner] of expectedAttachmentOwners) {
+          const authoritative = byKey.get(`${owner}\0${attachmentId}`);
+          if (!authoritative) return undefined;
+          const appearances: unknown[] = [
+            ...(event.attachments ?? []).filter((item) => item.id === attachmentId),
+            ...(Array.isArray(dispatch?.attachments)
+              ? dispatch.attachments.filter((item) => item && typeof item === "object" &&
+                  (item as Record<string, unknown>).id === attachmentId)
+              : []),
+            ...(Array.isArray(dispatch?.recipients) ? dispatch.recipients.flatMap((value) => {
+              if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+              const recipient = value as Record<string, unknown>;
+              return Array.isArray(recipient.attachments)
+                ? recipient.attachments.filter((item) => item && typeof item === "object" &&
+                    (item as Record<string, unknown>).id === attachmentId)
+                : [];
+            }) : []),
+          ];
+          for (const appearance of appearances) {
+            const expected = appearance as Record<string, unknown>;
+            if (expected.name !== authoritative.attachment.name ||
+                expected.mediaType !== authoritative.attachment.mediaType ||
+                expected.size !== authoritative.attachment.size ||
+                (expected.agentId !== undefined && expected.agentId !== authoritative.attachment.agentId) ||
+                (expected.sha256 !== undefined && expected.sha256 !== authoritative.contentHash) ||
+                (expected.localPath !== undefined && expected.localPath !== authoritative.localPath)) return undefined;
+          }
+        }
+        return byKey;
+      };
+      let reservedAttachments = validateReservedAttachments();
+      if (!reservedAttachments) {
+        app.log.error({ runtimeCommunicationId: row.id, communicationEventId },
+          "runtime communication attachment is unavailable; canonical projection remains uncommitted");
+        continue;
+      }
+
       // The runtime row is the durable handoff boundary. Multi-recipient sends
       // deliberately store target-owned copies under dispatch.recipients; the
       // top-level form remains for single-recipient/direct legacy handoffs.
@@ -4271,7 +4377,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
       }
       if (Array.isArray(dispatch?.attachments)) {
-        for (const agentId of coordinationV3.communicationRecipientAgentIds(row.projectId, row.id)) {
+        for (const agentId of recipientAgentIds) {
           if (!rawRecipientSets.some((recipient) => recipient.agentId === agentId)) {
             rawRecipientSets.push({ agentId, rawAttachments: dispatch.attachments });
           }
@@ -4287,13 +4393,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           if (!raw || typeof raw !== "object") continue;
           const expected = raw as Record<string, unknown>;
           if (typeof expected.id !== "string") continue;
-          const metadata = await assetMetadata(agentId, expected.id);
-          if (!metadata || metadata.name !== expected.name || metadata.mediaType !== expected.mediaType || metadata.size !== expected.size) continue;
-          const {
-            projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile,
-            associatedAt: _associatedAt, ...publicAsset
-          } = metadata;
-          recovered.push({ ...publicAsset, state: "associated" });
+          const authoritative = reservedAttachments.get(`${agentId}\0${expected.id}`);
+          if (!authoritative || authoritative.attachment.name !== expected.name ||
+              authoritative.attachment.mediaType !== expected.mediaType ||
+              authoritative.attachment.size !== expected.size) continue;
+          recovered.push({ ...authoritative.attachment, state: "associated" });
         }
         if (recovered.length === rawAttachments.length) attachmentsByAgent.set(agentId, recovered);
       }
@@ -4304,6 +4408,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       try {
         if (!store.getCommunicationEvent(row.projectId, communicationEventId)) {
+          reservedAttachments = validateReservedAttachments();
+          if (!reservedAttachments) throw new Error("runtime Communication attachment changed before canonical projection");
           recordCommunication(event as CommunicationEvent);
           repaired += 1;
         }
@@ -5412,11 +5518,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
         content = authoritative.body;
       } else {
-        const managed = artifact?.size === undefined
-          ? undefined
-          : assets.managedArtifactContent(author.projectId, artifact.id, artifact.size);
+        const managed = artifact
+          ? assets.authoritativeGeneratedArtifact(author.projectId, artifact)
+          : undefined;
         if (!managed) return reply.code(404).send({ error: `artifact content is unavailable: ${ref}` });
-        content = managed;
+        content = managed.body;
       }
       sources.push({
         ref,
@@ -9223,7 +9329,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         (mode === "full" || artifact.pinned || artifact.visibility === "published" || historyText.includes(artifact.id))
       );
       const artifacts = await Promise.all(projectArtifacts.map(async (artifact) => {
-        const data = await fs.readFile(managedArtifactContentPath(opts.dataDir, agent.projectId, artifact.id));
+        const runtimeArtifact = coordinationV3.runtimeArtifact(artifact.id);
+        const runtime = runtimeArtifact?.projectId === agent.projectId
+          ? assets.authoritativeRuntimeArtifact(agent.projectId, runtimeArtifact)
+          : undefined;
+        const generated = artifact.kind === "generated_file"
+          ? assets.authoritativeGeneratedArtifact(agent.projectId, artifact)
+          : undefined;
+        let fallback: Buffer | undefined;
+        if (!runtime && !generated && artifact.kind !== "generated_file") {
+          try {
+            const descriptor = await fs.open(
+              managedArtifactContentPath(opts.dataDir, agent.projectId, artifact.id),
+              fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+            );
+            try { fallback = await descriptor.readFile(); }
+            finally { await descriptor.close(); }
+          } catch { /* unavailable non-generated import */ }
+        }
+        const data = runtime?.body ?? generated?.body ?? fallback;
+        if (!data) throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
         portableArtifactBytes += data.length;
         if (portableArtifactBytes > 64 * 1024 * 1024) throw new AssetError(413, "portable Agent package artifacts exceed the 64 MiB export limit");
         return {
@@ -9347,22 +9472,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const managedPath = `imported/${artifactId}${extension}`;
           const destination = managedArtifactContentPath(opts.dataDir, project.id, artifactId);
           await fs.mkdir(path.dirname(destination), { recursive: true });
-          await fs.writeFile(destination, portableArtifactData.get(artifact.ref)!);
-          store.recordProjectArtifact({
+          const importedFile = await fs.open(destination, "wx", 0o600);
+          try {
+            await importedFile.writeFile(portableArtifactData.get(artifact.ref)!);
+            await importedFile.sync();
+          } finally { await importedFile.close(); }
+          const createdAt = artifact.createdAt || body.package.exportedAt;
+          const artifactBody = portableArtifactData.get(artifact.ref)!;
+          const catalogArtifact = {
             id: artifactId,
             projectId: project.id,
             agentId: agent.id,
             originAgentId: agent.id,
             kind: artifact.kind,
             path: managedPath,
-            ...(artifact.summary ? { summary: artifact.summary } : {}),
-            createdAt: artifact.createdAt || body.package.exportedAt,
+            ...(artifact.kind === "generated_file"
+              ? { summary: artifact.summary ?? path.basename(artifact.path) }
+              : artifact.summary ? { summary: artifact.summary } : {}),
+            createdAt,
             ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
             visibility: artifact.visibility ?? "project",
             pinned: artifact.pinned ?? false,
             ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-            size: portableArtifactData.get(artifact.ref)!.length,
-          });
+            size: artifactBody.length,
+            ...(artifact.kind === "generated_file" ? {
+              sha256: createHash("sha256").update(artifactBody).digest("hex"),
+            } : {}),
+          };
+          if (catalogArtifact.kind === "generated_file") {
+            assets.registerGeneratedArtifact(catalogArtifact as RegisteredGeneratedArtifact);
+          }
+          store.recordProjectArtifact(catalogArtifact);
         }
         const rewriteArtifactRefs = (text: string): string => {
           let rewritten = text;
@@ -9985,17 +10125,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
 
       const projectArtifacts = store.getProjectArtifacts(agent.projectId);
-      const legacyAgentArtifacts = store.getArtifacts(agent.id).filter((artifact) =>
-        artifact.kind === "generated_file" && !projectArtifacts.some((candidate) => candidate.id === artifact.id)
+      const allGeneratedArtifacts = projectArtifacts.filter((artifact) =>
+        artifact.kind !== "generated_file" || Boolean(assets.authoritativeGeneratedArtifact(agent.projectId, artifact))
       );
-      const allGeneratedArtifacts = [...projectArtifacts, ...legacyAgentArtifacts];
       const routingConversationId = sourceConversationId ?? agent.conversationId;
       const contextArtifacts = allGeneratedArtifacts.filter((artifact) =>
         artifact.kind === "generated_file" && (artifact.pinned || artifact.visibility === "published")
       );
-      const artifactLocalPath = (artifact: ArtifactDto): string => artifact.projectId
-        ? managedArtifactContentPath(opts.dataDir, artifact.projectId, artifact.id)
-        : artifactContentPath(opts.dataDir, agent.projectId, artifact.agentId, artifact.path);
+      const artifactLocalPath = (artifact: ArtifactDto): string =>
+        managedArtifactContentPath(opts.dataDir, artifact.projectId ?? agent.projectId, artifact.id);
       const importedHistory = store.getImportedHistory(agent.id)?.messages ?? [];
       const fullHistory: ChatMessage[] = [
         ...importedHistory.map((message) => {
@@ -11817,24 +11955,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         };
       }
       if (managed.kind === "document" || managed.size === undefined || !managed.mediaType) return undefined;
-      const body = assets.managedArtifactContent(projectId, artifactId, managed.size);
-      return body ? {
-        body,
+      const authoritative = assets.authoritativeGeneratedArtifact(projectId, managed);
+      return authoritative ? {
+        body: authoritative.body,
         name: managed.summary ?? path.basename(managed.path),
         mediaType: managed.mediaType,
       } : undefined;
     }
     const agent = store.getAgent(agentId);
     if (!project || !agent || agent.projectId !== project.id) return undefined;
-    const captured = store.getGeneratedArtifact(agent.id, artifactId);
-    if (captured) {
-      try {
-        const managed = artifactContentPath(opts.dataDir, agent.projectId, agent.id, captured.path);
-        const info = await fs.stat(managed);
-        if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
-        return { body: await fs.readFile(managed), name: captured.name, mediaType: captured.mediaType };
-      } catch { return undefined; }
-    }
     const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
     if (!generatedPath) return undefined;
     try {

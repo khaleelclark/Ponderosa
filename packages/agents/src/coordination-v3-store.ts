@@ -719,7 +719,7 @@ export class CoordinationV3Store {
       throw new Error("runtime communication ID collision");
     }
     this.options.attachmentAuthority?.reserveCommunication(input.id, preparedAttachments.bindings);
-    return this.sqlite.transaction(() => {
+    const result = this.sqlite.transaction(() => {
       if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
       this.requireProject(input.projectId);
       this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
@@ -803,6 +803,13 @@ export class CoordinationV3Store {
         replayed: false,
       };
     })();
+    // The filesystem-backed authority commits separately from scheduler SQLite.
+    // Re-read every accepted attachment after the passive transaction commits;
+    // callers must not project the canonical Communication when immutable bytes
+    // disappeared or changed in that crash window. The scheduler row remains an
+    // idempotent recovery boundary and an exact-byte restore can retry safely.
+    this.revalidateRuntimeAttachments(input.projectId, preparedAttachments.bindings);
+    return result;
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
@@ -4432,6 +4439,72 @@ export class CoordinationV3Store {
     }
 
     const authority = this.options.attachmentAuthority;
+    const canonicalAttachments = hasCanonicalAttachments
+      ? communication!.attachments as AssetDto[]
+      : [];
+    const canonicalOwnerById = new Map(canonicalAttachments.map((attachment) =>
+      [attachment.id, attachment.agentId] as const));
+    const targets = [...new Set(activationAgentIds)];
+    const topLevelAttachments = hasTopLevelAttachments
+      ? dispatch!.attachments as RuntimeDispatchAttachmentV3[]
+      : [];
+    const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
+      const owner = canonicalOwnerById.get(attachment.id);
+      return owner ? [owner] : [];
+    }))];
+    const topLevelOwner = topLevelAttachments.length === 0
+      ? undefined
+      : targets.length === 1
+        ? targets[0]
+        : targets.length === 0 && canonicalTargets.length === 1 &&
+            topLevelAttachments.every((attachment) => canonicalOwnerById.has(attachment.id))
+          ? canonicalTargets[0]
+          : undefined;
+    if (topLevelAttachments.length > 0 && !topLevelOwner) {
+      throw new Error("runtime communication attachment owner is ambiguous");
+    }
+
+    // Bound structural work before the authority resolver opens or hashes any
+    // file. Canonical and dispatch appearances of the same Project+owner+ID are
+    // one candidate; contradictory owners and dispatch duplicates fail closed.
+    const candidateKeys = new Set<string>();
+    const ownerById = new Map<string, string>();
+    const dispatchIds = new Set<string>();
+    const addCandidate = (agentId: string, attachmentId: string, dispatchAppearance: boolean): void => {
+      if (dispatchAppearance) {
+        if (dispatchIds.has(attachmentId)) throw new Error("runtime communication attachments are invalid");
+        dispatchIds.add(attachmentId);
+      }
+      const priorOwner = ownerById.get(attachmentId);
+      if (priorOwner !== undefined && priorOwner !== agentId) {
+        throw new Error("runtime communication attachment identity conflicts across canonical and dispatch appearances");
+      }
+      ownerById.set(attachmentId, agentId);
+      candidateKeys.add(`${projectId}\0${agentId}\0${attachmentId}`);
+      if (candidateKeys.size > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE) {
+        throw new Error("runtime communication attachments are invalid");
+      }
+    };
+    for (const attachment of canonicalAttachments) addCandidate(attachment.agentId, attachment.id, false);
+    for (const attachment of topLevelAttachments) addCandidate(topLevelOwner!, attachment.id, true);
+    if (Array.isArray(recipients)) {
+      for (const candidate of recipients) {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+          if (hasRecipientAttachments) throw new Error("runtime communication attachments are invalid");
+          continue;
+        }
+        const recipient = candidate as Record<string, unknown>;
+        if (!Object.prototype.hasOwnProperty.call(recipient, "attachments")) continue;
+        if (typeof recipient.agentId !== "string" || !UUID_PATTERN.test(recipient.agentId) ||
+            !runtimeDispatchAttachmentsAreValid(recipient.attachments)) {
+          throw new Error("runtime communication attachments are invalid");
+        }
+        for (const attachment of recipient.attachments as RuntimeDispatchAttachmentV3[]) {
+          addCandidate(recipient.agentId, attachment.id, true);
+        }
+      }
+    }
+
     const resolvedByOwner = new Map<string, RuntimeAttachmentAuthorityV3>();
     const meaningById = new Map<string, string>();
     const resolveAuthority = (agentId: string, attachmentId: string): RuntimeAttachmentAuthorityV3 => {
@@ -4466,10 +4539,7 @@ export class CoordinationV3Store {
       }
       return resolved.attachment;
     };
-    const dispatchIds = new Set<string>();
     const resolveSnapshot = (attachment: RuntimeDispatchAttachmentV3, agentId: string): RuntimeDispatchAttachmentV3 => {
-      if (dispatchIds.has(attachment.id)) throw new Error("runtime communication attachments are invalid");
-      dispatchIds.add(attachment.id);
       const resolved = resolveAuthority(agentId, attachment.id);
       if (!resolved || attachment.name !== resolved.attachment.name ||
           attachment.mediaType !== resolved.attachment.mediaType || attachment.size !== resolved.attachment.size ||
@@ -4494,31 +4564,12 @@ export class CoordinationV3Store {
         attachments: (communication!.attachments as AssetDto[]).map(resolveCanonical),
       };
     }
-    const canonicalOwners = new Map<string, string>(
-      (nextCommunication?.attachments as AssetDto[] | undefined)?.map((attachment) =>
-        [attachment.id, attachment.agentId] as const) ?? [],
-    );
     let nextDispatch = dispatch;
     if (dispatch) {
       nextDispatch = { ...dispatch };
       if (hasTopLevelAttachments) {
-        const topLevelAttachments = dispatch.attachments as RuntimeDispatchAttachmentV3[];
-        const targets = [...new Set(activationAgentIds)];
-        const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
-          const owner = canonicalOwners.get(attachment.id);
-          return owner ? [owner] : [];
-        }))];
-        const target = targets.length === 1
-          ? targets[0]
-          : targets.length === 0 && canonicalTargets.length === 1 &&
-              topLevelAttachments.every((attachment) => canonicalOwners.has(attachment.id))
-            ? canonicalTargets[0]
-            : undefined;
-        if (topLevelAttachments.length > 0 && !target) {
-          throw new Error("runtime communication attachment owner is ambiguous");
-        }
         nextDispatch.attachments = topLevelAttachments.length
-          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, target!))
+          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, topLevelOwner!))
           : [];
       }
       if (Array.isArray(recipients)) {
@@ -4562,6 +4613,24 @@ export class CoordinationV3Store {
     }, bindings };
     if (communication === payload) return { payload: nextCommunication, bindings };
     return { payload: nextDispatch ? { ...payload, dispatch: nextDispatch } : payloadValue, bindings };
+  }
+
+  private revalidateRuntimeAttachments(
+    projectId: string,
+    bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
+  ): void {
+    if (!bindings.length) return;
+    const authority = this.options.attachmentAuthority;
+    if (!authority) throw new Error("runtime communication attachment authority mismatch");
+    for (const binding of bindings) {
+      const resolved = authority.resolve(projectId, binding.agentId, binding.attachmentId);
+      if (!resolved || binding.projectId !== projectId ||
+          resolved.attachment.agentId !== binding.agentId || resolved.attachment.id !== binding.attachmentId ||
+          resolved.contentHash !== binding.contentHash || resolved.byteLength !== binding.byteLength ||
+          resolved.attachment.sha256 !== binding.contentHash || resolved.attachment.size !== binding.byteLength) {
+        throw new Error("runtime communication attachment authority mismatch after scheduler commit");
+      }
+    }
   }
 
   private resolveRuntimeArtifacts(

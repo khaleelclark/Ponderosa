@@ -3639,6 +3639,11 @@ export class AgentStore {
 
   recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
     if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
+    if (artifact.kind === "generated_file" &&
+        (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
+          !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? ""))) {
+      throw new Error("generated artifact immutable metadata is required");
+    }
     appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [{ type: "created", artifact } satisfies ManagedArtifactEvent]);
   }
 

@@ -1509,6 +1509,8 @@ export interface ArtifactDto {
   pinned?: boolean;
   sourcePath?: string;
   size?: number;
+  /** Immutable SHA-256 of Project-managed generated-file bytes. */
+  sha256?: string;
 }
 
 /** GET /api/agents/:id/artifacts/:aid — the artifact plus its rendered content. */

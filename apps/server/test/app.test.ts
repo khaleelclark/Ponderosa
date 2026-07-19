@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { gunzipSync } from "node:zlib";
+import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
@@ -15,13 +16,46 @@ import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContent
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
-import { AssetStore } from "../src/assets.js";
+import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
 };
+
+function registerTestGeneratedArtifact(dataDir: string, artifact: RegisteredGeneratedArtifact): void {
+  const authority = new AssetStore(dataDir);
+  try { authority.registerGeneratedArtifact(artifact); }
+  finally { authority.close(); }
+}
+
+function durableMutationState(store: AgentStore, dataDir: string, projectId: string) {
+  const count = (table: string, predicate?: string) => (store.sqlite.prepare(
+    `SELECT COUNT(*) AS count FROM ${table}${predicate ? ` WHERE ${predicate}` : ""}`,
+  ).get() as { count: number }).count;
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  try {
+    const authorityCount = (table: string) => (authority.prepare(
+      `SELECT COUNT(*) AS count FROM ${table}`,
+    ).get() as { count: number }).count;
+    return {
+      communications: count("runtime_communications"),
+      projectArtifacts: store.getProjectArtifacts(projectId).length,
+      runtimeArtifacts: count("runtime_artifacts"),
+      activations: count("agent_activations"),
+      outbox: count("activation_outbox"),
+      retryLineage: count("activation_delivery_retry_lineage"),
+      idempotency: count("coordination_idempotency"),
+      promptInjections: count("scheduler_prompt_injections"),
+      runs: count("scheduler_runs"),
+      activeLeases: count("scheduler_runs", "status IN ('leased','running')"),
+      assetReservations: authorityCount("asset_reservations"),
+      attachmentAssociations: authorityCount("runtime_attachment_associations"),
+      generatedAuthorities: authorityCount("generated_artifact_authority"),
+    };
+  } finally { authority.close(); }
+}
 
 function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
   const targetRunId = new CoordinationV3Store(store.sqlite).agentSnapshot(agentId).activeRun?.id;
@@ -4486,12 +4520,14 @@ describe("server chunk F", () => {
       sourcePath: "output.png", name: "output.png", mediaType: "image/png", size: body.length,
       visibility: "project", pinned: true,
     });
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
       executionId: "run-art", kind: "generated_file", path: relativePath, sourcePath: "output.png",
       summary: "output.png", createdAt: captured.ts, mediaType: "image/png", size: body.length,
-      visibility: "project", pinned: true,
-    });
+      sha256: createHash("sha256").update(body).digest("hex"), visibility: "project" as const, pinned: true,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
 
     store.rebuildProjections();
     expect(readFileSync(legacyFile)).toEqual(body);
@@ -4514,12 +4550,14 @@ describe("server chunk F", () => {
     const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
     mkdirSync(path.dirname(managedFile), { recursive: true });
     writeFileSync(managedFile, body);
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
       executionId: "run-html", kind: "generated_file", path: relativePath, sourcePath: "report.html",
       summary: "report.html", createdAt: new Date().toISOString(), mediaType: "text/html", size: body.length,
-      visibility: "project", pinned: false,
-    });
+      sha256: createHash("sha256").update(body).digest("hex"), visibility: "project" as const, pinned: false,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
     store.appendEvent(agent.id, { type: "test_result", passed: true, summary: "Accessibility checks passed" });
 
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts` })).json<{ items: ArtifactDto[] }>().items)
@@ -4544,6 +4582,83 @@ describe("server chunk F", () => {
     });
     expect(download.headers["content-disposition"]).toMatch(/^attachment/);
     expect(download.headers["content-security-policy"]).not.toContain("sandbox");
+    await app.close();
+  });
+
+  it("fails every generated-file read surface closed on byte or catalog substitution and permits exact restore", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Generated authority", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    const artifactId = randomUUID();
+    const bytes = Buffer.from("authoritative generated result");
+    const managedFile = managedArtifactContentPath(dataDir, project.id, artifactId);
+    mkdirSync(path.dirname(managedFile), { recursive: true });
+    writeFileSync(managedFile, bytes, { mode: 0o600 });
+    const artifact = {
+      id: artifactId, projectId: project.id, agentId: agent.id, originAgentId: agent.id,
+      executionId: "run-generated", kind: "generated_file", path: `generated/${artifactId}.txt`,
+      sourcePath: "result.txt", summary: "result.txt", createdAt: "2026-07-19T00:00:00.000Z",
+      mediaType: "text/plain", size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"),
+      visibility: "project" as const, pinned: true,
+    } as const;
+    registerTestGeneratedArtifact(dataDir, artifact);
+    store.recordProjectArtifact(artifact);
+    appendBroadcast(store, project.id, conversation.id, `Read ponderosa://artifact/${artifactId}`);
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: `Retrieve ${artifactId}`, sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const resultRef = `ponderosa://artifact/${artifactId}`;
+    const retrieve = () => runtime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [resultRef], maxBytes: 4096 },
+    });
+    expect(JSON.parse((await retrieve()).text)).toMatchObject({
+      items: [{ ref: resultRef, content: bytes.toString("utf8"), complete: true }],
+    });
+    for (const url of [
+      `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/download`,
+    ]) expect((await app.inject({ method: "GET", url })).rawPayload).toEqual(bytes);
+
+    const countsBefore = durableMutationState(store, dataDir, project.id);
+    const replacement = Buffer.from("substituted generated result!!");
+    expect(replacement.length).toBe(bytes.length);
+    writeFileSync(managedFile, replacement);
+    expect((await retrieve()).success).toBe(false);
+    for (const url of [
+      `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/preview`,
+      `/api/projects/${project.id}/agents/${agent.id}/generated-artifacts/${artifactId}/download`,
+    ]) expect((await app.inject({ method: "GET", url })).statusCode).toBe(404);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(countsBefore);
+
+    rmSync(managedFile);
+    expect((await retrieve()).success).toBe(false);
+    writeFileSync(managedFile, bytes, { mode: 0o600 });
+    expect(JSON.parse((await retrieve()).text)).toMatchObject({
+      items: [{ content: bytes.toString("utf8"), complete: true }],
+    });
+    store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" });
+    expect((await retrieve()).success).toBe(false);
+    expect((await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    })).statusCode).toBe(404);
+    store.recordProjectArtifact(artifact);
+    expect((await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    })).rawPayload).toEqual(bytes);
+    persistent.completeTurn(0);
     await app.close();
   });
 
@@ -6844,8 +6959,9 @@ describe("server chunk F", () => {
     const conversation = store.createConversation(project.id, { title: "General" });
     const owner = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
     const staging = new AssetStore(dataDir);
+    const originalBytes = Buffer.from("%PDF-1.7\npassive durable");
     const attachment = await staging.stage({
-      projectId: project.id, agentId: owner.id, body: Buffer.from("%PDF-1.7\npassive durable"),
+      projectId: project.id, agentId: owner.id, body: originalBytes,
       name: "passive.pdf", declaredType: "application/pdf",
     });
     const event: CommunicationEvent = {
@@ -6869,9 +6985,59 @@ describe("server chunk F", () => {
     expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
     expect((await staging.read(project.id, owner.id, attachment.id))?.state).toBe("staged");
     expect(await staging.reconcile(project.id, owner.id, new Set(), Date.now() + 25 * 60 * 60 * 1000)).toBe(0);
+    const attachmentFile = path.join(
+      dataDir, "projects", project.id, "agents", owner.id, "attachments", `${attachment.id}.bin`,
+    );
+    const replacement = Buffer.from("%PDF-1.7\npassive changed");
+    expect(replacement.length).toBe(originalBytes.length);
+    writeFileSync(attachmentFile, replacement);
+    const schedulerState = () => durableMutationState(store, dataDir, project.id);
+    const committedState = schedulerState();
+    expect(() => coordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience, payload: { communication: event }, now: event.createdAt,
+    })).toThrow(/attachment authority mismatch/);
+    expect(schedulerState()).toEqual(committedState);
     staging.close();
 
-    const recoveredApp = createServer({
+    let recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    expect(schedulerState()).toEqual(committedState);
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    rmSync(attachmentFile);
+    recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toBeUndefined();
+    expect(schedulerState()).toEqual(committedState);
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    writeFileSync(attachmentFile, originalBytes);
+    const retryAssets = new AssetStore(dataDir);
+    const retryCoordination = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          retryAssets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+        reserveCommunication: (communicationId, bindings) =>
+          retryAssets.reserveRuntimeCommunication(communicationId, bindings),
+      },
+    });
+    expect(retryCoordination.recordRuntimeCommunication({
+      id: event.eventId, projectId: project.id, sender: event.sender, intent: event.intent,
+      audience: event.audience, payload: { communication: event }, now: event.createdAt,
+    })).toEqual({ id: event.eventId, replayed: true });
+    retryAssets.close();
+    recoveredApp = createServer({
       dataDir, store, engines, logger: false,
       communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
     });
@@ -6883,6 +7049,18 @@ describe("server chunk F", () => {
     expect((await verificationStore.read(project.id, owner.id, attachment.id))?.state).toBe("associated");
     verificationStore.close();
     expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+    await recoveredApp.close();
+    store = new AgentStore(dataDir);
+
+    const canonicalBytes = JSON.stringify(store.getCommunicationEvent(project.id, event.eventId));
+    recoveredApp = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await recoveredApp.ready();
+    expect(JSON.stringify(store.getCommunicationEvent(project.id, event.eventId))).toBe(canonicalBytes);
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(1);
+    expect(schedulerState()).toEqual(committedState);
     await recoveredApp.close();
   });
 
@@ -8773,11 +8951,14 @@ describe("V3.3 Decisions, management, and portability", () => {
     const artifactFile = managedArtifactContentPath(dataDir, project.id, artifactId);
     mkdirSync(path.dirname(artifactFile), { recursive: true });
     writeFileSync(artifactFile, bytes);
-    store.recordProjectArtifact({
+    const catalogArtifact = {
       id: artifactId, projectId: project.id, agentId: source.id, originAgentId: source.id,
       kind: "generated_file", path: `generated/${artifactId}.txt`, summary: "result.txt", createdAt: "2026-07-16T00:00:00.000Z",
-      mediaType: "text/plain", visibility: "project", pinned: false, size: bytes.length,
-    });
+      mediaType: "text/plain", visibility: "project" as const, pinned: false, size: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    } as const;
+    registerTestGeneratedArtifact(dataDir, catalogArtifact);
+    store.recordProjectArtifact(catalogArtifact);
     store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
     const exported = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=full` });
     expect(exported.statusCode, exported.body).toBe(200);
