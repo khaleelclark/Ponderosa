@@ -131,6 +131,36 @@ export function createAgentWorkInvalidator(
   };
 }
 
+/** Coalesces repeated lifecycle notifications before refreshing Project rosters.
+ * Agent detail remains event-driven; this only prevents the shared list from
+ * refetching once for every event in a short lifecycle burst. */
+export function createAgentListInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 350,
+): { schedule(projectId: string): void; flush(): void; dispose(): void } {
+  const projectIds = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    for (const projectId of projectIds) void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
+    projectIds.clear();
+  };
+  return {
+    schedule(projectId) {
+      projectIds.add(projectId);
+      // A fixed window keeps lifecycle state visible even under sustained load.
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      projectIds.clear();
+    },
+  };
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
@@ -138,8 +168,10 @@ export function useWorkspaceStream(): void {
 
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
+    const agentListInvalidator = createAgentListInvalidator(queryClient);
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
+      agentListInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
       void queryClient.invalidateQueries({ queryKey: ["agents"] });
@@ -196,7 +228,7 @@ export function useWorkspaceStream(): void {
         }
         if (event.category === "lifecycle") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
-          void queryClient.invalidateQueries({ queryKey: ["agents", event.projectId] });
+          agentListInvalidator.schedule(event.projectId);
           void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
           agentWorkInvalidator.schedule(event.projectId);
         }
@@ -255,6 +287,7 @@ export function useWorkspaceStream(): void {
       window.removeEventListener("storage", onStorage);
       refreshChannel?.close();
       agentWorkInvalidator.dispose();
+      agentListInvalidator.dispose();
     };
   }, [queryClient]);
 }
