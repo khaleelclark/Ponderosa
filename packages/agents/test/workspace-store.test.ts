@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -29,6 +29,20 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.getDraft("chat")).toEqual(first);
     expect(restarted.listDraftConflicts("chat").conflicts).toEqual([expect.objectContaining({ current: first, displaced: expect.objectContaining({ text: "stale" }) })]);
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));
+  });
+
+  it("defaults Agent Run concurrency when replaying a preferences event without the field", () => {
+    const { dir, store } = fixture();
+    store.updatePreferences({ projectSort: "custom" });
+    const eventsFile = path.join(dir, "workspace-events.jsonl");
+    const record = JSON.parse(readFileSync(eventsFile, "utf8")) as { event: { preferences: Record<string, unknown> } };
+    delete record.event.preferences.maxConcurrentAgentRuns;
+    writeFileSync(eventsFile, `${JSON.stringify(record)}\n`);
+
+    expect(new WorkspaceStore(dir).getPreferences()).toMatchObject({
+      projectSort: "custom",
+      maxConcurrentAgentRuns: 8,
+    });
   });
 
   it("deduplicates notifications and rotates/removes one device subscription", () => {

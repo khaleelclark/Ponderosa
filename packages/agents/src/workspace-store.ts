@@ -96,7 +96,7 @@ export class WorkspaceStore {
       providerAvailability: record.event.preferences.providerAvailability ?? {},
       engineDefaults: record.event.preferences.engineDefaults ?? {},
       globalInstructions: record.event.preferences.globalInstructions ?? "",
-      maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns,
+      maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
       profile: normalizeProfile(record.event.preferences.profile),
     };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
