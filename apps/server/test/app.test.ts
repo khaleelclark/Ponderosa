@@ -1140,6 +1140,46 @@ describe("generated artifact endpoints", () => {
     await app.close();
   });
 
+  it("does not account nonexistent Projects and shares weighted capacity with downloads", async () => {
+    writeFileSync(path.join(repoDir, "download.txt"), "bounded transfer\n");
+    const projects = Array.from({ length: 4 }, (_, index) => store.createProject({
+      label: `Transfer ${index}`,
+      hostPath: repoDir,
+    }));
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      projectFilePreviewFaults: { afterResolve: async () => { entered += 1; await barrier; } },
+    });
+    for (let index = 0; index < 600; index += 1) {
+      const missing = await app.inject({
+        method: "GET",
+        url: `/api/projects/missing-${index}/workspace-files/download?path=download.txt`,
+      });
+      expect(missing.statusCode).toBe(404);
+    }
+    const active = projects.slice(0, 3).flatMap((project) => Array.from({ length: 2 }, () => app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/download?path=download.txt`,
+    })));
+    await vi.waitFor(() => expect(entered).toBe(6));
+    const saturated = await app.inject({
+      method: "GET",
+      url: `/api/projects/${projects[3]!.id}/workspace-files/download?path=download.txt`,
+    });
+    expect(saturated.statusCode).toBe(429);
+    release();
+    expect((await Promise.all(active)).map((response) => response.statusCode)).toEqual([200, 200, 200, 200, 200, 200]);
+    const recovered = await app.inject({
+      method: "GET",
+      url: `/api/projects/${projects[3]!.id}/workspace-files/download?path=download.txt`,
+    });
+    expect(recovered.statusCode).toBe(200);
+    await app.close();
+  });
+
   it("authorizes artifact references submitted through history and retained by the accepted provider session", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -7069,6 +7109,15 @@ describe("server chunk F", () => {
       payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-reply" },
     });
     expect(edited.statusCode, edited.body).toBe(200);
+    const editReplays = await Promise.all(Array.from({ length: 2 }, () => app.inject({
+      method: "PATCH",
+      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
+      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-reply" },
+    })));
+    expect(editReplays.map((response) => response.json())).toEqual([
+      expect.objectContaining({ edited: true, replayed: true }),
+      expect.objectContaining({ edited: true, replayed: true }),
+    ]);
     const after = new CoordinationV3Store(store.sqlite).pendingActivations(project.id)
       .find((activation) => activation.id === queued[0]!.deliveryId)!;
     const serializedAfter = JSON.stringify(after.payload);
@@ -7076,6 +7125,7 @@ describe("server chunk F", () => {
     expect(serializedAfter).not.toContain(supersededMarker);
     expect(serializedAfter).not.toContain(originalArtifactId);
 
+    await expect.poll(() => store.readCommunicationRevisions(project.id).length).toBe(1);
     for (const surface of ["conversation", "direct_agent_audit"] as const) {
       const projectionKey = surface === "conversation" ? master.id : author.id;
       const current = store.readProjectedCommunicationMessages(project.id, surface, projectionKey)
@@ -7102,6 +7152,74 @@ describe("server chunk F", () => {
     expect(providerInput.exactPrompt).not.toContain(originalArtifactId);
     expect(providerInput.sourceManifest.artifactIds).not.toContain(originalArtifactId);
     await app.close();
+  });
+
+  it("recovers a committed queued edit before delivery when projection append is interrupted", async () => {
+    const project = store.createProject({ label: "Queued edit recovery", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Recovery room" });
+    const agent = store.createAgent(project.id, { title: "Recovery agent", engine: "codex", conversationId: conversation.id });
+    const createdAt = "2026-07-18T12:00:00.000Z";
+    const communication = {
+      eventId: "queued-edit-recovery-message",
+      schemaVersion: 2 as const,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "user" as const, userId: "local-operator" },
+      intent: "user_dm" as const,
+      audience: { kind: "user_agent" as const, userId: "local-operator", agentId: agent.id },
+      text: "superseded",
+      createdAt,
+      idempotencyKey: "queued-edit-recovery-message",
+    };
+    store.appendCommunicationEvent(communication);
+    let coordination = new CoordinationV3Store(store.sqlite);
+    const intake = coordination.recordRuntimeCommunication({
+      id: communication.eventId,
+      projectId: project.id,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: { agentId: agent.id },
+      payload: { communication, dispatch: { conversationId: conversation.id, text: communication.text } },
+      activation: { agentId: agent.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run" },
+      now: createdAt,
+    });
+    for (const item of coordination.claimOutbox("seed-signal-drain")) {
+      coordination.completeOutbox(item.id, "seed-signal-drain");
+    }
+
+    const interrupted = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+      messageLifecycleFaults: {
+        afterQueuedEditSqliteCommit: () => { throw new Error("simulated process loss after SQLite commit"); },
+      },
+    });
+    const edit = await interrupted.inject({
+      method: "PATCH",
+      url: `/api/agents/${agent.id}/queued-messages/${intake.activationId}`,
+      payload: { text: "safe replacement", idempotencyKey: "recover-edit" },
+    });
+    expect(edit.statusCode).toBe(500);
+    expect(store.readCommunicationRevisions(project.id)).toEqual([]);
+    expect(coordination.leaseNextRun({ workerId: "must-not-deliver" })).toBeUndefined();
+    await interrupted.close();
+
+    store = new AgentStore(dataDir);
+    coordination = new CoordinationV3Store(store.sqlite);
+    const recovered = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 5 },
+    });
+    await recovered.ready();
+    await expect.poll(() => store.readCommunicationRevisions(project.id).length).toBe(1);
+    expect(store.readCommunicationRevisions(project.id)[0]).toMatchObject({
+      targetEventId: communication.eventId,
+      text: "safe replacement",
+    });
+    const lease = coordination.leaseNextRun({ workerId: "after-recovery" });
+    expect(JSON.stringify(lease?.activations[0]?.payload)).toContain("safe replacement");
+    expect(JSON.stringify(lease?.activations[0]?.payload)).not.toContain("superseded");
+    await recovered.close();
   });
 
   it("uses the same safe-boundary Steer semantics in Project and Agent chat", async () => {

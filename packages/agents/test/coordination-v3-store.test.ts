@@ -1547,6 +1547,59 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.claimOutbox("dispatcher-3", 10, "2026-07-15T00:01:10.000Z", 30_000)).toHaveLength(0);
   });
 
+  it("atomically fences an edited Activation behind its durable revision outbox", () => {
+    const intake = store.recordRuntimeCommunication({
+      id: "queued-communication",
+      projectId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { agentId: recipientA },
+      payload: {
+        communication: { eventId: "queued-communication", sender: { kind: "user", userId: "local-operator" }, text: "old" },
+        dispatch: { text: "old" },
+      },
+      activation: { agentId: recipientA, kind: "human_message", priority: 100, dispatchPolicy: "next_run" },
+    });
+    for (const item of store.claimOutbox("signals")) store.completeOutbox(item.id, "signals");
+
+    const first = store.editPendingActivationText({
+      activationId: intake.activationId,
+      projectId,
+      requestText: "replacement",
+      text: "Full message: ponderosa://artifact/replacement",
+      document: { id: "replacement", createdAt: "first-attempt" },
+      artifactId: "replacement",
+      resultRef: "ponderosa://artifact/replacement",
+      revisionOwnerId: "revision-1",
+      revisionOutboxPayload: { revision: { eventId: "revision-1", text: "replacement" } },
+      idempotencyKey: "edit-once",
+    });
+    expect(first).toMatchObject({ edited: true, replayed: false });
+    expect(store.leaseNextRun({ workerId: "worker" })).toBeUndefined();
+
+    const revision = store.claimOutbox("projector");
+    expect(revision).toEqual([expect.objectContaining({
+      activationId: intake.activationId,
+      eventKind: "communication_revision",
+      payload: { revision: { eventId: "revision-1", text: "replacement" } },
+    })]);
+    const replay = store.editPendingActivationText({
+      activationId: intake.activationId,
+      projectId,
+      requestText: "replacement",
+      text: "Full message: ponderosa://artifact/replacement",
+      document: { id: "replacement", createdAt: "later-attempt" },
+      artifactId: "replacement",
+      resultRef: "ponderosa://artifact/replacement",
+      revisionOwnerId: "revision-1",
+      revisionOutboxPayload: { revision: { eventId: "revision-1", text: "replacement", createdAt: "later-attempt" } },
+      idempotencyKey: "edit-once",
+    });
+    expect(replay).toMatchObject({ edited: true, replayed: true });
+    store.completeOutbox(revision[0]!.id, "projector");
+    expect(store.leaseNextRun({ workerId: "worker" })?.activationIds).toEqual([intake.activationId]);
+  });
+
   it("backpressures new external intake without blocking idempotent replay", () => {
     store = new CoordinationV3Store(opened.client, { maxPendingActivationsPerAgent: 1 });
     const first = store.enqueueMessageActivation({
