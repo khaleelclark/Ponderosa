@@ -2382,6 +2382,60 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("retries a terminal uncertain operator delivery once through the public API", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { steeringRecoveryGraceMs: 60_000 },
+    });
+    const project = store.createProject({ label: "Delivery retry", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: master.id });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "keep working" } });
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    persistent.failNextSteer = true;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "change direction" } });
+
+    let uncertain!: import("@ponderosa/core").MessageDeliveryReceiptDto;
+    await vi.waitFor(async () => {
+      const detail = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}` }))
+        .json<import("@ponderosa/core").AgentDetailDto>();
+      uncertain = detail.messages.find((candidate) => candidate.text === "change direction")?.deliveryReceipts?.[0]!;
+      expect(uncertain).toMatchObject({ state: "unconfirmed", attemptCount: 1 });
+    });
+    store.sqlite.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?")
+      .run(uncertain.injectionId);
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      payload: { idempotencyKey: `operator-delivery-retry:${uncertain.activationId}` },
+    });
+    expect(first.statusCode).toBe(202);
+    const accepted = first.json<import("@ponderosa/core").RetryMessageDeliveryResponse>();
+    expect(accepted).toMatchObject({
+      accepted: true, replayed: false, state: "queued", retryMayDuplicate: true,
+      targetAgentId: agent.id, activationId: expect.any(String),
+    });
+    const replay = await app.inject({
+      method: "POST",
+      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      payload: { idempotencyKey: `operator-delivery-retry:${uncertain.activationId}` },
+    });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual({ ...accepted, replayed: true });
+    const competing = await app.inject({
+      method: "POST",
+      url: `/api/message-deliveries/${uncertain.activationId}/retry`,
+      payload: { idempotencyKey: "competing-delivery-retry" },
+    });
+    expect(competing.statusCode).toBe(409);
+    expect(competing.json()).toMatchObject({ accepted: false, rejectionReason: "stale_attempt" });
+    await app.close();
+  });
+
   it("automatically interrupts the exact uncertain Run and starts an audit-first recovery", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];

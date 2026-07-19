@@ -16,6 +16,7 @@ import {
   type CoordinationRequestState,
   type CoordinationRequestUpdateKind,
   type MessageDeliveryReceiptDto,
+  type RetryMessageDeliveryResponse,
   type RequestLifetime,
   type DerivedAgentAvailability,
   type TriggerDefinitionDto,
@@ -688,7 +689,8 @@ export class CoordinationV3Store {
   deliveryReceiptsForCommunication(communicationEventId: string): MessageDeliveryReceiptDto[] {
     if (!communicationEventId.trim()) return [];
     const activations = this.sqlite.prepare(`
-      SELECT DISTINCT activation.id, activation.agent_id, activation.state, activation.updated_at
+      SELECT DISTINCT activation.id, activation.agent_id, activation.state, activation.updated_at,
+        activation.rowid AS row_sequence
       FROM activation_sources source
       JOIN runtime_communications runtime ON runtime.id = source.source_id
       JOIN agent_activations activation ON activation.id = source.activation_id
@@ -700,11 +702,18 @@ export class CoordinationV3Store {
             ELSE NULL
           END = ?
         )
-      ORDER BY activation.created_at, activation.id
+      ORDER BY activation.created_at, row_sequence
     `).all(communicationEventId, communicationEventId) as Array<{
-      id: string; agent_id: string; state: string; updated_at: string;
+      id: string; agent_id: string; state: string; updated_at: string; row_sequence: number;
     }>;
-    return activations.map((activation) => {
+    const latestByRecipient = new Map<string, { activation: typeof activations[number]; attemptCount: number }>();
+    for (const activation of activations) {
+      latestByRecipient.set(activation.agent_id, {
+        activation,
+        attemptCount: (latestByRecipient.get(activation.agent_id)?.attemptCount ?? 0) + 1,
+      });
+    }
+    return [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
       const injection = this.sqlite.prepare(`
         SELECT injection.id, injection.kind, injection.state, injection.updated_at
         FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
@@ -746,12 +755,169 @@ export class CoordinationV3Store {
         targetAgentId: activation.agent_id,
         state,
         updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
+        attemptCount,
+        ...((state === "undelivered" || state === "failed") && this.agentSurvives(activation.agent_id)
+          ? { canRetry: true as const, ...(activation.state === "outcome_unknown" ? { retryMayDuplicate: true as const } : {}) }
+          : {}),
         ...(injection ? { injectionId: injection.id } : {}),
         ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
         ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
         ...(recovery?.recovery_activation_id ? { recoveryActivationId: recovery.recovery_activation_id } : {}),
       };
     });
+  }
+
+  /** Create a new delivery attempt without duplicating the canonical user
+   * message. Only the latest terminal attempt can advance the attempt chain. */
+  retryMessageDelivery(input: {
+    activationId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): RetryMessageDeliveryResponse {
+    if (!input.idempotencyKey.trim()) throw new Error("delivery retry idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction((): RetryMessageDeliveryResponse => {
+      const original = this.sqlite.prepare(`
+        SELECT id, project_id, agent_id, scope_key, kind, priority, dispatch_policy,
+          prompt_class, state, payload_json
+        FROM agent_activations WHERE id = ?
+      `).get(input.activationId) as Pick<ActivationRow,
+        "id" | "project_id" | "agent_id" | "scope_key" | "kind" | "priority" |
+        "dispatch_policy" | "prompt_class" | "state" | "payload_json"
+      > | undefined;
+      if (!original) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_found",
+      };
+
+      const hash = payloadHash({ activationId: original.id });
+      const replay = this.idempotentReplay<Omit<RetryMessageDeliveryResponse, "replayed">>(
+        original.project_id, "user:local-operator", "retry_message_delivery", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+
+      const sources = this.sqlite.prepare(`
+        SELECT source.source_kind, source.source_id, runtime.sender_json, runtime.payload_json
+        FROM activation_sources source
+        LEFT JOIN runtime_communications runtime
+          ON source.source_kind = 'communication' AND runtime.id = source.source_id
+        WHERE source.activation_id = ?
+        ORDER BY source.source_kind, source.source_id
+      `).all(original.id) as Array<{
+        source_kind: string; source_id: string; sender_json: string | null; payload_json: string | null;
+      }>;
+      const communicationSources = sources.filter((source) => source.source_kind === "communication");
+      const authoredByOperator = communicationSources.some((source) => {
+        if (!source.sender_json) return false;
+        try {
+          const sender = JSON.parse(source.sender_json) as { kind?: unknown; userId?: unknown };
+          return sender.kind === "user" && sender.userId === "local-operator";
+        } catch {
+          return false;
+        }
+      });
+      if (!authoredByOperator) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_operator_message",
+      };
+      if (!this.agentSurvives(original.agent_id)) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
+      };
+
+      const placeholders = communicationSources.map(() => "?").join(", ");
+      const latest = this.sqlite.prepare(`
+        SELECT activation.id
+        FROM agent_activations activation
+        JOIN activation_sources source ON source.activation_id = activation.id
+        WHERE activation.agent_id = ? AND source.source_kind = 'communication'
+          AND source.source_id IN (${placeholders})
+        ORDER BY activation.created_at DESC, activation.rowid DESC
+        LIMIT 1
+      `).get(original.agent_id, ...communicationSources.map((source) => source.source_id)) as { id: string } | undefined;
+      if (latest?.id !== original.id) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "stale_attempt",
+      };
+
+      let retryMayDuplicate = false;
+      let retryable = original.state === "failed";
+      if (original.state === "outcome_unknown") {
+        retryMayDuplicate = true;
+        const recovery = this.sqlite.prepare(`
+          SELECT recovery.state, recovery_activation.state AS activation_state
+          FROM scheduler_prompt_injections injection
+          JOIN json_each(injection.activation_ids_json) member ON member.value = ?
+          LEFT JOIN scheduler_steering_recoveries recovery ON recovery.injection_id = injection.id
+          LEFT JOIN scheduler_steering_recovery_activations mapping
+            ON mapping.injection_id = injection.id AND mapping.source_activation_id = ?
+          LEFT JOIN agent_activations recovery_activation ON recovery_activation.id = mapping.recovery_activation_id
+          ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
+        `).get(original.id, original.id) as {
+          state: "grace_period" | "wait_for_run" | "recovery_queued" | null;
+          activation_state: string | null;
+        } | undefined;
+        retryable = !recovery || recovery.state === null ||
+          ["failed", "outcome_unknown", "cancelled"].includes(recovery.activation_state ?? "");
+      }
+      if (!retryable) return {
+        accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_terminal",
+      };
+
+      const payload = JSON.parse(original.payload_json) as Record<string, unknown>;
+      const priorRetry = payload.deliveryRetry && typeof payload.deliveryRetry === "object"
+        ? payload.deliveryRetry as { rootActivationId?: unknown }
+        : undefined;
+      const retryPayload = {
+        ...payload,
+        deliveryRetry: {
+          previousActivationId: original.id,
+          rootActivationId: typeof priorRetry?.rootActivationId === "string"
+            ? priorRetry.rootActivationId
+            : original.id,
+          previousState: original.state,
+          requestedBy: "local-operator",
+          requestedAt: now,
+        },
+        ...(retryMayDuplicate ? {
+          steeringRecovery: {
+            instruction: "This is an operator-requested retry after the previous delivery acknowledgement was not confirmed. Audit current state before acting. If the request was already completed, report that result instead of repeating side effects.",
+          },
+        } : {}),
+      };
+      const primarySource = communicationSources[0] ?? sources[0];
+      if (!primarySource) throw new Error("delivery retry has no durable source");
+      const retryKey = createHash("sha256")
+        .update(`${original.id}\0${input.idempotencyKey}`)
+        .digest("hex");
+      const activationId = this.createActivation({
+        projectId: original.project_id,
+        agentId: original.agent_id,
+        scopeKey: original.scope_key,
+        kind: original.kind,
+        priority: Math.max(original.priority, PRIORITY.human),
+        dispatchPolicy: original.dispatch_policy,
+        promptClass: original.prompt_class,
+        dedupeKey: `delivery-retry:${retryKey}`,
+        payload: retryPayload,
+        sourceKind: primarySource.source_kind,
+        sourceId: primarySource.source_id,
+        now,
+        externalIntake: true,
+      });
+      for (const source of sources) this.sqlite.prepare(`
+        INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
+        VALUES (?, ?, ?)
+      `).run(activationId, source.source_kind, source.source_id);
+      const result: Omit<RetryMessageDeliveryResponse, "replayed"> = {
+        accepted: true,
+        state: "queued",
+        activationId,
+        targetAgentId: original.agent_id,
+        ...(retryMayDuplicate ? { retryMayDuplicate: true } : {}),
+      };
+      this.recordIdempotency(
+        original.project_id, "user:local-operator", "retry_message_delivery",
+        input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
   }
 
   pendingActivations(projectId?: string): PendingActivationV3View[] {

@@ -20,6 +20,7 @@ describe("message delivery status", () => {
       injectionId: "injection",
       state: "unconfirmed",
       updatedAt: "2026-07-16T00:00:00.000Z",
+      attemptCount: 1,
       recoveryAt: "2099-07-16T00:00:10.000Z",
       canLetCurrentRunFinish: true,
     }]);
@@ -27,16 +28,20 @@ describe("message delivery status", () => {
     expect(html).toContain("Let current Run finish");
   });
 
-  it("labels historical uncertainty as undelivered without offering replay", () => {
+  it("offers a guarded retry for historical uncertainty", () => {
     const html = render([{
       activationId: "historical",
       targetAgentId: "manager",
       injectionId: "old-injection",
       state: "undelivered",
       updatedAt: "2026-07-15T00:00:00.000Z",
+      attemptCount: 1,
+      canRetry: true,
+      retryMayDuplicate: true,
     }]);
     expect(html).toContain("Undelivered to Manager");
     expect(html).not.toContain("Let current Run finish");
+    expect(html).toContain("Retry");
   });
 
   it("links compact status text to the recipient's direct chat", () => {
@@ -45,6 +50,7 @@ describe("message delivery status", () => {
       targetAgentId: "manager",
       state: "processed",
       updatedAt: "2026-07-16T00:00:00.000Z",
+      attemptCount: 1,
     }], true);
     expect(html).toContain("Processed by Manager");
     expect(html).toContain("Open direct chat with Manager");

@@ -51,6 +51,8 @@ import type {
   MultiAgentDirectMessageResponse,
   LetCurrentRunFinishRequest,
   LetCurrentRunFinishResponse,
+  RetryMessageDeliveryRequest,
+  RetryMessageDeliveryResponse,
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
@@ -8112,6 +8114,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       replayed: result.replayed,
       state: result.state,
     } satisfies LetCurrentRunFinishResponse);
+  });
+
+  app.post<{
+    Params: { activationId: string };
+    Body: RetryMessageDeliveryRequest;
+  }>("/api/message-deliveries/:activationId/retry", async (request, reply) => {
+    const activationId = request.params.activationId?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!activationId) return reply.code(400).send({ error: "activationId is required" });
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    }
+    const result = coordinationV3.retryMessageDelivery({ activationId, idempotencyKey });
+    if (!result.accepted || !result.targetAgentId) {
+      const status = result.rejectionReason === "not_found" ? 404 : 409;
+      return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);
+    }
+    coordinationV3Scheduler.notify();
+    publishMessageDeliveryChanged(result.targetAgentId);
+    return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);
   });
 
 

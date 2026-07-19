@@ -1473,6 +1473,144 @@ describe("CoordinationV3Store scheduler", () => {
     `).get()).toEqual({ count: 0 });
   });
 
+  it("retries only the latest terminal operator delivery and preserves one canonical message", () => {
+    const eventId = "retry-historical-uncertain-steer";
+    const { activationId, steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
+    opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
+
+    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+      activationId,
+      state: "undelivered",
+      attemptCount: 1,
+      canRetry: true,
+      retryMayDuplicate: true,
+    })]);
+    const retry = store.retryMessageDelivery({
+      activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:20.000Z",
+    });
+    expect(retry).toMatchObject({
+      accepted: true, replayed: false, state: "queued", targetAgentId: recipientA,
+      retryMayDuplicate: true, activationId: expect.any(String),
+    });
+    expect(store.retryMessageDelivery({
+      activationId, idempotencyKey: "retry-once", now: "2026-07-15T00:00:21.000Z",
+    })).toEqual({ ...retry, replayed: true });
+    expect(store.retryMessageDelivery({
+      activationId, idempotencyKey: "competing-retry", now: "2026-07-15T00:00:21.000Z",
+    })).toMatchObject({
+      accepted: false, state: "not_retryable", rejectionReason: "stale_attempt",
+    });
+
+    const latest = store.deliveryReceiptsForCommunication(eventId);
+    expect(latest).toEqual([expect.objectContaining({
+      activationId: retry.activationId,
+      state: "queued",
+      attemptCount: 2,
+    })]);
+    expect(latest[0]).not.toHaveProperty("canRetry");
+    const retryActivation = store.pendingActivations(projectId)
+      .find((candidate) => candidate.id === retry.activationId)!;
+    expect(retryActivation.payload).toMatchObject({
+      communication: { eventId },
+      deliveryRetry: {
+        previousActivationId: activationId,
+        rootActivationId: activationId,
+        requestedBy: "local-operator",
+      },
+      steeringRecovery: {
+        instruction: expect.stringContaining("Audit current state before acting"),
+      },
+    });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM runtime_communications
+      WHERE json_extract(payload_json, '$.communication.eventId') = ?
+    `).get(eventId)).toEqual({ count: 1 });
+
+    opened.client.prepare(`
+      UPDATE agent_activations SET state = 'failed', updated_at = ? WHERE id = ?
+    `).run("2026-07-15T00:00:22.000Z", retry.activationId);
+    const third = store.retryMessageDelivery({
+      activationId: retry.activationId!, idempotencyKey: "retry-after-failure",
+      now: "2026-07-15T00:00:23.000Z",
+    });
+    expect(third).toMatchObject({ accepted: true, replayed: false, state: "queued" });
+    expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+      activationId: third.activationId,
+      attemptCount: 3,
+      state: "queued",
+    })]);
+  });
+
+  it("keeps a queued delivery retry and its single-flight fence across restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "ponderosa-delivery-retry-"));
+    const databasePath = join(directory, "retry.sqlite");
+    opened.client.close();
+    try {
+      opened = openDb(databasePath);
+      store = new CoordinationV3Store(opened.client);
+      seed();
+      const eventId = "restart-safe-delivery-retry";
+      const { activationId, steering } = createUncertainHumanSteer(eventId, "2026-07-15T00:00:00.000Z");
+      opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?").run(steering.injectionId);
+      const retry = store.retryMessageDelivery({
+        activationId, idempotencyKey: "restart-retry", now: "2026-07-15T00:00:20.000Z",
+      });
+      opened.client.close();
+
+      opened = openDb(databasePath);
+      store = new CoordinationV3Store(opened.client);
+      expect(store.deliveryReceiptsForCommunication(eventId)).toEqual([expect.objectContaining({
+        activationId: retry.activationId,
+        attemptCount: 2,
+        state: "queued",
+      })]);
+      expect(store.retryMessageDelivery({
+        activationId, idempotencyKey: "restart-competing-retry", now: "2026-07-15T00:00:21.000Z",
+      })).toMatchObject({
+        accepted: false, state: "not_retryable", rejectionReason: "stale_attempt",
+      });
+    } finally {
+      opened.client.close();
+      rmSync(directory, { recursive: true, force: true });
+      opened = openDb(":memory:");
+      store = new CoordinationV3Store(opened.client);
+    }
+  });
+
+  it("rejects delivery retries while recovery is active, after recipient deletion, and for non-operator sources", () => {
+    const active = createUncertainHumanSteer("active-recovery-not-retryable", "2026-07-15T00:00:00.000Z");
+    expect(store.retryMessageDelivery({
+      activationId: active.activationId, idempotencyKey: "too-early",
+      now: "2026-07-15T00:00:01.000Z",
+    })).toMatchObject({ accepted: false, rejectionReason: "not_terminal" });
+
+    opened.client.prepare("DELETE FROM scheduler_steering_recoveries WHERE injection_id = ?")
+      .run(active.steering.injectionId);
+    opened.client.prepare("UPDATE agents SET archived = 1 WHERE id = ?").run(recipientA);
+    expect(store.retryMessageDelivery({
+      activationId: active.activationId, idempotencyKey: "missing-recipient",
+      now: "2026-07-15T00:00:02.000Z",
+    })).toMatchObject({ accepted: false, rejectionReason: "recipient_unavailable" });
+    opened.client.prepare("UPDATE agents SET archived = 0 WHERE id = ?").run(recipientA);
+
+    const nonOperator = store.recordRuntimeCommunication({
+      id: "agent-authored-delivery", projectId,
+      sender: { kind: "agent", agentId: requesterId }, intent: "direct",
+      audience: { agentId: recipientA }, payload: { communication: { eventId: "agent-authored" } },
+      activation: {
+        agentId: recipientA, kind: "ordinary_message", priority: 50,
+        dispatchPolicy: "next_run", promptClass: "ordinary",
+      },
+      now: "2026-07-15T00:00:03.000Z",
+    });
+    opened.client.prepare("UPDATE agent_activations SET state = 'failed' WHERE id = ?")
+      .run(nonOperator.activationId);
+    expect(store.retryMessageDelivery({
+      activationId: nonOperator.activationId!, idempotencyKey: "agent-authored-retry",
+      now: "2026-07-15T00:00:04.000Z",
+    })).toMatchObject({ accepted: false, rejectionReason: "not_operator_message" });
+  });
+
   it("never interrupts a later unrelated Run when the recovery deadline races forward", () => {
     const now = "2026-07-15T00:00:00.000Z";
     const { run } = createUncertainHumanSteer("do-not-interrupt-later-run", now);
