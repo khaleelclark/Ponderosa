@@ -556,6 +556,8 @@ export class AgentStore {
     const rowKey = this.globalChatSearchRowKey(projection);
     const chatKind = projection.surface === "conversation"
       ? "conversation"
+      : projection.surface === "collaboration_view"
+        ? "collaboration"
       : projection.surface === "direct_agent_audit"
         ? "agent"
         : undefined;
@@ -581,6 +583,7 @@ export class AgentStore {
       role: canonicalRole,
       authorAgentId: authorAgentId ?? null,
       timestamp: message.createdAt,
+      orderKey: message.orderKey ?? message.createdAt,
       text: message.renderedText ?? event.text,
     }).onConflictDoUpdate({
       target: chatSearchMessages.rowKey,
@@ -593,6 +596,7 @@ export class AgentStore {
         role: canonicalRole,
         authorAgentId: authorAgentId ?? null,
         timestamp: message.createdAt,
+        orderKey: message.orderKey ?? message.createdAt,
         text: message.renderedText ?? event.text,
       },
     }).run();
@@ -916,12 +920,19 @@ export class AgentStore {
     projectionKey: string,
     limit?: number,
   ): ProjectedCommunicationMessage[] {
-    const events = this.communicationIndex(projectId).byId;
-    const revisions = this.communicationRevisionIndex(projectId).byTarget;
     const matching = this.projectionIndex(projectId).projections
       .filter((projection) => projection.surface === surface && projection.projectionKey === projectionKey &&
         projection.message && this.communicationProjectionAllowed(projectId, projection));
-    return (limit === undefined ? matching : matching.slice(-limit))
+    return this.materializeProjectedCommunicationMessages(projectId, limit === undefined ? matching : matching.slice(-limit));
+  }
+
+  private materializeProjectedCommunicationMessages(
+    projectId: string,
+    projections: CommunicationProjection[],
+  ): ProjectedCommunicationMessage[] {
+    const events = this.communicationIndex(projectId).byId;
+    const revisions = this.communicationRevisionIndex(projectId).byTarget;
+    return projections
       .flatMap((projection) => {
         const event = events.get(projection.eventId);
         const message = projection.message;
@@ -938,7 +949,7 @@ export class AgentStore {
         return [{
           eventId: event.eventId,
           ...(event.conversationId ? { conversationId: event.conversationId } : {}),
-          surface, projectionKey, messageId: message.messageId,
+          surface: projection.surface, projectionKey: projection.projectionKey, messageId: message.messageId,
           role: canonicalRole,
           text: latestRevision ? revisedRenderedText(renderedText, event.text, latestRevision.text) : renderedText,
           createdAt: message.createdAt,
@@ -956,6 +967,79 @@ export class AgentStore {
         }];
       })
       .sort((a, b) => (a.orderKey ?? a.createdAt).localeCompare(b.orderKey ?? b.createdAt));
+  }
+
+  private encodeChatHistoryCursor(input: { chatKind: string; chatId: string; orderKey: string; rowKey: string }): string {
+    return Buffer.from(JSON.stringify({ v: 1, ...input }), "utf8").toString("base64url");
+  }
+
+  private decodeChatHistoryCursor(cursor: string, chatKind: string, chatId: string): { orderKey: string; rowKey: string } {
+    let parsed: unknown;
+    try {
+      const decoded = Buffer.from(cursor, "base64url");
+      if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical cursor");
+      parsed = JSON.parse(decoded.toString("utf8"));
+    } catch {
+      throw new Error("invalid history cursor");
+    }
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
+    const value = parsed as Record<string, unknown>;
+    if (value.v !== 1 || value.chatKind !== chatKind || value.chatId !== chatId ||
+      typeof value.orderKey !== "string" || typeof value.rowKey !== "string") {
+      throw new Error("invalid history cursor");
+    }
+    return { orderKey: value.orderKey, rowKey: value.rowKey };
+  }
+
+  readProjectedCommunicationMessagePage(
+    projectId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+    input: { limit: number; cursor?: string; focusId?: string },
+  ): { messages: ProjectedCommunicationMessage[]; hasMore: boolean; cursor?: string } {
+    const chatKind = surface === "conversation" ? "conversation"
+      : surface === "collaboration_view" ? "collaboration"
+        : surface === "direct_agent_audit" ? "agent" : undefined;
+    if (!chatKind) return { messages: [], hasMore: false };
+    let boundary = input.cursor ? this.decodeChatHistoryCursor(input.cursor, chatKind, projectionKey) : undefined;
+    let inclusiveBoundary = false;
+    if (input.focusId) {
+      const focus = this.client.prepare(`
+        SELECT order_key AS orderKey, row_key AS rowKey
+        FROM chat_search_messages
+        WHERE project_id = ? AND chat_kind = ? AND chat_id = ?
+          AND (message_id = ? OR communication_event_id = ?)
+        ORDER BY order_key DESC, row_key DESC
+        LIMIT 1
+      `).get(projectId, chatKind, projectionKey, input.focusId, input.focusId) as { orderKey: string; rowKey: string } | undefined;
+      if (!focus) return { messages: [], hasMore: false };
+      boundary = focus;
+      inclusiveBoundary = true;
+    }
+    const rows = this.client.prepare(`
+      SELECT row_key AS rowKey, communication_event_id AS eventId, order_key AS orderKey
+      FROM chat_search_messages
+      WHERE project_id = ? AND chat_kind = ? AND chat_id = ?
+        ${boundary ? `AND (order_key < ? OR (order_key = ? AND row_key ${inclusiveBoundary ? "<=" : "<"} ?))` : ""}
+      ORDER BY order_key DESC, row_key DESC
+      LIMIT ?
+    `).all(...(boundary
+      ? [projectId, chatKind, projectionKey, boundary.orderKey, boundary.orderKey, boundary.rowKey, input.limit + 1]
+      : [projectId, chatKind, projectionKey, input.limit + 1])) as Array<{ rowKey: string; eventId: string; orderKey: string }>;
+    const hasMore = rows.length > input.limit;
+    const selected = rows.slice(0, input.limit);
+    const index = this.projectionIndex(projectId);
+    const projections = selected.flatMap((row) => {
+      const projection = index.byTuple.get(`${row.eventId}\u0000${surface}\u0000${projectionKey}`);
+      return projection ? [projection] : [];
+    });
+    const messages = this.materializeProjectedCommunicationMessages(projectId, projections);
+    const oldest = selected.at(-1);
+    return {
+      messages,
+      hasMore,
+      ...(hasMore && oldest ? { cursor: this.encodeChatHistoryCursor({ chatKind, chatId: projectionKey, orderKey: oldest.orderKey, rowKey: oldest.rowKey }) } : {}),
+    };
   }
 
   private ensureCommunicationProjectionLedger(projectId: string): void {
@@ -1621,12 +1705,44 @@ export class AgentStore {
     if (!master) return [];
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
     const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId, limit);
+    return this.projectedConversationMessageDtos(conversationId, projected);
+  }
+
+  /** Full canonical room history for provider context, without UI-only file-activity hydration. */
+  getCanonicalConversationContextMessages(
+    conversationId: string,
+    channel: ConversationChannel = "main",
+  ): ConversationMessageDto[] {
+    const master = this.getConversation(conversationId);
+    if (!master) return [];
+    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
+    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
+    return this.projectedConversationMessageDtos(conversationId, projected, false);
+  }
+
+  getProjectedConversationMessagePage(
+    conversationId: string,
+    channel: ConversationChannel,
+    input: { limit: number; cursor?: string; focusId?: string },
+  ): { messages: ConversationMessageDto[]; hasMore: boolean; cursor?: string } {
+    const master = this.getConversation(conversationId);
+    if (!master) return { messages: [], hasMore: false };
+    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
+    const page = this.readProjectedCommunicationMessagePage(master.projectId, surface, conversationId, input);
+    return { ...page, messages: this.projectedConversationMessageDtos(conversationId, page.messages) };
+  }
+
+  private projectedConversationMessageDtos(
+    conversationId: string,
+    projected: ProjectedCommunicationMessage[],
+    includeFileActivity = true,
+  ): ConversationMessageDto[] {
     const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
     const activityByAgentAndStatus = new Map<string, Map<string, ResponseFileActivityDto[]>>();
     const runsByAgent = new Map<string, AgentRunDto[]>();
     return projected.map((message) => {
       let fileActivity: ResponseFileActivityDto[] | undefined;
-      if (message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)) {
+      if (includeFileActivity && message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)) {
         const runs = runsByAgent.get(message.authorAgentId) ?? this.getRuns(message.authorAgentId);
         runsByAgent.set(message.authorAgentId, runs);
         const status: ResponseFileActivityDto["status"] = runs.some((run) =>
@@ -2260,17 +2376,17 @@ export class AgentStore {
   }
 
   /** Full agent-detail hydration for GET /api/agents/:id (SPEC §8). */
-  getAgentDetail(id: string, limit?: number): AgentDetailDto | undefined {
+  getAgentDetail(id: string, limit?: number, includeMessages = true): AgentDetailDto | undefined {
     const agent = this.rowToAgentDto(id);
     if (!agent) return undefined;
     const bounded = <T>(items: T[]): T[] => limit === undefined ? items : items.slice(-limit);
-    const messages = this.getMessages(id);
+    const messages = includeMessages ? this.getMessages(id) : [];
     const runOutput = this.getRunOutputs(id);
     const activity = this.getActivity(id);
     const runs = this.getRuns(id);
     const workItems = this.getWorkItems(id);
     const artifacts = this.getArtifacts(id);
-    const hasMore = limit !== undefined && [messages, runOutput, activity, runs, workItems, artifacts]
+    const hasMore = limit !== undefined && [runOutput, activity, runs, workItems, artifacts]
       .some((items) => items.length > limit);
     return {
       agent,
@@ -2447,6 +2563,20 @@ export class AgentStore {
     const agent = this.getAgent(agentId);
     if (!agent) return [];
     const projected = this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId, limit);
+    return this.projectedAgentMessageDtos(agentId, projected);
+  }
+
+  getProjectedAgentMessagePage(
+    agentId: string,
+    input: { limit: number; cursor?: string; focusId?: string },
+  ): { messages: MessageDto[]; hasMore: boolean; cursor?: string } {
+    const agent = this.getAgent(agentId);
+    if (!agent) return { messages: [], hasMore: false };
+    const page = this.readProjectedCommunicationMessagePage(agent.projectId, "direct_agent_audit", agentId, input);
+    return { ...page, messages: this.projectedAgentMessageDtos(agentId, page.messages) };
+  }
+
+  private projectedAgentMessageDtos(agentId: string, projected: ProjectedCommunicationMessage[]): MessageDto[] {
     return projected
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];

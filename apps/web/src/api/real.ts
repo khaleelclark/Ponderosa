@@ -170,12 +170,12 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CreateConversationRequest),
     });
   },
-  getConversation(conversationId, limit = 100) {
-    return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId) + toQuery({ limit: String(limit) }));
+  getConversation(conversationId, limit = 100, cursor, focusId) {
+    return requestJson<ConversationDetailDto>("/api/conversations/" + encodeURIComponent(conversationId) + toQuery({ limit: String(limit), cursor, focusId }));
   },
-  getCollaborationView(conversationId, limit = 100) {
+  getCollaborationView(conversationId, limit = 100, cursor, focusId) {
     return requestJson<CollaborationViewDto>(
-      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit) }),
+      "/api/conversations/" + encodeURIComponent(conversationId) + "/collaboration" + toQuery({ limit: String(limit), cursor, focusId }),
     );
   },
   updateConversation(conversationId, patch) {
@@ -364,8 +364,8 @@ export const realApi: PonderosaApi = {
       body: JSON.stringify(request satisfies CommitAgentDeletionRequest),
     });
   },
-  getAgent(agentId, limit = 100) {
-    return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit) })}`);
+  getAgent(agentId, limit = 100, cursor, focusId) {
+    return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
   listProjectArtifacts(projectId) {
     return requestJson<ArtifactDto[]>(`/api/projects/${encodeURIComponent(projectId)}/artifacts`);

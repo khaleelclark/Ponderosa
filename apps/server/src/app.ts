@@ -3376,22 +3376,40 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
   }
 
-  function conversationDetail(conversationId: string, limit = 100): ConversationDetailDto | undefined {
+  function conversationDetail(
+    conversationId: string,
+    input: { limit?: number; cursor?: string; focusId?: string } = {},
+  ): ConversationDetailDto | undefined {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
-    const window = store.getProjectedConversationMessages(conversationId, "main", limit + 1);
-    const hasMore = window.length > limit;
+    const limit = input.limit ?? 100;
+    const page = store.getProjectedConversationMessagePage(conversationId, "main", { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       conversation,
       agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
-      messages: withMessagePresentation(conversation.projectId, window.slice(-limit)),
-      history: { limit, hasMore },
+      messages: withMessagePresentation(conversation.projectId, page.messages),
+      history: { limit, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) },
     };
   }
 
-  function collaborationViewDetail(conversationId: string, limit = 100): CollaborationViewDto | undefined {
+  /** Provider context must read canonical room history, never a UI projection window. */
+  function canonicalConversationContext(conversationId: string): ConversationDetailDto | undefined {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
+    return {
+      conversation,
+      agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
+      messages: store.getCanonicalConversationContextMessages(conversationId, "main"),
+    };
+  }
+
+  function collaborationViewDetail(
+    conversationId: string,
+    input: { limit?: number; cursor?: string; focusId?: string } = {},
+  ): CollaborationViewDto | undefined {
+    const conversation = store.getConversation(conversationId);
+    if (!conversation) return undefined;
+    const limit = input.limit ?? 100;
     const agents = store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId));
     const names = new Map(agents.map((agent) => [agent.id, agent.title]));
     const operations: NonNullable<CollaborationViewDto["operations"]> = [];
@@ -3482,24 +3500,30 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       });
     }
     operations.sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
-    const messageWindow = store.getProjectedConversationMessages(conversationId, "collaboration", limit + 1);
-    const hasMore = messageWindow.length > limit || operations.length > limit;
+    const messagePage = store.getProjectedConversationMessagePage(conversationId, "collaboration", { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       agents,
       operations: operations.slice(-limit),
-      messages: withMessagePresentation(conversation.projectId, messageWindow.slice(-limit)),
-      history: { limit, hasMore },
+      messages: withMessagePresentation(conversation.projectId, messagePage.messages),
+      history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
     };
   }
 
-  function agentDetail(agentId: string, limit = 100): import("@ponderosa/core").AgentDetailDto | undefined {
-    const detail = store.getAgentDetail(agentId, limit);
+  function agentDetail(
+    agentId: string,
+    input: { limit?: number; cursor?: string; focusId?: string } = {},
+  ): import("@ponderosa/core").AgentDetailDto | undefined {
+    const limit = input.limit ?? 100;
+    // Chat is read through the indexed canonical projection below; do not also
+    // hydrate the legacy Agent message table only to replace it.
+    const detail = store.getAgentDetail(agentId, limit, false);
     if (!detail) return detail;
-    const projectedWindow = store.getProjectedAgentMessages(agentId, limit + 1);
+    const messagePage = store.getProjectedAgentMessagePage(agentId, { limit, cursor: input.cursor, focusId: input.focusId });
     return {
       ...detail,
-      messages: withMessagePresentation(detail.agent.projectId, projectedWindow.slice(-limit)),
-      history: { limit, hasMore: Boolean(detail.history?.hasMore || projectedWindow.length > limit) },
+      messages: withMessagePresentation(detail.agent.projectId, messagePage.messages),
+      telemetryHistory: detail.history,
+      history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
       coordinationV3: coordinationV3.agentSnapshot(agentId),
     };
   }
@@ -7141,10 +7165,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return conversation;
   });
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/conversations/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/conversations/:id", async (request, reply) => {
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    const detail = conversationDetail(request.params.id, limit);
-    return detail ?? reply.code(404).send({ error: "conversation not found" });
+    try {
+      const detail = conversationDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
+      return detail ?? reply.code(404).send({ error: "conversation not found" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
+    }
   });
 
   app.post<{ Params: { id: string } }>("/api/conversations/:id/generate-title", async (request, reply) => {
@@ -8068,10 +8096,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    const detail = collaborationViewDetail(request.params.id, limit);
-    return detail ?? reply.code(404).send({ error: "conversation not found" });
+    try {
+      const detail = collaborationViewDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
+      return detail ?? reply.code(404).send({ error: "conversation not found" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
+    }
   });
 
   app.post<{
@@ -8783,10 +8815,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>("/api/agents/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/agents/:id", async (request, reply) => {
     const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    const detail = agentDetail(request.params.id, limit);
-    return detail ?? reply.code(404).send({ error: "agent not found" });
+    try {
+      const detail = agentDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
+      return detail ?? reply.code(404).send({ error: "agent not found" });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
+    }
   });
 
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
@@ -9736,7 +9772,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // assembled only after the collaboration endpoint successfully tagged this
       // particular linked agent.
       const conversation = routingConversationId
-        ? conversationDetail(routingConversationId)
+        ? canonicalConversationContext(routingConversationId)
         : undefined;
       const sourceChannel: AgentMessageChannel = request.body.sourceChannel === "main"
           ? "main"

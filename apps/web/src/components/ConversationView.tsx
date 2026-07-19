@@ -59,6 +59,12 @@ import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
+function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
+  const byId = new Map<string, ConversationMessageDto>();
+  for (const message of groups.flat()) byId.set(message.id, message);
+  return [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
 export function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
   engineCapabilities: ProjectEngineCapabilitiesDto[],
@@ -289,9 +295,11 @@ export function ConversationView({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [historyLimit, setHistoryLimit] = useState(100);
-  const detailQuery = useConversation(conversationId, historyLimit);
-  const collaborationQuery = useCollaborationView(conversationId, historyLimit);
+  const detailQuery = useConversation(conversationId);
+  const collaborationQuery = useCollaborationView(conversationId);
+  const [olderMain, setOlderMain] = useState<{ messages: ConversationMessageDto[]; cursor?: string; hasMore: boolean }>();
+  const [olderCollaboration, setOlderCollaboration] = useState<{ messages: ConversationMessageDto[]; cursor?: string; hasMore: boolean }>();
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const queuedMessagesQuery = useQuery({
     queryKey: ["queued-messages", conversationId],
     queryFn: () => api.listQueuedConversationMessages(conversationId),
@@ -364,7 +372,9 @@ export function ConversationView({
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
 
   useEffect(() => {
-    setHistoryLimit(100);
+    setOlderMain(undefined);
+    setOlderCollaboration(undefined);
+    focusedMessage.current = undefined;
     setActiveView(readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main");
   }, [conversationId]);
 
@@ -375,24 +385,68 @@ export function ConversationView({
   const conversation = detailQuery.data?.conversation;
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
-  const messages = compactDefined(detailQuery.data?.messages ?? []);
+  const messages = mergeConversationMessages(olderMain?.messages ?? [], compactDefined(detailQuery.data?.messages ?? []));
   const agents = compactDefined(detailQuery.data?.agents ?? []);
-  const collaborationMessages = compactDefined(collaborationQuery.data?.messages ?? []);
+  const collaborationMessages = mergeConversationMessages(olderCollaboration?.messages ?? [], compactDefined(collaborationQuery.data?.messages ?? []));
   const operationalEvents = compactDefined(collaborationQuery.data?.operations ?? []).slice(-150);
   const messageLayoutKey = chatMessageLayoutKey(messages);
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
   const operationalLayoutKey = operationalEvents.length
     ? `${operationalEvents.length}:${operationalEvents.at(-1)?.id ?? ""}`
     : "0";
+  const mainHistory = olderMain ?? {
+    messages: [],
+    cursor: detailQuery.data?.history?.cursor,
+    hasMore: detailQuery.data?.history?.hasMore ?? false,
+  };
+  const collaborationHistory = olderCollaboration ?? {
+    messages: [],
+    cursor: collaborationQuery.data?.history?.cursor,
+    hasMore: collaborationQuery.data?.history?.hasMore ?? false,
+  };
+  const loadOlderHistory = async () => {
+    const history = activeView === "main" ? mainHistory : collaborationHistory;
+    if (!history.hasMore || !history.cursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      if (activeView === "main") {
+        const page = await api.getConversation(conversationId, 100, history.cursor);
+        setOlderMain((current) => ({
+          messages: mergeConversationMessages(page.messages, current?.messages ?? [], detailQuery.data?.messages ?? []),
+          cursor: page.history?.cursor,
+          hasMore: page.history?.hasMore ?? false,
+        }));
+      } else {
+        const page = await api.getCollaborationView(conversationId, 100, history.cursor);
+        setOlderCollaboration((current) => ({
+          messages: mergeConversationMessages(page.messages, current?.messages ?? [], collaborationQuery.data?.messages ?? []),
+          cursor: page.history?.cursor,
+          hasMore: page.history?.hasMore ?? false,
+        }));
+      }
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
   useEffect(() => {
-    if (!focusMessageId || focusedMessage.current === focusMessageId) return;
+    if (!focusMessageId || focusedMessage.current === focusMessageId || focusedMessage.current === `missing:${focusMessageId}`) return;
     if (activeView !== "main") {
       setActiveView("main");
       return;
     }
     const projectedId = projectedMessageIdForFocus(messages, focusMessageId);
     if (!projectedId) {
-      if (detailQuery.data?.history?.hasMore && historyLimit < 1_000) setHistoryLimit((current) => Math.min(1_000, current + 100));
+      if (focusedMessage.current !== `loading:${focusMessageId}`) {
+        focusedMessage.current = `loading:${focusMessageId}`;
+        void api.getConversation(conversationId, 100, undefined, focusMessageId).then((page) => {
+          setOlderMain((current) => ({
+            messages: mergeConversationMessages(page.messages, current?.messages ?? [], detailQuery.data?.messages ?? []),
+            cursor: page.history?.cursor,
+            hasMore: page.history?.hasMore ?? false,
+          }));
+          focusedMessage.current = page.messages.length ? undefined : `missing:${focusMessageId}`;
+        }).catch(() => { focusedMessage.current = undefined; });
+      }
       return;
     }
     const target = document.getElementById(`master-message-${projectedId}`);
@@ -402,7 +456,7 @@ export function ConversationView({
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
-  }, [activeView, detailQuery.data?.history?.hasMore, focusMessageId, historyLimit, messages]);
+  }, [activeView, conversationId, focusMessageId, messages]);
   useLayoutEffect(() => {
     if (
       displayedConversationId.current !== conversationId ||
@@ -948,14 +1002,15 @@ export function ConversationView({
           </Alert>)}
 
           <Stack spacing={0} sx={{ mb: 2 }}>
-            {(activeView === "collaboration" ? collaborationQuery.data?.history?.hasMore : detailQuery.data?.history?.hasMore) ? (
+            {(activeView === "collaboration" ? collaborationHistory.hasMore : mainHistory.hasMore) ? (
               <Button
                 size="small"
                 color="inherit"
-                onClick={() => setHistoryLimit((current) => Math.min(1_000, current + 100))}
+                disabled={loadingOlder}
+                onClick={() => void loadOlderHistory()}
                 sx={{ alignSelf: "center", mb: 1 }}
               >
-                Load older history
+                {loadingOlder ? "Loading…" : "Load older history"}
               </Button>
             ) : null}
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
