@@ -7142,6 +7142,120 @@ describe("server chunk F", () => {
     verificationAssets.close();
   });
 
+  it("compensates attachment authority after post-insert rollback and scheduler COMMIT failure", async () => {
+    const project = store.createProject({ label: "Publication rollback boundaries", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const sender = store.createAgent(project.id, {
+      title: "Sender", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const assets = new AssetStore(dataDir);
+    const attachment = await assets.stage({
+      projectId: project.id,
+      agentId: recipient.id,
+      body: Buffer.from("%PDF-1.7\nrollback-boundary"),
+      name: "rollback-boundary.pdf",
+      declaredType: "application/pdf",
+    });
+    const authorityOptions = {
+      resolve: (candidateProjectId: string, candidateAgentId: string, attachmentId: string) =>
+        assets.authoritativeRuntimeAttachment(candidateProjectId, candidateAgentId, attachmentId),
+      reserveCommunication: (
+        communicationId: string,
+        bindings: Parameters<AssetStore["reserveRuntimeCommunication"]>[1],
+      ) => assets.reserveRuntimeCommunication(communicationId, bindings),
+      compensateCommunication: (receipt: import("@ponderosa/agents").RuntimeAttachmentReservationReceiptV3) =>
+        assets.compensateRuntimeCommunicationReservation(receipt),
+    };
+    const saturated = new CoordinationV3Store(store.sqlite, {
+      maxPendingActivationsPerAgent: 1,
+      attachmentAuthority: authorityOptions,
+    });
+    saturated.enqueueMessageActivation({
+      projectId: project.id,
+      agentId: recipient.id,
+      messageId: "occupy-recipient-capacity",
+      kind: "ordinary",
+      payload: { text: "already pending" },
+    });
+    const postInsertId = "runtime-post-insert-rollback";
+    const postInsertEvent: CommunicationEvent = {
+      eventId: postInsertId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id },
+      intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] },
+      text: "must roll back after insert",
+      attachments: [{ ...attachment, state: "associated" }],
+      createdAt: "2026-07-19T00:00:00.000Z",
+    };
+    const beforePostInsertFailure = durableMutationState(store, dataDir, project.id);
+    expect(() => saturated.recordRuntimeCommunication({
+      id: postInsertId,
+      projectId: project.id,
+      sender: postInsertEvent.sender,
+      intent: postInsertEvent.intent,
+      audience: postInsertEvent.audience,
+      payload: { communication: postInsertEvent },
+      activation: {
+        agentId: recipient.id,
+        kind: "coordination_request",
+        priority: 60,
+        dispatchPolicy: "next_run",
+        promptClass: "coordination",
+      },
+    })).toThrow("pending activation limit reached");
+    expect(new CoordinationV3Store(store.sqlite).runtimeCommunication(postInsertId)).toBeUndefined();
+    expect(assets.authoritativeRuntimeCommunicationAttachments(postInsertId)).toEqual([]);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforePostInsertFailure);
+
+    const commitFailureId = "runtime-commit-failure";
+    store.sqlite.exec(`
+      CREATE TABLE pr246_commit_failure_parent (id TEXT PRIMARY KEY);
+      CREATE TABLE pr246_commit_failure_child (
+        id TEXT PRIMARY KEY,
+        parent_id TEXT NOT NULL,
+        FOREIGN KEY (parent_id) REFERENCES pr246_commit_failure_parent(id)
+          DEFERRABLE INITIALLY DEFERRED
+      );
+      CREATE TEMP TRIGGER pr246_fail_runtime_communication_commit
+      AFTER INSERT ON runtime_communications
+      WHEN NEW.id = '${commitFailureId}'
+      BEGIN
+        INSERT INTO pr246_commit_failure_child (id, parent_id)
+        VALUES (NEW.id, 'missing-parent');
+      END;
+    `);
+    const commitFailureEvent: CommunicationEvent = {
+      ...postInsertEvent,
+      eventId: commitFailureId,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "must roll back at commit",
+    };
+    const commitFailure = new CoordinationV3Store(store.sqlite, {
+      attachmentAuthority: authorityOptions,
+    });
+    const beforeCommitFailure = durableMutationState(store, dataDir, project.id);
+    expect(() => commitFailure.recordRuntimeCommunication({
+      id: commitFailureId,
+      projectId: project.id,
+      sender: commitFailureEvent.sender,
+      intent: commitFailureEvent.intent,
+      audience: commitFailureEvent.audience,
+      payload: { communication: commitFailureEvent },
+    })).toThrow(/FOREIGN KEY constraint failed/);
+    expect(commitFailure.runtimeCommunication(commitFailureId)).toBeUndefined();
+    expect(assets.authoritativeRuntimeCommunicationAttachments(commitFailureId)).toEqual([]);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(beforeCommitFailure);
+    assets.close();
+  });
+
   it("keeps a canonical-only passive Broadcast attachment reachable across commit, crash, restart, and sweep", async () => {
     const project = store.createProject({ label: "Passive attachment recovery", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });

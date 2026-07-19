@@ -738,9 +738,12 @@ export class CoordinationV3Store {
       throw new Error("runtime communication ID collision");
     }
     const attachmentAuthority = this.options.attachmentAuthority;
-    const result = this.sqlite.transaction((): RuntimeCommunicationV3Result => {
-      let reservationReceipt: RuntimeAttachmentReservationReceiptV3 | undefined;
-      try {
+    let reservationReceipt: RuntimeAttachmentReservationReceiptV3 | undefined;
+    let result: RuntimeCommunicationV3Result;
+    try {
+      result = this.sqlite.transaction((): RuntimeCommunicationV3Result => {
+        let insertedCommunication = false;
+        try {
         // The scheduler write fence must precede the separately committed asset
         // reservation. Otherwise two attempts can share one association, let
         // the rejected attempt compensate it, and commit the second attempt
@@ -795,6 +798,7 @@ export class CoordinationV3Store {
           stableJson(input.audience), stableJson(payload), hash,
           activationInputs.length ? 1 : 0, now,
         );
+        insertedCommunication = true;
         const insertArtifact = this.sqlite.prepare(`
           INSERT INTO runtime_artifacts (
             id, owner_kind, owner_id, project_id, role, title, media_type,
@@ -830,27 +834,55 @@ export class CoordinationV3Store {
           ...(artifacts.length ? { artifactIds: artifacts.map((artifact) => artifact.id) } : {}),
           replayed: false,
         };
-      } catch (schedulerError) {
-        if (reservationReceipt && attachmentAuthority) {
-          try {
+        } catch (schedulerError) {
+          if (reservationReceipt && attachmentAuthority) {
+            try {
             // Compensation remains inside the same scheduler fence as
             // reservation and publication, so another attempt cannot observe
             // or reuse an association that this attempt may release.
             const committed = this.sqlite.prepare(`
               SELECT 1 FROM runtime_communications WHERE id = ?
             `).get(input.id);
-            if (!committed) attachmentAuthority.compensateCommunication(reservationReceipt);
-          } catch (compensationError) {
-            throw new AggregateError(
-              [schedulerError, compensationError],
-              "runtime Communication attachment compensation failed",
-              { cause: schedulerError },
-            );
+            // A row inserted by this callback is still visible here but will
+            // roll back when the callback throws. Only a genuinely pre-existing
+            // committed replay owns its association across this failure.
+            if (insertedCommunication || !committed) {
+              attachmentAuthority.compensateCommunication(reservationReceipt);
+            }
+            } catch (compensationError) {
+              throw new AggregateError(
+                [schedulerError, compensationError],
+                "runtime Communication attachment compensation failed",
+                { cause: schedulerError },
+              );
+            }
           }
+          throw schedulerError;
         }
-        throw schedulerError;
+      }).immediate();
+    } catch (transactionError) {
+      if (reservationReceipt && attachmentAuthority) {
+        try {
+          // better-sqlite3 performs COMMIT after the callback returns. A COMMIT
+          // failure therefore bypasses the callback catch above; reacquire the
+          // scheduler fence and release only this attempt's exact reservation
+          // when no concurrent attempt committed the Communication.
+          this.sqlite.transaction(() => {
+            const committed = this.sqlite.prepare(`
+              SELECT 1 FROM runtime_communications WHERE id = ?
+            `).get(input.id);
+            if (!committed) attachmentAuthority.compensateCommunication(reservationReceipt!);
+          }).immediate();
+        } catch (compensationError) {
+          throw new AggregateError(
+            [transactionError, compensationError],
+            "runtime Communication attachment compensation failed",
+            { cause: transactionError },
+          );
+        }
       }
-    }).immediate();
+      throw transactionError;
+    }
     // The filesystem-backed authority commits separately from scheduler SQLite.
     // Re-read every accepted attachment after the passive transaction commits;
     // callers must not project the canonical Communication when immutable bytes
