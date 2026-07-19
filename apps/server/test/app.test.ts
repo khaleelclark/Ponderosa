@@ -741,6 +741,7 @@ class SteerableMockAdapter extends MockAdapter {
   readonly starts: RuntimeTurnInput[] = [];
   readonly steers: RuntimeTurnInput[] = [];
   readonly openedOptions: OpenRuntimeSessionOptions[] = [];
+  readonly livenessSetters: Array<(alive: boolean) => void> = [];
   opened = 0;
   closed = 0;
   interrupted = 0;
@@ -758,6 +759,10 @@ class SteerableMockAdapter extends MockAdapter {
     this.openedOptions[sessionIndex]?.onRuntimeRootExit();
   }
 
+  markDead(sessionIndex: number): void {
+    this.livenessSetters[sessionIndex]?.(false);
+  }
+
   completeTurn(sessionIndex: number): void {
     this.queues[sessionIndex]?.push({ type: "turn_done" });
   }
@@ -769,6 +774,7 @@ class SteerableMockAdapter extends MockAdapter {
     this.queues.push(queue);
     queue.push({ type: "session", sessionId: "persistent-session" });
     let alive = true;
+    this.livenessSetters.push((next) => { alive = next; });
     let closePromise: Promise<void> | undefined;
     const session: RuntimeSession = {
       engineAgentId: "persistent-session",
@@ -2675,6 +2681,88 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("detaches an idle crashed persistent runtime before replacement work", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Idle persistent root exit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Idle crash", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "First turn" } });
+    await waitForRun(agent.id);
+    expect(persistent.opened).toBe(1);
+    persistent.crashRoot(0);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Replacement turn" } });
+    await waitForRun(agent.id, 2);
+    expect(persistent.opened).toBe(2);
+    await app.close();
+  });
+
+  it("refuses a dead reusable session even when its root-exit callback was missed", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Dead reusable session", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Liveness gate", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "First turn" } });
+    await waitForRun(agent.id);
+    persistent.markDead(0);
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Do not reuse dead state" } });
+    await waitForRun(agent.id, 2);
+    expect(persistent.closed).toBeGreaterThanOrEqual(1);
+    expect(persistent.opened).toBe(2);
+    await app.close();
+  });
+
+  it("binds a reused persistent root exit to the current turn instead of its opening Run", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      runtimeSessionScheduling: { maxIdleSessions: 1, idleTtlMs: 60_000 },
+      communicationV3: { pollMs: 5 },
+    });
+    const project = store.createProject({ label: "Reused persistent root exit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Second-turn crash", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Open the session" } });
+    await waitForRun(agent.id);
+    persistent.completeStartedTurns = false;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Reuse the session" } });
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(2));
+    expect(persistent.opened).toBe(1);
+
+    const token = persistent.openedOptions[0]!.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN!;
+    persistent.crashRoot(0);
+    expect((await app.inject({
+      method: "GET", url: "/api/agent-directory", headers: { authorization: `Bearer ${token}` },
+    })).statusCode).toBe(401);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await vi.waitFor(() => expect(new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun).toBeUndefined());
+
+    persistent.completeStartedTurns = true;
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Start safely again" } });
+    await waitForRun(agent.id, 2);
+    expect(persistent.opened).toBe(2);
+    expect(persistent.starts).toHaveLength(3);
+    await app.close();
+  });
+
   it("awaits non-persistent Run completion until a stubborn descendant exits", async () => {
     const children: ChildProcess[] = [];
     const pidFile = path.join(dataDir, "one-shot-descendant.json");
@@ -2754,6 +2842,62 @@ describe("persistent engine steering", () => {
     expect(store.getProject(project.id)).toBeUndefined();
     expect(closeAttempts).toBe(2);
     expect(alive).toBe(false);
+    await app.close();
+  });
+
+  it("blocks a queued successor until failed one-shot cleanup confirms process exit", async () => {
+    const fallback = new MockAdapter();
+    let executions = 0;
+    let firstCloseAttempts = 0;
+    let firstAlive = true;
+    let releaseRetry!: () => void;
+    const retryBarrier = new Promise<void>((resolve) => { releaseRetry = resolve; });
+    const firstHandle: RuntimeProcessHandle = {
+      isAlive: () => firstAlive,
+      close: async () => {
+        firstCloseAttempts += 1;
+        if (firstCloseAttempts === 1) throw new Error("simulated first one-shot close failure");
+        await retryBarrier;
+        firstAlive = false;
+      },
+    };
+    const execute = async function* (options: SeedOptions | ContinueOptions): AsyncIterable<AgentEvent> {
+      executions += 1;
+      let alive = true;
+      const handle: RuntimeProcessHandle = executions === 1 ? firstHandle : {
+        isAlive: () => alive,
+        close: async () => { alive = false; },
+      };
+      options.onRuntimeSpawned?.(handle);
+      yield { type: "session", sessionId: `one-shot-${executions}` };
+      yield { type: "turn_done" };
+    };
+    engines = [{
+      adapter: {
+        id: "codex", displayName: "Serialized one-shot runtime",
+        listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
+        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+      },
+      authStatus: async () => ({ authenticated: true }),
+    }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "One-shot successor gate", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Serialized one shot", engine: "codex" });
+
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "First" } });
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Second" } });
+    await waitForRun(agent.id);
+    await vi.waitFor(() => expect(firstCloseAttempts).toBeGreaterThanOrEqual(2));
+    expect(executions).toBe(1);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?")
+      .get(agent.id)).toEqual({ count: 1 });
+
+    releaseRetry();
+    await waitForRun(agent.id, 2);
+    expect(firstAlive).toBe(false);
+    expect(executions).toBe(2);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?")
+      .get(agent.id)).toEqual({ count: 2 });
     await app.close();
   });
 

@@ -474,6 +474,10 @@ interface ActiveRun {
   lastEventReceivedAt?: string;
   lastEventPersistedAt?: string;
   runtimeSession?: RuntimeSession;
+  /** Stable identity of the persistent provider process serving this turn.
+   * Root-exit callbacks bind to this identity rather than the Run that first
+   * opened a reusable session. */
+  persistentRuntimeIdentity?: object;
   v3SchedulerRunId?: string;
   v3FencingToken?: number;
   conversationId?: string;
@@ -483,6 +487,8 @@ interface ActiveRun {
 }
 
 interface PersistentRuntime {
+  /** Host-owned identity that survives reuse across provider turns. */
+  identity: object;
   session: RuntimeSession;
   iterator: AsyncIterator<AgentEvent>;
   /** Stable secrets injected once into the persistent engine process. */
@@ -501,6 +507,7 @@ interface PersistentRuntimeTeardown {
 }
 
 interface OpeningPersistentRuntime {
+  identity: object;
   projectId: string;
   /** Registered before Adapter.openSession() begins, so deletion and shutdown
    * cannot miss a provider process whose handle has not returned yet. */
@@ -521,6 +528,17 @@ interface OneShotRuntimeTeardown {
   operation?: Promise<void>;
   terminationConfirmed?: boolean;
   lastError?: string;
+}
+
+/** One Agent-indexed registry owns every provider process handle. Scheduler Run
+ * ownership remains separately fenced in SQLite; this registry is the local
+ * admission barrier that prevents overlapping host authority. */
+interface AgentRuntimeAuthority {
+  opening?: OpeningPersistentRuntime;
+  reusable?: PersistentRuntime;
+  closing?: PersistentRuntimeTeardown;
+  oneShots: Map<string, OneShotRuntimeTeardown>;
+  retryTimer?: NodeJS.Timeout;
 }
 
 /**
@@ -1784,15 +1802,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     handleProtocols: (protocols) => protocols.has("vite-hmr") ? "vite-hmr" : protocols.has("vite-ping") ? "vite-ping" : false,
   });
   let linkPreviewSweep: NodeJS.Timeout | undefined;
-  const runtimeSessions = new Map<string, PersistentRuntime>();
-  const openingRuntimes = new Map<string, OpeningPersistentRuntime>();
-  // A runtime moves here before it leaves the reusable pool. Failed or
-  // in-flight termination therefore retains the only process handle and fences
-  // every replacement until the operating system confirms exit.
-  const runtimeTeardowns = new Map<string, PersistentRuntimeTeardown>();
-  /** Spawn-time handles for non-persistent provider Runs. Entries survive Run
-   * release and failed close attempts until whole-group exit is observed. */
-  const oneShotRuntimeTeardowns = new Map<string, OneShotRuntimeTeardown>();
+  const runtimeAuthorities = new Map<string, AgentRuntimeAuthority>();
+  const runtimeAuthority = (agentId: string, create = false): AgentRuntimeAuthority | undefined => {
+    const existing = runtimeAuthorities.get(agentId);
+    if (existing || !create) return existing;
+    const created: AgentRuntimeAuthority = { oneShots: new Map() };
+    runtimeAuthorities.set(agentId, created);
+    return created;
+  };
+  const pruneRuntimeAuthority = (agentId: string, authority: AgentRuntimeAuthority): void => {
+    if (!authority.opening && !authority.reusable && !authority.closing && authority.oneShots.size === 0 && !authority.retryTimer &&
+        runtimeAuthorities.get(agentId) === authority) {
+      runtimeAuthorities.delete(agentId);
+    }
+  };
+  const reusableRuntime = (agentId: string): PersistentRuntime | undefined => runtimeAuthority(agentId)?.reusable;
+  const openingRuntime = (agentId: string): OpeningPersistentRuntime | undefined => runtimeAuthority(agentId)?.opening;
+  const closingRuntime = (agentId: string): PersistentRuntimeTeardown | undefined => runtimeAuthority(agentId)?.closing;
+  const oneShotRuntime = (agentId: string, runId: string): OneShotRuntimeTeardown | undefined =>
+    runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
@@ -2346,6 +2374,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const setRuntimeIdleTimer = opts.runtimeSessionScheduling?.setTimer ?? ((callback: () => void, delayMs: number) => setTimeout(callback, delayMs));
   const clearRuntimeIdleTimer = opts.runtimeSessionScheduling?.clearTimer ?? clearTimeout;
 
+  function clearRuntimeAuthorityRetry(authority: AgentRuntimeAuthority): void {
+    if (!authority.retryTimer) return;
+    clearTimeout(authority.retryTimer);
+    authority.retryTimer = undefined;
+  }
+
+  function clearRuntimeAuthorityRetryIfUnblocked(authority: AgentRuntimeAuthority): void {
+    if (authority.opening || authority.closing || authority.oneShots.size > 0) return;
+    clearRuntimeAuthorityRetry(authority);
+  }
+
+  function scheduleRuntimeAuthorityRetry(agentId: string): void {
+    const authority = runtimeAuthority(agentId, true)!;
+    if (closed || authority.retryTimer) return;
+    authority.retryTimer = setTimeout(() => {
+      authority.retryTimer = undefined;
+      void reconcileAgentRuntimeAuthority(agentId)
+        .then(() => {
+          pruneRuntimeAuthority(agentId, authority);
+          coordinationV3Scheduler?.notify();
+        })
+        .catch((error) => {
+          app.log.error({ err: error, agentId }, "provider runtime authority cleanup retry remains pending");
+          scheduleRuntimeAuthorityRetry(agentId);
+        });
+    }, 500);
+    authority.retryTimer.unref?.();
+  }
+
   function cancelRuntimeIdleClose(runtime: PersistentRuntime | undefined): void {
     if (!runtime) return;
     runtime.idleSince = undefined;
@@ -2364,8 +2421,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectId?: string,
   ): PersistentRuntimeTeardown {
     cancelRuntimeIdleClose(runtime);
-    if (runtimeSessions.get(agentId) === runtime) runtimeSessions.delete(agentId);
-    const existing = runtimeTeardowns.get(agentId);
+    const authority = runtimeAuthority(agentId, true)!;
+    if (authority.reusable === runtime) authority.reusable = undefined;
+    const existing = authority.closing;
     if (existing && existing.runtime !== runtime) {
       throw new Error(`cannot replace ${agentId} runtime while its previous process group is not confirmed terminated`);
     }
@@ -2375,7 +2433,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return existing;
     }
     const state: PersistentRuntimeTeardown = { runtime, reason, projectId };
-    runtimeTeardowns.set(agentId, state);
+    authority.closing = state;
     return state;
   }
 
@@ -2391,9 +2449,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const operation = Promise.resolve()
       .then(() => runtime.session.close())
       .then(() => {
-        if (runtimeTeardowns.get(agentId) === state) runtimeTeardowns.delete(agentId);
+        const authority = runtimeAuthority(agentId);
+        if (authority?.closing === state) {
+          authority.closing = undefined;
+          clearRuntimeAuthorityRetryIfUnblocked(authority);
+          pruneRuntimeAuthority(agentId, authority);
+        }
         try { resolveOperationalNotification(runtimeTeardownNotificationKey(agentId)); }
         catch { /* successful authority revocation remains authoritative */ }
+        coordinationV3Scheduler?.notify();
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -2408,6 +2472,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             projectId: state.projectId,
           });
         } catch { /* the retained process handle is the fail-closed authority */ }
+        scheduleRuntimeAuthorityRetry(agentId);
         throw error;
       })
       .finally(() => {
@@ -2417,22 +2482,41 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
-  async function retryPendingRuntimeTeardown(agentId: string): Promise<void> {
-    const pending = runtimeTeardowns.get(agentId);
+  async function reconcileAgentRuntimeAuthority(agentId: string): Promise<void> {
+    const pending = closingRuntime(agentId);
     if (pending) await teardownPersistentRuntime(agentId, pending.runtime, pending.reason, pending.projectId);
-    const opening = openingRuntimes.get(agentId);
-    if (!opening) return;
-    await opening.operation.catch(() => undefined);
-    if (opening.handle && !opening.terminationConfirmed) {
-      await teardownOpeningRuntime(agentId, opening, "provider readiness cleanup retry");
+    const opening = openingRuntime(agentId);
+    if (opening) {
+      await opening.operation.catch(() => undefined);
+      if (openingRuntime(agentId) === opening && opening.handle && !opening.terminationConfirmed) {
+        await teardownOpeningRuntime(agentId, opening, "provider readiness cleanup retry");
+      }
+      if (openingRuntime(agentId) === opening) {
+        throw new Error(`provider runtime readiness cleanup remains pending for ${agentId}`);
+      }
     }
-    if (openingRuntimes.get(agentId) === opening) {
-      throw new Error(`provider runtime readiness cleanup remains pending for ${agentId}`);
+
+    const oneShots = [...(runtimeAuthority(agentId)?.oneShots.values() ?? [])];
+    const results = await Promise.allSettled(oneShots.map((state) =>
+      teardownOneShotRuntime(state, "successor Run admission")
+    ));
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) {
+      throw new AggregateError(failures, `provider runtime cleanup remains pending for ${agentId}`);
+    }
+
+    const reusable = reusableRuntime(agentId);
+    if (reusable) {
+      let alive = false;
+      try { alive = reusable.session.isAlive(); } catch { /* a failed liveness check fails closed */ }
+      if (!alive) {
+        await teardownPersistentRuntime(agentId, reusable, "dead reusable session rejected before Run admission");
+      }
     }
   }
 
   function persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined {
-    return runtimeSessions.get(agentId) ?? runtimeTeardowns.get(agentId)?.runtime;
+    return reusableRuntime(agentId) ?? closingRuntime(agentId)?.runtime;
   }
 
   function teardownPersistentRuntimeInBackground(
@@ -2457,9 +2541,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       .then(() => state.handle!.close())
       .then(() => {
         state.terminationConfirmed = true;
-        if (state.settled && openingRuntimes.get(agentId) === state) openingRuntimes.delete(agentId);
+        const authority = runtimeAuthority(agentId);
+        if (state.settled && authority?.opening === state) {
+          authority.opening = undefined;
+          clearRuntimeAuthorityRetryIfUnblocked(authority);
+          pruneRuntimeAuthority(agentId, authority);
+        }
         try { resolveOperationalNotification(runtimeTeardownNotificationKey(agentId)); }
         catch { /* observed process-group exit remains authoritative */ }
+        coordinationV3Scheduler?.notify();
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
@@ -2474,6 +2564,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             projectId: state.projectId,
           });
         } catch { /* the retained opening handle is the fail-closed authority */ }
+        scheduleRuntimeAuthorityRetry(agentId);
         throw error;
       })
       .finally(() => {
@@ -2491,9 +2582,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       .then(() => state.handle.close())
       .then(() => {
         state.terminationConfirmed = true;
-        if (oneShotRuntimeTeardowns.get(state.runId) === state) oneShotRuntimeTeardowns.delete(state.runId);
+        const authority = runtimeAuthority(state.agentId);
+        if (authority?.oneShots.get(state.runId) === state) {
+          authority.oneShots.delete(state.runId);
+          clearRuntimeAuthorityRetryIfUnblocked(authority);
+          pruneRuntimeAuthority(state.agentId, authority);
+        }
         try { resolveOperationalNotification(`provider-run-cleanup:${state.runId}`); }
         catch { /* observed process-group exit remains authoritative */ }
+        coordinationV3Scheduler?.notify();
       })
       .catch((error: unknown) => {
         state.lastError = error instanceof Error ? error.message : String(error);
@@ -2503,10 +2600,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             category: "system",
             severity: "urgent",
             title: "Provider Run cleanup needs attention",
-            body: `Ponderosa could not confirm that ${state.agentId}'s provider process group exited after ${reason}. Project cleanup remains blocked while termination retries. ${state.lastError}`.slice(0, 1_000),
+            body: `Ponderosa could not confirm that ${state.agentId}'s provider process group exited after ${reason}. New provider work for this Agent remains blocked while termination retries. ${state.lastError}`.slice(0, 1_000),
             projectId: state.projectId,
           });
         } catch { /* retained handle is the fail-closed authority */ }
+        scheduleRuntimeAuthorityRetry(state.agentId);
         throw error;
       })
       .finally(() => {
@@ -2516,12 +2614,38 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
-  function persistentRootExited(agentId: string, run: ActiveRun): void {
-    if (!ownsActiveRun(agentId, run)) return;
+  function persistentRootExited(agentId: string, identity: object): void {
+    const authority = runtimeAuthority(agentId);
+    const runtime = authority?.reusable;
+    if (runtime?.identity === identity) {
+      // Detach before checking Run ownership. An idle or second-turn crash must
+      // never leave this dead process eligible for later reuse.
+      teardownPersistentRuntimeInBackground(agentId, runtime, "provider root exited");
+    }
+    const opening = authority?.opening;
+    if (opening?.identity === identity && opening.handle && !opening.terminationConfirmed) {
+      void teardownOpeningRuntime(agentId, opening, "provider root exited during readiness").catch((error) => {
+        app.log.error({ err: error, agentId }, "opening provider root-exit cleanup remains pending");
+      });
+    }
+
+    const run = activeRuns.get(agentId);
+    if (!run || run.persistentRuntimeIdentity !== identity || !ownsActiveRun(agentId, run)) return;
+    transitionRun(agentId, run, "cancelling");
+    activeRuns.delete(agentId);
+    void closeRunBrowser(agentId, run, "persistent_provider_root_exited");
+    closeLinkPreviewsForAgent(agentId, "persistent provider root exited");
     agentMessageCapabilities.delete(run.messageCapability);
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
-    transitionRun(agentId, run, "cancelling");
+    run.controller.abort();
+    const lifecycle = store.appendEvent(agentId, {
+      type: "agent_lifecycle",
+      status: "failed",
+      reason: "runtime_error",
+      executionId: run.executionId,
+    });
+    publish(agentId, lifecycle);
     try {
       coordinationV3.failRun({
         runId: run.v3SchedulerRunId!,
@@ -2532,14 +2656,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         error: "persistent provider root exited",
       });
     } catch { /* cancellation/deletion may already have advanced the fence */ }
-    const runtime = runtimeSessions.get(agentId);
-    if (runtime && runtime.session === run.runtimeSession) {
-      // Detach immediately so no later Run can reuse a process whose root has
-      // exited. The retained teardown registry owns retries until the complete
-      // provider process group is observed gone.
-      teardownPersistentRuntimeInBackground(agentId, runtime, "provider root exited");
-    }
-    run.controller.abort();
+    publishMessageDeliveryChanged(agentId);
     coordinationV3Scheduler?.notify();
   }
 
@@ -2548,6 +2665,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     agentIds?: ReadonlySet<string>,
   ): Promise<void> {
     const relevant = (agentId: string): boolean => !agentIds || agentIds.has(agentId);
+    for (const [agentId, authority] of runtimeAuthorities) {
+      if (relevant(agentId)) clearRuntimeAuthorityRetry(authority);
+    }
     for (let pass = 0; pass < 100; pass += 1) {
       // Revoke capabilities and cancellation authority before awaiting any
       // opening operation. An adapter that returns late is then routed through
@@ -2563,8 +2683,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         });
       }
 
-      const openingSnapshot = [...openingRuntimes]
-        .filter(([agentId, opening]) => relevant(agentId) || (!agentIds && Boolean(opening.projectId)));
+      const openingSnapshot = [...runtimeAuthorities].flatMap(([agentId, authority]) =>
+        authority.opening && (relevant(agentId) || (!agentIds && Boolean(authority.opening.projectId)))
+          ? [[agentId, authority.opening] as const]
+          : []
+      );
       // A registered spawn-time handle is actionable before readiness settles.
       // Close it first so a stalled initialize/thread-open request cannot hold
       // deletion or shutdown hostage through its own unresolved Promise.
@@ -2585,7 +2708,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         throw new AggregateError(spawnedTerminationFailures, "Provider runtime authority drain did not complete");
       }
       // Rejections here are expected for opens fenced by cancellation. If a
-      // ready runtime failed to close, its handle is in runtimeTeardowns. A
+      // ready runtime failed to close, its handle remains in the Agent's
+      // closing authority slot. A
       // readiness failure retains its spawn-time handle directly on the opening
       // state so this pass can retry it without relying on Adapter success.
       await Promise.allSettled(openingSnapshot.map(([, opening]) => opening.operation));
@@ -2607,10 +2731,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
 
       const completionSnapshot = [...activeRuns].filter(([agentId]) => relevant(agentId));
-      const oneShotEntries = [...oneShotRuntimeTeardowns.values()].filter((state) => relevant(state.agentId));
+      const oneShotEntries = [...runtimeAuthorities].flatMap(([agentId, authority]) =>
+        relevant(agentId) ? [...authority.oneShots.values()] : []
+      );
       const runtimes = new Map<string, PersistentRuntime>();
-      for (const [agentId, state] of runtimeTeardowns) if (relevant(agentId)) runtimes.set(agentId, state.runtime);
-      for (const [agentId, runtime] of runtimeSessions) if (relevant(agentId)) runtimes.set(agentId, runtime);
+      for (const [agentId, authority] of runtimeAuthorities) {
+        if (!relevant(agentId)) continue;
+        if (authority.closing) runtimes.set(agentId, authority.closing.runtime);
+        if (authority.reusable) runtimes.set(agentId, authority.reusable);
+      }
       const runtimeEntries = [...runtimes];
       // Persistent event loops often settle only after session.close(). Start
       // their teardown and the active Run completion barriers together.
@@ -2656,17 +2785,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         );
       }
 
-      const pending = [...openingRuntimes.keys()].some(relevant) ||
-        [...activeRuns.keys()].some(relevant) || [...runtimeSessions.keys()].some(relevant) ||
-        [...runtimeTeardowns.keys()].some(relevant) ||
-        [...oneShotRuntimeTeardowns.values()].some((state) => relevant(state.agentId));
+      const pending = [...activeRuns.keys()].some(relevant) || [...runtimeAuthorities].some(([agentId, authority]) =>
+        relevant(agentId) && Boolean(authority.opening || authority.reusable || authority.closing || authority.oneShots.size)
+      );
       if (!pending) return;
     }
     throw new Error("Provider runtime authority drain did not reach a fixed point");
   }
 
   function trimIdleRuntimeSessions(): void {
-    const idle = [...runtimeSessions.entries()]
+    const idle = [...runtimeAuthorities].flatMap(([agentId, authority]) => authority.reusable
+      ? [[agentId, authority.reusable] as const]
+      : [])
       .filter(([agentId, runtime]) => !activeRuns.has(agentId) && runtime.idleSince !== undefined)
       .sort((left, right) => left[1].idleSince! - right[1].idleSince!);
     for (const [agentId, runtime] of idle.slice(0, Math.max(0, idle.length - runtimeMaxIdleSessions))) {
@@ -2678,7 +2808,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     cancelRuntimeIdleClose(runtime);
     runtime.idleSince = runtimeSessionNow();
     runtime.idleTimer = setRuntimeIdleTimer(() => {
-      if (closed || activeRuns.has(agentId) || runtimeSessions.get(agentId) !== runtime) return;
+      if (closed || activeRuns.has(agentId) || reusableRuntime(agentId) !== runtime) return;
       teardownPersistentRuntimeInBackground(agentId, runtime, "idle timeout");
     }, runtimeIdleTtlMs);
     runtime.idleTimer.unref?.();
@@ -3793,10 +3923,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         });
         publishCoordinationV3Changed(payload.agentId);
       },
-      blockedAgentIds: () => store.listProjects().flatMap((project) =>
-        store.listAgents(project.id)
-          .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
-          .map((candidate) => candidate.id)),
+      blockedAgentIds: () => [...new Set([
+        ...store.listProjects().flatMap((project) =>
+          store.listAgents(project.id)
+            .filter((candidate) => !providerEnabled(candidate.activeEngine) || Boolean(engineAvailability.denial(candidate.activeEngine)))
+            .map((candidate) => candidate.id)),
+        ...[...runtimeAuthorities].flatMap(([agentId, authority]) =>
+          authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
+      ])],
       onRunLeased: (lease) => {
         const triggerId = lease.activations.flatMap((activation) => {
           if (activation.kind !== "trigger_occurrence" || !activation.payload || typeof activation.payload !== "object") return [];
@@ -4207,10 +4341,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
     if (!providerRuntimeShutdownFinalized) {
       await drainProviderRuntimeAuthority("server_shutdown");
-      runtimeSessions.clear();
-      runtimeTeardowns.clear();
-      openingRuntimes.clear();
-      oneShotRuntimeTeardowns.clear();
+      runtimeAuthorities.clear();
       activeRuns.clear();
       providerRuntimeShutdownFinalized = true;
     }
@@ -6842,9 +6973,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
       // The drain rescans after every late open/completion. Keep this explicit
       // final assertion beside the irreversible storage boundary.
-      if ([...openingRuntimes.keys(), ...activeRuns.keys(), ...runtimeSessions.keys(), ...runtimeTeardowns.keys()]
-        .some((agentId) => agentIds.has(agentId)) ||
-        [...oneShotRuntimeTeardowns.values()].some((state) => agentIds.has(state.agentId))) {
+      if ([...activeRuns.keys()].some((agentId) => agentIds.has(agentId)) ||
+        [...runtimeAuthorities].some(([agentId, authority]) => agentIds.has(agentId) &&
+          Boolean(authority.opening || authority.reusable || authority.closing || authority.oneShots.size))) {
         throw new Error("Project deletion provider authority changed after draining");
       }
 
@@ -9565,7 +9696,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       );
       // An evicted/failed runtime keeps this Agent fenced until its retained
       // handle confirms exit. Never start a replacement beside it.
-      await retryPendingRuntimeTeardown(agent.id);
+      await reconcileAgentRuntimeAuthority(agent.id);
       let resumeSessionState = store.resumeSessionState(agent.id);
       if (requestContextRollover) {
         // Provider sessions are resumable caches, not agent identity. A newly
@@ -9573,7 +9704,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         // join, human, and steering activations continue their current context.
         // Close only the idle provider process; canonical agent state and all
         // durable coordination records remain intact.
-        const staleRuntime = runtimeSessions.get(agent.id);
+        const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "request_context_rollover");
         organizationEnvelopeStates.delete(agent.id);
@@ -9583,14 +9714,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         // A provider session is a cache of both context and its immutable tool
         // surface. Missing hashes are intentionally incompatible: canonical
         // Agent state survives while the opaque provider cache is reseeded.
-        const staleRuntime = runtimeSessions.get(agent.id);
+        const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "tool_contract_changed");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
         if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
       }
-      const reusablePersistentRuntime = engine.adapter.openSession ? runtimeSessions.get(agent.id) : undefined;
+      const reusablePersistentRuntime = engine.adapter.openSession ? reusableRuntime(agent.id) : undefined;
       cancelRuntimeIdleClose(reusablePersistentRuntime);
       const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
       const resumeSessionId = resumeSessionState?.sessionId;
@@ -10046,6 +10177,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const openPersistentRuntime = async (
             sessionResumeId: string | undefined,
             onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
+            identity: object,
           ): Promise<PersistentRuntime> => {
             const session = await engine.adapter.openSession!({
               agentId: agent.id,
@@ -10113,20 +10245,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 };
               },
               onRuntimeSpawned,
-              onRuntimeRootExit: () => persistentRootExited(agent.id, activeRun),
+              onRuntimeRootExit: () => persistentRootExited(agent.id, identity),
               signal: controller.signal,
             });
             return {
+              identity,
               session,
               iterator: session.events[Symbol.asyncIterator](),
               messageCapability,
             };
           };
           const openRegisteredPersistentRuntime = (sessionResumeId?: string): Promise<PersistentRuntime> => {
-            if (openingRuntimes.has(agent.id)) {
+            const authority = runtimeAuthority(agent.id, true)!;
+            if (authority.opening) {
               throw new Error(`provider runtime is already opening for ${agent.id}`);
             }
-            const state = {} as OpeningPersistentRuntime;
+            const identity = {};
+            const state = { identity, projectId: project.id } as OpeningPersistentRuntime;
+            activeRun.persistentRuntimeIdentity = identity;
             // Defer the adapter call by one microtask so the opening operation
             // is visible to Project deletion and shutdown before openSession()
             // can spawn or await anything.
@@ -10139,24 +10275,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   throw new Error(`provider adapter registered multiple opening handles for ${agent.id}`);
                 }
                 state.handle = handle;
-              }))
+              }, identity))
               .then(async (runtime) => {
                 const currentAgent = store.getAgent(agent.id);
+                const currentAuthority = runtimeAuthority(agent.id);
                 const stillAuthoritative = !closed && !deletingProjectIds.has(project.id) && !deletingAgentIds.has(agent.id) &&
                   !controller.signal.aborted && currentAgent?.projectId === project.id &&
-                  activeRuns.get(agent.id) === activeRun && ownsActiveRun(agent.id, activeRun);
+                  activeRuns.get(agent.id) === activeRun && ownsActiveRun(agent.id, activeRun) &&
+                  currentAuthority?.opening === state && !currentAuthority.closing;
                 if (!stillAuthoritative) {
                   await teardownPersistentRuntime(agent.id, runtime, "provider open lost Run authority", project.id);
                   throw new Error(`provider runtime open lost authority for ${agent.id}`);
                 }
-                runtimeSessions.set(agent.id, runtime);
+                currentAuthority.reusable = runtime;
                 return runtime;
               })
               .catch(async (error: unknown) => {
                 // Adapter readiness can reject after the provider has spawned.
                 // Retain and close that spawn-time handle before propagating the
                 // open failure; a failed close leaves the state retryable.
-                if (state.handle && !state.terminationConfirmed && !runtimeTeardowns.has(agent.id)) {
+                if (state.handle && !state.terminationConfirmed && !closingRuntime(agent.id)) {
                   try {
                     await teardownOpeningRuntime(agent.id, state, "provider readiness failed");
                   } catch (closeError) {
@@ -10170,34 +10308,45 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               })
               .finally(() => {
                 state.settled = true;
-                if (openingRuntimes.get(agent.id) === state &&
-                    (!state.handle || state.terminationConfirmed || runtimeSessions.has(agent.id) || runtimeTeardowns.has(agent.id))) {
-                  openingRuntimes.delete(agent.id);
+                const currentAuthority = runtimeAuthority(agent.id);
+                if (currentAuthority?.opening === state &&
+                    (!state.handle || state.terminationConfirmed || currentAuthority.reusable || currentAuthority.closing)) {
+                  currentAuthority.opening = undefined;
+                  pruneRuntimeAuthority(agent.id, currentAuthority);
                 }
               });
-            state.projectId = project.id;
             state.operation = operation;
-            openingRuntimes.set(agent.id, state);
+            authority.opening = state;
             return operation;
           };
           let persistentRuntime = reusablePersistentRuntime;
+          if (persistentRuntime) {
+            let alive = false;
+            try { alive = persistentRuntime.session.isAlive(); } catch { /* fail closed */ }
+            if (reusableRuntime(agent.id) !== persistentRuntime || !alive) {
+              await reconcileAgentRuntimeAuthority(agent.id);
+              persistentRuntime = undefined;
+            }
+          }
           if (engine.adapter.openSession && !persistentRuntime) {
             persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
           }
           if (persistentRuntime) {
+            activeRun.persistentRuntimeIdentity = persistentRuntime.identity;
             activeRun.runtimeSession = persistentRuntime.session;
             scheduleRuntimeLivenessHeartbeat(agent.id, activeRun);
           }
           let persistentTurnStarted = false;
           const registerOneShotRuntime = (handle: RuntimeProcessHandle): void => {
-            const existing = oneShotRuntimeTeardowns.get(runId);
+            const authority = runtimeAuthority(agent.id, true)!;
+            const existing = authority.oneShots.get(runId);
             if (existing && existing.handle !== handle) {
               void handle.close().catch((error) => app.log.error({ err: error, runId }, "duplicate one-shot runtime failed to terminate"));
               throw new Error(`provider adapter registered multiple one-shot handles for ${runId}`);
             }
             if (existing) return;
             const state: OneShotRuntimeTeardown = { agentId: agent.id, projectId: project.id, runId, handle };
-            oneShotRuntimeTeardowns.set(runId, state);
+            authority.oneShots.set(runId, state);
             if (closed || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) ||
                 controller.signal.aborted || !ownsActiveRun(agent.id, activeRun)) {
               void teardownOneShotRuntime(state, "spawn lost Run authority").catch((error) => {
@@ -10515,7 +10664,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               });
             }
           }
-          const retainedRuntime = runtimeSessions.get(agent.id);
+          const retainedRuntime = reusableRuntime(agent.id);
           if (released && retainedRuntime && !closed && !controller.signal.aborted &&
               !deletingAgentIds.has(agent.id) && store.getAgent(agent.id)?.projectId === project.id) {
             scheduleRuntimeIdleClose(agent.id, retainedRuntime);
@@ -10527,7 +10676,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       })();
       activeRun.completion = execution;
       const cleanup = execution.finally(async () => {
-        const oneShot = oneShotRuntimeTeardowns.get(runId);
+        const oneShot = oneShotRuntime(agent.id, runId);
         if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
       });
       void cleanup.catch((error) => app.log.error({ err: error, agentId: agent.id, runId }, "provider Run cleanup remains pending"));
