@@ -1,7 +1,7 @@
 import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -47,6 +47,91 @@ describe("secure staged assets", () => {
     expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id.toUpperCase())).toBeUndefined();
     writeFileSync(bound!.localPath, "tampered");
     expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id)).toBeUndefined();
+  });
+
+  it("rejects attachment metadata, route, media, extension, and exact-byte drift", async () => {
+    const staged = await assets.stage({
+      projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\nauthoritative"),
+      name: "authority.pdf", declaredType: "application/pdf",
+    });
+    const directory = path.join(dataDir, "projects", "project", "agents", "agent", "attachments");
+    const metadataFile = path.join(directory, `${staged.id}.json`);
+    const original = JSON.parse(readFileSync(metadataFile, "utf8")) as Record<string, unknown>;
+    for (const drift of [
+      { name: "authority.json" },
+      { mediaType: "application/json" },
+      { url: "/api/agents/other/assets/foreign/download" },
+      { downloadUrl: "/api/agents/other/assets/foreign/download" },
+      { previewUrl: "/unexpected-preview" },
+      { unknownMetadata: true },
+    ]) {
+      writeFileSync(metadataFile, JSON.stringify({ ...original, ...drift }));
+      expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id)).toBeUndefined();
+    }
+    writeFileSync(metadataFile, JSON.stringify(original));
+    const contentFile = path.join(directory, `${staged.id}.bin`);
+    const replacement = Buffer.from("%PDF-1.7\nsubstitution!");
+    expect(replacement.length).toBe(staged.size);
+    writeFileSync(contentFile, replacement);
+    expect(assets.authoritativeRuntimeAttachment("project", "agent", staged.id)).toBeUndefined();
+  });
+
+  it("resolves closed Markdown artifacts only from the registered no-follow managed location", () => {
+    const projectId = "project";
+    const body = Buffer.from("# Durable report\n");
+    const id = `text-${createHash("sha256").update("artifact-authority").digest("hex")}`;
+    const contentDirectory = path.join(dataDir, "projects", projectId, "artifacts", "content");
+    mkdirSync(contentDirectory, { recursive: true });
+    const file = path.join(contentDirectory, id);
+    writeFileSync(file, body, { mode: 0o600 });
+    const artifact = {
+      id, role: "document" as const, title: "Durable report", mediaType: "text/markdown" as const,
+      blobPath: id, blobHash: createHash("sha256").update(body).digest("hex"), byteLength: body.length,
+    };
+    assets.registerRuntimeArtifact({ ...artifact, projectId, createdAt: "2026-07-19T00:00:00.000Z" });
+    expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toMatchObject({
+      artifact, localPath: file, contentHash: artifact.blobHash, byteLength: body.length,
+    });
+    expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, title: "Drift" })).toBeUndefined();
+    expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, blobPath: `../${id}` })).toBeUndefined();
+    expect(assets.authoritativeRuntimeArtifact(projectId, { ...artifact, blobHash: "0".repeat(64) })).toBeUndefined();
+    writeFileSync(file, Buffer.alloc(body.length, 0x78));
+    expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toBeUndefined();
+    rmSync(file);
+    const outside = path.join(dataDir, "outside-markdown");
+    writeFileSync(outside, body);
+    symlinkSync(outside, file);
+    expect(assets.authoritativeRuntimeArtifact(projectId, artifact)).toBeUndefined();
+  });
+
+  it("reserves passive Communication assets before commit and recovers or releases them after restart", async () => {
+    const committed = await assets.stage({
+      projectId: "p", agentId: "t", body: Buffer.from("%PDF-1.7\ncommitted"),
+      name: "committed.pdf", declaredType: "application/pdf",
+    });
+    const abandoned = await assets.stage({
+      projectId: "p", agentId: "t", body: Buffer.from("%PDF-1.7\nabandoned"),
+      name: "abandoned.pdf", declaredType: "application/pdf",
+    });
+    const committedHandle = assets.authoritativeRuntimeAttachment("p", "t", committed.id)!;
+    const abandonedHandle = assets.authoritativeRuntimeAttachment("p", "t", abandoned.id)!;
+    assets.reserveRuntimeCommunication("passive-committed", [{
+      projectId: "p", agentId: "t", attachmentId: committed.id,
+      contentHash: committedHandle.contentHash, byteLength: committedHandle.byteLength,
+    }]);
+    assets.reserveRuntimeCommunication("passive-abandoned", [{
+      projectId: "p", agentId: "t", attachmentId: abandoned.id,
+      contentHash: abandonedHandle.contentHash, byteLength: abandonedHandle.byteLength,
+    }]);
+    expect(await assets.reconcile("p", "t", new Set(), Date.now() + 25 * 60 * 60 * 1000)).toBe(0);
+    expect((await assets.read("p", "t", committed.id))?.state).toBe("staged");
+    assets.close();
+    assets = new AssetStore(dataDir);
+    expect(await assets.recoverRuntimeCommunicationAssociations((communicationId) => communicationId === "passive-committed"))
+      .toEqual({ associated: 1, released: 1, unavailable: 0 });
+    expect((await assets.read("p", "t", committed.id))?.state).toBe("associated");
+    expect(await assets.reconcile("p", "t", new Set([committed.id]), Date.now() + 25 * 60 * 60 * 1000)).toBe(1);
+    expect(await assets.read("p", "t", abandoned.id)).toBeUndefined();
   });
 
   it("rejects trailing payloads, active markup, MIME/extension disagreement, and corrupt integrity", async () => {

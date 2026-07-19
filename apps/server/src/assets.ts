@@ -5,7 +5,7 @@ import path from "node:path";
 import sharp from "sharp";
 import Database from "better-sqlite3";
 import { DEFAULT_ASSET_LIMITS, type AssetDto, type AssetLimitsDto } from "@ponderosa/core";
-import { attachmentsDir } from "@ponderosa/agents";
+import { attachmentsDir, managedArtifactContentPath, managedArtifactsDir, type RuntimeArtifactInputV3 } from "@ponderosa/agents";
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
@@ -29,8 +29,49 @@ export interface StoredAsset extends AssetDto {
 }
 
 export interface AuthoritativeRuntimeAttachment {
-  attachment: AssetDto;
+  attachment: AssetDto & { sha256: string };
   localPath: string;
+  contentHash: string;
+  byteLength: number;
+}
+
+export interface AuthoritativeRuntimeArtifact {
+  artifact: RuntimeArtifactInputV3;
+  localPath: string;
+  contentHash: string;
+  byteLength: number;
+}
+
+export interface RuntimeAttachmentAssociation {
+  communicationId: string;
+  projectId: string;
+  agentId: string;
+  attachmentId: string;
+  contentHash: string;
+  byteLength: number;
+}
+
+interface RegisteredRuntimeArtifact extends RuntimeArtifactInputV3 {
+  projectId: string;
+  createdAt: string;
+}
+
+function runtimeArtifactIdentityMatches(
+  registered: Omit<RegisteredRuntimeArtifact, "id" | "createdAt" | "originAgentId" | "executionId"> & {
+    originAgentId?: string | null;
+    executionId?: string | null;
+  },
+  expected: Omit<RegisteredRuntimeArtifact, "id" | "createdAt" | "originAgentId" | "executionId"> & {
+    originAgentId?: string | null;
+    executionId?: string | null;
+  },
+): boolean {
+  return registered.projectId === expected.projectId && registered.role === expected.role &&
+    registered.title === expected.title && registered.mediaType === expected.mediaType &&
+    registered.blobPath === expected.blobPath && registered.blobHash === expected.blobHash &&
+    registered.byteLength === expected.byteLength &&
+    (registered.originAgentId ?? null) === (expected.originAgentId ?? null) &&
+    (registered.executionId ?? null) === (expected.executionId ?? null);
 }
 
 export class AssetError extends Error {
@@ -44,9 +85,7 @@ export class AssetAuthority {
       mkdirSyncSafe(dataDir); this.db = new Database(path.join(dataDir, "asset-authority.sqlite"));
       this.db.pragma("journal_mode = WAL"); this.db.pragma("synchronous = FULL"); this.db.pragma("busy_timeout = 500");
       const version = this.db.pragma("user_version", { simple: true }) as number;
-      if (version !== 0 && version !== 1 && version !== 2 && version !== 3) throw new AssetError(409, "asset authority schema is incompatible");
-      if (version === 1) this.db.exec("DROP TABLE IF EXISTS asset_reservations; DROP TABLE IF EXISTS asset_rate_events;");
-      if (version === 2) this.db.exec("DROP TABLE IF EXISTS asset_audit;");
+      if (version !== 0 && version !== 4) throw new AssetError(409, "asset authority schema is incompatible");
       this.db.exec(`CREATE TABLE IF NOT EXISTS asset_reservations (
         id TEXT PRIMARY KEY, asset_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL,
         size INTEGER NOT NULL CHECK(size > 0), created_at INTEGER NOT NULL
@@ -62,7 +101,24 @@ export class AssetAuthority {
       CREATE TABLE IF NOT EXISTS asset_audit (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT NOT NULL UNIQUE, project_id TEXT NOT NULL, agent_id TEXT NOT NULL, record_json TEXT NOT NULL CHECK(json_valid(record_json))
       );
-      PRAGMA user_version=3;`);
+      CREATE TABLE IF NOT EXISTS runtime_attachment_associations (
+        communication_id TEXT NOT NULL, asset_id TEXT NOT NULL, project_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL, content_hash TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length > 0),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (communication_id, asset_id)
+      );
+      CREATE INDEX IF NOT EXISTS runtime_attachment_associations_owner
+        ON runtime_attachment_associations(project_id, agent_id, asset_id);
+      CREATE TABLE IF NOT EXISTS runtime_artifact_authority (
+        id TEXT NOT NULL, project_id TEXT NOT NULL, role TEXT NOT NULL,
+        title TEXT NOT NULL, media_type TEXT NOT NULL, blob_path TEXT NOT NULL,
+        blob_hash TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length > 0),
+        origin_agent_id TEXT, execution_id TEXT, created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, id)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS runtime_artifact_authority_owner_role
+        ON runtime_artifact_authority(project_id, id, role);
+      PRAGMA user_version=4;`);
     } catch (error) { throw error instanceof AssetError ? error : new AssetError(409, `asset authority unavailable: ${error instanceof Error ? error.message : String(error)}`); }
   }
   private now(): number { return (this.db.prepare("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) now").get() as { now: number }).now; }
@@ -176,6 +232,118 @@ export class AssetAuthority {
   assertOwned(id: string): void {
     try { this.db.exec("BEGIN IMMEDIATE"); const now = this.now(); const result = this.db.prepare("DELETE FROM asset_reservations WHERE id=? AND created_at <= ?").run(id, now - UPLOAD_LEASE_MS); if (result.changes || !this.db.prepare("SELECT 1 FROM asset_reservations WHERE id=?").get(id)) throw new AssetError(409, "upload reservation expired"); this.db.exec("COMMIT"); } catch (error) { if (this.db.inTransaction) this.db.exec("ROLLBACK"); throw this.mapped(error); }
   }
+  reserveRuntimeCommunication(communicationId: string, bindings: RuntimeAttachmentAssociation[]): void {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const now = this.now();
+      const find = this.db.prepare(`
+        SELECT project_id projectId, agent_id agentId, content_hash contentHash, byte_length byteLength
+        FROM runtime_attachment_associations WHERE communication_id=? AND asset_id=?
+      `);
+      const insert = this.db.prepare(`
+        INSERT INTO runtime_attachment_associations(
+          communication_id,asset_id,project_id,agent_id,content_hash,byte_length,created_at
+        ) VALUES (?,?,?,?,?,?,?)
+      `);
+      for (const binding of bindings) {
+        const prior = find.get(communicationId, binding.attachmentId) as Omit<RuntimeAttachmentAssociation, "communicationId" | "attachmentId"> | undefined;
+        if (prior) {
+          if (prior.projectId !== binding.projectId || prior.agentId !== binding.agentId ||
+              prior.contentHash !== binding.contentHash || prior.byteLength !== binding.byteLength) {
+            throw new AssetError(409, "runtime Communication attachment reservation conflicts");
+          }
+          continue;
+        }
+        insert.run(
+          communicationId, binding.attachmentId, binding.projectId, binding.agentId,
+          binding.contentHash, binding.byteLength, now,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  runtimeCommunicationAssociations(): RuntimeAttachmentAssociation[] {
+    try {
+      return this.db.prepare(`
+        SELECT communication_id communicationId, asset_id attachmentId, project_id projectId,
+          agent_id agentId, content_hash contentHash, byte_length byteLength
+        FROM runtime_attachment_associations ORDER BY communication_id, asset_id
+      `).all() as RuntimeAttachmentAssociation[];
+    } catch (error) { throw this.mapped(error); }
+  }
+  removeRuntimeCommunicationAssociations(communicationId: string): void {
+    try { this.db.prepare("DELETE FROM runtime_attachment_associations WHERE communication_id=?").run(communicationId); }
+    catch (error) { throw this.mapped(error); }
+  }
+  runtimeAssociatedAssetIds(projectId: string, agentId: string): Set<string> {
+    try {
+      const rows = this.db.prepare(`
+        SELECT DISTINCT asset_id id FROM runtime_attachment_associations
+        WHERE project_id=? AND agent_id=?
+      `).all(projectId, agentId) as Array<{ id: string }>;
+      return new Set(rows.map((row) => row.id));
+    } catch (error) { throw this.mapped(error); }
+  }
+  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): RegisteredRuntimeArtifact {
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      const prior = this.db.prepare(`
+        SELECT project_id projectId, role, title, media_type mediaType, blob_path blobPath,
+          blob_hash blobHash, byte_length byteLength, origin_agent_id originAgentId,
+          execution_id executionId, created_at createdAt
+        FROM runtime_artifact_authority WHERE project_id=? AND id=?
+      `).get(artifact.projectId, artifact.id) as Omit<RegisteredRuntimeArtifact, "id"> | undefined;
+      const expected = {
+        projectId: artifact.projectId, role: artifact.role, title: artifact.title,
+        mediaType: artifact.mediaType, blobPath: artifact.blobPath, blobHash: artifact.blobHash,
+        byteLength: artifact.byteLength, originAgentId: artifact.originAgentId ?? null,
+        executionId: artifact.executionId ?? null,
+      };
+      const priorIdentity = prior ? (({ createdAt: _createdAt, ...identity }) => identity)(prior) : undefined;
+      if (priorIdentity && !runtimeArtifactIdentityMatches(priorIdentity, expected)) {
+        throw new AssetError(409, "runtime artifact identity collision");
+      }
+      if (!prior) this.db.prepare(`
+        INSERT INTO runtime_artifact_authority(
+          id,project_id,role,title,media_type,blob_path,blob_hash,byte_length,
+          origin_agent_id,execution_id,created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        artifact.id, artifact.projectId, artifact.role, artifact.title, artifact.mediaType,
+        artifact.blobPath, artifact.blobHash, artifact.byteLength,
+        artifact.originAgentId ?? null, artifact.executionId ?? null, artifact.createdAt,
+      );
+      this.db.exec("COMMIT");
+      return this.runtimeArtifact(artifact.projectId, artifact.id)!;
+    } catch (error) {
+      if (this.db.inTransaction) this.db.exec("ROLLBACK");
+      throw this.mapped(error);
+    }
+  }
+  runtimeArtifact(projectId: string, id: string): RegisteredRuntimeArtifact | undefined {
+    try {
+      const row = this.db.prepare(`
+        SELECT id, project_id projectId, role, title, media_type mediaType, blob_path blobPath,
+          blob_hash blobHash, byte_length byteLength, origin_agent_id originAgentId,
+          execution_id executionId, created_at createdAt
+        FROM runtime_artifact_authority WHERE project_id=? AND id=?
+      `).get(projectId, id) as (RegisteredRuntimeArtifact & { originAgentId: string | null; executionId: string | null }) | undefined;
+      if (!row) return undefined;
+      const { originAgentId, executionId, ...rest } = row;
+      return {
+        ...rest,
+        ...(originAgentId ? { originAgentId } : {}),
+        ...(executionId ? { executionId } : {}),
+      };
+    } catch (error) { throw this.mapped(error); }
+  }
+  removeRuntimeArtifact(projectId: string, id: string): void {
+    try { this.db.prepare("DELETE FROM runtime_artifact_authority WHERE project_id=? AND id=?").run(projectId, id); }
+    catch (error) { throw this.mapped(error); }
+  }
   close(): void { this.db.close(); }
 }
 
@@ -254,15 +422,36 @@ function canonicalFiles(id: string): { originalFile: string; previewFile: string
 function validateStoredAsset(value: unknown, projectId: string, agentId: string, id: string): StoredAsset | undefined {
   if (!value || typeof value !== "object") return undefined;
   const asset = value as Partial<StoredAsset>;
+  const fields = new Set([
+    "id", "projectId", "agentId", "name", "mediaType", "size", "width", "height",
+    "sha256", "state", "createdAt", "associatedAt", "originalFile", "previewFile",
+    "url", "downloadUrl", "previewUrl",
+  ]);
+  if (Object.keys(value as Record<string, unknown>).some((field) => !fields.has(field))) return undefined;
   const names = canonicalFiles(id);
   if (asset.id !== id || asset.projectId !== projectId || asset.agentId !== agentId) return undefined;
   if (!OWNER_ID.test(projectId) || !OWNER_ID.test(agentId) || !ID.test(id)) return undefined;
   if (asset.originalFile !== names.originalFile || (asset.previewFile !== undefined && asset.previewFile !== names.previewFile)) return undefined;
-  if (typeof asset.name !== "string" || typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > ASSET_LIMITS.maxFileBytes) return undefined;
+  if (typeof asset.name !== "string" || normalizeName(asset.name) !== asset.name ||
+      typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size < 1 || asset.size > ASSET_LIMITS.maxFileBytes) return undefined;
   if (typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sha256)) return undefined;
   if (asset.state !== "staged" && asset.state !== "associated") return undefined;
   if (typeof asset.createdAt !== "string" || !Number.isFinite(Date.parse(asset.createdAt))) return undefined;
+  if (asset.associatedAt !== undefined && (typeof asset.associatedAt !== "string" || !Number.isFinite(Date.parse(asset.associatedAt)))) return undefined;
+  if ((asset.state === "associated") !== (asset.associatedAt !== undefined)) return undefined;
   if (!ASSET_LIMITS.acceptedMediaTypes.includes(asset.mediaType as AssetDto["mediaType"])) return undefined;
+  if (!extensionMatches(asset.name, asset.mediaType as AssetDto["mediaType"])) return undefined;
+  const preview = asset.previewFile !== undefined;
+  const expectedDownload = `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/download`;
+  const expectedPreview = preview ? `/api/agents/${encodeURIComponent(agentId)}/assets/${id}/preview` : undefined;
+  const expectedUrl = preview
+    ? `/api/agents/${encodeURIComponent(agentId)}/attachments/${id}`
+    : expectedDownload;
+  if (asset.url !== expectedUrl || asset.downloadUrl !== expectedDownload || asset.previewUrl !== expectedPreview) return undefined;
+  if (String(asset.mediaType).startsWith("image/")) {
+    if (!preview || !Number.isSafeInteger(asset.width) || (asset.width ?? 0) < 1 ||
+        !Number.isSafeInteger(asset.height) || (asset.height ?? 0) < 1) return undefined;
+  } else if (preview || asset.width !== undefined || asset.height !== undefined) return undefined;
   return asset as StoredAsset;
 }
 
@@ -338,6 +527,7 @@ export class AssetStore {
     if (!ID.test(id)) return undefined;
     let metadataFd: number | undefined;
     let contentFd: number | undefined;
+    let previewFd: number | undefined;
     try {
       const directory = this.dir(projectId, agentId);
       const root = this.root ??= realpathSync(this.dataDir);
@@ -355,24 +545,120 @@ export class AssetStore {
       }
       metadataFd = openSync(path.join(actual, `${id}.json`), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const metadataInfo = fstatSync(metadataFd);
-      if (!metadataInfo.isFile() || metadataInfo.size > 32 * 1024) return undefined;
+      if (!metadataInfo.isFile() || metadataInfo.nlink !== 1 || metadataInfo.size > 32 * 1024) return undefined;
       const asset = validateStoredAsset(JSON.parse(readFileSync(metadataFd, "utf8")), projectId, agentId, id);
       if (!asset) return undefined;
       contentFd = openSync(path.join(actual, asset.originalFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
       const contentInfo = fstatSync(contentFd);
-      if (!contentInfo.isFile() || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+      if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== asset.size || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
       const body = readFileSync(contentFd);
-      if (createHash("sha256").update(body).digest("hex") !== asset.sha256) return undefined;
+      const contentHash = createHash("sha256").update(body).digest("hex");
+      if (contentHash !== asset.sha256 || detectType(body) !== asset.mediaType ||
+          !extensionMatches(asset.name, asset.mediaType) || !hasStrictImageContainer(body, asset.mediaType)) return undefined;
+      if (asset.previewFile) {
+        previewFd = openSync(path.join(actual, asset.previewFile), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const previewInfo = fstatSync(previewFd);
+        if (!previewInfo.isFile() || previewInfo.nlink !== 1 || previewInfo.size < 1 ||
+            previewInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+        const preview = readFileSync(previewFd);
+        if (detectType(preview) !== "image/png" || !hasStrictImageContainer(preview, "image/png")) return undefined;
+      }
       return {
-        attachment: { ...publicDto(asset), state: "associated" },
+        attachment: { ...publicDto(asset), sha256: contentHash, state: "associated" },
         localPath: path.join(actual, asset.originalFile),
+        contentHash,
+        byteLength: body.length,
       };
     } catch {
       return undefined;
     } finally {
       if (metadataFd !== undefined) closeSync(metadataFd);
       if (contentFd !== undefined) closeSync(contentFd);
+      if (previewFd !== undefined) closeSync(previewFd);
     }
+  }
+
+  registerRuntimeArtifact(artifact: RegisteredRuntimeArtifact): RegisteredRuntimeArtifact {
+    return this.authority.registerRuntimeArtifact(artifact);
+  }
+
+  removeRuntimeArtifactReservation(projectId: string, id: string): void {
+    this.authority.removeRuntimeArtifact(projectId, id);
+  }
+
+  authoritativeRuntimeArtifact(
+    projectId: string,
+    expected: RuntimeArtifactInputV3,
+  ): AuthoritativeRuntimeArtifact | undefined {
+    let contentFd: number | undefined;
+    try {
+      const registered = this.authority.runtimeArtifact(projectId, expected.id);
+      if (!registered || registered.projectId !== projectId) return undefined;
+      const { createdAt: _createdAt, ...registeredIdentity } = registered;
+      const expectedIdentity = { projectId, ...expected };
+      if (!runtimeArtifactIdentityMatches(registeredIdentity, expectedIdentity)) return undefined;
+      const { projectId: _projectId, ...authoritativeMetadata } = registeredIdentity;
+      const root = this.root ??= realpathSync(this.dataDir);
+      const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
+      const actualDirectory = realpathSync(contentDirectory);
+      const expectedDirectory = path.join(root, "projects", projectId, "artifacts", "content");
+      if (actualDirectory !== expectedDirectory) return undefined;
+      for (const ancestor of [
+        path.join(this.dataDir, "projects"),
+        path.join(this.dataDir, "projects", projectId),
+        managedArtifactsDir(this.dataDir, projectId),
+        contentDirectory,
+      ]) {
+        const info = lstatSync(ancestor);
+        if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
+      }
+      const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, expected.id);
+      if (canonicalPath !== path.join(actualDirectory, expected.id) || expected.blobPath !== expected.id) return undefined;
+      contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const contentInfo = fstatSync(contentFd);
+      if (!contentInfo.isFile() || contentInfo.nlink !== 1 || contentInfo.size !== expected.byteLength ||
+          contentInfo.size < 1 || contentInfo.size > ASSET_LIMITS.maxFileBytes) return undefined;
+      const body = readFileSync(contentFd);
+      const contentHash = createHash("sha256").update(body).digest("hex");
+      try { new TextDecoder("utf-8", { fatal: true }).decode(body); }
+      catch { return undefined; }
+      if (contentHash !== expected.blobHash) return undefined;
+      return { artifact: authoritativeMetadata, localPath: canonicalPath, contentHash, byteLength: body.length };
+    } catch { return undefined; }
+    finally { if (contentFd !== undefined) closeSync(contentFd); }
+  }
+
+  reserveRuntimeCommunication(
+    communicationId: string,
+    bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
+  ): void {
+    this.authority.reserveRuntimeCommunication(communicationId, bindings.map((binding) => ({ communicationId, ...binding })));
+  }
+
+  async recoverRuntimeCommunicationAssociations(
+    communicationExists: (communicationId: string, projectId: string) => boolean,
+  ): Promise<{ associated: number; released: number; unavailable: number }> {
+    let associated = 0;
+    let released = 0;
+    let unavailable = 0;
+    const rows = this.authority.runtimeCommunicationAssociations();
+    for (const row of rows) {
+      if (!communicationExists(row.communicationId, row.projectId)) {
+        this.authority.removeRuntimeCommunicationAssociations(row.communicationId);
+        released += 1;
+        continue;
+      }
+      const resolved = this.authoritativeRuntimeAttachment(row.projectId, row.agentId, row.attachmentId);
+      if (!resolved || resolved.contentHash !== row.contentHash || resolved.byteLength !== row.byteLength) {
+        unavailable += 1;
+        continue;
+      }
+      try {
+        await this.associate(row.projectId, row.agentId, [row.attachmentId]);
+        associated += 1;
+      } catch { unavailable += 1; }
+    }
+    return { associated, released, unavailable };
   }
 
   async stage(input: { projectId: string; agentId: string; body: Buffer; name: unknown; declaredType?: string }): Promise<AssetDto> {
@@ -410,8 +696,9 @@ export class AssetStore {
           const metadata = await image.metadata();
           if (!metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1 || metadata.width * metadata.height > MAX_PIXELS) throw new Error("unsafe image dimensions");
           width = metadata.width; height = metadata.height;
-          preview = await image.rotate().timeout({ seconds: 5 }).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
-          if (preview.length > ASSET_LIMITS.maxFileBytes) throw new Error("preview exceeds size limit");
+          const renderedPreview = await image.rotate().timeout({ seconds: 5 }).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+          if (renderedPreview.length > ASSET_LIMITS.maxFileBytes) throw new Error("preview exceeds size limit");
+          preview = renderedPreview;
         } catch { throw new AssetError(415, "image could not be safely decoded as one bounded frame"); }
       }
 
@@ -492,6 +779,7 @@ export class AssetStore {
     if (!openedDirectory) return 0;
     const directory = openedDirectory.path;
     let removed = 0;
+    const reachableIds = new Set([...associatedIds, ...this.authority.runtimeAssociatedAssetIds(projectId, agentId)]);
     const entries = await readdir(directory).catch(() => []);
     const metadataIds = new Set<string>();
     for (const entry of entries) {
@@ -512,8 +800,10 @@ export class AssetStore {
       const id = entry.slice(0, -5);
       const asset = await this.read(projectId, agentId, id);
       if (!asset) continue;
-      if (associatedIds.has(id) && asset.state !== "associated") await this.associate(projectId, agentId, [id]).catch(() => undefined);
-      else if (asset.state === "staged" && now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
+      if (associatedIds.has(id) && asset.state !== "associated") {
+        await this.associate(projectId, agentId, [id]).catch(() => undefined);
+      } else if (!reachableIds.has(id) && asset.state === "staged" &&
+          now - Date.parse(asset.createdAt) > STAGED_TTL_MS && await this.remove(projectId, agentId, id)) removed++;
     }
     await openedDirectory.handle.close();
     return removed;

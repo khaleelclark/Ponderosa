@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { CommunicationEvent } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type CommunicationEvent } from "@ponderosa/core";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import { openDb, type OpenedDb } from "../src/db.js";
 
@@ -92,7 +92,14 @@ function createTrigger(id: string, sourceKind: "webhook" | "filesystem" | "sched
 
 beforeEach(() => {
   opened = openDb(":memory:");
-  store = new CoordinationV3Store(opened.client);
+  store = new CoordinationV3Store(opened.client, {
+    artifactAuthority: (_candidateProjectId, artifact) => ({
+      artifact,
+      localPath: `/managed/${artifact.id}`,
+      contentHash: artifact.blobHash,
+      byteLength: artifact.byteLength,
+    }),
+  });
   seed();
 });
 
@@ -2130,6 +2137,72 @@ describe("CoordinationV3Store scheduler", () => {
     `).get(intake.activationId)).toEqual(activationBefore);
   });
 
+  it("requires exact managed-artifact bytes on Communication, Request update, and queued edit before mutation", () => {
+    const missing = runtimeArtifactInput(31);
+    const mismatched = runtimeArtifactInput(32);
+    store = new CoordinationV3Store(opened.client, {
+      artifactAuthority: (_candidateProjectId, artifact) => artifact.id === mismatched.id
+        ? {
+            artifact,
+            localPath: `/managed/${artifact.id}`,
+            contentHash: "f".repeat(64),
+            byteLength: artifact.byteLength,
+          }
+        : undefined,
+    });
+    const broadcast = (id: string, artifact: typeof missing) => ({
+      id, projectId,
+      sender: { kind: "user" as const, userId: "local-operator" },
+      intent: "broadcast" as const,
+      audience: { kind: "organization" as const, organizationId: projectId },
+      payload: { text: id }, artifacts: [artifact],
+    });
+    const empty = runtimeMutationState();
+    expect(() => store.recordRuntimeCommunication(broadcast("missing-runtime-artifact", missing)))
+      .toThrow("runtime communication artifact authority mismatch");
+    expect(() => store.recordRuntimeCommunication(broadcast("mismatched-runtime-artifact", mismatched)))
+      .toThrow("runtime communication artifact authority mismatch");
+    expect(runtimeMutationState()).toEqual(empty);
+    expect(store.leaseNextRun({ workerId: "artifact-rejection" })).toBeUndefined();
+
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "missing-authority-request",
+      requests: [{ requestId: "missing-authority-request", recipientAgentId: recipientA, lifetime: indefinite }],
+    });
+    const beforeUpdate = runtimeMutationState();
+    for (const [index, artifact] of [missing, mismatched].entries()) {
+      expect(() => store.updateRequest({
+        requestId: "missing-authority-request", updateId: `missing-authority-update-${index}`,
+        kind: "completed", actor: { kind: "agent", id: recipientA },
+        payload: { text: "must not commit" }, artifacts: [artifact],
+      })).toThrow("request update artifact authority mismatch");
+      expect(runtimeMutationState()).toEqual(beforeUpdate);
+    }
+    expect(store.getRequest("missing-authority-request")).toMatchObject({ state: "open", version: 0 });
+
+    const communication = userDmEvent({ eventId: "missing-authority-edit", agentId: recipientB, text: "Original" });
+    const intake = store.recordRuntimeCommunication({
+      id: communication.eventId, projectId, sender: communication.sender,
+      intent: communication.intent, audience: communication.audience,
+      payload: { communication, dispatch: { text: communication.text } },
+      activation: {
+        agentId: recipientB, kind: "human_message", priority: 100,
+        dispatchPolicy: "next_run", promptClass: "human",
+      },
+    });
+    const beforeEdit = runtimeMutationState();
+    for (const [index, artifact] of [missing, mismatched].entries()) {
+      expect(() => store.editPendingActivationText({
+        activationId: intake.activationId!, projectId, requestText: `Rejected ${index}`,
+        text: `Rejected ${index}`, revisionOwnerId: `missing-authority-edit-${index}`,
+        artifact, revisionOutboxPayload: { rejected: index }, idempotencyKey: `missing-authority-edit-${index}`,
+      })).toThrow("queued edit artifact authority mismatch");
+      expect(runtimeMutationState()).toEqual(beforeEdit);
+    }
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+  });
+
   it("accepts paired agent/Run provenance and provenance-free user artifacts on alternate artifact paths", () => {
     store.enqueueMessageActivation({
       projectId, agentId: recipientA, messageId: "artifact-positive-run",
@@ -2262,10 +2335,18 @@ describe("CoordinationV3Store scheduler", () => {
 
     const authoritative = runtimeAttachment(recipientA, { id: validAttachment.id });
     store = new CoordinationV3Store(opened.client, {
-      attachmentAuthority: (candidateProjectId, candidateAgentId, attachmentId) =>
-        candidateProjectId === projectId && candidateAgentId === recipientA && attachmentId === authoritative.id
-          ? { attachment: authoritative, localPath: `/validated/${authoritative.id}.bin` }
-          : undefined,
+      attachmentAuthority: {
+        resolve: (candidateProjectId, candidateAgentId, attachmentId) =>
+          candidateProjectId === projectId && candidateAgentId === recipientA && attachmentId === authoritative.id
+            ? {
+                attachment: authoritative as typeof authoritative & { sha256: string },
+                localPath: `/validated/${authoritative.id}.bin`,
+                contentHash: authoritative.sha256!,
+                byteLength: authoritative.size,
+              }
+            : undefined,
+        reserveCommunication: () => undefined,
+      },
     });
 
     expect(store.recordRuntimeCommunication(input("top-level-empty-attachments", { attachments: [] })).activationId)
@@ -2293,8 +2374,18 @@ describe("CoordinationV3Store scheduler", () => {
       return bound;
     };
     store = new CoordinationV3Store(opened.client, {
-      attachmentAuthority: (candidateProjectId, agentId, attachmentId) =>
-        authority.get(`${candidateProjectId}:${agentId}:${attachmentId}`),
+      attachmentAuthority: {
+        resolve: (candidateProjectId, agentId, attachmentId) => {
+          const resolved = authority.get(`${candidateProjectId}:${agentId}:${attachmentId}`);
+          return resolved ? {
+            attachment: resolved.attachment as typeof resolved.attachment & { sha256: string },
+            localPath: resolved.localPath,
+            contentHash: resolved.attachment.sha256!,
+            byteLength: resolved.attachment.size,
+          } : undefined;
+        },
+        reserveCommunication: () => undefined,
+      },
     });
     const snapshot = (attachment: import("@ponderosa/core").AssetDto, localPath?: string) => ({
       id: attachment.id,
@@ -2412,6 +2503,106 @@ describe("CoordinationV3Store scheduler", () => {
       register(projectId, recipientA, attachment);
       expect(store.recordRuntimeCommunication(input(`valid-media-${index}`, [attachment])).activationId).toBeTruthy();
     }
+  });
+
+  it("enforces one global canonical budget and resolves each multi-recipient attachment identity once", () => {
+    const authority = new Map<string, import("../src/coordination-v3-store.js").RuntimeAttachmentAuthorityV3>();
+    const calls = new Map<string, number>();
+    const register = (owner: string, size = 64, id = randomUUID()) => {
+      const attachment = runtimeAttachment(owner, {
+        id, name: `${id}.pdf`, size, sha256: id.replaceAll("-", "").padEnd(64, "a").slice(0, 64),
+      }) as import("@ponderosa/core").AssetDto & { sha256: string };
+      const key = `${projectId}:${owner}:${id}`;
+      authority.set(key, {
+        attachment, localPath: `/authority/${projectId}/${owner}/${id}.bin`,
+        contentHash: attachment.sha256, byteLength: size,
+      });
+      return attachment;
+    };
+    store = new CoordinationV3Store(opened.client, {
+      attachmentAuthority: {
+        resolve: (candidateProjectId, owner, id) => {
+          const key = `${candidateProjectId}:${owner}:${id}`;
+          calls.set(key, (calls.get(key) ?? 0) + 1);
+          return authority.get(key);
+        },
+        reserveCommunication: () => undefined,
+      },
+    });
+    const snapshot = (attachment: import("@ponderosa/core").AssetDto) => ({
+      id: attachment.id, name: attachment.name, mediaType: attachment.mediaType,
+      size: attachment.size, sha256: attachment.sha256,
+    });
+    const communicationInput = (id: string, attachments: import("@ponderosa/core").AssetDto[]) => {
+      const communication: CommunicationEvent = {
+        eventId: id, schemaVersion: 2, projectId, conversationId,
+        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+        audience: { kind: "user_agents", userId: "local-operator", agentIds: [recipientA, recipientB] },
+        text: "Bounded multi-recipient intake", attachments,
+        createdAt: "2026-07-15T00:00:00.000Z",
+      };
+      return {
+        id, projectId, sender: communication.sender, intent: communication.intent,
+        audience: communication.audience,
+        payload: {
+          communication,
+          dispatch: {
+            text: communication.text,
+            recipients: attachments.map((attachment) => ({
+              agentId: attachment.agentId, attachments: [snapshot(attachment)],
+            })),
+          },
+        },
+        activations: [recipientA, recipientB].map((agentId) => ({
+          agentId, kind: "human_message", priority: 100,
+          dispatchPolicy: "next_run" as const, promptClass: "human" as const,
+        })),
+      };
+    };
+
+    const first = register(recipientA);
+    const second = register(recipientB);
+    expect(store.recordRuntimeCommunication(communicationInput("bounded-resolver-work", [first, second])))
+      .toMatchObject({ replayed: false, activationIds: expect.arrayContaining([expect.any(String), expect.any(String)]) });
+    expect([...calls.values()]).toEqual([1, 1]);
+    const persisted = store.runtimeCommunication("bounded-resolver-work")!.payload as {
+      dispatch: { recipients: Array<{ attachments: Array<{ sha256: string; localPath: string }> }> };
+    };
+    expect(persisted.dispatch.recipients.flatMap((recipient) => recipient.attachments))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ sha256: first.sha256, localPath: expect.stringContaining(first.id) }),
+        expect.objectContaining({ sha256: second.sha256, localPath: expect.stringContaining(second.id) }),
+      ]));
+
+    const overCount = [
+      register(recipientA), register(recipientA), register(recipientA),
+      register(recipientB), register(recipientB),
+    ];
+    const before = runtimeMutationState();
+    expect(() => store.recordRuntimeCommunication(communicationInput("global-cross-owner-count", overCount)))
+      .toThrow("runtime communication attachments are invalid");
+    expect(runtimeMutationState()).toEqual(before);
+
+    const overBytes = [
+      register(recipientA, DEFAULT_ASSET_LIMITS.maxFileBytes),
+      register(recipientA, DEFAULT_ASSET_LIMITS.maxFileBytes),
+      register(recipientB, DEFAULT_ASSET_LIMITS.maxFileBytes),
+      register(recipientB, DEFAULT_ASSET_LIMITS.maxFileBytes),
+    ];
+    expect(() => store.recordRuntimeCommunication(communicationInput("global-cross-owner-bytes", overBytes)))
+      .toThrow("runtime communication attachments are invalid");
+    expect(runtimeMutationState()).toEqual(before);
+
+    const sharedId = randomUUID();
+    const ownerA = register(recipientA, 64, sharedId);
+    register(recipientB, 65, sharedId);
+    const contradictory = communicationInput("cross-owner-one-id", [ownerA]);
+    (contradictory.payload.dispatch.recipients as Array<{ agentId: string; attachments: unknown[] }>)[0] = {
+      agentId: recipientB, attachments: [{ ...snapshot(ownerA), size: 65 }],
+    };
+    expect(() => store.recordRuntimeCommunication(contradictory))
+      .toThrow(/attachment (authority mismatch|identity conflicts)/);
+    expect(runtimeMutationState()).toEqual(before);
   });
 
   it("accepts current canonical and closed internal RuntimeCommunication variants", () => {
