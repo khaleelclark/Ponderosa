@@ -411,11 +411,11 @@ export const realApi = {
   getAgent(agentId: string, limit: number = 100, cursor?: string, focusId?: string): Promise<AgentDetailDto> {
     return requestJson<AgentDetailDto>(`/api/agents/${encodeURIComponent(agentId)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
-  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = 100, cursor?: string): Promise<AgentTelemetryPageDto> {
-    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor })}`);
+  getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = 100, cursor?: string, focusId?: string): Promise<AgentTelemetryPageDto> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
-  getActivityOutput(retrievalUrl: string): Promise<AgentActivityOutputDto> {
-    return requestJson(retrievalUrl);
+  getActivityOutput(retrievalUrl: string, cursor?: string): Promise<AgentActivityOutputDto> {
+    return requestJson(`${retrievalUrl}${toQuery({ cursor })}`);
   },
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);

@@ -42,7 +42,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto, AgentTelemetryStream, HistoryWindowDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto, AgentTelemetryPageDto, AgentTelemetryStream, HistoryWindowDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -61,6 +61,8 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
+import type { AgentTelemetryFocus } from "../routing";
+import { telemetryElementId } from "../telemetryFocus";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
@@ -69,15 +71,46 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
 type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
+const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
+  stream === "runOutput" ? "runOutput"
+    : stream === "activity" ? "activity"
+      : stream === "artifacts" ? "artifacts" : "runs";
+
 type TelemetryPageState = {
   [K in AgentTelemetryStream]?: {
     items: AgentDetailDto[K extends "runOutput" ? "runOutput"
       : K extends "activity" ? "activity"
         : K extends "runs" ? "runs"
           : K extends "workItems" ? "workItems" : "artifacts"];
-    history: HistoryWindowDto;
+    history?: HistoryWindowDto;
   };
 };
+
+function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPageDto, preserveHistory = false): TelemetryPageState {
+  const next = { ...current };
+  const history = preserveHistory ? current[page.stream]?.history : page.history;
+  if (page.stream === "runOutput") next.runOutput = {
+    items: [...new Map([...page.items, ...(current.runOutput?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else if (page.stream === "activity") next.activity = {
+    items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else if (page.stream === "runs") next.runs = {
+    items: [...new Map([...page.items, ...(current.runs?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else if (page.stream === "workItems") next.workItems = {
+    items: [...new Map([...page.items, ...(current.workItems?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else next.artifacts = {
+    items: [...new Map([...page.items, ...(current.artifacts?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  return next;
+}
 
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
   tab === "runOutput" ? ["runOutput"]
@@ -186,6 +219,7 @@ export function eligibleOrganizationParents(agent: AgentDto, agents: AgentDto[])
 export function AgentDetail({
   agentId,
   focusMessageId,
+  focusTelemetry,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -202,6 +236,7 @@ export function AgentDetail({
 }: {
   agentId: string;
   focusMessageId?: string;
+  focusTelemetry?: AgentTelemetryFocus;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(): Promise<unknown> | unknown;
@@ -221,6 +256,7 @@ export function AgentDetail({
   const [olderMessages, setOlderMessages] = useState<{ messages: MessageDto[]; cursor?: string; hasMore: boolean }>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
   const queuedMessagesQuery = useQuery({
@@ -276,6 +312,7 @@ export function AgentDetail({
     setOlderMessages(undefined);
     setOlderTelemetry({});
     focusedMessage.current = undefined;
+    focusedTelemetryRef.current = undefined;
   }, [agentId]);
 
   useEffect(() => {
@@ -337,6 +374,42 @@ export function AgentDetail({
     target.focus({ preventScroll: true });
     focusedMessage.current = focusMessageId;
   }, [agentId, detail?.messages, focusMessageId, tab]);
+
+  useEffect(() => {
+    if (!focusTelemetry) return;
+    const focusedId = focusTelemetry.id;
+    const focusKey = `${focusTelemetry.stream}:${focusedId}`;
+    if (focusedTelemetryRef.current === focusKey || focusedTelemetryRef.current === `missing:${focusKey}`) return;
+    const desiredTab = telemetryTab(focusTelemetry.stream);
+    if (tab !== desiredTab) {
+      setTab(desiredTab);
+      return;
+    }
+    const items = focusTelemetry.stream === "runOutput" ? detail?.runOutput
+      : focusTelemetry.stream === "activity" ? detail?.activity
+        : focusTelemetry.stream === "runs" ? detail?.runs
+          : focusTelemetry.stream === "workItems" ? detail?.workItems
+            : detail?.artifacts;
+    if (!items?.some((item) => item.id === focusedId)) {
+      if (focusedTelemetryRef.current !== `loading:${focusKey}`) {
+        focusedTelemetryRef.current = `loading:${focusKey}`;
+        void api.getAgentHistory(agentId, focusTelemetry.stream, 100, undefined, focusTelemetry.id)
+          .then((page) => {
+            // A focused lookup fills a durable deep link. It must not advance the
+            // ordinary history cursor past the records between recent and focused data.
+            setOlderTelemetry((current) => mergeTelemetryPage(current, page, true));
+            focusedTelemetryRef.current = page.items.length ? undefined : `missing:${focusKey}`;
+          })
+          .catch(() => { focusedTelemetryRef.current = undefined; });
+      }
+      return;
+    }
+    const target = document.getElementById(telemetryElementId(focusTelemetry.stream, focusedId));
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.focus({ preventScroll: true });
+    focusedTelemetryRef.current = focusKey;
+  }, [agentId, detail?.activity, detail?.artifacts, detail?.runOutput, detail?.runs, detail?.workItems, focusTelemetry, tab]);
   const decisionsQuery = useQuery({ queryKey: ["decisions", "agent", agentId], queryFn: () => api.listDecisions({ agentId, status: "pending" }) });
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
@@ -536,32 +609,7 @@ export function AgentDetail({
     try {
       const pages = await Promise.all(streams.map((stream) =>
         api.getAgentHistory(agentId, stream, 100, detail.telemetryHistory?.[stream]?.cursor)));
-      setOlderTelemetry((current) => {
-        const next = { ...current };
-        for (const page of pages) {
-          if (page.stream === "runOutput") next.runOutput = {
-            items: [...new Map([...page.items, ...(current.runOutput?.items ?? [])].map((item) => [item.id, item] as const)).values()],
-            history: page.history,
-          };
-          else if (page.stream === "activity") next.activity = {
-            items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
-            history: page.history,
-          };
-          else if (page.stream === "runs") next.runs = {
-            items: [...new Map([...page.items, ...(current.runs?.items ?? [])].map((item) => [item.id, item] as const)).values()],
-            history: page.history,
-          };
-          else if (page.stream === "workItems") next.workItems = {
-            items: [...new Map([...page.items, ...(current.workItems?.items ?? [])].map((item) => [item.id, item] as const)).values()],
-            history: page.history,
-          };
-          else next.artifacts = {
-            items: [...new Map([...page.items, ...(current.artifacts?.items ?? [])].map((item) => [item.id, item] as const)).values()],
-            history: page.history,
-          };
-        }
-        return next;
-      });
+      setOlderTelemetry((current) => pages.reduce((state, page) => mergeTelemetryPage(state, page), current));
     } finally {
       setLoadingOlder(false);
     }
@@ -700,6 +748,7 @@ export function AgentDetail({
     })} onReply={setReplyTo} /></Box>,
     runOutput: <WorkLogPane
       entries={detail.runOutput}
+      focusId={focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined}
       projectId={detail.agent.projectId}
       onOpenFile={(file: ResponseFileActivityDto) => {
         if (file.artifactId) {
@@ -711,11 +760,11 @@ export function AgentDetail({
       }}
       onViewAll={() => setTab("review")}
     />,
-    activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} />,
+    activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
-    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
+    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
   };
 

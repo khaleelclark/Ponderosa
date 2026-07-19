@@ -237,16 +237,71 @@ describe("CoordinationV3Store transactions", () => {
     }
     const first = store.teamOperationalRecords({ projectId, conversationId, limit: 2 });
     expect(first).toHaveLength(2);
-    expect(first.map((item) => item.updatedAt)).toEqual([
+    expect(first.map((item) => item.createdAt)).toEqual([
       "2026-07-15T00:00:02.000Z", "2026-07-15T00:00:01.000Z",
     ]);
     const oldest = first.at(-1)!;
     const second = store.teamOperationalRecords({
       projectId, conversationId, limit: 2,
-      before: { updatedAt: oldest.updatedAt, id: oldest.id },
+      before: { createdAt: oldest.createdAt, id: oldest.id },
     });
-    expect(second.map((item) => item.updatedAt)).toEqual(["2026-07-15T00:00:00.000Z"]);
+    expect(second.map((item) => item.createdAt)).toEqual(["2026-07-15T00:00:00.000Z"]);
     expect(new Set([...first, ...second].map((item) => item.id)).size).toBe(3);
+  });
+
+  it("does not skip unseen Team operations when their mutable state advances after a page", () => {
+    const activationIds: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const recorded = store.recordRuntimeCommunication({
+        id: `team-mutation-${index}`, projectId, sender: { kind: "user" }, intent: "user_dm",
+        scopeKey: `conversation:${conversationId}`,
+        audience: { kind: "agent", id: recipientA }, payload: { text: `Work ${index}` },
+        now: `2026-07-15T00:00:0${index}.000Z`,
+        activation: {
+          agentId: recipientA, kind: "human_message", priority: 100,
+          dispatchPolicy: "steer_or_run", promptClass: "human",
+        },
+      });
+      activationIds.push(recorded.activationId!);
+    }
+    const first = store.teamOperationalRecords({ projectId, conversationId, limit: 2 });
+    const boundary = first.at(-1)!;
+
+    opened.client.prepare(`UPDATE agent_activations SET state = 'cancelled', updated_at = ? WHERE id = ?`)
+      .run("2026-07-16T00:00:00.000Z", activationIds[0]);
+
+    const second = store.teamOperationalRecords({
+      projectId, conversationId, limit: 2,
+      before: { createdAt: boundary.createdAt, id: boundary.id },
+    });
+    expect(new Set([...first, ...second].map((item) => item.id))).toEqual(
+      new Set(activationIds.map((id) => `activation:${id}`)),
+    );
+    expect(second.find((item) => item.id === `activation:${activationIds[0]}`)?.state).toBe("cancelled");
+  });
+
+  it("pages equal-time Team operation subtypes with the namespaced stable ID tie-breaker", () => {
+    const tiedAt = "2026-07-15T00:00:00.000Z";
+    store.coordinate({
+      projectId, conversationId, requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`, idempotencyKey: "tied-operation",
+      requests: [{ requestId: "tied-request", recipientAgentId: recipientA, lifetime: indefinite }],
+      now: tiedAt,
+    });
+    opened.client.prepare(`UPDATE coordination_requests SET created_at = ?, updated_at = ? WHERE id = 'tied-request'`).run(tiedAt, tiedAt);
+    opened.client.prepare(`UPDATE agent_activations SET created_at = ?, updated_at = ? WHERE id IN (
+      SELECT activation_id FROM activation_sources WHERE source_kind = 'request' AND source_id = 'tied-request'
+    )`).run(tiedAt, tiedAt);
+    const first = store.teamOperationalRecords({ projectId, conversationId, limit: 1 });
+    const second = store.teamOperationalRecords({
+      projectId, conversationId, limit: 2,
+      before: { createdAt: first[0]!.createdAt, id: first[0]!.id },
+    });
+    expect([...first, ...second].map((item) => item.id)).toEqual([
+      "request:tied-request",
+      expect.stringMatching(/^activation:/u),
+    ]);
+    expect([...first, ...second].every((item) => item.createdAt === tiedAt)).toBe(true);
   });
 
   it("reports truncation when one Agent has more same-kind seeds than the requested limit", () => {

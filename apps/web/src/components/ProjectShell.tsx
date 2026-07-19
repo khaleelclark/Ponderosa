@@ -244,6 +244,7 @@ export function ProjectShell({
         key={route.agentId}
         agentId={route.agentId}
         focusMessageId={route.focusMessageId}
+        focusTelemetry={route.focusTelemetry}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={() => capabilitiesQuery.refetch()}

@@ -211,21 +211,65 @@ interface ResultCursorState {
   byteOffset: number;
 }
 
-function encodeTimelineCursor(stream: string, scope: string, updatedAt: string, id: string): string {
-  return Buffer.from(JSON.stringify({ v: 1, stream, scope, updatedAt, id }), "utf8").toString("base64url");
+interface ActivityOutputCursorState {
+  v: 1;
+  agentId: string;
+  seq: number;
+  sha256: string;
+  byteOffset: number;
 }
 
-function decodeTimelineCursor(value: string, stream: string, scope: string): { updatedAt: string; id: string } {
+function encodeTimelineCursor(stream: string, scope: string, createdAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ v: 2, stream, scope, createdAt, id }), "utf8").toString("base64url");
+}
+
+function decodeTimelineCursor(value: string, stream: string, scope: string): { createdAt: string; id: string } {
   try {
     const decoded = Buffer.from(value, "base64url");
     if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
     const parsed = JSON.parse(decoded.toString("utf8")) as Record<string, unknown>;
-    if (parsed.v !== 1 || parsed.stream !== stream || parsed.scope !== scope ||
-        typeof parsed.updatedAt !== "string" || typeof parsed.id !== "string") throw new Error("invalid cursor scope");
-    return { updatedAt: parsed.updatedAt, id: parsed.id };
+    if (parsed.v !== 2 || parsed.stream !== stream || parsed.scope !== scope ||
+        typeof parsed.createdAt !== "string" || typeof parsed.id !== "string") throw new Error("invalid cursor scope");
+    return { createdAt: parsed.createdAt, id: parsed.id };
   } catch {
     throw new Error("invalid history cursor");
   }
+}
+
+function encodeActivityOutputCursor(state: Omit<ActivityOutputCursorState, "v">): string {
+  return Buffer.from(JSON.stringify({ v: 1, ...state } satisfies ActivityOutputCursorState), "utf8").toString("base64url");
+}
+
+function decodeActivityOutputCursor(value: string, agentId: string, seq: number): ActivityOutputCursorState {
+  try {
+    const decoded = Buffer.from(value, "base64url");
+    if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
+    const parsed = JSON.parse(decoded.toString("utf8")) as Partial<ActivityOutputCursorState>;
+    if (parsed.v !== 1 || parsed.agentId !== agentId || parsed.seq !== seq ||
+        typeof parsed.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(parsed.sha256) ||
+        !Number.isSafeInteger(parsed.byteOffset) || parsed.byteOffset! < 0) {
+      throw new Error("invalid cursor scope");
+    }
+    return parsed as ActivityOutputCursorState;
+  } catch {
+    throw new Error("invalid activity output cursor");
+  }
+}
+
+function utf8Page(content: string, start: number, maximum: number): {
+  output: string;
+  pageUtf8Bytes: number;
+  endUtf8Byte: number;
+  totalUtf8Bytes: number;
+} {
+  const bytes = Buffer.from(content, "utf8");
+  if (start > bytes.length || (start < bytes.length && (bytes[start]! & 0xc0) === 0x80)) {
+    throw new Error("activity output cursor is not on a UTF-8 boundary");
+  }
+  let end = Math.min(bytes.length, start + maximum);
+  while (end > start && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+  const output = bytes.subarray(start, end).toString("utf8");
+  return { output, pageUtf8Bytes: end - start, endUtf8Byte: end, totalUtf8Bytes: bytes.length };
 }
 
 function encodeResultCursor(state: ResultCursorState, secret: Buffer): string {
@@ -3514,8 +3558,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
     for (const decision of workspace.listDecisions({ conversationId })) {
       const decisionId = `decision:${decision.id}`;
-      if (operationBoundary && !(decision.updatedAt < operationBoundary.updatedAt ||
-        (decision.updatedAt === operationBoundary.updatedAt && decisionId < operationBoundary.id))) continue;
+      if (operationBoundary && !(decision.createdAt < operationBoundary.createdAt ||
+        (decision.createdAt === operationBoundary.createdAt && decisionId < operationBoundary.id))) continue;
       const agentName = names.get(decision.agentId) ?? "An Agent";
       operations.push({
         id: decisionId,
@@ -3529,9 +3573,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     for (const plan of managementPlans.values()) if (plan.conversationId === conversationId) {
       const planId = `management:${plan.id}`;
-      const planUpdatedAt = plan.appliedAt ?? plan.createdAt;
-      if (operationBoundary && !(planUpdatedAt < operationBoundary.updatedAt ||
-        (planUpdatedAt === operationBoundary.updatedAt && planId < operationBoundary.id))) continue;
+      if (operationBoundary && !(plan.createdAt < operationBoundary.createdAt ||
+        (plan.createdAt === operationBoundary.createdAt && planId < operationBoundary.id))) continue;
       const agentName = names.get(plan.agentId) ?? "An Agent";
       operations.push({
         id: planId,
@@ -3545,7 +3588,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         updatedAt: plan.appliedAt ?? plan.createdAt,
       });
     }
-    operations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
+    operations.sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
     const hasMoreOperations = operations.length > limit;
     const selectedOperations = operations.slice(0, limit);
     const oldestOperation = selectedOperations.at(-1);
@@ -3558,7 +3601,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       operationHistory: {
         limit, hasMore: hasMoreOperations,
         ...(hasMoreOperations && oldestOperation ? {
-          cursor: encodeTimelineCursor("team:operations", conversationId, oldestOperation.updatedAt, oldestOperation.id),
+          cursor: encodeTimelineCursor("team:operations", conversationId, oldestOperation.createdAt, oldestOperation.id),
         } : {}),
       },
     };
@@ -8885,14 +8928,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.get<{
     Params: { id: string; stream: AgentTelemetryStream };
-    Querystring: { limit?: string; cursor?: string };
+    Querystring: { limit?: string; cursor?: string; focusId?: string };
   }>("/api/agents/:id/history/:stream", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
     const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "runs", "workItems", "artifacts"]);
     if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
     try {
-      const input = { limit, cursor: request.query.cursor };
+      const input = { limit, cursor: request.query.cursor, focusId: request.query.focusId };
       switch (request.params.stream) {
         case "runOutput": return { stream: "runOutput" as const, ...store.getRunOutputPage(request.params.id, input) };
         case "activity": return { stream: "activity" as const, ...store.getActivityPage(request.params.id, input) };
@@ -8905,11 +8948,49 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
-  app.get<{ Params: { id: string; seq: string } }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
+  app.get<{
+    Params: { id: string; seq: string };
+    Querystring: { cursor?: string; maxBytes?: string };
+  }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const seq = Number(request.params.seq);
     if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
-    return store.getActivityOutput(request.params.id, seq) ?? reply.code(404).send({ error: "tool output not found" });
+    const exact = store.getActivityOutput(request.params.id, seq);
+    if (!exact) return reply.code(404).send({ error: "tool output not found" });
+    try {
+      const cursor = request.query.cursor
+        ? decodeActivityOutputCursor(request.query.cursor, request.params.id, seq)
+        : undefined;
+      if (cursor && cursor.sha256 !== exact.sha256) throw new Error("activity output changed after the cursor was issued");
+      const requestedBytes = Number(request.query.maxBytes ?? RESULT_PAGE_DEFAULT_BYTES);
+      const maxBytes = Math.min(
+        RESULT_PAGE_MAX_BYTES,
+        Math.max(RESULT_PAGE_MIN_BYTES, Number.isFinite(requestedBytes) ? Math.floor(requestedBytes) : RESULT_PAGE_DEFAULT_BYTES),
+      );
+      const startUtf8Byte = cursor?.byteOffset ?? 0;
+      const page = utf8Page(exact.output, startUtf8Byte, maxBytes);
+      return {
+        agentId: exact.agentId,
+        activityId: exact.activityId,
+        seq: exact.seq,
+        output: page.output,
+        pageUtf8Bytes: page.pageUtf8Bytes,
+        startUtf8Byte,
+        endUtf8Byte: page.endUtf8Byte,
+        totalUtf8Bytes: page.totalUtf8Bytes,
+        sha256: exact.sha256,
+        ...(page.endUtf8Byte < page.totalUtf8Bytes ? {
+          nextCursor: encodeActivityOutputCursor({
+            agentId: exact.agentId,
+            seq: exact.seq,
+            sha256: exact.sha256,
+            byteOffset: page.endUtf8Byte,
+          }),
+        } : {}),
+      };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid activity output cursor" });
+    }
   });
 
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {

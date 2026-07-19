@@ -12,6 +12,12 @@
 // the server.
 
 import { useCallback, useEffect, useState } from "react";
+import type { AgentTelemetryStream } from "@ponderosa/core";
+
+export interface AgentTelemetryFocus {
+  stream: AgentTelemetryStream;
+  id: string;
+}
 
 export type Route =
   | { kind: "home" }
@@ -20,7 +26,7 @@ export type Route =
   | { kind: "project"; projectId: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string }
   | { kind: "agents"; projectId: string }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -29,6 +35,11 @@ export function parseRoute(pathname: string, search = ""): Route {
   const [cleanPathname, inlineSearch = ""] = pathname.split("?", 2);
   const query = new URLSearchParams(search || (inlineSearch ? `?${inlineSearch}` : ""));
   const focusMessageId = query.get("message")?.trim() || undefined;
+  const telemetryStream = query.get("stream")?.trim();
+  const telemetryId = query.get("item")?.trim();
+  const focusTelemetry = telemetryId && ["runOutput", "activity", "runs", "workItems", "artifacts"].includes(telemetryStream ?? "")
+    ? { stream: telemetryStream as AgentTelemetryStream, id: telemetryId }
+    : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
@@ -41,7 +52,11 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
   }
   if (parts[2] === "agents" && parts[3]) {
-    return { kind: "agent", projectId, agentId: decodeURIComponent(parts[3]), ...(focusMessageId ? { focusMessageId } : {}) };
+    return {
+      kind: "agent", projectId, agentId: decodeURIComponent(parts[3]),
+      ...(focusMessageId ? { focusMessageId } : {}),
+      ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
+    };
   }
   if (parts[2] === "reviews" && parts[3]) {
     return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
@@ -65,7 +80,11 @@ export function routeToPath(route: Route): string {
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
     case "agent":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}` : ""}`;
+      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${
+        route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}`
+          : route.focusTelemetry ? `?stream=${encodeURIComponent(route.focusTelemetry.stream)}&item=${encodeURIComponent(route.focusTelemetry.id)}`
+            : ""
+      }`;
     case "review":
       return `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`;
     default:
