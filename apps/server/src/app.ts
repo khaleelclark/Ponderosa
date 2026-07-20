@@ -11288,6 +11288,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         let continuationHandoffConsumed = false;
         let providerWorkObserved = false;
         let schedulerCancelled = false;
+        let usedFreshFallback = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -11644,6 +11645,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   persistentTurnStarted = false;
                 }
                 sessionId = undefined;
+                usedFreshFallback = true;
                 retryFresh = true;
                 break;
               }
@@ -11826,7 +11828,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 // A continued session advances only through the FIFO page that
                 // was actually submitted. A fresh/reseeded session deliberately
                 // accepts the newest bounded tail and records the canonical tip.
-                lastMessageId: incremental && roomDeltaOmitted
+                lastMessageId: !usedFreshFallback && incremental && roomDeltaOmitted
                   ? roomMessages.at(-1)?.id ?? previousCursor?.lastMessageId
                   : roomCanonicalTipId,
                 routingHash,
@@ -11840,7 +11842,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sessionId: acceptedSessionId,
                 conversationId: routingConversationId,
                 channel: "broadcast",
-                lastMessageId: broadcastIncremental && broadcastDeltaOmitted
+                lastMessageId: !usedFreshFallback && broadcastIncremental && broadcastDeltaOmitted
                   ? initialBroadcastContext.at(-1)?.id ?? previousBroadcastCursor?.lastMessageId
                   : broadcastCanonicalTipId,
                 routingHash,

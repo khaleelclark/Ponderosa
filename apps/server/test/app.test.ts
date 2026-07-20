@@ -17,6 +17,7 @@ import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa
 import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
+import { ContextCursorStore } from "../src/context-cursors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const processAlive = (pid: number): boolean => {
@@ -5735,6 +5736,125 @@ describe("server chunk F", () => {
     expect(adapter.continues[3]?.prompt).not.toContain("canonical delta 79");
     expect(adapter.continues[3]?.prompt).toContain("canonical delta 80");
     expect(adapter.continues[3]?.prompt).toContain("canonical delta 100");
+    await app.close();
+  });
+
+  it("commits the main-room canonical tip after an oversized resume delta falls back to a fresh seed", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Main-room fallback", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Reseeded room" });
+    const initialTipId = appendBroadcast(store, project.id, master.id, "main-room accepted cursor").id;
+    const agent = store.createAgent(project.id, { title: "Main Reader", engine: "codex", conversationId: master.id });
+
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "seed main room", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id);
+    await vi.waitFor(() => {
+      const sessionId = store.resumeSessionId(agent.id);
+      expect(sessionId).toBeTruthy();
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, sessionId!)).toMatchObject({
+        channel: "main",
+        lastMessageId: initialTipId,
+      });
+    });
+
+    const unseen = Array.from({ length: 45 }, (_, index) => `MAIN-RESEED-${String(index).padStart(3, "0")}`);
+    let canonicalTipId = "";
+    for (const marker of unseen) canonicalTipId = appendBroadcast(store, project.id, master.id, marker).id;
+
+    adapter.mode = "resume_compaction_fail";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "resume then reseed main room", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]!.prompt).toContain(unseen[0]);
+    expect(adapter.continues[0]!.prompt).not.toContain(unseen.at(-1)!);
+    const freshSeedPrompt = adapter.seeds[1]!.prompt;
+    expect(freshSeedPrompt).toContain(unseen.at(-1)!);
+    const seededMarkers = unseen.filter((marker) => freshSeedPrompt.includes(marker));
+    expect(seededMarkers.length).toBeGreaterThan(0);
+    expect(seededMarkers.length).toBeLessThan(unseen.length);
+    const acceptedSessionId = store.resumeSessionId(agent.id);
+    expect(acceptedSessionId).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, acceptedSessionId!)).toMatchObject({
+        channel: "main",
+        lastMessageId: canonicalTipId,
+      });
+    });
+
+    adapter.mode = "normal";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "continue after main reseed", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id, 3);
+    const continuedPrompt = adapter.continues[1]!.prompt;
+    for (const marker of seededMarkers) expect(continuedPrompt).not.toContain(marker);
+    await app.close();
+  });
+
+  it("commits the inherited-Broadcast canonical tip after an oversized resume delta falls back to a fresh seed", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Broadcast fallback", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Inherited context" });
+    const initialTipId = appendBroadcast(store, project.id, master.id, "inherited accepted cursor").id;
+    const agent = store.createAgent(project.id, { title: "Private Reader", engine: "codex", conversationId: master.id });
+
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed private chat" },
+    });
+    await waitForRun(agent.id);
+    await vi.waitFor(() => {
+      const sessionId = store.resumeSessionId(agent.id);
+      expect(sessionId).toBeTruthy();
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, sessionId!)).toMatchObject({
+        channel: "broadcast",
+        lastMessageId: initialTipId,
+      });
+    });
+
+    const unseen = Array.from({ length: 45 }, (_, index) => `BROADCAST-RESEED-${String(index).padStart(3, "0")}`);
+    let canonicalTipId = "";
+    for (const marker of unseen) canonicalTipId = appendBroadcast(store, project.id, master.id, marker).id;
+
+    adapter.mode = "resume_compaction_fail";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "resume then reseed inherited context" },
+    });
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]!.prompt).toContain(unseen[0]);
+    expect(adapter.continues[0]!.prompt).not.toContain(unseen.at(-1)!);
+    const freshSeedPrompt = adapter.seeds[1]!.prompt;
+    expect(freshSeedPrompt).toContain(unseen.at(-1)!);
+    const seededMarkers = unseen.filter((marker) => freshSeedPrompt.includes(marker));
+    expect(seededMarkers.length).toBeGreaterThan(0);
+    expect(seededMarkers.length).toBeLessThan(unseen.length);
+    const acceptedSessionId = store.resumeSessionId(agent.id);
+    expect(acceptedSessionId).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, acceptedSessionId!)).toMatchObject({
+        channel: "broadcast",
+        lastMessageId: canonicalTipId,
+      });
+    });
+
+    adapter.mode = "normal";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue after inherited reseed" },
+    });
+    await waitForRun(agent.id, 3);
+    const continuedPrompt = adapter.continues[1]!.prompt;
+    for (const marker of seededMarkers) expect(continuedPrompt).not.toContain(marker);
     await app.close();
   });
 
