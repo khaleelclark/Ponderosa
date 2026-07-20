@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
-import { CodexAppServerSession, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage, sumProviderRequestUsage } from "../src/codex-app-server.js";
+import { CodexAppServerSession, discoverCodexAppServerCapabilities, mapCodexAppServerNotification, mapCodexTokenUsage, reconcileProviderRequestUsage, subtractUsage, sumProviderRequestUsage } from "../src/codex-app-server.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fake = join(here, "fake-codex-app-server.mjs");
@@ -15,6 +15,38 @@ const processAlive = (pid: number): boolean => {
 };
 
 describe("Codex app-server persistent runtime", () => {
+  it("bounds sessionless capability discovery and terminates an unresponsive app-server", async () => {
+    let child: ChildProcess | undefined;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
+      child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1_000)"], opts);
+      return child;
+    }) as unknown as typeof spawn;
+
+    const capabilities = await discoverCodexAppServerCapabilities({
+      bin: "codex",
+      spawnFn,
+      cwd: here,
+      sandboxMode: "workspace-write",
+      killGraceMs: 25,
+      timeoutMs: 25,
+      configuredMcps: [{
+        name: "configured",
+        configured: true,
+        initialization: "not_initialized",
+        usable: false,
+        toolsDiscovered: false,
+        toolCount: 0,
+        health: "unknown",
+      }],
+    });
+
+    expect(capabilities.mcpServers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "configured", configured: true }),
+    ]));
+    expect(child).toBeDefined();
+    await vi.waitFor(() => expect(child!.exitCode !== null || child!.signalCode !== null).toBe(true));
+  });
+
   it("injects canonical history into the first turn of a fresh persistent session", async () => {
     const controller = new AbortController();
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;

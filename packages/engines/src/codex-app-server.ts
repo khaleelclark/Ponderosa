@@ -104,8 +104,15 @@ export async function discoverCodexAppServerCapabilities(opts: {
   sandboxMode: string;
   killGraceMs: number;
   configuredMcps: EngineMcpServer[];
+  timeoutMs?: number;
 }): Promise<EngineCapabilities> {
   const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, opts.timeoutMs ?? 15_000);
+  timeout.unref();
   const rpc = new JsonRpcProcess({
     bin: opts.bin,
     args: [
@@ -121,7 +128,16 @@ export async function discoverCodexAppServerCapabilities(opts: {
     onRuntimeRootExit: () => undefined,
   });
   try {
-    await rpc.initialize();
+    try {
+      await rpc.initialize();
+    } catch (error) {
+      if (!timedOut) throw error;
+      return normalizeCodexProviderDiscovery({
+        cwd: opts.cwd,
+        selectedModel: opts.model,
+        configuredMcps: opts.configuredMcps,
+      });
+    }
     const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
       optionalRequest(rpc, "skills/list", { cwds: [opts.cwd], forceReload: true }),
       optionalRequest(rpc, "plugin/installed", { cwds: [opts.cwd] }),
@@ -142,6 +158,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
       configuredMcps: opts.configuredMcps,
     });
   } finally {
+    clearTimeout(timeout);
     controller.abort();
     await rpc.close().catch(() => undefined);
   }

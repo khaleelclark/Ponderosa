@@ -145,7 +145,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (body ? JSON.parse(body) : undefined) as T;
 }
 
-function toQuery(params: Record<string, string | number | undefined>): string {
+function toQuery(params: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) {
@@ -492,7 +492,7 @@ export const realApi = {
   recheckEngine(engineId: string): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });
   },
-  getEngineCapabilities(projectId: string, context?: { engineId?: string; model?: string; agentId?: string }): Promise<ProjectEngineCapabilitiesDto[]> {
+  getEngineCapabilities(projectId: string, context?: { engineId?: string; model?: string; agentId?: string; refresh?: boolean }): Promise<ProjectEngineCapabilitiesDto[]> {
     return requestJson<ProjectEngineCapabilitiesDto[]>(
       `/api/projects/${encodeURIComponent(projectId)}/engine-capabilities${toQuery(context ?? {})}`,
     );
