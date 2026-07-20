@@ -10077,8 +10077,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       destinationId: string;
       managedPath: string;
       createdAt: string;
-      summary?: string;
-      sha256?: string;
+      summary: string;
+      mediaType: string;
+      sha256: string;
     };
     type PlannedNode = Omit<AgentPortablePackageDto["agents"][number], "artifacts" | "history" | "triggers"> & {
       targetEngine: string;
@@ -10197,8 +10198,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const extension = path.extname(artifact.path).toLowerCase().slice(0, 16);
           const managedPath = `imported/${destinationId}${extension}`;
           const createdAt = new Date(artifact.createdAt).toISOString();
-          const summary = artifact.kind === "generated_file" ? (artifact.summary ?? path.basename(artifact.path)) : artifact.summary;
-          const sha256 = artifact.kind === "generated_file" ? createHash("sha256").update(data).digest("hex") : undefined;
+          const summary = artifact.summary?.trim() || path.basename(artifact.path).trim() || "Imported artifact";
+          const mediaType = artifact.mediaType?.trim() || "application/octet-stream";
+          const sha256 = createHash("sha256").update(data).digest("hex");
           if (artifact.kind === "generated_file" && !generatedArtifactMetadataIsValid({
             id: destinationId,
             projectId: project.id,
@@ -10207,17 +10209,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             kind: "generated_file",
             path: managedPath,
             ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-            summary: summary!,
+            summary,
             createdAt,
-            mediaType: artifact.mediaType ?? "",
+            mediaType,
             size: data.length,
-            sha256: sha256!,
+            sha256,
           })) throw new Error(`generated artifact ${artifact.ref} has invalid immutable metadata`);
           artifactRefMap.set(artifact.ref, destinationId);
           reservedDestinationIds.add(destinationId);
           plannedArtifacts.push({
-            ...(artifactCandidate as PlannedArtifact), data, destinationId, managedPath, createdAt,
-            ...(summary ? { summary } : {}), ...(sha256 ? { sha256 } : {}),
+            ...(artifactCandidate as PlannedArtifact), data, destinationId, managedPath, createdAt, summary, mediaType, sha256,
           });
         }
         artifactsByNode.set(node.ref, plannedArtifacts);
@@ -10309,14 +10310,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           originAgentId: agent.id,
           kind: artifact.kind,
           path: artifact.managedPath,
-          ...(artifact.summary ? { summary: artifact.summary } : {}),
+          summary: artifact.summary,
           createdAt: artifact.createdAt,
-          ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+          mediaType: artifact.mediaType,
           visibility: artifact.visibility ?? "project",
           pinned: artifact.pinned ?? false,
           ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
           size: artifact.data.length,
-          ...(artifact.sha256 ? { sha256: artifact.sha256 } : {}),
+          sha256: artifact.sha256,
         };
         if (catalogArtifact.kind === "generated_file") assets.registerGeneratedArtifact(catalogArtifact as RegisteredGeneratedArtifact);
         store.recordProjectArtifact(catalogArtifact);

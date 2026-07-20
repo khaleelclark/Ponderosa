@@ -10639,7 +10639,9 @@ describe("V3.3 Decisions, management, and portability", () => {
       createdAt: "2026-07-20T00:00:00.000Z",
       visibility: "project",
       pinned: false,
+      mediaType: "application/octet-stream",
       size: 1,
+      sha256: createHash("sha256").update("x").digest("hex"),
     });
     const originalText = "Use ponderosa://artifact/a; prose a, data-a, ponderosa://artifact/ab, ponderosa://artifact/a.b, ponderosa://artifact/a:b, ponderosa://artifact/a-b, ponderosa://artifact/a_b, and 文档a🙂 stay unchanged.";
     const portablePackage: AgentPortablePackageDto = {
