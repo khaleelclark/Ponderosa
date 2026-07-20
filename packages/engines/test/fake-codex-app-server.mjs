@@ -85,7 +85,8 @@ lines.on("line", (line) => {
   }
   if (message.method === "thread/compact/start") return send({ id: message.id, result: {} });
   if (message.method === "turn/start") {
-    if (discovery.rejectTurnStartModel === message.params?.model) {
+    if (typeof discovery.rejectTurnStartModel === "string" &&
+        discovery.rejectTurnStartModel === message.params?.model) {
       return send({ id: message.id, error: { code: -32000, message: `model ${message.params.model} was rejected` } });
     }
     send({ id: message.id, result: { turn: { id: "turn-1" } } });

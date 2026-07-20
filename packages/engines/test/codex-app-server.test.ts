@@ -255,6 +255,37 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
+  it.each([
+    ["fresh", undefined],
+    ["resumed", "codex-thread-v1"],
+  ])("keeps the accepted/default model when a %s session turn has no override", async (_label, resumeSessionId) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "default-model", cwd: here, history: [], resumeSessionId,
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-a",
+        rejectTurnStartModel: "model-b",
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+          { id: "model-b", hidden: false, isDefault: false },
+        ], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    expect(before.model).toBe("model-a");
+    await expect(session.startTurn({ prompt: "keep the session model", kind: "user_message" }))
+      .resolves.toEqual({ turnId: "turn-1" });
+    expect(await session.capabilities()).toBe(before);
+    expect(changes).toHaveLength(0);
+    await session.close();
+  });
+
   it("updates the live catalog only after an A-to-B turn override is accepted", async () => {
     const controller = new AbortController();
     const changes: number[] = [];
