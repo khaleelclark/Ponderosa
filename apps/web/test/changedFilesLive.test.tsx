@@ -3,19 +3,29 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
-import { ChangedFilesPane } from "../src/components/panes";
+import { ChangedFilesPane, WorkspaceReviewPane } from "../src/components/panes";
 import { useAgentStream } from "../src/hooks/useAgentStream";
 
 afterEach(() => vi.restoreAllMocks());
 
-function LiveChangedFiles({ agentId }: { agentId: string }): JSX.Element {
+function LiveChangedFileViews({ agentId }: { agentId: string }): JSX.Element {
   useAgentStream(agentId);
   const detail = useQuery({
     queryKey: ["agent", agentId, 100],
     queryFn: () => api.getAgent(agentId, 100),
     staleTime: Infinity,
   });
-  return <ChangedFilesPane agentId={agentId} files={detail.data?.changedFiles ?? []} />;
+  const files = detail.data?.changedFiles ?? [];
+  return <>
+    <ChangedFilesPane agentId={agentId} files={files} />
+    <WorkspaceReviewPane
+      projectId="project"
+      agentId={agentId}
+      files={files}
+      running={false}
+      initialPath="src/live.ts"
+    />
+  </>;
 }
 
 function renderedText(value: unknown): string {
@@ -27,81 +37,188 @@ function renderedText(value: unknown): string {
   return "";
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const firstChangedAt = "2026-07-20T09:00:00.000Z";
+const secondChangedAt = "2026-07-20T09:01:00.000Z";
+const thirdChangedAt = "2026-07-20T09:02:00.000Z";
+
+function liveDetail(agentId: string): AgentDetailDto {
+  return {
+    agent: { id: agentId, projectId: "project", activeEngine: "codex" },
+    messages: [],
+    runOutput: [],
+    activity: [],
+    changedFiles: [{
+      path: "src/live.ts", kind: "edit", lastSeq: 1, lastChangedAt: firstChangedAt,
+      executionCount: 1, diffAvailable: true,
+    }],
+    runs: [{
+      id: "run-2", agentId, status: "running", engine: "codex", title: "Second Run",
+      startedAt: secondChangedAt, updatedAt: secondChangedAt,
+    }],
+    workItems: [],
+    artifacts: [],
+  } as unknown as AgentDetailDto;
+}
+
+function firstDetail(detail: AgentDetailDto): ChangedFileDetailDto {
+  return {
+    ...detail.changedFiles[0]!, executionIds: ["run-1"], provenanceTruncated: false,
+    diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-old\n+first",
+  };
+}
+
+const secondDetail: ChangedFileDetailDto = {
+  path: "src/live.ts", kind: "edit", lastSeq: 2, lastChangedAt: secondChangedAt,
+  executionCount: 2, diffAvailable: true, executionIds: ["run-2", "run-1"], provenanceTruncated: false,
+  diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-first\n+second",
+};
+
+async function mountLiveViews(agentId: string, nextDetail: Promise<ChangedFileDetailDto>): Promise<{
+  client: QueryClient;
+  emit: (envelope: SseEventEnvelope) => void;
+  getChangedFileDetail: ReturnType<typeof vi.spyOn>;
+  view: ReturnType<typeof create>;
+}> {
+  const detail = liveDetail(agentId);
+  let emit!: (envelope: SseEventEnvelope) => void;
+  vi.spyOn(api, "subscribeAgent").mockImplementation((_id, _cursor, handlers) => {
+    emit = handlers.onEvent;
+    return { close: vi.fn() };
+  });
+  vi.spyOn(api, "getAgent").mockResolvedValue(detail);
+  vi.spyOn(api, "getWorkspaceStatus").mockResolvedValue({
+    projectId: "project",
+    isGitRepository: true,
+    branch: "feature/live",
+    head: "abc1234",
+    generatedAt: secondChangedAt,
+    changes: [{ path: "src/live.ts", kind: "edit", staged: false, unstaged: true, untracked: false }],
+  });
+  vi.spyOn(api, "getWorkspaceFile").mockResolvedValue({
+    projectId: "project",
+    path: "src/live.ts",
+    exists: true,
+    content: "export const live = true;\n",
+    diff: "@@ -1 +1 @@\n-false\n+true",
+    stagedDiff: "",
+    unstagedDiff: "@@ -1 +1 @@\n-false\n+true",
+    truncated: false,
+  });
+  const getChangedFileDetail = vi.spyOn(api, "getChangedFileDetail").mockImplementation(() => nextDetail);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["agent", agentId, 100], detail);
+  client.setQueryData(["changed-file", agentId, "src/live.ts", 1], firstDetail(detail));
+
+  let view!: ReturnType<typeof create>;
+  await act(async () => {
+    view = create(<QueryClientProvider client={client}><LiveChangedFileViews agentId={agentId} /></QueryClientProvider>);
+  });
+  await act(async () => {
+    emit({ seq: 1, ts: firstChangedAt, replayed: true, event: { type: "session", sessionId: "session-1" } });
+  });
+  await act(async () => {
+    view.root.findByProps({ "aria-expanded": false }).props.onClick();
+  });
+  await vi.waitFor(() => expect(renderedText(view.toJSON())).toContain("+first"));
+  return { client, emit, getChangedFileDetail, view };
+}
+
+function runBFileChange(seq = 2, ts = secondChangedAt): SseEventEnvelope {
+  return {
+    seq,
+    ts,
+    event: {
+      type: "file_change",
+      path: "src/live.ts",
+      kind: "edit",
+      diff: `--- a/src/live.ts\n+++ b/src/live.ts\n-before\n+after-${seq}`,
+    },
+  };
+}
+
+function expectImmediateRunB(view: ReturnType<typeof create>): void {
+  const text = renderedText(view.toJSON());
+  expect(text).toContain("2 runs");
+  expect(text).toContain("2 agent runs");
+  expect(text).not.toContain("1 run");
+  expect(text).not.toContain("1 agent run");
+  expect(text).not.toContain("+first");
+}
+
+function dispose(view: ReturnType<typeof create>, client: QueryClient): void {
+  view.unmount();
+  client.clear();
+}
+
 describe("live Changed Files detail", () => {
-  it("keeps an expanded path on the current canonical diff and provenance after another Run changes it", async () => {
-    const agentId = "agent-live-changed-file";
-    const firstChangedAt = "2026-07-20T09:00:00.000Z";
-    const secondChangedAt = "2026-07-20T09:01:00.000Z";
-    const detail = {
-      agent: { id: agentId, projectId: "project", activeEngine: "codex" },
-      messages: [],
-      runOutput: [],
-      activity: [],
-      changedFiles: [{
-        path: "src/live.ts", kind: "edit", lastSeq: 1, lastChangedAt: firstChangedAt,
-        executionCount: 1, diffAvailable: true,
-      }],
-      runs: [{ id: "run-2", agentId, status: "running", engine: "codex", title: "Second Run", startedAt: secondChangedAt, updatedAt: secondChangedAt }],
-      workItems: [],
-      artifacts: [],
-    } as unknown as AgentDetailDto;
-    const first: ChangedFileDetailDto = {
-      ...detail.changedFiles[0]!, executionIds: ["run-1"], provenanceTruncated: false,
-      diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-old\n+first",
-    };
-    const second: ChangedFileDetailDto = {
-      path: "src/live.ts", kind: "edit", lastSeq: 2, lastChangedAt: secondChangedAt,
-      executionCount: 2, diffAvailable: true, executionIds: ["run-2", "run-1"], provenanceTruncated: false,
-      diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-first\n+second",
-    };
-    let emit!: (envelope: SseEventEnvelope) => void;
-    vi.spyOn(api, "subscribeAgent").mockImplementation((_id, _cursor, handlers) => {
-      emit = handlers.onEvent;
-      return { close: vi.fn() };
-    });
-    vi.spyOn(api, "getAgent").mockResolvedValue(detail);
-    const getChangedFileDetail = vi.spyOn(api, "getChangedFileDetail")
-      .mockResolvedValueOnce(first)
-      .mockResolvedValue(second);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(["agent", agentId, 100], detail);
+  it("immediately advances expanded Changed Files and Review while Run B detail is deferred", async () => {
+    const pending = deferred<ChangedFileDetailDto>();
+    const mounted = await mountLiveViews("agent-live-deferred", pending.promise);
 
-    let view!: ReturnType<typeof create>;
-    await act(async () => {
-      view = create(<QueryClientProvider client={client}><LiveChangedFiles agentId={agentId} /></QueryClientProvider>);
-    });
-    await act(async () => {
-      emit({
-        seq: 1,
-        ts: firstChangedAt,
-        replayed: true,
-        event: { type: "file_change", path: "src/live.ts", kind: "edit", diff: first.diff },
-      });
-    });
-    await act(async () => {
-      view.root.findByProps({ "aria-expanded": false }).props.onClick();
-    });
+    await act(async () => mounted.emit(runBFileChange()));
+    await vi.waitFor(() => expectImmediateRunB(mounted.view));
+
+    expect(mounted.getChangedFileDetail).toHaveBeenCalledTimes(1);
+    expect(mounted.client.getQueryData<AgentDetailDto>(["agent", "agent-live-deferred", 100])?.changedFiles[0])
+      .toMatchObject({ lastSeq: 2, executionCount: 2 });
+    dispose(mounted.view, mounted.client);
+  });
+
+  it("keeps the new live count and suppresses the stale diff when Run B detail is rejected", async () => {
+    const pending = deferred<ChangedFileDetailDto>();
+    const mounted = await mountLiveViews("agent-live-rejected", pending.promise);
+
+    await act(async () => mounted.emit(runBFileChange()));
+    await act(async () => pending.reject(new Error("detail unavailable")));
     await vi.waitFor(() => {
-      expect(JSON.stringify(view.toJSON())).toContain("first");
+      expectImmediateRunB(mounted.view);
+      expect(renderedText(mounted.view.toJSON())).toContain("File provenance could not be loaded");
     });
 
-    await act(async () => {
-      emit({
-        seq: 2,
-        ts: secondChangedAt,
-        event: { type: "file_change", path: "src/live.ts", kind: "edit", diff: second.diff },
-      });
-    });
+    dispose(mounted.view, mounted.client);
+  });
+
+  it("does not double-count duplicate same-Run file events", async () => {
+    const pending = deferred<ChangedFileDetailDto>();
+    const mounted = await mountLiveViews("agent-live-duplicate", pending.promise);
+
+    await act(async () => mounted.emit(runBFileChange()));
+    await act(async () => mounted.emit(runBFileChange(3, thirdChangedAt)));
+    await vi.waitFor(() => expectImmediateRunB(mounted.view));
+
+    expect(mounted.client.getQueryData<AgentDetailDto>(["agent", "agent-live-duplicate", 100])?.changedFiles[0])
+      .toMatchObject({ lastSeq: 3, executionCount: 2 });
+    dispose(mounted.view, mounted.client);
+  });
+
+  it("reconciles the immutable Run B detail without regressing either live count", async () => {
+    const pending = deferred<ChangedFileDetailDto>();
+    const mounted = await mountLiveViews("agent-live-success", pending.promise);
+
+    await act(async () => mounted.emit(runBFileChange()));
+    await vi.waitFor(() => expectImmediateRunB(mounted.view));
+    await act(async () => pending.resolve(secondDetail));
     await vi.waitFor(() => {
-      const rendered = renderedText(view.toJSON());
-      expect(rendered).toContain("second");
-      expect(rendered).not.toContain("+first");
-      expect(rendered).toContain("2 runs");
+      expectImmediateRunB(mounted.view);
+      expect(renderedText(mounted.view.toJSON())).toContain("+second");
     });
 
-    expect(getChangedFileDetail).toHaveBeenCalledTimes(2);
-    expect(client.getQueryData<ChangedFileDetailDto>(["changed-file", agentId, "src/live.ts", 2])).toEqual(second);
-    view.unmount();
-    client.clear();
+    expect(mounted.client.getQueryData<ChangedFileDetailDto>(["changed-file", "agent-live-success", "src/live.ts", 2]))
+      .toEqual(secondDetail);
+    dispose(mounted.view, mounted.client);
   });
 });
