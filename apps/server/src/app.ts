@@ -1842,26 +1842,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
     (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
-  const artifactFilesystemError = artifactFilesystem.ok
+  const artifactFilesystemError = () => artifactFilesystem.ok
     ? undefined
     : `artifact-dependent work is unavailable: ${artifactFilesystem.detail}`;
-  const isArtifactDependentWorkIntake = (method: string, url: string): boolean => {
-    if (method !== "POST" && method !== "PUT" && method !== "PATCH") return false;
-    const pathname = url.split("?", 1)[0]!;
-    return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
-      pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
-      pathname === "/api/agent-management" ||
-      pathname === "/api/user-reactions" ||
-      /^\/api\/agents\/[^/]+\/messages$/u.test(pathname) ||
-      /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|direct-replies|collaboration\/messages)$/u.test(pathname) ||
-      /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
-      /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
-      /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
-      /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
-      /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/retry$/u.test(pathname) ||
-      /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
-      /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
-  };
   const assets = new AssetStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
     attachmentAuthority: {
@@ -2180,6 +2163,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     result?: unknown;
   };
   const managementPlans = new Map<string, ManagementPlan>();
+  const isArtifactDependentWorkIntake = (method: string, url: string, body?: unknown): boolean => {
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH") return false;
+    const pathname = url.split("?", 1)[0]!;
+    if (pathname === "/api/agent-management") {
+      if (method !== "POST" || !body || typeof body !== "object" || Array.isArray(body)) return false;
+      const input = body as { action?: unknown; operations?: unknown; planId?: unknown };
+      if (input.action === "plan") {
+        return Array.isArray(input.operations) && input.operations.some((operation) =>
+          operation && typeof operation === "object" && !Array.isArray(operation) &&
+          (operation as { kind?: unknown }).kind === "create_agent");
+      }
+      if (input.action === "apply" && typeof input.planId === "string") {
+        return Boolean(managementPlans.get(input.planId.trim())?.operations.some((operation) => operation.kind === "create_agent"));
+      }
+      return false;
+    }
+    // Draft attachments remain ephemeral editor state. They do not enter the
+    // Agent asset authority or scheduling state until a separately fenced send.
+    return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
+      pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
+      pathname === "/api/user-reactions" ||
+      /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
+      /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|direct-replies|collaboration\/messages)$/u.test(pathname) ||
+      /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
+      /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/retry$/u.test(pathname) ||
+      /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
+      /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
+  };
   const publicManagementOperations = (operations: ManagementOperation[]): ManagementOperation[] => operations.map((operation) => {
     const providerOperation = { ...operation };
     delete providerOperation.targetRunId;
@@ -5043,8 +5057,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (artifactFilesystemError && isArtifactDependentWorkIntake(request.method, request.url)) {
-      return reply.code(503).send({ error: artifactFilesystemError });
+    const error = artifactFilesystemError();
+    if (error && isArtifactDependentWorkIntake(request.method, request.url)) {
+      return reply.code(503).send({ error });
+    }
+  });
+
+  app.addHook("preValidation", async (request, reply) => {
+    const error = artifactFilesystemError();
+    if (error && isArtifactDependentWorkIntake(request.method, request.url, request.body)) {
+      return reply.code(503).send({ error });
     }
   });
 
@@ -7454,7 +7476,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.post("/api/deployment/resume", async (_request, reply) => {
     if (closed) return reply.code(409).send({ error: "daemon is shutting down" });
     if (!artifactFilesystem.ok) {
-      return reply.code(409).send({ error: artifactFilesystemError });
+      return reply.code(409).send({ error: artifactFilesystemError() });
     }
     deploymentDraining = false;
     coordinationV3Scheduler.resumeLeasing();

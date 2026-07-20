@@ -4894,6 +4894,80 @@ describe("server chunk F", () => {
     await healthy.close();
   });
 
+  it("rejects valid Agent attachment staging without procfs while preserving ephemeral draft uploads", async () => {
+    const project = store.createProject({ label: "Blocked Agent attachment", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Attachment draft" });
+    const agent = store.createAgent(project.id, { title: "Attachment owner", engine: "codex", conversationId: conversation.id });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const rosterBefore = structuredClone(store.listAgents(project.id));
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "valid.png" },
+      payload: png,
+    });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(rosterBefore);
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    const attachmentDirectory = path.join(dataDir, "projects", project.id, "agents", agent.id, "attachments");
+    expect(existsSync(attachmentDirectory) ? readdirSync(attachmentDirectory) : []).toEqual([]);
+    expect(adapter.seeds).toEqual([]);
+
+    const draft = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/draft-attachments`,
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "image/png", "x-ponderosa-filename": "draft.png" },
+      payload: png,
+    });
+    expect(draft.statusCode, draft.body).toBe(201);
+    const draftDownload = await app.inject({ method: "GET", url: draft.json<{ downloadUrl: string }>().downloadUrl });
+    expect(draftDownload.statusCode).toBe(200);
+    expect(draftDownload.rawPayload).toEqual(png);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    const healthyBefore = readinessFenceDurableState(store, dataDir, project.id);
+    const uploaded = await healthy.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "valid.png" },
+      payload: png,
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).not.toEqual(healthyBefore);
+    const authority = new AssetStore(dataDir);
+    try {
+      expect(await authority.read(project.id, agent.id, uploaded.json<{ id: string }>().id)).toMatchObject({
+        name: "valid.png",
+        mediaType: "image/png",
+        state: "staged",
+      });
+    } finally {
+      authority.close();
+    }
+    await healthy.close();
+  });
+
   it("rejects valid reaction and direct-reply intake without procfs before any canonical or notification mutation", async () => {
     const project = store.createProject({ label: "Blocked private reply intake", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "Valid reply target" });
@@ -10953,9 +11027,13 @@ describe("V3.3 Decisions, management, and portability", () => {
     await app.close();
   });
 
-  it("rejects authorized create-Agent management plan/apply without procfs before plan or organization mutation", async () => {
+  it("fences only create-Agent management while preserving recovery and organization operations without procfs", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const artifactCapability: { ok: boolean; detail: string } = {
+      ok: true,
+      detail: "artifact filesystem descriptor access is available",
+    };
     const app = createServer({
       dataDir,
       store,
@@ -10963,18 +11041,36 @@ describe("V3.3 Decisions, management, and portability", () => {
       logger: false,
       communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 30 * 60 * 1000 },
       executionLeaseScheduling: { leaseMs: 30 * 60 * 1000, heartbeatMs: 10 * 60 * 1000 },
+      artifactFilesystemCapabilityProbe: () => artifactCapability,
     });
-    const project = store.createProject({ label: "Blocked management apply", hostPath: repoDir });
+    const project = store.createProject({ label: "Scoped management readiness", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "Team" });
-    const owner = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const owner = store.createAgent(project.id, {
+      title: "Manager",
+      engine: "codex",
+      conversationId: conversation.id,
+      managementPermissions: {
+        allowAutomaticDescendantDeletion: true,
+        allowAutomaticDescendantReorganization: true,
+      },
+    });
+    const branch = store.createAgent(project.id, { title: "Branch", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const leaf = store.createAgent(project.id, { title: "Leaf", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const stopTarget = store.createAgent(project.id, { title: "Stop target", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const deleteTarget = store.createAgent(project.id, { title: "Delete target", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
     expect((await app.inject({
       method: "POST",
       url: `/api/agents/${owner.id}/messages`,
       payload: { text: "Prepare a managed Agent", sourceChannel: "main", sourceConversationId: conversation.id },
     })).statusCode).toBe(202);
-    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
-    const runtime = persistent.openedOptions[0]!;
-    const planned = await runtime.handleDynamicToolCall!({
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${stopTarget.id}/messages`,
+      payload: { text: "Remain active until stopped", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const runtime = persistent.openedOptions.find((opened) => opened.agentId === owner.id)!;
+    const createPlan = await runtime.handleDynamicToolCall!({
       name: "ponderosa_manage",
       arguments: {
         action: "plan",
@@ -10988,85 +11084,117 @@ describe("V3.3 Decisions, management, and portability", () => {
         }],
       },
     });
-    expect(planned.success, planned.text).toBe(true);
-    const planId = JSON.parse(planned.text).planId as string;
-    const messageToken = runtime.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
-    expect(messageToken).toBeTruthy();
-
-    const storeClose = store.close.bind(store);
-    const closeStub = vi.spyOn(store, "close").mockImplementation(() => {});
-    const unavailable = createServer({
-      dataDir,
-      store,
-      engines,
-      logger: false,
-      artifactFilesystemCapabilityProbe: () => ({
-        ok: false,
-        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
-      }),
+    expect(createPlan.success, createPlan.text).toBe(true);
+    const createPlanId = JSON.parse(createPlan.text).planId as string;
+    expect((await app.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    artifactCapability.ok = false;
+    artifactCapability.detail = "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs";
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      status: "not_ready",
+      acceptingDurableIntake: false,
+      leasingRuns: false,
+      checks: { artifactFilesystem: { ok: false, detail: expect.stringContaining("masked procfs") } },
     });
-    expect((await unavailable.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
-    const rosterBefore = structuredClone(store.listAgents(project.id));
-    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
-    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
-    const approvalsBefore = store.sqlite.prepare(
-      "SELECT * FROM agent_management_approvals ORDER BY rowid",
-    ).all();
-    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const describe = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "describe" } });
+    expect(describe.success, describe.text).toBe(true);
+    expect(JSON.parse(describe.text)).toMatchObject({ owner: { agentId: owner.id } });
+    const activationIdsBeforeSafeManagement = (store.sqlite.prepare(
+      "SELECT id FROM agent_activations ORDER BY id",
+    ).all() as Array<{ id: string }>).map((row) => row.id);
+    const intakeBeforeSafeManagement = durableMutationState(store, dataDir, project.id);
+    const authorityBeforeSafeManagement = readinessFenceDurableState(store, dataDir, project.id).assetAuthorityBytes;
+
+    const planAndApply = async (idempotencyKey: string, operations: Array<Record<string, unknown>>) => {
+      const planned = await runtime.handleDynamicToolCall!({
+        name: "ponderosa_manage",
+        arguments: { action: "plan", idempotencyKey, operations },
+      });
+      expect(planned.success, planned.text).toBe(true);
+      const applied = await runtime.handleDynamicToolCall!({
+        name: "ponderosa_manage",
+        arguments: { action: "apply", planId: JSON.parse(planned.text).planId },
+      });
+      expect(applied.success, applied.text).toBe(true);
+      return JSON.parse(applied.text) as { replayed: boolean };
+    };
+
+    expect(await planAndApply("missing-procfs-rename", [
+      { kind: "rename_agent", targetAgentId: leaf.id, title: "Renamed leaf" },
+    ])).toMatchObject({ replayed: false });
+    expect(store.getAgent(leaf.id)?.title).toBe("Renamed leaf");
+
+    await planAndApply("missing-procfs-reorganize", [
+      { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: branch.id },
+    ]);
+    expect(store.getAgent(leaf.id)?.managerAgentId).toBe(branch.id);
+
+    await planAndApply("missing-procfs-stop", [
+      { kind: "stop_agent", targetAgentId: stopTarget.id },
+    ]);
+    expect(new CoordinationV3Store(store.sqlite).agentSnapshot(stopTarget.id).activeRun).toBeUndefined();
+    await planAndApply("missing-procfs-delete", [
+      { kind: "delete_agent", targetAgentId: deleteTarget.id },
+    ]);
+    expect(store.getAgent(deleteTarget.id)).toBeUndefined();
+    const intakeAfterSafeManagement = durableMutationState(store, dataDir, project.id);
+    expect((store.sqlite.prepare("SELECT id FROM agent_activations ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id))
+      .toEqual(activationIdsBeforeSafeManagement);
+    expect(intakeAfterSafeManagement).toMatchObject({
+      communications: intakeBeforeSafeManagement.communications,
+      projectArtifacts: intakeBeforeSafeManagement.projectArtifacts,
+      runtimeArtifacts: intakeBeforeSafeManagement.runtimeArtifacts,
+      activations: intakeBeforeSafeManagement.activations,
+      outbox: intakeBeforeSafeManagement.outbox,
+      assetReservations: intakeBeforeSafeManagement.assetReservations,
+      attachmentAssociations: intakeBeforeSafeManagement.attachmentAssociations,
+      generatedAuthorities: intakeBeforeSafeManagement.generatedAuthorities,
+    });
+    expect(readinessFenceDurableState(store, dataDir, project.id).assetAuthorityBytes).toBe(authorityBeforeSafeManagement);
+
+    const blockedState = readinessFenceDurableState(store, dataDir, project.id);
     const runtimeBefore = {
       opened: persistent.opened,
-      closed: persistent.closed,
-      interrupted: persistent.interrupted,
       starts: persistent.starts.length,
       steers: persistent.steers.length,
     };
 
-    const blockedPlan = await unavailable.inject({
-      method: "POST",
-      url: "/api/agent-management",
-      headers: { authorization: `Bearer ${messageToken}` },
-      payload: {
+    const blockedPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
         action: "plan",
         idempotencyKey: "must-not-persist-plan",
         operations: [{ kind: "create_agent", ref: "blocked-report", title: "Blocked report", engine: "codex" }],
       },
     });
-    expect(blockedPlan.statusCode, blockedPlan.body).toBe(503);
-    expect(blockedPlan.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
-
-    const blocked = await unavailable.inject({
-      method: "POST",
-      url: "/api/agent-management",
-      headers: { authorization: `Bearer ${messageToken}` },
-      payload: { action: "apply", planId },
+    expect(blockedPlan.success).toBe(false);
+    expect(blockedPlan.text).toContain("artifact-dependent work is unavailable");
+    const blockedApply = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "apply", planId: createPlanId },
     });
-    expect(blocked.statusCode, blocked.body).toBe(503);
-    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
-    expect(store.listAgents(project.id)).toEqual(rosterBefore);
-    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
-    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
-    expect(store.sqlite.prepare("SELECT * FROM agent_management_approvals ORDER BY rowid").all()).toEqual(approvalsBefore);
-    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(blockedApply.success).toBe(false);
+    expect(blockedApply.text).toContain("artifact-dependent work is unavailable");
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(blockedState);
+    expect(store.listAgents(project.id).some((agent) => agent.title === "New report" || agent.title === "Blocked report")).toBe(false);
     expect({
       opened: persistent.opened,
-      closed: persistent.closed,
-      interrupted: persistent.interrupted,
       starts: persistent.starts.length,
       steers: persistent.steers.length,
     }).toEqual(runtimeBefore);
-    const applied = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } });
+
+    artifactCapability.ok = true;
+    artifactCapability.detail = "artifact filesystem descriptor access is available";
+    const applied = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: createPlanId } });
     expect(applied.success, applied.text).toBe(true);
     expect(JSON.parse(applied.text)).toMatchObject({ replayed: false });
     const created = store.listAgents(project.id).find((agent) => agent.title === "New report");
     expect(created).toMatchObject({ managerAgentId: owner.id, spawnedByAgentId: owner.id });
     expect(store.getImportedHistory(created!.id)?.messages[0]?.text).toBe("Perform the opening assignment.");
-    const replay = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } });
+    const replay = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: createPlanId } });
     expect(replay.success, replay.text).toBe(true);
     expect(JSON.parse(replay.text)).toMatchObject({ replayed: true });
-    await unavailable.close();
     await app.close();
-    closeStub.mockRestore();
-    storeClose();
   });
 
   it("reauthorizes destructive plans at apply and rejects stale topology or unrelated approvals", async () => {
