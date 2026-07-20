@@ -19,8 +19,6 @@ import {
   Select,
   Stack,
   TextField,
-  ToggleButton,
-  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -41,9 +39,9 @@ import {
   type AgentStatus,
 } from "../agents";
 
-type StatusFilter = "all" | AgentStatus | "unassigned";
+export type StatusFilter = "all" | AgentStatus | "unassigned";
 
-const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
+export const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
   { value: "running", label: "Running" },
   { value: "waiting", label: "Waiting" },
   { value: "blocked", label: "Blocked" },
@@ -55,6 +53,28 @@ const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">
   { value: "completed", label: "Completed" },
   { value: "idle", label: "Idle" },
 ];
+
+export function agentStatusFilterOptions(
+  agents: AgentDto[],
+  statusByAgentId: ReadonlyMap<string, AgentStatus>,
+): Array<{ value: StatusFilter; label: string; count: number }> {
+  const counts = agents.reduce(
+    (result, agent) => {
+      result.status[statusByAgentId.get(agent.id) ?? "idle"] += 1;
+      if (agent.conversationIds.length === 0) result.unassigned += 1;
+      return result;
+    },
+    {
+      status: { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
+      unassigned: 0,
+    },
+  );
+  return [
+    { value: "all", label: "All", count: agents.length },
+    ...STATUS_FILTERS.map((option) => ({ ...option, count: counts.status[option.value] })),
+    { value: "unassigned", label: "Unassigned", count: counts.unassigned },
+  ];
+}
 
 export function AgentsTab({
   agents,
@@ -115,14 +135,7 @@ export function AgentsTab({
     if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
     return true;
   });
-  const statusCounts = agents.reduce(
-    (counts, agent) => {
-      const status = statusByAgentId.get(agent.id) ?? "idle";
-      counts[status] += 1;
-      return counts;
-    },
-    { running: 0, stalled: 0, interrupted: 0, waiting: 0, blocked: 0, compacting: 0, cancelled: 0, completed: 0, failed: 0, idle: 0 } satisfies Record<AgentStatus, number>,
-  );
+  const statusOptions = agentStatusFilterOptions(agents, statusByAgentId);
   const activeRunTargets = agents.flatMap((agent) => {
     const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
     return runId ? [{ agentId: agent.id, runId }] : [];
@@ -197,39 +210,25 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
       >
-        <Stack
-          direction="row"
-          spacing={0.75}
-          useFlexGap
-          flexWrap="wrap"
-          role="status"
-          aria-label={`${statusCounts.running} running, ${statusCounts.stalled} stalled, ${statusCounts.interrupted} interrupted, ${statusCounts.waiting} waiting, ${statusCounts.compacting} compacting, ${statusCounts.blocked} blocked, ${statusCounts.failed} failed, ${statusCounts.cancelled} cancelled, ${statusCounts.completed} completed`}
-        >
-          <Chip size="small" color="info" label={`${statusCounts.running} running`} />
-          {statusCounts.stalled ? <Chip size="small" color="error" label={`${statusCounts.stalled} stalled`} /> : null}
-          {statusCounts.interrupted ? <Chip size="small" color="error" label={`${statusCounts.interrupted} interrupted`} /> : null}
-          <Chip size="small" color="warning" label={`${statusCounts.waiting} waiting`} />
-          <Chip size="small" label={`${statusCounts.idle} idle`} />
-          {statusCounts.compacting ? <Chip size="small" color="info" label={`${statusCounts.compacting} compacting`} /> : null}
-          {statusCounts.blocked ? <Chip size="small" color="error" label={`${statusCounts.blocked} blocked`} /> : null}
-          {statusCounts.failed ? <Chip size="small" color="error" label={`${statusCounts.failed} failed`} /> : null}
-        </Stack>
-        <Box sx={{ maxWidth: "100%", overflowX: "auto", pb: 0.25 }}>
-          <ToggleButtonGroup
-            size="small"
-            exclusive
+        <FormControl size="small" sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}>
+          <InputLabel id="agents-status-filter-label">Status</InputLabel>
+          <Select
+            labelId="agents-status-filter-label"
+            label="Status"
             value={statusFilter}
-            onChange={(_event, value: StatusFilter | null) => value && setStatusFilter(value)}
-            aria-label="Filter agents by status"
-            sx={{ "& .MuiToggleButton-root": { minHeight: 44 } }}
+            onChange={(event: SelectChangeEvent<StatusFilter>) => setStatusFilter(event.target.value as StatusFilter)}
+            inputProps={{ "aria-label": "Filter agents by status" }}
+            sx={{ minHeight: { xs: 44, sm: 40 } }}
+            renderValue={(value) => {
+              const option = statusOptions.find((candidate) => candidate.value === value);
+              return option ? `${option.label} (${option.count})` : "All";
+            }}
           >
-            <ToggleButton value="all">All</ToggleButton>
-            {STATUS_FILTERS.map((option) => <ToggleButton key={option.value} value={option.value}>
-              {option.label}{statusCounts[option.value] ? ` (${statusCounts[option.value]})` : ""}
-            </ToggleButton>)}
-            <ToggleButton value="unassigned">Unassigned</ToggleButton>
-          </ToggleButtonGroup>
-        </Box>
+            {statusOptions.map((option) => <MenuItem key={option.value} value={option.value}>
+              {option.label} ({option.count})
+            </MenuItem>)}
+          </Select>
+        </FormControl>
         <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel id="agents-master-filter-label">Project chat</InputLabel>
           <Select
