@@ -88,6 +88,9 @@ interface ManagedSession {
   spawnHandles: Set<BrowserTerminationHandle>;
   cleanupError?: string;
   cleanup?: Promise<void>;
+  /** Authority-specific cleanup started by a distinct callback after the
+   * factory has already produced a healthy ready driver. */
+  lateCleanups: Set<Promise<void>>;
   queue: Promise<unknown>;
   lifecycleEpoch: number;
   opening?: Promise<BrowserSessionDto>;
@@ -100,6 +103,7 @@ interface ManagedSession {
 
 interface SpawnPublication {
   promise: Promise<void>;
+  readonly sealed: boolean;
   readonly coversReturnedDriver: boolean;
   finish(coversReturnedDriver?: boolean): void;
 }
@@ -111,6 +115,7 @@ function spawnPublication(): SpawnPublication {
   const promise = new Promise<void>((resolve) => { finishPromise = resolve; });
   return {
     promise,
+    get sealed() { return complete; },
     get coversReturnedDriver() { return coversReturnedDriver; },
     finish(coversDriver = false) {
       if (complete) return;
@@ -264,7 +269,7 @@ export class BrowserSessionManager {
       openings: sessions.filter((session) => Boolean(session.opening)).length,
       active: sessions.filter((session) => Boolean(session.driver)).length,
       pendingCleanup: sessions.filter((session) => Boolean(
-        session.closingDriver || session.cleanup ||
+        session.closingDriver || session.cleanup || session.lateCleanups.size || session.cleanupError ||
         ((session.dto.status === "closed" || session.dto.status === "failed") && session.spawnHandles.size),
       )).length,
       retainedFailures: sessions.filter((session) => Boolean(session.cleanupError)).length,
@@ -334,11 +339,43 @@ export class BrowserSessionManager {
     return [...byAuthority.values()];
   }
 
+  private hasAuthority(session: ManagedSession, authority: object): boolean {
+    return this.retainedHandles(session).some((handle) => this.authority(handle) === authority);
+  }
+
+  private discardSpawnAuthority(session: ManagedSession, authority: object): void {
+    for (const published of session.spawnHandles) {
+      if (this.authority(published) === authority) session.spawnHandles.delete(published);
+    }
+  }
+
+  /** A factory callback after readiness cannot expand the ready driver's
+   * process authority. Contain only the newly published distinct authority so
+   * the canonical ready session remains usable and truthful. */
+  private closeLateSpawnAuthority(session: ManagedSession, handle: BrowserTerminationHandle): void {
+    const authority = this.authority(handle);
+    const cleanup = this.closeHandle(handle).then(
+      () => this.discardSpawnAuthority(session, authority),
+      (error: unknown) => {
+        session.cleanupError = error instanceof Error ? error.message : String(error);
+        this.lifecycle(session, `late browser authority cleanup did not complete: ${session.cleanupError}`);
+        throw error;
+      },
+    );
+    session.lateCleanups.add(cleanup);
+    void cleanup.finally(() => session.lateCleanups.delete(cleanup)).catch(() => undefined);
+  }
+
   /** Close every process authority retained by a session, clearing only handles
    * whose whole-process shutdown was observed. Failed handles remain attached
    * to the session so later cleanup and readiness checks cannot lose them. */
   private async performRetainedCleanup(session: ManagedSession): Promise<void> {
     while (true) {
+      // A full lifecycle close joins any authority-specific late cleanup first.
+      // If it failed, closeHandle released its coalescing entry and this pass
+      // retries that exact retained authority alongside the session driver.
+      const lateCleanups = [...session.lateCleanups];
+      if (lateCleanups.length) await Promise.allSettled(lateCleanups);
       const handles = this.retainedHandles(session);
       if (!handles.length) {
         session.cleanupError = undefined;
@@ -352,9 +389,7 @@ export class BrowserSessionManager {
         const authority = this.authority(handle);
         if (session.driver && this.authority(session.driver) === authority) session.driver = undefined;
         if (session.closingDriver && this.authority(session.closingDriver) === authority) session.closingDriver = undefined;
-        for (const published of session.spawnHandles) {
-          if (this.authority(published) === authority) session.spawnHandles.delete(published);
-        }
+        this.discardSpawnAuthority(session, authority);
       });
       if (failures.length) {
         session.cleanupError = failures.map((error) => error instanceof Error ? error.message : String(error)).join("; ");
@@ -384,8 +419,19 @@ export class BrowserSessionManager {
     handle: BrowserTerminationHandle,
     options: BrowserSpawnPublicationOptions = {},
   ): void {
-    session.spawnHandles.add(handle);
+    const wasSealed = publication.sealed;
     if (options.complete) publication.finish(options.coversReturnedDriver);
+    const authority = this.authority(handle);
+    // Duplicate callbacks and spawn/driver handles sharing one explicit
+    // termination authority never create another close obligation.
+    if (this.hasAuthority(session, authority)) return;
+    session.spawnHandles.add(handle);
+    if (this.sessions.get(scope.agentId) === session &&
+        (wasSealed || session.dto.status === "ready" ||
+          (session.dto.status === "opening" && session.lifecycleEpoch !== lifecycleEpoch))) {
+      this.closeLateSpawnAuthority(session, handle);
+      return;
+    }
     if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening" ||
         session.lifecycleEpoch !== lifecycleEpoch) {
       // Cleanup has already fenced this opening. Start closing immediately;
@@ -469,6 +515,7 @@ export class BrowserSessionManager {
         updatedAt: now,
       },
       spawnHandles: new Set(),
+      lateCleanups: new Set(),
       queue: Promise.resolve(),
       lifecycleEpoch: 1,
     };
@@ -505,7 +552,6 @@ export class BrowserSessionManager {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
         session.driver = createdDriver;
-        session.cleanupError = undefined;
         if (url) await createdDriver.navigate(validateBrowserUrl(url));
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
@@ -595,7 +641,6 @@ export class BrowserSessionManager {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
         session.driver = createdDriver;
-        session.cleanupError = undefined;
         if (previousUrl && previousUrl !== "about:blank") await createdDriver.navigate(validateBrowserUrl(previousUrl));
         const info = redactPageInfo(await createdDriver.pageInfo());
         if (this.sessions.get(scope.agentId) !== session || session.driver !== createdDriver || session.dto.status !== "opening") {

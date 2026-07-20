@@ -12,6 +12,8 @@ import {
   validateBrowserUrl,
   type BrowserDriver,
   type BrowserScope,
+  type BrowserSpawnPublicationOptions,
+  type BrowserTerminationHandle,
 } from "../src/browser-session-manager.js";
 
 const png = Buffer.from("89504e470d0a1a0a", "hex");
@@ -175,6 +177,205 @@ describe("run-scoped browser sessions", () => {
     expect(duplicate.close).not.toHaveBeenCalled();
     await manager.close(scope, "duplicate_close");
     expect(driver.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("contains a distinct post-readiness publication without closing the healthy driver", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const driverAuthority = {};
+    const driver = Object.assign(fakeDriver(), { terminationAuthority: driverAuthority });
+    const spawnHandle = { terminationAuthority: driverAuthority, close: vi.fn(async () => undefined) };
+    const lateAuthority = {};
+    const lateHandle = { terminationAuthority: lateAuthority, close: vi.fn(async () => undefined) };
+    let publish!: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      publish = onSpawned!;
+      publish(spawnHandle, { complete: true, coversReturnedDriver: true });
+      return driver;
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+
+    await expect(manager.open(scope)).resolves.toMatchObject({ status: "ready" });
+    publish(lateHandle);
+    await vi.waitFor(() => expect(manager.authorityStatus()).toEqual({
+      openings: 0, active: 1, pendingCleanup: 0, retainedFailures: 0,
+    }));
+
+    expect(manager.get(scope.agentId)).toMatchObject({ status: "ready" });
+    await expect(manager.inspect(scope)).resolves.toContain("about:blank");
+    await expect(manager.navigate(scope, "https://example.com/continued", "agent")).resolves.toMatchObject({
+      status: "ready", url: "https://example.com/continued",
+    });
+    expect(driver.close).not.toHaveBeenCalled();
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+
+    await manager.close(scope, "project_deleted");
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+    expect(lateHandle.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("contains a distinct publication after the factory seals but before readiness", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const returnDriver = deferred<void>();
+    const factoryStarted = deferred<void>();
+    const driverAuthority = {};
+    const driver = Object.assign(fakeDriver(), { terminationAuthority: driverAuthority });
+    const spawnHandle = { terminationAuthority: driverAuthority, close: vi.fn(async () => undefined) };
+    let failLateClose = true;
+    const lateHandle = {
+      close: vi.fn(async () => {
+        if (failLateClose) throw new Error("sealed late browser authority is still alive");
+      }),
+    };
+    let publish!: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      publish = onSpawned!;
+      publish(spawnHandle, { complete: true, coversReturnedDriver: true });
+      factoryStarted.resolve();
+      await returnDriver.promise;
+      return driver;
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+
+    const opening = manager.open(scope);
+    await factoryStarted.promise;
+    publish(lateHandle);
+    await vi.waitFor(() => expect(manager.authorityStatus()).toEqual({
+      openings: 1, active: 0, pendingCleanup: 1, retainedFailures: 1,
+    }));
+    expect(driver.close).not.toHaveBeenCalled();
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+
+    returnDriver.resolve();
+    await expect(opening).resolves.toMatchObject({ status: "ready" });
+    expect(manager.authorityStatus()).toEqual({ openings: 0, active: 1, pendingCleanup: 1, retainedFailures: 1 });
+    await expect(manager.inspect(scope)).resolves.toContain("about:blank");
+    failLateClose = false;
+    await manager.close(scope, "project_deleted");
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(lateHandle.close).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a failed distinct post-readiness authority and retries only its unresolved close", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    let failLateClose = true;
+    const driverAuthority = {};
+    const driver = Object.assign(fakeDriver(), { terminationAuthority: driverAuthority });
+    const spawnHandle = { terminationAuthority: driverAuthority, close: vi.fn(async () => undefined) };
+    const lateHandle = {
+      close: vi.fn(async () => {
+        if (failLateClose) throw new Error("late distinct browser authority is still alive");
+      }),
+    };
+    const events: AgentEvent[] = [];
+    let publish!: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      publish = onSpawned!;
+      publish(spawnHandle, { complete: true, coversReturnedDriver: true });
+      return driver;
+    }, (_scope, event) => events.push(event));
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+    await manager.open(scope);
+
+    publish(lateHandle);
+    await vi.waitFor(() => expect(manager.authorityStatus()).toEqual({
+      openings: 0, active: 1, pendingCleanup: 1, retainedFailures: 1,
+    }));
+    expect(manager.get(scope.agentId)).toMatchObject({ status: "ready" });
+    await expect(manager.inspect(scope)).resolves.toContain("about:blank");
+    expect(driver.close).not.toHaveBeenCalled();
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "browser_session",
+      status: "ready",
+      reason: expect.stringContaining("late distinct browser authority is still alive"),
+    }));
+
+    failLateClose = false;
+    await manager.close(scope, "project_deleted");
+    expect(lateHandle.close).toHaveBeenCalledTimes(2);
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+    expect(manager.authorityStatus()).toEqual({ openings: 0, active: 0, pendingCleanup: 0, retainedFailures: 0 });
+  });
+
+  it("does not close or double-close post-readiness callbacks for covered authorities", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const driverAuthority = {};
+    const driver = Object.assign(fakeDriver(), { terminationAuthority: driverAuthority });
+    const spawnHandle = { terminationAuthority: driverAuthority, close: vi.fn(async () => undefined) };
+    const duplicateDriverHandle = { terminationAuthority: driverAuthority, close: vi.fn(async () => undefined) };
+    const lateAuthority = {};
+    const firstLateHandle = { terminationAuthority: lateAuthority, close: vi.fn(async () => undefined) };
+    const duplicateLateHandle = { terminationAuthority: lateAuthority, close: vi.fn(async () => undefined) };
+    let publish!: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      publish = onSpawned!;
+      publish(spawnHandle, { complete: true, coversReturnedDriver: true });
+      return driver;
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+    await manager.open(scope);
+
+    publish(duplicateDriverHandle);
+    publish(firstLateHandle);
+    await vi.waitFor(() => expect(firstLateHandle.close).toHaveBeenCalledTimes(1));
+    publish(duplicateLateHandle);
+    await vi.waitFor(() => expect(manager.authorityStatus()).toEqual({
+      openings: 0, active: 1, pendingCleanup: 0, retainedFailures: 0,
+    }));
+
+    expect(driver.close).not.toHaveBeenCalled();
+    expect(spawnHandle.close).not.toHaveBeenCalled();
+    expect(duplicateDriverHandle.close).not.toHaveBeenCalled();
+    expect(firstLateHandle.close).toHaveBeenCalledTimes(1);
+    expect(duplicateLateHandle.close).not.toHaveBeenCalled();
+    await expect(manager.inspect(scope)).resolves.toContain("about:blank");
+
+    await manager.close(scope, "project_deleted");
+    expect(driver.close).toHaveBeenCalledTimes(1);
+    expect(firstLateHandle.close).toHaveBeenCalledTimes(1);
+    expect(duplicateLateHandle.close).not.toHaveBeenCalled();
+  });
+
+  it("contains a stale publication from an earlier reconnect lifecycle epoch", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    const firstDriver = fakeDriver();
+    const secondDriver = fakeDriver();
+    const staleHandle = { close: vi.fn(async () => undefined) };
+    let firstPublish!: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void;
+    let factoryCalls = 0;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        firstPublish = onSpawned!;
+        return firstDriver;
+      }
+      return secondDriver;
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+    await manager.open(scope);
+    await manager.reconnect(scope);
+
+    firstPublish(staleHandle);
+    await vi.waitFor(() => expect(manager.authorityStatus()).toEqual({
+      openings: 0, active: 1, pendingCleanup: 0, retainedFailures: 0,
+    }));
+
+    expect(staleHandle.close).toHaveBeenCalledTimes(1);
+    expect(firstDriver.close).toHaveBeenCalledTimes(1);
+    expect(secondDriver.close).not.toHaveBeenCalled();
+    expect(manager.get(scope.agentId)).toMatchObject({ status: "ready" });
+    await expect(manager.inspect(scope)).resolves.toContain("about:blank");
+
+    await manager.close(scope, "project_deleted");
+    expect(staleHandle.close).toHaveBeenCalledTimes(1);
+    expect(secondDriver.close).toHaveBeenCalledTimes(1);
   });
 
   it("does not report a Project fixed point between distinct late publications", async () => {
