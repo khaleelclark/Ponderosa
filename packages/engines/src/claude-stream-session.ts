@@ -3,6 +3,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
+  EngineCapabilities,
   OpenRuntimeSessionOptions,
   RuntimeSession,
   RuntimeSteerResult,
@@ -13,6 +14,7 @@ import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 import { renderSeedPrompt } from "./seed-history.js";
+import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -30,6 +32,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private stderrTail = "";
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
+  private capabilitiesSnapshot?: EngineCapabilities;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     if (!opts.onRuntimeSpawned) {
@@ -102,6 +105,18 @@ export class ClaudeStreamSession implements RuntimeSession {
     return { turnId };
   }
 
+  async capabilities(): Promise<EngineCapabilities> {
+    return this.capabilitiesSnapshot ?? {
+      steering: true,
+      persistentSessions: true,
+      sessionId: this.engineAgentId,
+      ...(this.opts.model ? { model: this.opts.model } : {}),
+      commands: [],
+      mcpServers: [],
+      composerCapabilities: [],
+    };
+  }
+
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
     if (!this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
@@ -157,6 +172,11 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     stdout.setEncoding("utf8");
     for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
+      const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
+      if (capabilities) {
+        this.capabilitiesSnapshot = capabilities;
+        this.opts.onCapabilitiesChanged?.();
+      }
       for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
         if (event.type === "turn_done" || event.type === "error") this.active = false;
         yield event;

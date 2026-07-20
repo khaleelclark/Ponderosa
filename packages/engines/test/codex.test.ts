@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -9,6 +9,7 @@ import { CodexAdapter, readCodexModels, renderSeedPrompt } from "../src/codex.js
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeCodex = join(here, "fake-codex.mjs");
+const fakeCodexAppServer = join(here, "fake-codex-app-server.mjs");
 // A real, existing cwd — spawn() requires the working dir to exist.
 const cwd = here;
 
@@ -265,6 +266,33 @@ describe("CodexAdapter.continue transport", () => {
 });
 
 describe("CodexAdapter surface", () => {
+  it("opens one registered app-server without an untracked CLI inventory subprocess", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-open-"));
+    const inventoryMarker = join(tempDir, "inventory-helper-ran");
+    const bin = join(tempDir, "codex");
+    writeFileSync(bin, `#!/bin/sh\n: > "${inventoryMarker}"\n`);
+    chmodSync(bin, 0o755);
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fakeCodexAppServer], opts)) as unknown as typeof spawn;
+    const adapter = new CodexAdapter({ bin, spawnFn, killGraceMs: 50 });
+    const controller = new AbortController();
+
+    try {
+      const session = await adapter.openSession!({
+        agentId: "single-spawn",
+        cwd,
+        history: [],
+        signal: controller.signal,
+        onRuntimeSpawned: () => undefined,
+      });
+      expect(existsSync(inventoryMarker)).toBe(false);
+      await session.close();
+    } finally {
+      controller.abort();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("exposes id, displayName, models, and efforts", () => {
     const a = new CodexAdapter({ modelsCachePath: join(cwd, "missing-models-cache.json") });
     expect(a.id).toBe("codex");

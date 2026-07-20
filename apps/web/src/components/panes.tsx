@@ -189,6 +189,28 @@ export function matchingEngineCommands(commands: EngineCommand[], prefix: string
   return commands.filter((command) => command.name.toLocaleLowerCase().startsWith(normalized));
 }
 
+export function engineCommandDisabledReason(command: EngineCommand): string | undefined {
+  return command.status === "unavailable"
+    ? command.unavailableReason ?? "This provider command is not currently available."
+    : undefined;
+}
+
+export function providerSlashSubmission(
+  text: string,
+  commands: readonly EngineCommand[],
+): { command: EngineCommand; argumentsText?: string } | { error: string } | undefined {
+  const match = /^\/([\p{L}\p{N}_:-]+)(?:\s+([\s\S]*))?$/u.exec(text.trim());
+  if (!match) return text.trimStart().startsWith("/")
+    ? { error: "This runtime does not advertise that slash command." }
+    : undefined;
+  const command = commands.find((candidate) => candidate.name === match[1]);
+  if (!command) return { error: `The active provider does not advertise /${match[1]}.` };
+  const unavailable = engineCommandDisabledReason(command);
+  if (unavailable) return { error: unavailable };
+  const argumentsText = match[2]?.trim();
+  return { command, ...(argumentsText ? { argumentsText } : {}) };
+}
+
 export function composerCapabilityDisabledReason(capability: EngineComposerCapability): string | undefined {
   if (capability.status === "unavailable") return capability.unavailableReason ?? "This capability is not currently available.";
   if (capability.insertText) return undefined;
@@ -1960,6 +1982,7 @@ export function Composer({
   busyMentionHandles,
   allowUnmentionedSend = true,
   onSend,
+  onCommand,
   onQueue,
   preferQueue = false,
   queuedMentionHandles,
@@ -1997,6 +2020,8 @@ export function Composer({
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
   onSend(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
+  /** Structured provider commands bypass ordinary user-text submission. */
+  onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
   /** Explicitly enqueue this draft instead of steering the active agent turn. */
   onQueue?(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
   /** Make the primary send action enqueue while this direct Agent already has pending work. */
@@ -2241,7 +2266,7 @@ export function Composer({
     ? fileEntries
         .filter((entry) => entry.name.toLocaleLowerCase().startsWith(filePrefix.toLocaleLowerCase()))
     : [];
-  const slashMatch = /^\/([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
+  const slashMatch = /^\/([\p{L}\p{N}_:-]*)$/u.exec(text.slice(0, caret));
   const commandSuggestions = slashMatch && commands
     ? matchingEngineCommands(commands, slashMatch[1]!)
     : [];
@@ -2287,14 +2312,15 @@ export function Composer({
   };
 
   const applyCommand = (command: EngineCommand) => {
-    const next = `/${command.name}${command.acceptsArguments ? " " : ""}${text.slice(caret)}`;
+    if (engineCommandDisabledReason(command)) return;
+    const next = `${command.insertText}${text.slice(caret)}`;
     update(next);
     setHighlighted(0);
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      const nextCaret = command.name.length + (command.acceptsArguments ? 2 : 1);
+      const nextCaret = command.insertText.length;
       el.setSelectionRange(nextCaret, nextCaret);
       setCaret(nextCaret);
     });
@@ -2319,10 +2345,22 @@ export function Composer({
 
   const submit = (handler: (message: string, selectedFiles: File[], stagedAttachmentIds?: string[]) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
+    const slash = files.length === 0 ? providerSlashSubmission(submissionText, commands ?? []) : undefined;
+    if (slash && "error" in slash) {
+      setSendError(slash.error);
+      return;
+    }
+    if (slash && slash.command.invocation === "runtime" && !onCommand) {
+      setSendError(`/${slash.command.name} requires a structured provider action that is unavailable here.`);
+      return;
+    }
     sendingRef.current = true;
     setSendError(undefined);
     const stagedIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
-    void Promise.resolve(handler(submissionText, files, stagedIds)).then(() => {
+    const operation = slash && slash.command.invocation === "runtime"
+      ? onCommand!(slash.command, slash.argumentsText)
+      : handler(submissionText, files, stagedIds);
+    void Promise.resolve(operation).then(() => {
       update("");
       setPastedText(undefined);
       dispatchAttachments({ type: "clear" });
@@ -2597,12 +2635,16 @@ export function Composer({
                   sx={{ maxHeight: "min(40vh, 360px)", overflowY: "auto", overscrollBehavior: "contain" }}
                 >
                   {menuSuggestions.map((suggestion, index) => (
+                    (() => {
+                      const commandReason = suggestion.kind === "command" ? engineCommandDisabledReason(suggestion.command) : undefined;
+                      return (
                     <MenuItem
                       key={suggestion.kind === "mention" ? suggestion.handle : suggestion.kind === "file" ? suggestion.entry.path : suggestion.command.name}
                       id={`${mentionListId}-option-${index}`}
                       role="option"
                       aria-selected={index === highlighted}
                       selected={index === highlighted}
+                      disabled={Boolean(commandReason)}
                       sx={{ whiteSpace: "normal", alignItems: "flex-start" }}
                       onMouseDown={(event) => {
                         event.preventDefault();
@@ -2615,8 +2657,10 @@ export function Composer({
                         ? `#${suggestion.handle}`
                         : suggestion.kind === "file"
                           ? <Box><Typography variant="body2">@{suggestion.entry.path}{suggestion.entry.kind === "dir" ? "/" : ""}</Typography><Typography variant="caption" color="text.secondary">{suggestion.entry.kind === "dir" ? "Folder" : "File"}</Typography></Box>
-                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">/{suggestion.command.name}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.source} · {suggestion.command.description}</Typography></Box>}
+                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">{suggestion.command.insertText.trimEnd()}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.source} · {commandReason ?? suggestion.command.description}</Typography></Box>}
                     </MenuItem>
+                      );
+                    })()
                   ))}
                 </MenuList>
               </Paper>

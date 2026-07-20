@@ -239,7 +239,7 @@ export function AgentDetail({
   focusTelemetry?: AgentTelemetryFocus;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
-  onRefreshCapabilities(): Promise<unknown> | unknown;
+  onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
   projectedStatus?: AgentStatus;
   projectedHealth?: AgentHealthDto;
   agents: AgentDto[];
@@ -425,12 +425,7 @@ export function AgentDetail({
   const project = projectsQuery.data?.find((candidate) => candidate.id === detail?.agent.projectId);
   const inheritedRuntime = resolveRuntimeSelection(engine, preferencesQuery.data, project);
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
-  const commands: EngineCommand[] = [
-    { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
-    { name: "fresh", description: "Start a fresh provider session; canonical history stays available", source: "ponderosa", acceptsArguments: false },
-    { name: "status", description: "Show this agent's runtime status", source: "ponderosa", acceptsArguments: false },
-    ...(engineCapability?.commands ?? []),
-  ];
+  const commands: EngineCommand[] = engineCapability?.commands ?? [];
 
   const latestRun = detail?.runs.at(-1);
   const persistedModel = detail
@@ -466,8 +461,20 @@ export function AgentDetail({
     [stream.timeline],
   );
   const status = runtimeActivity ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
-  const connectedMcps = engineCapability?.mcpServers.filter((server) => server.status === "connected") ?? [];
-  const mcpSummary = engineCapability?.mcpServers.map((server) => `${server.name}: ${server.status}`).join("\n") || "No inherited MCP servers reported by this engine.";
+  const configuredMcps = engineCapability?.mcpServers.filter((server) => server.configured) ?? [];
+  const usableMcps = configuredMcps.filter((server) => server.usable);
+  const inventoriedMcps = configuredMcps.filter((server) => server.toolsDiscovered);
+  const discoveredMcpTools = inventoriedMcps.reduce((total, server) => total + server.toolCount, 0);
+  const mcpToolCountLabel = inventoriedMcps.length === configuredMcps.length
+    ? `${discoveredMcpTools} tools`
+    : `${discoveredMcpTools} tools · inventory ${inventoriedMcps.length}/${configuredMcps.length}`;
+  const mcpSummary = configuredMcps.map((server) => [
+    `${server.name}: ${server.initialization.replaceAll("_", " ")}`,
+    server.usable ? "usable" : "not usable",
+    server.toolsDiscovered ? `${server.toolCount} tool${server.toolCount === 1 ? "" : "s"}` : "tools not discovered",
+    `health ${server.health}`,
+    server.detail,
+  ].filter(Boolean).join(" · ")).join("\n") || "No MCP servers are configured for this runtime.";
 
   const stopRequestId = useRef<string>();
   const cancelRun = useMutation({
@@ -936,12 +943,21 @@ export function AgentDetail({
                 <Chip
                   size="small"
                   variant="outlined"
-                  color={connectedMcps.length > 0 ? "success" : "default"}
-                  label={`${connectedMcps.length}/${engineCapability?.mcpServers.length ?? 0} MCPs${engineCapability?.steering ? " · Steerable" : ""}`}
+                  color={usableMcps.length > 0 ? "success" : "default"}
+                  label={`${usableMcps.length}/${configuredMcps.length} MCPs · ${mcpToolCountLabel}${engineCapability?.steering ? " · Steerable" : ""}`}
                 />
               </Tooltip>
             </Stack>}
             actions={[
+              {
+                label: "Start fresh provider session",
+                onSelect: () => {
+                  setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
+                  void api.compactSession(agentId)
+                    .then(() => setQueuedMessageNotice("Fresh provider session scheduled. Canonical history remains available."))
+                    .catch((error: unknown) => setQueuedMessageNotice(error instanceof Error ? error.message : "Fresh provider session could not be scheduled."));
+                },
+              },
               {
                 label: "Rename",
                 icon: <DriveFileRenameOutlineIcon fontSize="small" />,
@@ -1025,7 +1041,7 @@ export function AgentDetail({
         <Composer
           commands={commands}
           capabilities={engineIsAvailable(engine) ? engineCapability?.composerCapabilities : []}
-          onCapabilitiesOpen={onRefreshCapabilities}
+          onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: engine?.id, model, agentId })}
           projectId={detail.agent.projectId}
           draftStorageKey={chatStateKey("draft", `agent.${agentId}`)}
           conversationDraftId={`agent:${agentId}`}
@@ -1038,20 +1054,12 @@ export function AgentDetail({
           placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}
           agentResponding={Boolean(runtimeActivity)}
           onSend={(text, files) => {
-            if (files.length === 0 && text === "/cancel") {
-              setQueuedMessageNotice("Cancelling the active turn…");
-              return stopActiveRun().then(() => setQueuedMessageNotice("Active turn cancelled."));
-            }
-            if (files.length === 0 && text === "/fresh") {
-              setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
-              return api.compactSession(agentId).then(() => setQueuedMessageNotice("Fresh provider session scheduled. Canonical history remains available."));
-            }
-            if (files.length === 0 && text === "/status") {
-              setQueuedMessageNotice(`${detail.agent.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);
-              return Promise.resolve();
-            }
             return submitAgentMessage("steer")(text, files);
           }}
+          onCommand={(command, argumentsText) => api.invokeProviderCommand(agentId, {
+            name: command.name,
+            ...(argumentsText ? { argumentsText } : {}),
+          }).then(() => setQueuedMessageNotice(`/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`))}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
           onCancel={() => stopActiveRun()}

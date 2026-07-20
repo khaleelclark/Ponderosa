@@ -25,6 +25,7 @@ import type {
   ChatMessage,
   EngineAuthStatus,
   EngineAvailabilityStatus,
+  EngineCapabilities,
   EngineDto,
   ProjectEngineCapabilitiesDto,
   ProjectFolderOptionsDto,
@@ -10039,6 +10040,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         : hasModelOverride
           ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[agent.activeEngine]]).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
+      const providerSlash = !internalV3Dispatch ? /^\/([\p{L}\p{N}_:-]+)(?:\s|$)/u.exec(text) : undefined;
+      if (providerSlash) {
+        const runtimeSession = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
+        const catalog: EngineCapabilities = await Promise.resolve(runtimeSession?.capabilities
+          ? runtimeSession.capabilities()
+          : engine.adapter.capabilities
+            ? engine.adapter.capabilities(project.hostPath, { ...(effectiveModel ? { model: effectiveModel } : {}) })
+            : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
+        const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
+        if (!command || command.status !== "available") {
+          return reply.code(409).send({
+            error: command?.unavailableReason ?? `the active provider does not advertise /${providerSlash[1]}`,
+            catalogVersion: catalog.catalogVersion,
+          });
+        }
+        if (command.invocation !== "prompt") {
+          return reply.code(409).send({ error: `/${command.name} must be invoked through its structured provider action` });
+        }
+      }
       const attachmentIds = request.body?.attachmentIds ?? [];
       if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
       const attached = (await Promise.all(attachmentIds.map((id) => assetMetadata(agent.id, id))));
@@ -10960,6 +10980,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               },
               onRuntimeSpawned,
               onRuntimeRootExit: () => persistentRootExited(agent.id, identity),
+              onCapabilitiesChanged: () => appendWorkspace({
+                type: "runtime_capabilities_changed",
+                projectId: project.id,
+                engineId: engine.adapter.id,
+              }),
               signal: controller.signal,
             });
             return {
@@ -12060,6 +12085,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { cancelled: true, replayed: result.replayed } satisfies CancelAgentRunResponse;
   });
 
+  app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string } }>(
+    "/api/agents/:id/provider-commands",
+    async (request, reply) => {
+      const agent = store.getAgent(request.params.id);
+      if (!agent) return reply.code(404).send({ error: "agent not found" });
+      if (activeRuns.has(agent.id)) {
+        return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
+      }
+      const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
+      const argumentsText = request.body?.argumentsText?.trim();
+      if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
+        return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
+      }
+      const runtime = reusableRuntime(agent.id);
+      if (!runtime?.session.capabilities || !runtime.session.invokeCommand) {
+        return reply.code(409).send({ error: "this agent has no live provider session for structured commands" });
+      }
+      const catalog = await runtime.session.capabilities();
+      const command = catalog.commands.find((candidate) => candidate.name === name);
+      if (!command || command.invocation !== "runtime" || command.status !== "available") {
+        return reply.code(409).send({
+          error: command?.unavailableReason ?? `the provider no longer advertises /${name}`,
+          catalogVersion: catalog.catalogVersion,
+        });
+      }
+      await runtime.session.invokeCommand(name, argumentsText);
+      appendWorkspace({ type: "runtime_capabilities_changed", projectId: agent.projectId, engineId: agent.activeEngine });
+      return { invoked: true, name, catalogVersion: catalog.catalogVersion };
+    },
+  );
+
   app.post<{ Params: { id: string } }>("/api/agents/:id/compact", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     if (activeRuns.has(request.params.id)) {
@@ -12584,16 +12640,31 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return engineDto(registration);
   });
 
-  app.get<{ Params: { id: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { engineId?: string; model?: string; agentId?: string } }>(
     "/api/projects/:id/engine-capabilities",
     async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      const scopedAgent = request.query.agentId ? store.getAgent(request.query.agentId) : undefined;
+      if (request.query.agentId && (!scopedAgent || scopedAgent.projectId !== project.id)) {
+        return reply.code(404).send({ error: "agent not found in project" });
+      }
+      if (request.query.engineId && !engines.has(request.query.engineId)) {
+        return reply.code(400).send({ error: "unknown engine" });
+      }
       return Promise.all([...engines.values()].map(async ({ adapter }) => {
-        const key = `${project.id}\0${project.hostPath}\0${adapter.id}`;
-        const capabilities = await Promise.resolve(adapter.capabilities
-          ? adapter.capabilities(project.hostPath)
+        const selectedModel = adapter.id === request.query.engineId || adapter.id === scopedAgent?.activeEngine
+          ? request.query.model?.trim() || undefined
+          : undefined;
+        const liveSession = scopedAgent?.activeEngine === adapter.id
+          ? activeRuns.get(scopedAgent.id)?.runtimeSession ?? reusableRuntime(scopedAgent.id)?.session
+          : undefined;
+        const capabilities = await Promise.resolve(liveSession?.capabilities
+          ? liveSession.capabilities()
+          : adapter.capabilities
+          ? adapter.capabilities(project.hostPath, { ...(selectedModel ? { model: selectedModel } : {}) })
           : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
+        const key = `${project.id}\0${project.hostPath}\0${adapter.id}\0${scopedAgent?.id ?? "project"}\0${selectedModel ?? "default"}`;
         const value = { engineId: adapter.id, ...capabilities };
         const fingerprint = JSON.stringify(value);
         const previous = engineCapabilityFingerprints.get(key);

@@ -6,8 +6,6 @@
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { homedir } from "node:os";
-import path from "node:path";
 import type {
   Adapter,
   ApiPriceProfile,
@@ -25,7 +23,7 @@ import { claudeApiPriceProfile } from "./api-pricing.js";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess, type SpawnFn } from "./process.js";
-import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList } from "./capabilities.js";
+import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
 
 export interface ClaudeAdapterOptions {
@@ -98,25 +96,15 @@ export class ClaudeAdapter implements Adapter {
     return claudeApiPriceProfile(model);
   }
 
-  async capabilities(cwd: string): Promise<EngineCapabilities> {
-    const claudeHome = path.join(homedir(), ".claude");
-    const plugins = discoverEnginePlugins([
-      { path: path.join(cwd, ".claude", "plugins"), requireInstallMarker: false },
-      { path: path.join(claudeHome, "plugins"), requireInstallMarker: false },
-    ]);
-    const commands = [...discoverMarkdownCommands([
-      { path: path.join(cwd, ".claude", "commands"), source: "engine" },
-      { path: path.join(cwd, ".claude", "skills"), source: "skill", skillFilesOnly: true },
-      { path: path.join(claudeHome, "commands"), source: "engine" },
-      { path: path.join(claudeHome, "skills"), source: "skill", skillFilesOnly: true },
-    ]), ...plugins.flatMap((plugin) => plugin.commands)];
+  async capabilities(cwd: string, context?: { model?: string }): Promise<EngineCapabilities> {
     const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList);
     return {
       steering: true,
       persistentSessions: true,
-      commands,
+      ...(context?.model ? { model: context.model } : {}),
+      commands: [],
       mcpServers,
-      composerCapabilities: composerCapabilities(commands, plugins, mcpServers, "/"),
+      composerCapabilities: composerCapabilities([], [], mcpServers, "/"),
     };
   }
 

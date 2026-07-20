@@ -26,7 +26,7 @@ describe("chat interaction refinement", () => {
         engineId: "runtime-a",
         steering: true,
         persistentSessions: true,
-        commands: [{ name: "review", description: "Review", source: "skill", acceptsArguments: true }],
+        commands: [{ name: "review", description: "Review", source: "skill", acceptsArguments: true, insertText: "$review ", status: "available", invocation: "prompt" }],
         mcpServers: [],
         composerCapabilities: [{ id: "skill:review", kind: "skill", label: "review", description: "Review", status: "available", insertText: "$review " }],
       }],
@@ -37,8 +37,37 @@ describe("chat interaction refinement", () => {
 
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(source).toContain("capabilities={composerRuntime.capabilities}");
-    expect(source).toContain("onCapabilitiesOpen={onRefreshCapabilities}");
+    expect(source).toContain("onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}");
     expect(source).not.toContain('capabilities={activeView === "main"');
+  });
+
+  it("changes slash choices by provider/model/session and excludes Ponderosa control aliases", () => {
+    const command = (name: string, status: "available" | "unavailable" = "available") => ({
+      name, description: name, source: "built-in" as const, acceptsArguments: false,
+      insertText: `/${name}`, status, invocation: "runtime" as const,
+      ...(status === "unavailable" ? { unavailableReason: "Selected model is unavailable." } : {}),
+    });
+    const codex = conversationComposerRuntime(
+      { id: "codex", authenticated: true, available: true },
+      [{ engineId: "codex", steering: true, persistentSessions: true, model: "model-a", sessionId: "thread-a", commands: [command("compact")], mcpServers: [], composerCapabilities: [] }],
+    );
+    const changedModel = conversationComposerRuntime(
+      { id: "codex", authenticated: true, available: true },
+      [{ engineId: "codex", steering: true, persistentSessions: true, model: "model-b", sessionId: "thread-a", commands: [command("compact", "unavailable")], mcpServers: [], composerCapabilities: [] }],
+    );
+    const claude = conversationComposerRuntime(
+      { id: "claude", authenticated: true, available: true },
+      [{ engineId: "claude", steering: true, persistentSessions: true, model: "sonnet", sessionId: "claude-b", commands: [{ ...command("plugin:review"), source: "plugin", invocation: "prompt" }], mcpServers: [], composerCapabilities: [] }],
+    );
+    expect(codex.commands).toMatchObject([{ name: "compact", status: "available" }]);
+    expect(changedModel.commands).toMatchObject([{ name: "compact", status: "unavailable" }]);
+    expect(claude.commands.map((item) => item.name)).toEqual(["plugin:review"]);
+    expect([...codex.commands, ...changedModel.commands, ...claude.commands].some((item) => ["cancel", "fresh", "status"].includes(item.name))).toBe(false);
+
+    const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(agentDetail).toContain("Start fresh provider session");
+    expect(agentDetail).toContain("inventory ${inventoriedMcps.length}/${configuredMcps.length}");
+    expect(agentDetail).not.toMatch(/name:\s*["'](?:cancel|fresh|status)["']/);
   });
 
   it("keeps direct-reply context bounded and exposes review/count metadata", () => {

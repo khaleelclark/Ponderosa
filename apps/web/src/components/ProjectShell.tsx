@@ -4,7 +4,7 @@ import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useM
 import { useTheme } from "@mui/material/styles";
 import type { AgentHealthDto, EngineDto, ConversationDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { chatStateKey, writeChatState } from "../chatState";
 import { mergeAgentStatuses } from "../agents";
@@ -75,6 +75,11 @@ export function ProjectShell({
   // member's full history from the Project shell.
   const reviewAgentQuery = useAgent(route.kind === "review" ? route.agentId : undefined);
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
+  const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
+    const discovered = await api.getEngineCapabilities(projectId, context);
+    queryClient.setQueryData(["engine-capabilities", projectId], discovered);
+    return discovered;
+  }, [projectId, queryClient]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
@@ -226,7 +231,7 @@ export function ProjectShell({
         initialView={route.channel}
         engines={engines}
         engineCapabilities={engineCapabilities}
-        onRefreshCapabilities={() => capabilitiesQuery.refetch()}
+        onRefreshCapabilities={refreshCapabilities}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => openAgentFromConversation(agentId, false)}
@@ -252,7 +257,7 @@ export function ProjectShell({
         focusTelemetry={route.focusTelemetry}
         engines={engines}
         engineCapabilities={engineCapabilities}
-        onRefreshCapabilities={() => capabilitiesQuery.refetch()}
+        onRefreshCapabilities={refreshCapabilities}
         projectedStatus={statusByAgentId.get(route.agentId)}
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}

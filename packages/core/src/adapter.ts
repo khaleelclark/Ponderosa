@@ -158,6 +158,11 @@ export interface RuntimeProcessHandle {
 export interface RuntimeSession extends RuntimeProcessHandle {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
+  /** Live provider-owned catalog for this exact authenticated session. */
+  capabilities?(): Promise<EngineCapabilities>;
+  /** Invoke a provider command that is represented by a structured runtime
+   * method rather than by ordinary prompt text. */
+  invokeCommand?(name: string, argumentsText?: string): Promise<void>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;
@@ -181,19 +186,39 @@ export interface OpenRuntimeSessionOptions {
   /** Exactly-once notification that the persistent provider root exited or
    * failed to spawn. The host revokes any active Run before draining output. */
   onRuntimeRootExit: () => void;
+  /** Provider-native catalog notifications invalidate the host projection. */
+  onCapabilitiesChanged?: () => void;
   signal: AbortSignal;
 }
 
 export interface EngineCommand {
   name: string;
   description: string;
-  source: "ponderosa" | "engine" | "skill" | "plugin";
+  source: "built-in" | "skill" | "plugin";
   acceptsArguments: boolean;
+  /** Exact provider syntax inserted when this item is selected from the slash
+   * discovery menu. Codex skills, for example, use `$name` even though `/`
+   * opens the discovery surface. */
+  insertText: string;
+  status: "available" | "unavailable";
+  unavailableReason?: string;
+  /** Prompt commands are sent through the provider's advertised command path;
+   * runtime commands are dispatched through a structured adapter method. */
+  invocation: "prompt" | "runtime";
+  /** Provider plugin identity when the effective catalog attributes it. */
+  pluginName?: string;
 }
 
 export interface EngineMcpServer {
   name: string;
-  status: "connected" | "disconnected" | "unknown";
+  configured: boolean;
+  initialization: "not_initialized" | "initializing" | "initialized" | "failed";
+  /** True only when provider evidence says the initialized server can be used.
+   * Optional health metadata is intentionally not used as a failure proxy. */
+  usable: boolean;
+  toolsDiscovered: boolean;
+  toolCount: number;
+  health: "healthy" | "unhealthy" | "unknown";
   detail?: string;
 }
 
@@ -217,6 +242,10 @@ export interface EngineComposerCapability {
 export interface EngineCapabilities {
   steering: boolean;
   persistentSessions: boolean;
+  /** Provider session/catalog boundary represented by this snapshot. */
+  sessionId?: string;
+  model?: string;
+  catalogVersion?: string;
   commands: EngineCommand[];
   mcpServers: EngineMcpServer[];
   composerCapabilities: EngineComposerCapability[];
@@ -244,8 +273,9 @@ export interface Adapter {
   /** Open the V1 persistent runtime. Required by steer-capable adapters. */
   openSession?(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession>;
 
-  /** Discover engine-native commands, skills/plugins, and inherited host MCPs. */
-  capabilities?(cwd: string): Promise<EngineCapabilities>;
+  /** Discover engine-native commands, skills/plugins, structured actions, and
+   * MCP state for the selected provider/model boundary. */
+  capabilities?(cwd: string, context?: { model?: string }): Promise<EngineCapabilities>;
 
   /**
    * Continue the agent's ACTIVE session with the next user message. Resume by

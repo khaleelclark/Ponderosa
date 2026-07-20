@@ -1,5 +1,7 @@
 import type {
   AgentEvent,
+  EngineCapabilities,
+  EngineMcpServer,
   TokenUsage,
   OpenRuntimeSessionOptions,
   RuntimeSession,
@@ -10,6 +12,7 @@ import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import type { SpawnFn } from "./process.js";
 import { renderSeedPrompt } from "./seed-history.js";
+import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 
 interface ThreadResponse { thread: { id: string } }
 interface TurnResponse { turn: { id: string } }
@@ -25,6 +28,123 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   spawnFn: SpawnFn;
   sandboxMode: string;
   killGraceMs: number;
+  configuredMcps?: EngineMcpServer[];
+}
+
+async function optionalRequest(rpc: JsonRpcProcess, method: string, params: unknown): Promise<unknown> {
+  try { return await rpc.request(method, params); }
+  catch { return undefined; }
+}
+
+function object(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+async function optionalPaginatedRequest(
+  rpc: JsonRpcProcess,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    const data: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      const response = object(await rpc.request(method, { ...params, ...(cursor ? { cursor } : {}) }));
+      if (!response) return undefined;
+      if (Array.isArray(response.data)) data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : undefined;
+      if (!nextCursor) return { data, nextCursor: null };
+      if (seenCursors.has(nextCursor)) throw new Error(`${method} repeated pagination cursor`);
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new Error(`${method} exceeded pagination limit`);
+  } catch {
+    return undefined;
+  }
+}
+
+async function readInstalledPluginDetails(rpc: JsonRpcProcess, response: unknown): Promise<unknown[]> {
+  const requests: Promise<unknown>[] = [];
+  const marketplaces = object(response)?.marketplaces;
+  for (const candidate of Array.isArray(marketplaces) ? marketplaces : []) {
+    const marketplace = object(candidate);
+    const marketplaceName = typeof marketplace?.name === "string" ? marketplace.name : undefined;
+    const marketplacePath = typeof marketplace?.path === "string" ? marketplace.path : undefined;
+    const plugins = marketplace?.plugins;
+    for (const item of Array.isArray(plugins) ? plugins : []) {
+      const plugin = object(item);
+      if (plugin?.installed !== true || plugin.enabled !== true || typeof plugin.name !== "string") continue;
+      const remotePluginId = typeof plugin.remotePluginId === "string" ? plugin.remotePluginId : undefined;
+      requests.push(optionalRequest(rpc, "plugin/read", {
+        // Remote marketplaces address plugin/read by the provider's remote id;
+        // local marketplaces address it by the manifest name.
+        pluginName: marketplacePath ? plugin.name : remotePluginId ?? plugin.name,
+        ...(marketplacePath
+          ? { marketplacePath }
+          : marketplaceName
+            ? { remoteMarketplaceName: marketplaceName }
+            : {}),
+      }));
+    }
+  }
+  return (await Promise.all(requests)).filter((detail) => detail !== undefined);
+}
+
+export async function discoverCodexAppServerCapabilities(opts: {
+  bin: string;
+  spawnFn: SpawnFn;
+  cwd: string;
+  model?: string;
+  sandboxMode: string;
+  killGraceMs: number;
+  configuredMcps: EngineMcpServer[];
+}): Promise<EngineCapabilities> {
+  const controller = new AbortController();
+  const rpc = new JsonRpcProcess({
+    bin: opts.bin,
+    args: [
+      "app-server", "--stdio",
+      "-c", `sandbox_mode=${JSON.stringify(opts.sandboxMode)}`,
+      "-c", 'approval_policy="never"',
+    ],
+    cwd: opts.cwd,
+    signal: controller.signal,
+    spawnFn: opts.spawnFn,
+    killGraceMs: opts.killGraceMs,
+    onRuntimeSpawned: () => undefined,
+    onRuntimeRootExit: () => undefined,
+  });
+  try {
+    await rpc.initialize();
+    const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
+      optionalRequest(rpc, "skills/list", { cwds: [opts.cwd], forceReload: true }),
+      optionalRequest(rpc, "plugin/installed", { cwds: [opts.cwd] }),
+      optionalPaginatedRequest(rpc, "model/list", { includeHidden: false }),
+      optionalRequest(rpc, "modelProvider/capabilities/read", {}),
+      optionalPaginatedRequest(rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly" }),
+    ]);
+    const pluginDetails = await readInstalledPluginDetails(rpc, plugins);
+    return normalizeCodexProviderDiscovery({
+      cwd: opts.cwd,
+      selectedModel: opts.model,
+      skills,
+      plugins,
+      pluginDetails,
+      models,
+      modelProviderCapabilities,
+      mcpStatuses,
+      configuredMcps: opts.configuredMcps,
+    });
+  } finally {
+    controller.abort();
+    await rpc.close().catch(() => undefined);
+  }
 }
 
 export class CodexAppServerSession implements RuntimeSession {
@@ -34,6 +154,10 @@ export class CodexAppServerSession implements RuntimeSession {
   private readonly usageCheckpointsByTurnId = new Map<string, Set<string>>();
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
+  private capabilitiesSnapshot?: EngineCapabilities;
+  private capabilitiesDirty = true;
+  private catalogGeneration = 0;
+  private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
   readonly events: AsyncIterable<AgentEvent>;
 
   private constructor(
@@ -42,6 +166,9 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly cwd: string,
     fresh: boolean,
     private readonly seedHistory: OpenRuntimeSessionOptions["history"],
+    private readonly selectedModel: string | undefined,
+    private readonly configuredMcps: EngineMcpServer[],
+    private readonly onCapabilitiesChanged: (() => void) | undefined,
   ) {
     if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
@@ -51,6 +178,7 @@ export class CodexAppServerSession implements RuntimeSession {
     if (!opts.onRuntimeSpawned) {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
+    let session: CodexAppServerSession | undefined;
     const rpc = new JsonRpcProcess({
       bin: opts.bin,
       args: [
@@ -66,6 +194,7 @@ export class CodexAppServerSession implements RuntimeSession {
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: opts.onRuntimeRootExit,
+      onNotification: (notification) => session?.observeCapabilityNotification(notification),
       handleServerRequest: async (method, params) => {
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
@@ -104,13 +233,77 @@ export class CodexAppServerSession implements RuntimeSession {
             inputSchema: tool.inputSchema,
           })) ?? null,
         });
-    return new CodexAppServerSession(
+    session = new CodexAppServerSession(
       response.thread.id,
       rpc,
       opts.cwd,
       !opts.resumeSessionId,
       opts.resumeSessionId ? [] : [...opts.history],
+      opts.model,
+      opts.configuredMcps ?? [],
+      opts.onCapabilitiesChanged,
     );
+    return session;
+  }
+
+  async capabilities(): Promise<EngineCapabilities> {
+    if (!this.capabilitiesDirty && this.capabilitiesSnapshot) return this.capabilitiesSnapshot;
+    const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
+      optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
+      optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
+      optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
+      optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
+      optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
+    ]);
+    const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
+    const snapshot = normalizeCodexProviderDiscovery({
+      cwd: this.cwd,
+      selectedModel: this.selectedModel,
+      sessionId: this.engineAgentId,
+      skills,
+      plugins,
+      pluginDetails,
+      models,
+      modelProviderCapabilities,
+      mcpStatuses,
+      mcpStartup: this.mcpStartup,
+      configuredMcps: this.configuredMcps,
+    });
+    snapshot.catalogVersion = `${this.engineAgentId}:${this.catalogGeneration}`;
+    this.capabilitiesSnapshot = snapshot;
+    this.capabilitiesDirty = false;
+    return snapshot;
+  }
+
+  async invokeCommand(name: string, argumentsText?: string): Promise<void> {
+    if (name !== "compact" || argumentsText?.trim()) throw new Error(`unsupported Codex runtime command: ${name}`);
+    const command = (await this.capabilities()).commands.find((candidate) => candidate.name === name);
+    if (!command || command.status !== "available" || command.invocation !== "runtime") {
+      throw new Error(command?.unavailableReason ?? `Codex no longer advertises /${name}`);
+    }
+    await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
+  }
+
+  private observeCapabilityNotification(notification: JsonRpcNotification): void {
+    if (notification.method === "mcpServer/startupStatus/updated") {
+      const raw = notification.params && typeof notification.params === "object"
+        ? notification.params as { name?: unknown; status?: unknown; error?: unknown } : undefined;
+      if (typeof raw?.name === "string" && typeof raw.status === "string") {
+        this.mcpStartup.set(raw.name, {
+          status: raw.status,
+          ...(typeof raw.error === "string" && raw.error.trim() ? { error: raw.error.trim() } : {}),
+        });
+      }
+      this.invalidateCapabilities();
+    } else if (notification.method === "skills/changed" || notification.method === "app/list/updated") {
+      this.invalidateCapabilities();
+    }
+  }
+
+  private invalidateCapabilities(): void {
+    this.capabilitiesDirty = true;
+    this.catalogGeneration += 1;
+    this.onCapabilitiesChanged?.();
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
@@ -169,6 +362,10 @@ export class CodexAppServerSession implements RuntimeSession {
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
+      if (notification.method === "skills/changed" || notification.method === "app/list/updated" ||
+          notification.method === "mcpServer/startupStatus/updated") {
+        this.observeCapabilityNotification(notification);
+      }
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {

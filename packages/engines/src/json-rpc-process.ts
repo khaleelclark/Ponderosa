@@ -60,6 +60,9 @@ export interface JsonRpcProcessOptions {
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   onRuntimeRootExit: () => void;
   handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
+  /** Observe provider notifications even while the Agent has no active turn and
+   * the event iterator is not currently being pulled. */
+  onNotification?: (notification: JsonRpcNotification) => void;
 }
 
 /** Minimal JSONL JSON-RPC client for subscription-authenticated engine daemons. */
@@ -181,7 +184,11 @@ export class JsonRpcProcess {
       void this.respondToServerRequest(message.id, message.method, message.params);
       return;
     }
-    if (message.method) this.queue.push({ method: message.method, params: message.params });
+    if (message.method) {
+      const notification = { method: message.method, params: message.params };
+      this.opts.onNotification?.(notification);
+      this.queue.push(notification);
+    }
   }
 
   private async respondToServerRequest(id: RpcId, method: string, params: unknown): Promise<void> {

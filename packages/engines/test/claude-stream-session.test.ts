@@ -15,6 +15,55 @@ const processAlive = (pid: number): boolean => {
 };
 
 describe("Claude persistent stream-json runtime", () => {
+  it("uses each system/init slash catalog, including user skills and plugin commands", async () => {
+    const open = async (catalog: object) => {
+      const controller = new AbortController();
+      const changes: number[] = [];
+      const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+        spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+      const session = new ClaudeStreamSession({
+        agentId: "catalog", cwd: here, history: [], signal: controller.signal,
+        bin: "claude", spawnFn, permissionMode: "bypassPermissions", killGraceMs: 50,
+        environment: { PONDEROSA_TEST_CLAUDE_CATALOG: JSON.stringify(catalog) },
+        onRuntimeSpawned: retainOpeningHandleForTest,
+        onCapabilitiesChanged: () => changes.push(Date.now()),
+      });
+      const iterator = session.events[Symbol.asyncIterator]();
+      expect(await iterator.next()).toMatchObject({ value: { type: "session" }, done: false });
+      return { session, capabilities: await session.capabilities(), changes };
+    };
+
+    const first = await open({
+      session_id: "claude-catalog-a",
+      slash_commands: [
+        { name: "compact", description: "Compact", accepts_arguments: false },
+        { name: "my-command", description: "User command", source: "skill" },
+        { name: "github:review", description: "Review PR", source: "plugin", plugin_name: "github" },
+      ],
+      skills: [{ name: "my-command" }],
+      plugins: [{ name: "github" }],
+      tools: ["mcp__issues__search"],
+      mcp_servers: [{ name: "issues", status: "connected" }],
+    });
+    expect(first.capabilities.commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "compact", source: "built-in", insertText: "/compact", invocation: "prompt" }),
+      expect.objectContaining({ name: "my-command", source: "skill" }),
+      expect.objectContaining({ name: "github:review", source: "plugin", pluginName: "github" }),
+    ]));
+    expect(first.capabilities.mcpServers[0]).toMatchObject({ usable: true, toolCount: 1, health: "unknown" });
+    expect(first.changes).toHaveLength(1);
+    await first.session.close();
+
+    const second = await open({
+      session_id: "claude-catalog-b",
+      slash_commands: [{ name: "new-session-only", source: "skill" }],
+      skills: [{ name: "new-session-only" }],
+    });
+    expect(second.capabilities.commands.map((command) => command.name)).toEqual(["new-session-only"]);
+    expect(second.capabilities.commands.some((command) => command.name === "my-command")).toBe(false);
+    await second.session.close();
+  });
+
   it("injects canonical history into the first turn of a fresh persistent session", async () => {
     const controller = new AbortController();
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;

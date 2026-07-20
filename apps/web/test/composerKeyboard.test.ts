@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canSubmitComposerText, composerCapabilityDisabledReason, insertComposerCapability, matchingComposerCapabilities, matchingEngineCommands, shouldIgnoreComposerKey, shouldSendComposerKey, shouldShowQueueControl } from "../src/components/panes";
+import { canSubmitComposerText, composerCapabilityDisabledReason, insertComposerCapability, matchingComposerCapabilities, matchingEngineCommands, providerSlashSubmission, shouldIgnoreComposerKey, shouldSendComposerKey, shouldShowQueueControl } from "../src/components/panes";
 
 describe("composer keyboard behavior", () => {
   it("returns every matching inherited command instead of truncating the menu", () => {
@@ -8,8 +8,22 @@ describe("composer keyboard behavior", () => {
       description: `Command ${index}`,
       source: "skill" as const,
       acceptsArguments: true,
+      insertText: `$command-${index} `,
+      status: "available" as const,
+      invocation: "prompt" as const,
     }));
     expect(matchingEngineCommands(commands, "command-")).toHaveLength(20);
+  });
+
+  it("blocks unavailable or unadvertised slash text instead of sending it as ordinary prose", () => {
+    const commands = [{
+      name: "compact", description: "Compact", source: "built-in" as const,
+      acceptsArguments: false, insertText: "/compact", status: "unavailable" as const,
+      unavailableReason: "Requires an active session.", invocation: "runtime" as const,
+    }];
+    expect(providerSlashSubmission("/missing", commands)).toEqual({ error: "The active provider does not advertise /missing." });
+    expect(providerSlashSubmission("/compact", commands)).toEqual({ error: "Requires an active session." });
+    expect(providerSlashSubmission("ordinary text", commands)).toBeUndefined();
   });
 
   it("sends on Enter", () => {
