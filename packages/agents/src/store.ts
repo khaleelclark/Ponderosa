@@ -555,7 +555,7 @@ export class AgentStore {
     mkdirSync(projectsDir(dataDir), { recursive: true });
     this.ownership = acquireDataDirectoryOwnership(dataDir);
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
-    this.deliverySequence = readJsonLines<{ sequence: number }>(this.deliverySequenceFile)
+    this.deliverySequence = readRepairableJsonl<{ sequence: number }>(this.deliverySequenceFile, "delivery order journal", true)
       .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
     try {
       const opened = openDb(dbPath(dataDir));
@@ -575,7 +575,7 @@ export class AgentStore {
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
     this.deliverySequence += 1;
-    appendFileSync(this.deliverySequenceFile, `${JSON.stringify({ sequence: this.deliverySequence })}\n`, "utf8");
+    appendFsyncedJsonl(this.deliverySequenceFile, [{ sequence: this.deliverySequence }]);
     return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
@@ -1650,18 +1650,18 @@ export class AgentStore {
     if (!this.getProject(projectId)) throw new Error("unknown project");
     const now = new Date().toISOString();
     const preset: AgentPresetDto = { id: randomUUID(), projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now };
-    appendFileSync(agentPresetsPath(this.dataDir, projectId), JSON.stringify({ type: "upsert", preset } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{ type: "upsert", preset } satisfies PresetEvent]);
     this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run(); return preset;
   }
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {
     const current = this.getAgentPreset(id); if (!current) return undefined;
     const next = { ...current, ...patch, model: patch.model === null ? undefined : patch.model ?? current.model, effort: patch.effort === null ? undefined : patch.effort ?? current.effort, updatedAt: new Date().toISOString() } as AgentPresetDto;
-    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "upsert", preset: next } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "upsert", preset: next } satisfies PresetEvent]);
     this.db.update(agentPresets).set({ ...next, model: next.model ?? null, effort: next.effort ?? null, enabled: next.enabled ? 1 : 0 }).where(eq(agentPresets.id, id)).run(); return next;
   }
   deleteAgentPreset(id: string): boolean {
     const current = this.getAgentPreset(id); if (!current) return false;
-    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent]);
     this.db.delete(agentPresets).where(eq(agentPresets.id, id)).run(); return true;
   }
 
@@ -4750,7 +4750,7 @@ export class AgentStore {
         })
         .run();
       const resolved = new Map<string, AgentPresetDto>();
-      for (const event of readJsonLines<PresetEvent>(agentPresetsPath(this.dataDir, projectId))) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
+      for (const event of readRepairableJsonl<PresetEvent>(agentPresetsPath(this.dataDir, projectId), "agent preset journal", true)) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
       for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {

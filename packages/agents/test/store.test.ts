@@ -9,7 +9,7 @@ import { EventLog } from "../src/eventlog.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactContentPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentPresetsPath, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactContentPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -559,6 +559,16 @@ describe("AgentStore — canonical communication events", () => {
     expect(() => new AgentStore(dir)).toThrow("non-tail corruption");
     writeFileSync(file, valid, "utf8");
     store = new AgentStore(dir);
+  });
+
+  it("repairs a crash-torn delivery-order tail before allocating the next key", () => {
+    expect(store.nextDeliveryOrderKey("2026-07-20T00:00:00.000Z")).toMatch(/0000000000000001$/);
+    store.close();
+    const file = join(dir, "delivery-order.jsonl");
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"sequence":`, "utf8");
+    store = new AgentStore(dir);
+    expect(store.nextDeliveryOrderKey("2026-07-20T00:00:01.000Z")).toMatch(/0000000000000002$/);
+    expect(readFileSync(file, "utf8")).toBe('{"sequence":1}\n{"sequence":2}\n');
   });
 
   it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
@@ -1870,6 +1880,22 @@ describe("agent presets", () => {
     store.rebuildProjections();
     expect(store.getAgentPreset(preset.id)).toBeUndefined();
     expect(store.getAgent(agent.id)?.presetSnapshot?.name).toBe("Release");
+  });
+
+  it("repairs a crash-torn preset tail on restart and accepts a later durable update", () => {
+    const project = store.createProject({ label: "Preset recovery", hostPath: "/repo" });
+    const file = agentPresetsPath(dir, project.id);
+    store.close();
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"type":"upsert","preset":`, "utf8");
+
+    store = new AgentStore(dir);
+    expect(store.listAgentPresets(project.id)).toHaveLength(4);
+    const added = store.createAgentPreset(project.id, {
+      name: "Recovered", description: "Recovered safely", guidance: "Continue after restart.", engine: "codex",
+    });
+    store.rebuildProjections();
+    expect(store.getAgentPreset(added.id)?.name).toBe("Recovered");
+    expect(readFileSync(file, "utf8")).not.toContain('"preset":\n');
   });
 });
 

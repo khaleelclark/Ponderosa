@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CoordinationV3Store, openDb } from "@ponderosa/agents";
 import type { SchedulerLease } from "@ponderosa/agents";
-import { CoordinationV3Scheduler, formatActivationPrompt } from "../src/coordination-v3-scheduler.js";
+import { CoordinationV3Scheduler, DISPATCH_LATENCY_SAMPLE_LIMIT, formatActivationPrompt } from "../src/coordination-v3-scheduler.js";
 
 let opened: ReturnType<typeof openDb>;
 let store: CoordinationV3Store;
@@ -214,6 +214,38 @@ describe("Communication V3 central scheduler", () => {
     expect(await scheduler.drainOnce()).toBe(1);
     expect(leases).toHaveLength(2);
     expect(leases[1]!.agentId).not.toBe(leases[0]!.agentId);
+  });
+
+  it("bounds dispatch-latency samples while retaining exact lifetime aggregates", async () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    const dispatches = DISPATCH_LATENCY_SAMPLE_LIMIT + 10;
+    for (let index = 0; index < dispatches; index += 1) {
+      store.enqueueMessageActivation({
+        projectId, agentId: agentA, messageId: `latency-${index}`, kind: "ordinary", payload: {}, now,
+      });
+    }
+    let clock = Date.parse(now);
+    const scheduler = new CoordinationV3Scheduler(store, async (lease) => {
+      store.markRunStarted(lease.runId, lease.fencingToken);
+      store.markPromptSubmitted({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+      store.acknowledgePromptInjection({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+      store.completeRun(lease.runId, lease.fencingToken, now);
+      return { accepted: true };
+    }, {
+      workerId: "scheduler",
+      coalesceLimit: 1,
+      maxConcurrentRuns: 1,
+      now: () => clock++,
+    });
+
+    expect(await scheduler.drainOnce()).toBe(dispatches);
+    const metrics = scheduler.snapshotMetrics();
+    expect(metrics.dispatchLatencyCount).toBe(dispatches);
+    expect(metrics.dispatchLatencyMs).toHaveLength(DISPATCH_LATENCY_SAMPLE_LIMIT);
+    expect(metrics.dispatchLatencyTotalMs).toBe(dispatches);
+    expect(metrics.dispatchLatencyMinMs).toBe(1);
+    expect(metrics.dispatchLatencyMaxMs).toBe(1);
+    expect(metrics.dispatchLatencyAverageMs).toBe(1);
   });
 
   it("applies live concurrency changes without cancelling active Runs or reordering queued work", async () => {

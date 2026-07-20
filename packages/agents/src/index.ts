@@ -44,6 +44,7 @@ export type {
 export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
 export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
+export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 export { openDb } from "./db.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,

@@ -13,9 +13,17 @@ export interface CoordinationV3SchedulerMetrics {
   acceptedRuns: number;
   rejectedRuns: number;
   outboxSignals: number;
+  dispatchLatencyCount: number;
+  dispatchLatencyTotalMs: number;
+  dispatchLatencyMinMs?: number;
+  dispatchLatencyMaxMs?: number;
+  dispatchLatencyAverageMs: number;
+  /** Most recent samples only; lifetime aggregates above remain exact. */
   dispatchLatencyMs: number[];
   lastDispatchError?: string;
 }
+
+export const DISPATCH_LATENCY_SAMPLE_LIMIT = 256;
 
 export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
@@ -30,6 +38,9 @@ export class CoordinationV3Scheduler {
     acceptedRuns: 0,
     rejectedRuns: 0,
     outboxSignals: 0,
+    dispatchLatencyCount: 0,
+    dispatchLatencyTotalMs: 0,
+    dispatchLatencyAverageMs: 0,
     dispatchLatencyMs: [],
   };
 
@@ -238,7 +249,7 @@ export class CoordinationV3Scheduler {
         } catch (error) {
           result = { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
         }
-        this.metrics.dispatchLatencyMs.push(Math.max(0, (this.options.now ?? Date.now)() - started));
+        this.recordDispatchLatency(Math.max(0, (this.options.now ?? Date.now)() - started));
         if (result.accepted) {
           this.metrics.acceptedRuns += 1;
         } else {
@@ -285,6 +296,22 @@ export class CoordinationV3Scheduler {
         .finally(() => this.schedule(this.options.pollMs ?? 250));
     }, delayMs);
     this.timer.unref?.();
+  }
+
+  private recordDispatchLatency(latencyMs: number): void {
+    this.metrics.dispatchLatencyCount += 1;
+    this.metrics.dispatchLatencyTotalMs += latencyMs;
+    this.metrics.dispatchLatencyAverageMs = this.metrics.dispatchLatencyTotalMs / this.metrics.dispatchLatencyCount;
+    this.metrics.dispatchLatencyMinMs = this.metrics.dispatchLatencyMinMs === undefined
+      ? latencyMs
+      : Math.min(this.metrics.dispatchLatencyMinMs, latencyMs);
+    this.metrics.dispatchLatencyMaxMs = this.metrics.dispatchLatencyMaxMs === undefined
+      ? latencyMs
+      : Math.max(this.metrics.dispatchLatencyMaxMs, latencyMs);
+    this.metrics.dispatchLatencyMs.push(latencyMs);
+    if (this.metrics.dispatchLatencyMs.length > DISPATCH_LATENCY_SAMPLE_LIMIT) {
+      this.metrics.dispatchLatencyMs.splice(0, this.metrics.dispatchLatencyMs.length - DISPATCH_LATENCY_SAMPLE_LIMIT);
+    }
   }
 }
 
