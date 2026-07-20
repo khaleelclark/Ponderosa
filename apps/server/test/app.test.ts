@@ -10333,6 +10333,32 @@ describe("V3.3 Decisions, management, and portability", () => {
     ].join(" "));
   });
 
+  it("does not collect an embedded artifact scheme from inside an overlong canonical-character run", () => {
+    const maximumId = "a".repeat(256);
+    for (const continuation of ["Z", ".", ":", "_", "-"]) {
+      const overlongReference = `ponderosa://artifact/${maximumId}${continuation}ponderosa://artifact/x`;
+      expect([...collectReachableArtifactIds(overlongReference)], continuation).toEqual([]);
+    }
+
+    expect([...collectReachableArtifactIds(
+      `ponderosa://artifact/${maximumId}Z ponderosa://artifact/x`,
+    )]).toEqual(["x"]);
+  });
+
+  it("does not rewrite an embedded artifact scheme from inside an overlong canonical-character run", () => {
+    const maximumId = "a".repeat(256);
+    const remaps = new Map([["x", "x-remapped"]]);
+    for (const continuation of ["Z", ".", ":", "_", "-"]) {
+      const overlongReference = `ponderosa://artifact/${maximumId}${continuation}ponderosa://artifact/x`;
+      expect(rewritePortableArtifactReferences(overlongReference, remaps), continuation).toBe(overlongReference);
+    }
+
+    expect(rewritePortableArtifactReferences(
+      `ponderosa://artifact/${maximumId}Z ponderosa://artifact/x`,
+      remaps,
+    )).toBe(`ponderosa://artifact/${maximumId}Z ponderosa://artifact/x-remapped`);
+  });
+
   it("rewrites only canonical artifact tokens after a one-character import collision", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Artifact token collision", hostPath: repoDir });

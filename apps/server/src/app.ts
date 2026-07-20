@@ -332,13 +332,20 @@ function canonicalArtifactReferenceMatches(text: string): Array<{
   index: number;
 }> {
   const matches: Array<{ reference: string; artifactId: string; index: number }> = [];
-  for (const match of text.matchAll(CANONICAL_ARTIFACT_REFERENCE)) {
+  const matcher = new RegExp(CANONICAL_ARTIFACT_REFERENCE.source, CANONICAL_ARTIFACT_REFERENCE.flags);
+  for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
     const reference = match[0];
     const artifactId = match[1]!;
     const index = match.index!;
     const followingCharacter = text[index + reference.length];
     if (artifactId.length === 256 && followingCharacter !== undefined &&
-        CANONICAL_ARTIFACT_ID_CHARACTER.test(followingCharacter)) continue;
+        CANONICAL_ARTIFACT_ID_CHARACTER.test(followingCharacter)) {
+      while (matcher.lastIndex < text.length &&
+          CANONICAL_ARTIFACT_ID_CHARACTER.test(text[matcher.lastIndex]!)) {
+        matcher.lastIndex += 1;
+      }
+      continue;
+    }
     matches.push({ reference, artifactId, index });
   }
   return matches;
