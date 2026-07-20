@@ -63,5 +63,6 @@ describe("persistent user-owned workspace tabs", () => {
     expect(reordered.map((tab) => tab.key)).toEqual(["b", "c", "a"]);
     expect(reordered.find((tab) => tab.key === "a")?.title).toBe("My start page");
     expect(reorderWorkspaceTabs(reordered, "missing", "b")).toBe(reordered);
+    expect(restoreWorkspaceTabSession(serializeWorkspaceTabs(reordered, "a"))).toEqual({ tabs: reordered, activeKey: "a" });
   });
 });

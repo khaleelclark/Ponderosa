@@ -71,6 +71,13 @@ export function WorkspaceTabs({
     setRenameDraft(label);
     setContextMenu(undefined);
   };
+  const moveContextTab = (offset: -1 | 1) => {
+    if (!contextMenu) return;
+    const index = tabs.findIndex((tab) => tab.key === contextMenu.key);
+    const target = tabs[index + offset];
+    if (target) onReorder(contextMenu.key, target.key);
+    setContextMenu(undefined);
+  };
 
   return <Stack component="nav" aria-label="Open workspace tabs" direction="row" sx={{
     display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 52 }, px: 1, py: 0.75,
@@ -138,7 +145,12 @@ export function WorkspaceTabs({
           }}
         >
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={500}>
-            <ButtonBase onClick={() => onActivate(tab.key)} aria-label={`Open ${accessibleLabel} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{
+            <ButtonBase onClick={() => onActivate(tab.key)} onKeyDown={(event) => {
+              if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                event.preventDefault();
+                setContextMenu({ anchor: event.currentTarget, key: tab.key, label });
+              }
+            }} aria-keyshortcuts="Shift+F10" aria-label={`Open ${accessibleLabel} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{
               minWidth: 0, flex: 1, px: 1, gap: 0.75, justifyContent: "flex-start", overflow: "hidden",
               "& > svg": { flex: "0 0 auto", fontSize: 18 },
             }}>
@@ -167,6 +179,8 @@ export function WorkspaceTabs({
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
       <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename tab</MenuItem>
+      <MenuItem disabled={tabs.findIndex((tab) => tab.key === contextMenu.key) <= 0} onClick={() => moveContextTab(-1)}>Move left</MenuItem>
+      <MenuItem disabled={tabs.findIndex((tab) => tab.key === contextMenu.key) >= tabs.length - 1} onClick={() => moveContextTab(1)}>Move right</MenuItem>
       <MenuItem disabled={tabs.length === 1} onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close tab</MenuItem>
       <MenuItem disabled={tabs.length === 1} onClick={() => { onCloseOthers(contextMenu.key); setContextMenu(undefined); }}>Close other tabs</MenuItem>
     </Menu> : null}

@@ -1,9 +1,20 @@
 import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceTabs } from "../src/components/WorkspaceTabs";
 import { openWorkspaceTab } from "../src/workspaceTabs";
+
+vi.mock("@mui/material", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mui/material")>();
+  const { createElement, forwardRef } = await import("react");
+  return {
+    ...actual,
+    Menu: forwardRef<HTMLDivElement, { children?: ReactNode }>(({ children }, ref) =>
+      createElement("div", { ref, role: "menu" }, children)),
+  };
+});
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/work/website", defaultEngine: "codex", createdAt: "2026-07-17T00:00:00.000Z" },
@@ -109,6 +120,41 @@ describe("workspace tab bar", () => {
       color: "text.primary",
       opacity: 1,
     });
+    view.unmount();
+    client.clear();
+  });
+
+  it("opens keyboard tab actions that move a tab without changing its persisted identity", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const tabs = openWorkspaceTab(
+      openWorkspaceTab(openWorkspaceTab([], { kind: "home" }, 1, "home"), { kind: "allChat" }, 2, "chat"),
+      { kind: "allAgents" }, 3, "agents",
+    );
+    const onReorder = vi.fn();
+    const view = create(<QueryClientProvider client={client}><WorkspaceTabs
+      tabs={tabs}
+      projects={[]}
+      activeKey="chat"
+      onActivate={vi.fn()}
+      onCreate={vi.fn()}
+      onClose={vi.fn()}
+      onCloseOthers={vi.fn()}
+      onRename={vi.fn()}
+      onReorder={onReorder}
+    /></QueryClientProvider>);
+
+    const chatTab = view.root.findByProps({ "aria-label": "Open All Chat in Ponderosa" });
+    expect(chatTab.props["aria-keyshortcuts"]).toBe("Shift+F10");
+    const menuKey = { key: "ContextMenu", shiftKey: false, preventDefault: vi.fn(), currentTarget: {} };
+    act(() => chatTab.props.onKeyDown(menuKey));
+    expect(menuKey.preventDefault).toHaveBeenCalledOnce();
+    const moveLeft = view.root.findAll((node) => node.props.children === "Move left")[0]!;
+    const moveRight = view.root.findAll((node) => node.props.children === "Move right")[0]!;
+    expect(moveLeft.props.disabled).toBe(false);
+    expect(moveRight.props.disabled).toBe(false);
+
+    act(() => moveRight.props.onClick());
+    expect(onReorder).toHaveBeenCalledWith("chat", "agents");
     view.unmount();
     client.clear();
   });

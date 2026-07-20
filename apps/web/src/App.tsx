@@ -36,12 +36,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
-import { providerUsageSummaryLabel, TokenUsageButton } from "./components/TokenUsageButton";
+import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { AllProjectsView } from "./components/WorkspaceOverview";
 import { HostFolderPicker } from "./components/HostFolderPicker";
+import { ProviderStatusDialog } from "./components/ProviderStatusDialog";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
@@ -60,7 +61,7 @@ import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 import { consumeProjectBrowserRequest, ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
-import { effortOptionsForModel, engineAvailabilityPresentation, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
+import { effortOptionsForModel, engineAvailabilityPresentation, engineCanTestAccess, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
   adjacentWorkspaceTab,
@@ -795,7 +796,7 @@ export default function App({
                 {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
               </Select></FormControl>
             </Stack>
-            {engines.filter((engine) => engine.authenticated && !engineIsAvailable(engine)).map((engine) => <Alert
+            {engines.filter(engineCanTestAccess).map((engine) => <Alert
               key={engine.id}
               severity="warning"
               action={<Button
@@ -841,35 +842,20 @@ export default function App({
         onNavigate={navigate}
         onOpenSettings={openSettings}
       />
-      <Dialog open={engineStatusOpen} onClose={() => setEngineStatusOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>AI provider status</DialogTitle>
-        <DialogContent>
-          <Stack spacing={1.5} sx={{ pt: 1 }}>
-            <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, operator availability, and runtime access. It cannot see subscription quotas or provider-account billing.</Typography>
-            {engines.map((engine) => {
-              return <Box key={engine.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
-              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-                <Typography variant="subtitle1" fontWeight={750} sx={{ flex: 1 }}>{engine.displayName}</Typography>
-                <Chip size="small" label={engine.enabled === false ? "Disabled" : "Enabled"} color={engine.enabled === false ? "default" : "success"} variant="outlined" />
-                <Chip size="small" label={engine.authenticated ? "Signed in" : "Sign-in needed"} color={engine.authenticated ? "success" : "warning"} variant="outlined" />
-                <Chip size="small" label={engine.available ? "Ready" : "Needs attention"} color={engine.available ? "success" : "warning"} />
-              </Stack>
-              <Typography variant="body2" sx={{ mt: 1 }}>{engine.availabilityDetail ?? (engine.available ? "Runtime access is available." : "Runtime access is unavailable.")}</Typography>
-              {engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-                {providerUsageSummaryLabel(engine.id, providerUsageQuery.data, providerUsageQuery.isLoading)}
-              </Typography>
-              {!engine.available && engine.authenticated ? <Button size="small" sx={{ mt: 1 }} disabled={recheckEngine.isPending} onClick={() => {
-                if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
-                recheckEngine.mutate(engine.id);
-              }}>{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test access"}</Button> : null}
-            </Box>})}
-            {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
-          </Stack>
-        </DialogContent>
-        <DialogActions><Button onClick={() => { setEngineStatusOpen(false); openSettings(); }}>Provider settings</Button><Button onClick={() => setEngineStatusOpen(false)}>Close</Button></DialogActions>
-      </Dialog>
+      <ProviderStatusDialog
+        open={engineStatusOpen}
+        engines={engines}
+        usage={providerUsageQuery.data}
+        usageLoading={providerUsageQuery.isLoading}
+        recheckingEngineId={recheckEngine.isPending ? recheckEngine.variables : undefined}
+        error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
+        onTestAccess={(engine) => {
+          if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
+          recheckEngine.mutate(engine.id);
+        }}
+        onOpenSettings={() => { setEngineStatusOpen(false); openSettings(); }}
+        onClose={() => setEngineStatusOpen(false)}
+      />
       <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Settings</DialogTitle>
         <DialogContent>
