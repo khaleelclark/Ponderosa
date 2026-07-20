@@ -51,10 +51,16 @@ lines.on("line", (line) => {
       ? send({ id: message.id, result: detail })
       : send({ id: message.id, error: { code: -32000, message: `unknown plugin ${message.params?.pluginName}` } });
   }
-  if (message.method === "model/list") return send({ id: message.id, result: discovery.models ?? { data: [{ id: "test-model", model: "test-model", hidden: false, isDefault: true }], nextCursor: null } });
+  if (message.method === "model/list") {
+    const page = Number(message.params?.cursor ?? 0);
+    const result = discovery.modelPages?.[page] ?? discovery.models ?? { data: [{ id: "test-model", model: "test-model", hidden: false, isDefault: true }], nextCursor: null };
+    return send({ id: message.id, result: discovery.modelPages ? { ...result, nextCursor: page + 1 < discovery.modelPages.length ? String(page + 1) : null } : result });
+  }
   if (message.method === "modelProvider/capabilities/read") return send({ id: message.id, result: discovery.modelProviderCapabilities ?? { namespaceTools: true, imageGeneration: false, webSearch: true } });
   if (message.method === "mcpServerStatus/list") {
-    send({ id: message.id, result: discovery.mcpStatuses ?? { data: [], nextCursor: null } });
+    const page = Number(message.params?.cursor ?? 0);
+    const result = discovery.mcpStatusPages?.[page] ?? discovery.mcpStatuses ?? { data: [], nextCursor: null };
+    send({ id: message.id, result: discovery.mcpStatusPages ? { ...result, nextCursor: page + 1 < discovery.mcpStatusPages.length ? String(page + 1) : null } : result });
     if (discovery.notificationsAfterMcpDiscovery) {
       setTimeout(() => {
         for (const notification of discovery.notificationsAfterMcpDiscovery) send(notification);

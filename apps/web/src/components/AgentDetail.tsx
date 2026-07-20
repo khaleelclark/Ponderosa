@@ -463,7 +463,11 @@ export function AgentDetail({
   const status = runtimeActivity ? "running" : errorHint ? "failed" : projectedStatus ?? deriveAgentStatus(detail);
   const configuredMcps = engineCapability?.mcpServers.filter((server) => server.configured) ?? [];
   const usableMcps = configuredMcps.filter((server) => server.usable);
-  const discoveredMcpTools = configuredMcps.reduce((total, server) => total + server.toolCount, 0);
+  const inventoriedMcps = configuredMcps.filter((server) => server.toolsDiscovered);
+  const discoveredMcpTools = inventoriedMcps.reduce((total, server) => total + server.toolCount, 0);
+  const mcpToolCountLabel = inventoriedMcps.length === configuredMcps.length
+    ? `${discoveredMcpTools} tools`
+    : `${discoveredMcpTools} tools · inventory ${inventoriedMcps.length}/${configuredMcps.length}`;
   const mcpSummary = configuredMcps.map((server) => [
     `${server.name}: ${server.initialization.replaceAll("_", " ")}`,
     server.usable ? "usable" : "not usable",
@@ -940,7 +944,7 @@ export function AgentDetail({
                   size="small"
                   variant="outlined"
                   color={usableMcps.length > 0 ? "success" : "default"}
-                  label={`${usableMcps.length}/${configuredMcps.length} MCPs · ${discoveredMcpTools} tools${engineCapability?.steering ? " · Steerable" : ""}`}
+                  label={`${usableMcps.length}/${configuredMcps.length} MCPs · ${mcpToolCountLabel}${engineCapability?.steering ? " · Steerable" : ""}`}
                 />
               </Tooltip>
             </Stack>}

@@ -109,8 +109,12 @@ describe("engine capability discovery", () => {
   });
 
   it("keeps configured, initialized, callable, failed, and health-unknown MCP facts distinct", () => {
-    const configured = parseCodexMcpList(JSON.stringify([{ name: "waiting", enabled: true }]));
+    const configured = parseCodexMcpList(JSON.stringify([{
+      name: "waiting", enabled: true,
+      transport: { command: "sensitive-command", args: ["sensitive-arg"], env: { SECRET_NAME: "sensitive-value" }, cwd: "/private/path" },
+    }]));
     expect(configured[0]).toMatchObject({ initialization: "not_initialized", toolsDiscovered: false, usable: false });
+    expect(JSON.stringify(configured)).not.toMatch(/sensitive|SECRET_NAME|private\/path/);
 
     const catalog = normalizeCodexProviderDiscovery({
       cwd: "/repo",

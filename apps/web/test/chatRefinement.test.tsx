@@ -66,6 +66,7 @@ describe("chat interaction refinement", () => {
 
     const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     expect(agentDetail).toContain("Start fresh provider session");
+    expect(agentDetail).toContain("inventory ${inventoriedMcps.length}/${configuredMcps.length}");
     expect(agentDetail).not.toMatch(/name:\s*["'](?:cancel|fresh|status)["']/);
   });
 

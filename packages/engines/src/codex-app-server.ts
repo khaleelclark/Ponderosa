@@ -42,6 +42,33 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+async function optionalPaginatedRequest(
+  rpc: JsonRpcProcess,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  try {
+    const data: unknown[] = [];
+    const seenCursors = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 100; page += 1) {
+      const response = object(await rpc.request(method, { ...params, ...(cursor ? { cursor } : {}) }));
+      if (!response) return undefined;
+      if (Array.isArray(response.data)) data.push(...response.data);
+      const nextCursor = typeof response.nextCursor === "string" && response.nextCursor
+        ? response.nextCursor
+        : undefined;
+      if (!nextCursor) return { data, nextCursor: null };
+      if (seenCursors.has(nextCursor)) throw new Error(`${method} repeated pagination cursor`);
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new Error(`${method} exceeded pagination limit`);
+  } catch {
+    return undefined;
+  }
+}
+
 async function readInstalledPluginDetails(rpc: JsonRpcProcess, response: unknown): Promise<unknown[]> {
   const requests: Promise<unknown>[] = [];
   const marketplaces = object(response)?.marketplaces;
@@ -98,9 +125,9 @@ export async function discoverCodexAppServerCapabilities(opts: {
     const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
       optionalRequest(rpc, "skills/list", { cwds: [opts.cwd], forceReload: true }),
       optionalRequest(rpc, "plugin/installed", { cwds: [opts.cwd] }),
-      optionalRequest(rpc, "model/list", { includeHidden: false }),
+      optionalPaginatedRequest(rpc, "model/list", { includeHidden: false }),
       optionalRequest(rpc, "modelProvider/capabilities/read", {}),
-      optionalRequest(rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly" }),
+      optionalPaginatedRequest(rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly" }),
     ]);
     const pluginDetails = await readInstalledPluginDetails(rpc, plugins);
     return normalizeCodexProviderDiscovery({
@@ -224,9 +251,9 @@ export class CodexAppServerSession implements RuntimeSession {
     const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
       optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
       optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
-      optionalRequest(this.rpc, "model/list", { includeHidden: false }),
+      optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
       optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
-      optionalRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
+      optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
     ]);
     const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
     const snapshot = normalizeCodexProviderDiscovery({

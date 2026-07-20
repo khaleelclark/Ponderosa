@@ -183,6 +183,34 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
+  it("exhausts provider model and MCP status pagination", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "paginated-discovery", cwd: here, history: [], signal: controller.signal,
+      model: "model-b", bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        modelPages: [
+          { data: [{ id: "model-a", hidden: false, isDefault: true }] },
+          { data: [{ id: "model-b", hidden: false, isDefault: false }] },
+        ],
+        mcpStatusPages: [
+          { data: [{ name: "empty", tools: {}, authStatus: "unsupported" }] },
+          { data: [{ name: "callable", tools: { search: { name: "search" } }, authStatus: "unsupported" }] },
+        ],
+      }) },
+    });
+    const capabilities = await session.capabilities();
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(capabilities.mcpServers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "empty", toolsDiscovered: true, toolCount: 0, usable: true }),
+      expect.objectContaining({ name: "callable", toolsDiscovered: true, toolCount: 1, usable: true }),
+    ]));
+    await session.close();
+  });
+
   it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
     const controller = new AbortController();
     let child: ChildProcess | undefined;
