@@ -4,6 +4,10 @@ import { isCompactViewport } from "../src/responsive";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("../src/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
+const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
+const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx", import.meta.url), "utf8");
+const artifacts = readFileSync(new URL("../src/components/ProjectArtifactsView.tsx", import.meta.url), "utf8");
+const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 
 describe("responsive compact controls", () => {
   it.each([
@@ -55,5 +59,15 @@ describe("responsive compact controls", () => {
     expect(sidebar).not.toContain("updateWorkspacePreferences");
     expect(sidebar).not.toContain("preferences.sidebarWidth");
     expect(app).toContain("onPreferences={savePreferences}");
+  });
+
+  it("keeps touched chat actions, user bubbles, and file previews usable at narrow widths", () => {
+    expect(conversation).toContain('maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" }');
+    expect(timestamps).toContain('useFlexGap flexWrap="wrap"');
+    expect(timestamps).toContain('minWidth: { xs: 44, sm: 28 }');
+    expect(globalCss).toContain("@media (hover: none), (pointer: coarse)");
+    expect(artifacts).toContain('className="ponderosa-scroll"');
+    expect(artifacts).toContain('overflow: "auto"');
+    expect(artifacts).toContain('minHeight: { xs: 44, sm: 36 }');
   });
 });

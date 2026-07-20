@@ -515,7 +515,9 @@ export function replyFallbackText(text: string): string {
 }
 
 export function isLongChatMessage(text: string): boolean {
-  return text.length > 1_600 || text.split("\n").length > 18;
+  // Display-only progressive disclosure. Provider input and artifact limits
+  // remain governed by the canonical constants imported above.
+  return text.length > 3_200 || text.split("\n").length > 36;
 }
 
 export function individualChatSenderLabel(
@@ -811,7 +813,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           aria-expanded={expanded}
           sx={{ mt: 0.5 }}
         >
-          {expanded ? "Show less" : "Show full message"}
+          {expanded ? "Show Less" : "Show Full Message"}
         </Button>
       ) : null}
       {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><a href={citation.url} target="_blank" rel="noreferrer">{citation.title}</a></Typography>)}</Box> : null}
@@ -821,10 +823,11 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
 
 export function UserMessageLabel({ profile }: { profile?: OperatorProfileDto }): JSX.Element {
   const glyph = ({ "default-user": "🌲", sunset: "🌅", river: "🌊", mountain: "⛰️", fox: "🦊", owl: "🦉" } as Record<string, string>)[profile?.avatarId ?? "default-user"] ?? "●";
+  const name = profile?.displayName ?? "User";
   return (
-    <Stack direction="row" spacing={0.75} sx={{ mb: 0.25, px: { xs: 1, sm: 1.5 }, alignItems: "center" }}>
-      <Avatar aria-label={`${profile?.displayName ?? "User"} profile picture`} sx={{ width: 22, height: 22, fontSize: 13, bgcolor: "action.selected" }}>{glyph}</Avatar>
-      <Typography variant="caption" component="div" sx={{ fontWeight: 700, color: "text.secondary" }}>{profile?.displayName ?? "User"}</Typography>
+    <Stack direction="row" spacing={0.75} sx={{ minHeight: 36, mb: 0.25, alignItems: "center" }}>
+      <Avatar aria-label={`${name} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{glyph}</Avatar>
+      <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={name} /></Box>
     </Stack>
   );
 }

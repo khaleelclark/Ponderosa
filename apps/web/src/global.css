@@ -36,6 +36,13 @@ body {
   pointer-events: auto;
 }
 
+@media (hover: none), (pointer: coarse) {
+  .chat-message-actions .chat-message-action-buttons {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .chat-scroll-region {
   /* Keep the gutter allocated while only changing the thumb's visibility. This
      avoids the document column moving when a scrollbar appears on hover. */

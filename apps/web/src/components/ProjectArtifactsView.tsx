@@ -35,6 +35,55 @@ interface ProjectArtifactRecord {
   artifact: ArtifactDto;
 }
 
+export function isTextArtifactPreview(mediaType: string | undefined): boolean {
+  return Boolean(mediaType && mediaType !== "text/html" && (
+    mediaType.startsWith("text/") || mediaType === "application/json"
+  ));
+}
+
+function ArtifactTextPreview({ artifact }: { artifact: ArtifactDto }): JSX.Element {
+  const query = useQuery({
+    queryKey: ["project-artifact-text-preview", artifact.id, artifact.previewUrl],
+    queryFn: async ({ signal }) => {
+      const response = await fetch(artifact.previewUrl!, {
+        cache: "no-store",
+        credentials: "same-origin",
+        signal,
+      });
+      if (!response.ok) throw new Error(`Preview request failed (${response.status})`);
+      return response.text();
+    },
+    enabled: Boolean(artifact.previewUrl),
+  });
+  const label = artifactDisplayLabel(artifact);
+  if (query.isLoading) return <Stack direction="row" spacing={1} role="status" sx={{ alignItems: "center", py: 3 }}><CircularProgress size={20} /><Typography variant="body2">Loading text preview…</Typography></Stack>;
+  if (query.isError) return <Alert severity="error">Text preview is unavailable. Download the file to inspect it.</Alert>;
+  if (query.data === "") return <Alert severity="info">This file is empty.</Alert>;
+  return <Box
+    component="pre"
+    className="ponderosa-scroll"
+    data-testid="artifact-text-preview"
+    aria-label={`Text preview of ${label}`}
+    tabIndex={0}
+    sx={{
+      width: "100%",
+      minWidth: 0,
+      maxHeight: "72dvh",
+      minHeight: { xs: "45dvh", sm: "28rem" },
+      m: 0,
+      p: { xs: 1.25, sm: 2 },
+      overflow: "auto",
+      whiteSpace: "pre-wrap",
+      overflowWrap: "anywhere",
+      bgcolor: "background.paper",
+      color: "text.primary",
+      borderRadius: 1,
+      fontSize: { xs: 12, sm: 13 },
+      lineHeight: 1.55,
+    }}
+  >{query.data}</Box>;
+}
+
 const projectOutputKinds = new Set<ArtifactDto["kind"]>([
   "test_report",
   "pr_summary",
@@ -155,7 +204,7 @@ export function ProjectArtifactsView({
           }).finally(() => setLoadingOlder(false));
         }}
         sx={{ alignSelf: "center" }}
-      >{loadingOlder ? "Loading…" : "Load older files"}</Button> : null}
+      >{loadingOlder ? "Loading…" : "Load Older Files"}</Button> : null}
       {loading && records.length === 0 ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 2 }}><CircularProgress size={18} /><Typography variant="body2" color="text.secondary">Loading project files…</Typography></Stack> : null}
       {projectArtifacts.isError ? <Alert severity="error">Project files could not be loaded. Try again.</Alert> : null}
       {!loading && records.length === 0 ? <Alert severity="info">No project files yet. Agent-created documents, images, downloads, and generated results will appear here.</Alert> : null}
@@ -195,15 +244,15 @@ export function ProjectArtifactsView({
               </Stack>
             </ListItemButton>
             {artifact.previewUrl ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", lg: "inline-flex" }, mr: .5, flexShrink: 0 }}>Preview</Button> : null}
-            {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" startIcon={<DownloadOutlinedIcon />} sx={{ mr: { xs: .5, sm: 1 }, px: { xs: .75, sm: 1 }, flexShrink: 0 }}><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Download</Box></Button> : null}
+            {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" aria-label={`Download ${label}`} startIcon={<DownloadOutlinedIcon />} sx={{ minWidth: 44, minHeight: 44, mr: { xs: .5, sm: 1 }, px: { xs: .75, sm: 1 }, flexShrink: 0 }}><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Download</Box></Button> : null}
           </Box>;
         })}
       </List>
     </Stack>
-    {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.agentId, artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
+    {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.agentId, artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
-      <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File preview"}</DialogTitle>
-      <DialogContent sx={{ p: { xs: 1, sm: 2 }, bgcolor: "background.default" }}>
+      <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File Preview"}</DialogTitle>
+      <DialogContent sx={{ minWidth: 0, p: { xs: 1, sm: 2 }, bgcolor: "background.default", overflow: "auto" }}>
         {previewArtifact ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25, alignItems: "center" }}>
           <Chip size="small" label={`Created by ${agents.find((agent) => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`} />
           {previewArtifact.executionId ? (() => {
@@ -213,7 +262,7 @@ export function ProjectArtifactsView({
               ? <Button size="small" aria-label={`Open originating Run ${previewArtifact.executionId}`} onClick={() => onOpenRun(originAgent.id, previewArtifact.executionId!)}>Generated from Run {previewArtifact.executionId.slice(0, 8)}</Button>
               : <Chip size="small" variant="outlined" label={`Run ${previewArtifact.executionId.slice(0, 8)} · originating Agent deleted`} />;
           })() : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
-          <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project scope"} />
+          <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project Scope"} />
         </Stack> : null}
         {previewArtifact?.previewUrl ? previewArtifact.mediaType?.startsWith("image/") ? <Box
           component="img"
@@ -221,7 +270,7 @@ export function ProjectArtifactsView({
           src={previewArtifact.previewUrl}
           alt={artifactDisplayLabel(previewArtifact)}
           sx={{ display: "block", maxWidth: "100%", maxHeight: "72dvh", mx: "auto", objectFit: "contain", borderRadius: 1 }}
-        /> : <Box
+        /> : isTextArtifactPreview(previewArtifact.mediaType) ? <ArtifactTextPreview artifact={previewArtifact} /> : <Box
           component="iframe"
           data-testid="artifact-document-preview"
           src={previewArtifact.previewUrl}
@@ -231,9 +280,9 @@ export function ProjectArtifactsView({
           sx={{ display: "block", width: "100%", height: "72dvh", border: 0, borderRadius: 1, bgcolor: "background.paper" }}
         /> : null}
       </DialogContent>
-      <DialogActions>
+      <DialogActions sx={{ flexWrap: "wrap", gap: 0.5, px: { xs: 1, sm: 2 }, "& .MuiButton-root": { minHeight: { xs: 44, sm: 36 } } }}>
         {previewArtifact ? <Button disabled={updateArtifact.isPending} onClick={() => updateArtifact.mutate({ artifactId: previewArtifact.id, pinned: !previewArtifact.pinned })}>{previewArtifact.pinned ? "Unpin" : "Pin"}</Button> : null}
-        {previewArtifact ? <Button disabled={updateArtifact.isPending} onClick={() => updateArtifact.mutate({ artifactId: previewArtifact.id, visibility: previewArtifact.visibility === "published" ? "project" : "published" })}>{previewArtifact.visibility === "published" ? "Make Project-only" : "Publish"}</Button> : null}
+        {previewArtifact ? <Button disabled={updateArtifact.isPending} onClick={() => updateArtifact.mutate({ artifactId: previewArtifact.id, visibility: previewArtifact.visibility === "published" ? "project" : "published" })}>{previewArtifact.visibility === "published" ? "Make Project-Only" : "Publish"}</Button> : null}
         {previewArtifact?.downloadUrl ? <Button component="a" href={previewArtifact.downloadUrl} download startIcon={<DownloadOutlinedIcon />}>Download</Button> : null}
         <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
       </DialogActions>

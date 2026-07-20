@@ -45,6 +45,14 @@ describe("message timestamps", () => {
     expect(markup).not.toContain("opacity:");
   });
 
+  it("keeps the calendar date visible in compact Agent identity timestamps", () => {
+    const markup = renderToStaticMarkup(<MessageTimestamp value="2026-07-11T14:05:06.789Z" compact />);
+
+    expect(markup).toContain('data-compact="true"');
+    expect(markup).toMatch(/>[^<]*2026[^<]*</);
+    expect(markup).not.toMatch(/>\s*2:05 PM\s*</);
+  });
+
   it.each(["light", "dark"] as const)(
     "inherits timestamp colors with WCAG AA contrast in %s manager and agent bubbles",
     (mode) => {

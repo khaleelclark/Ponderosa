@@ -175,7 +175,7 @@ export function AgentsTab({
           <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete selected ({selectedAgentIds.size})</Button>
           <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel selection</Button>
         </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select agents</Button>}
-        <Button variant="outlined" size="small" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)}>Import Agent or organization</Button>
+        <Button variant="outlined" size="small" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)} sx={{ minHeight: 44, flexShrink: 0 }}>Import Agent or Organization</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>

@@ -7,6 +7,7 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
@@ -161,17 +162,10 @@ export function ConversationMessage({
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
         {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? "min(78%, 780px)" : "100%" }}>
+        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
             <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
             <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
-            <Box sx={{ flex: 1 }} />
-            {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
-              size="small"
-              aria-label={`Open agent ${senderName}`}
-              onClick={() => onOpenAgent(message.authorAgentId!)}
-              sx={{ color: "text.secondary", width: 28, height: 28, opacity: 0.88, "&:hover": { color: "text.primary", opacity: 1 } }}
-            ><OpenInNewIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip> : null}
           </Stack> : null}
           {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
           <Box
@@ -245,6 +239,11 @@ export function ConversationMessage({
               onOpenWorkLog={onOpenWorkLog}
             /> : undefined}
             actions={conversation === "main" ? <>
+        {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
+          size="small"
+          aria-label={`Open agent ${senderName}`}
+          onClick={() => onOpenAgent(message.authorAgentId!)}
+        ><OpenInNewIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
@@ -993,12 +992,13 @@ export function ConversationView({
                 },
               },
               {
-                label: "Create agent",
+                label: "Create Agent",
                 icon: <AddIcon fontSize="small" />,
                 onSelect: () => onNewAgent(conversation),
               },
               {
-                label: "Import Agent or organization…",
+                label: "Import Agent or Organization…",
+                icon: <FileUploadOutlinedIcon fontSize="small" />,
                 onSelect: () => setImportOpen(true),
               },
               {

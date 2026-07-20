@@ -49,6 +49,10 @@ describe("user message labels on chat surfaces", () => {
     const html = renderToStaticMarkup(<UserMessageLabel />);
 
     expect(html).toContain(">User</div>");
+    expect(html).toContain('aria-label="User avatar"');
+    expect(html).toContain("width:36px");
+    expect(html).toContain("height:36px");
+    expect(html).toContain("data-message-sender");
     expect(html).not.toContain("aria-hidden");
   });
 
@@ -108,6 +112,8 @@ describe("user message labels on chat surfaces", () => {
     expect(manager.indexOf('aria-label="Reply to message"')).toBeLessThan(manager.indexOf("<time"));
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
+    expect(agent.indexOf('class="chat-message-actions')).toBeLessThan(agent.indexOf('aria-label="Open agent Pinnacles"'));
+    expect(agent.indexOf('aria-label="Open agent Pinnacles"')).toBeLessThan(agent.indexOf('aria-label="Reply to message"'));
     expect(agent.indexOf("<time")).toBeLessThan(agent.indexOf('aria-label="Reply to message"'));
     expect(agent.indexOf('aria-label="Reply to message"')).toBeLessThan(agent.indexOf("Reply directly to Pinnacles"));
   });

@@ -10,6 +10,7 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import {
   Alert,
@@ -997,20 +998,20 @@ export function AgentDetail({
                 },
               },
               {
-                label: "Create agent",
+                label: "Create Agent",
                 icon: <PersonAddAlt1Icon fontSize="small" />,
                 onSelect: () => onNewSubagent(agentId),
               },
               {
-                label: "Assign chats",
+                label: "Assign Chats",
                 onSelect: () => {
                   setMembershipIds(detail.agent.conversationIds);
                   setPrimaryConversationId(detail.agent.conversationId ?? "");
                   setMembershipOpen(true);
                 },
               },
-              { label: "Import Agent or organization…", onSelect: () => setImportOpen(true) },
-              ...(detail.agent.conversationId ? [{ label: "Quick copy into home chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
+              { label: "Import Agent or Organization…", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
+              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Home Chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
               {
                 label: "Reports to",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,

@@ -28,12 +28,13 @@ describe("message sender identity", () => {
     expect(html).not.toContain("aria-hidden");
   });
 
-  it("keeps team-chat navigation separate from the copyable sender label", () => {
+  it("keeps Project-chat navigation in the bottom action row and separate from the copyable sender label", () => {
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(source).toContain('<MessageSenderLabel name={senderName} />');
     expect(source).toContain('component="article"');
     expect(source).toContain('aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}');
     expect(source).toContain("aria-label={`Open agent ${senderName}`}");
-    expect(source).toContain("width: 28, height: 28");
+    expect(source.indexOf('actions={conversation === "main"')).toBeLessThan(source.indexOf("aria-label={`Open agent ${senderName}`}"));
+    expect(source).not.toContain("width: 28, height: 28");
   });
 });

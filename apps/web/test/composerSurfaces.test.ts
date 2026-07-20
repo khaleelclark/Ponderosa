@@ -47,7 +47,7 @@ describe("composer surface ownership", () => {
     expect(panes).toContain('showTimestamp={fromUser}');
     expect(conversation).toContain('justifyContent: fromManager ? "flex-end" : "flex-start"');
     expect(conversation).toContain('width: fromManager ? "fit-content" : "min(100%, 960px)"');
-    expect(conversation).toContain('maxWidth: fromManager ? "min(78%, 780px)" : "100%"');
+    expect(conversation).toContain('maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%"');
     expect(conversation).toContain('showTimestamp={fromManager}');
   });
 
