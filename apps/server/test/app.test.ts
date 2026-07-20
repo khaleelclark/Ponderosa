@@ -1316,6 +1316,33 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("generated artifact endpoints", () => {
+  it("bounds oversized text previews while retaining authenticated full download", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Large artifact", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Auditor", engine: "codex" });
+    const diff = `+${"x".repeat(2 * 1024 * 1024 + 64_000)}\n`;
+    const stored = store.appendEvent(agent.id, { type: "file_change", path: "large.txt", kind: "edit", diff });
+    const artifactId = `${agent.id}:a:${stored.seq}:0`;
+
+    const preview = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/artifacts/${artifactId}` });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ id: artifactId, truncated: true, totalBytes: Buffer.byteLength(diff) });
+    expect(Buffer.byteLength(preview.json<{ content: string }>().content)).toBeLessThanOrEqual(2 * 1024 * 1024);
+
+    const projectPreview = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+    });
+    expect(projectPreview.statusCode, projectPreview.body).toBe(200);
+    expect(projectPreview.headers["x-ponderosa-preview-truncated"]).toBe("true");
+    expect(projectPreview.rawPayload).toHaveLength(2 * 1024 * 1024);
+    const download = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    });
+    expect(download.statusCode, download.body).toBe(200);
+    expect(download.rawPayload).toEqual(Buffer.from(diff));
+    await app.close();
+  });
+
   it("previews and downloads bounded project files without escaping the registered workspace", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Project file browser", hostPath: repoDir });
@@ -4977,6 +5004,44 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keeps deleted-Agent Work log, Activity, Runs, and provider-input audit inspectable", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Deleted audit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Former worker", engine: "codex" });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "deleted-audit-run",
+    });
+    store.appendEvent(agent.id, { type: "tool_result", id: "deleted-tool", output: "audit output" });
+    store.appendEvent(agent.id, {
+      type: "agent_output", executionId: "deleted-audit-run", text: "durable response", sourceSeqStart: 2, sourceSeqEnd: 2,
+    });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "deleted-audit-run",
+    });
+    const now = new Date().toISOString();
+    store.sqlite.prepare(`
+      INSERT INTO provider_inputs (
+        execution_id, scheduler_run_id, agent_id, project_id, provider_prompt,
+        prompt_hash, source_manifest_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("deleted-audit-run", "scheduler-deleted-audit", agent.id, project.id, "exact audit prompt", "b".repeat(64), "[]", now, now);
+
+    expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      agent: { id: agent.id, archived: true, deletedAt: expect.any(String) },
+      runOutput: [expect.objectContaining({ text: "durable response" })],
+      activity: [expect.objectContaining({ event: expect.objectContaining({ id: "deleted-tool" }) })],
+      runs: [expect.objectContaining({ id: "deleted-audit-run", status: "completed" })],
+    });
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/history/activity` })).statusCode).toBe(200);
+    const providerInput = await app.inject({ method: "GET", url: "/api/runs/deleted-audit-run/provider-input?exact=1" });
+    expect(providerInput.statusCode, providerInput.body).toBe(200);
+    expect(providerInput.json()).toMatchObject({ exactPrompt: "exact audit prompt" });
+    await app.close();
+  });
+
   it("serves active generated documents only inside an opaque restricted sandbox", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Sandboxed artifacts", hostPath: repoDir });
@@ -5093,12 +5158,9 @@ describe("server chunk F", () => {
     expect(JSON.parse((await retrieve()).text)).toMatchObject({
       items: [{ content: bytes.toString("utf8"), complete: true }],
     });
-    store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" });
-    expect((await retrieve()).success).toBe(false);
-    expect((await app.inject({
-      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
-    })).statusCode).toBe(404);
-    store.recordProjectArtifact(artifact);
+    expect(() => store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" }))
+      .toThrow(/immutable/);
+    expect((await retrieve()).success).toBe(true);
     expect((await app.inject({
       method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
     })).rawPayload).toEqual(bytes);
@@ -9105,7 +9167,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("deletes an agent: removes projections + on-disk log, cancels active run", async () => {
+  it("deletes an agent: removes live authority while retaining immutable audit", async () => {
     const { app, project, agent } = await createProjectAndAgent();
 
     // Give the agent some history so there's a log + projections to remove.
@@ -9121,11 +9183,18 @@ describe("server chunk F", () => {
     expect(del.statusCode).toBe(200);
     expect(del.json<{ deleted: boolean }>().deleted).toBe(true);
 
-    // Gone from the projection list and by id.
+    // Gone from the live organization, while the stable audit identity remains.
     const list = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agents` });
     expect(list.json<unknown[]>()).toHaveLength(0);
     const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
-    expect(detail.statusCode).toBe(404);
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({
+      agent: { id: agent.id, archived: true, deletedAt: expect.any(String) },
+      runs: expect.any(Array), activity: expect.any(Array), runOutput: expect.any(Array),
+    });
+    expect((await app.inject({
+      method: "PATCH", url: `/api/agents/${agent.id}`, payload: { title: "Must remain immutable" },
+    })).statusCode).toBe(404);
 
     // Deleting again is a 404.
     const again = await app.inject({
@@ -9135,10 +9204,11 @@ describe("server chunk F", () => {
     });
     expect(again.statusCode).toBe(404);
 
-    // On-disk agent directory is gone (rebuild won't resurrect it).
+    // Rebuild retains audit without restoring live authority.
     store.rebuildProjections();
     const afterRebuild = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
-    expect(afterRebuild.statusCode).toBe(404);
+    expect(afterRebuild.statusCode).toBe(200);
+    expect(store.getAgent(agent.id)).toBeUndefined();
     await app.close();
   });
 
@@ -9304,7 +9374,8 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: `/api/agents/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
     expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: asset.downloadUrl })).statusCode).toBe(404);
-    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(false);
+    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(true);
+    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id, "attachments"))).toBe(false);
     await app.close();
   });
 

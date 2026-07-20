@@ -38,7 +38,12 @@ export type ProjectionOp =
   | { kind: "update_run"; id: string; status: AgentRunStatus; reason: AgentLifecycleReason; updatedAt: string; completedAt?: string }
   | { kind: "set_run_usage"; id: string; inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number; providerRequestUsage?: TokenUsage[] }
   | { kind: "insert_work_item"; row: WorkItemRow }
-  | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
+  | {
+      kind: "insert_artifact";
+      row: ArtifactRow;
+      content?: string;
+      managed?: { size: number; sha256: string; mediaType: string };
+    }
   | { kind: "insert_event"; row: EventRow; executionId?: string }
   | { kind: "set_session"; sessionId: string | null; toolContractHash: string | null; artifactIds: string[] }
   | { kind: "insert_continuation_handoff"; id: string; executionId: string; text: string; createdAt: string }
@@ -293,7 +298,7 @@ export function projectEvent(
       ops.push({
         kind: "insert_artifact",
         row: {
-          id: artifactId(agentId, seq, 0),
+          id: event.artifactId ?? artifactId(agentId, seq, 0),
           agentId,
           executionId: event.executionId,
           kind: "screenshot",
@@ -301,8 +306,11 @@ export function projectEvent(
           summary: `Browser screenshot (${event.width}×${event.height})`,
           createdAt: ts,
           mediaType: "image/png",
-          sourcePath: null, visibility: null, pinned: null, size: null,
+          sourcePath: null, visibility: "project", pinned: 0, size: event.size ?? null,
         },
+        ...(event.size && event.sha256
+          ? { managed: { size: event.size, sha256: event.sha256, mediaType: "image/png" } }
+          : {}),
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
@@ -317,6 +325,9 @@ export function projectEvent(
           sourcePath: event.sourcePath, mediaType: event.mediaType,
           visibility: event.visibility ?? null, pinned: event.pinned ? 1 : 0, size: event.size,
         },
+        ...(event.sha256
+          ? { managed: { size: event.size, sha256: event.sha256, mediaType: event.mediaType } }
+          : {}),
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;

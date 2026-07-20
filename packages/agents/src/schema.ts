@@ -46,6 +46,8 @@ export const agents = sqliteTable("agents", {
   stateCommit: text("state_commit"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+  /** Null for live authority; populated for an immutable deleted-Agent audit tombstone. */
+  deletedAt: text("deleted_at"),
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
   managerAgentId: text("manager_agent_id"),

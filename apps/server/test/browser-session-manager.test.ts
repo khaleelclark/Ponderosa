@@ -67,8 +67,10 @@ describe("run-scoped browser sessions", () => {
     await manager.setControl(scope, "agent", 2);
     const screenshot = await manager.captureArtifact(scope);
     expect(screenshot.path).toMatch(/^browser\//);
-    expect(existsSync(path.join(dataDir, "projects/project/agents/agent/artifacts", screenshot.path))).toBe(true);
-    expect(readFileSync(path.join(dataDir, "projects/project/agents/agent/artifacts", screenshot.path))).toEqual(png);
+    const artifactId = path.basename(screenshot.path, ".png");
+    const managed = path.join(dataDir, "projects/project/artifacts/content", artifactId);
+    expect(existsSync(managed)).toBe(true);
+    expect(readFileSync(managed)).toEqual(png);
     expect(events).toContainEqual(expect.objectContaining({ type: "browser_screenshot", executionId: "run", path: screenshot.path }));
 
     await manager.closeRun(scope, "run_completed");

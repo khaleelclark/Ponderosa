@@ -9,7 +9,7 @@ import type {
   BrowserOperatorInputRequest,
   BrowserSessionDto,
 } from "@ponderosa/core";
-import { artifactsDir } from "@ponderosa/agents";
+import { publishManagedArtifactContent } from "@ponderosa/agents";
 import { terminateProcessGroup } from "@ponderosa/engines";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
@@ -763,14 +763,13 @@ export class BrowserSessionManager {
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
       return captured;
     });
-    const relative = path.posix.join("browser", `${session.dto.id}-${Date.now()}-${randomUUID()}.png`);
-    const directory = artifactsDir(this.dataDir, scope.projectId, scope.actorAgentId ?? scope.agentId);
-    const file = path.join(directory, ...relative.split("/"));
-    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await fs.writeFile(file, body, { mode: 0o600, flag: "wx" });
+    const artifactId = randomUUID();
+    const relative = path.posix.join("browser", `${artifactId}.png`);
+    const published = publishManagedArtifactContent(this.dataDir, scope.projectId, artifactId, body);
     this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
-      path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
+      artifactId, path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
+      size: published.size, sha256: published.sha256,
     });
     return { path: relative, ...VIEWPORT };
   }

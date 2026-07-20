@@ -1814,6 +1814,17 @@ function ArtifactViewer({
         <Typography variant="caption" color="text.secondary" noWrap title={content.path}>{compactPath(content.path)}</Typography>
       </Stack>
       <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
+      {content.truncated ? (
+        <Alert
+          severity="info"
+          sx={{ mb: 1 }}
+          action={content.downloadUrl ? (
+            <Button component="a" href={content.downloadUrl} download size="small" color="inherit">Download full artifact</Button>
+          ) : undefined}
+        >
+          Preview is limited to 2 MiB{content.totalBytes ? ` of ${content.totalBytes.toLocaleString()} bytes` : ""}.
+        </Alert>
+      ) : null}
       <Paper variant="outlined" sx={{ p: 1.25, overflow: "auto", maxHeight: { xs: "55vh", md: "64vh" } }}>
         {content.contentType === "markdown" ? (
           <MarkdownViewer content={content.content} />

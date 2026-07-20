@@ -4,10 +4,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentDeletionConflictError, AgentStore } from "../src/store.js";
+import { publishManagedArtifactContent } from "../src/managed-artifact-files.js";
+import { EventLog } from "../src/eventlog.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactContentPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -914,6 +916,81 @@ const RUN: LogEvent[] = [
 ];
 
 describe("AgentStore — append + projection", () => {
+  it("recovers artifact publication after a crash immediately following the canonical event append", () => {
+    const { projectId, agentId } = seedAgent();
+    store.close();
+    const stored = new EventLog(eventsPath(dir, projectId, agentId)).append({
+      type: "command", command: "crash-boundary", cwd: "/repo",
+    });
+    store = new AgentStore(dir);
+    const artifactId = `${agentId}:a:${stored.seq}:0`;
+    expect(store.getProjectArtifact(projectId, artifactId)).toMatchObject({
+      id: artifactId, kind: "log", originAgentId: agentId, sha256: expect.any(String),
+    });
+    expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8")).toContain("crash-boundary");
+  });
+
+  it("rebuilds every execution artifact association and retains deleted-Agent audit evidence", () => {
+    const { projectId, agentId } = seedAgent();
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-audit",
+    });
+    store.appendEvent(agentId, { type: "command", command: "inspect", cwd: "/repo" });
+    store.appendEvent(agentId, { type: "file_change", path: "result.txt", kind: "edit", diff: "+result\n" });
+    store.appendEvent(agentId, { type: "test_result", passed: true, summary: "verified" });
+    store.appendEvent(agentId, { type: "tool_result", id: "tool-audit", output: "durable activity" });
+    store.appendEvent(agentId, {
+      type: "agent_output", executionId: "run-audit", text: "durable work log", sourceSeqStart: 2, sourceSeqEnd: 5,
+    });
+    const screenshot = publishManagedArtifactContent(dir, projectId, "screenshot-audit", Buffer.from("png-audit"));
+    store.appendEvent(agentId, {
+      type: "browser_screenshot", sessionId: "browser", executionId: "run-audit",
+      artifactId: "screenshot-audit", path: "browser/screenshot-audit.png", width: 1280, height: 720,
+      size: screenshot.size, sha256: screenshot.sha256,
+    });
+    const generated = publishManagedArtifactContent(dir, projectId, "generated-audit", Buffer.from("generated-audit"));
+    store.appendEvent(agentId, {
+      type: "generated_artifact", artifactId: "generated-audit", executionId: "run-audit",
+      path: "generated/generated-audit.txt", sourcePath: "result.txt", name: "result.txt",
+      mediaType: "text/plain", size: generated.size, sha256: generated.sha256, visibility: "project",
+    });
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-audit",
+    });
+    const now = new Date().toISOString();
+    store.sqlite.prepare(`
+      INSERT INTO provider_inputs (
+        execution_id, scheduler_run_id, agent_id, project_id, provider_prompt,
+        prompt_hash, source_manifest_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("run-audit", "scheduler-run-audit", agentId, projectId, "exact provider input", "a".repeat(64), "[]", now, now);
+
+    const expectedIds = store.getProjectArtifacts(projectId).map((artifact) => artifact.id);
+    store.updateProjectArtifactVisibility(projectId, "screenshot-audit", "published", true);
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.kind).sort()).toEqual([
+      "diff", "generated_file", "log", "screenshot", "test_report",
+    ]);
+    store.rebuildProjections();
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.id).sort()).toEqual([...expectedIds].sort());
+    expect(store.getProjectArtifact(projectId, "screenshot-audit")).toMatchObject({ visibility: "published", pinned: true });
+    for (const artifact of store.getProjectArtifacts(projectId)) {
+      expect(readFileSync(managedArtifactContentPath(dir, projectId, artifact.id))).toHaveLength(artifact.size!);
+    }
+
+    expect(store.deleteAgent(agentId)).toBe(true);
+    expect(store.getAgent(agentId)).toBeUndefined();
+    const audit = store.getAgentDetail(agentId)!;
+    expect(audit.agent).toMatchObject({ id: agentId, archived: true, deletedAt: expect.any(String) });
+    expect(audit.runOutput).toContainEqual(expect.objectContaining({ text: "durable work log" }));
+    expect(audit.activity).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ id: "tool-audit" }) }));
+    expect(audit.runs).toContainEqual(expect.objectContaining({ id: "run-audit", status: "completed" }));
+    expect(store.getProviderInput("run-audit", true)).toMatchObject({ exactPrompt: "exact provider input" });
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.id).sort()).toEqual([...expectedIds].sort());
+    store.rebuildProjections();
+    expect(store.getAgent(agentId)).toBeUndefined();
+    expect(store.getAgentDetail(agentId)?.runOutput).toContainEqual(expect.objectContaining({ text: "durable work log" }));
+  });
+
   it("keeps generated output under a stable artifact ID with visibility updates", () => {
     const { projectId, agentId } = seedAgent();
     const managedPath = "generated/image.png";
@@ -1741,7 +1818,10 @@ describe("agent organizational hierarchy", () => {
 
     store = new AgentStore(dir);
     expect(store.getAgent(deleted.id)).toBeUndefined();
-    expect(existsSync(agentDir(dir, project.id, deleted.id))).toBe(false);
+    expect(store.getAgentDetail(deleted.id)?.agent).toMatchObject({
+      id: deleted.id, archived: true, deletedAt: expect.any(String),
+    });
+    expect(existsSync(agentDir(dir, project.id, deleted.id))).toBe(true);
     expect(existsSync(deletedTombstone)).toBe(false);
     expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_deletion_tombstones`).get()).toEqual({ count: 0 });
   });

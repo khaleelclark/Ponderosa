@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -90,6 +90,7 @@ import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
 import { artifactId, messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
   initProjectionState,
@@ -311,6 +312,7 @@ interface AgentJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  deletedAt?: string;
   managementPermissions?: AgentDto["managementPermissions"];
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
@@ -961,9 +963,12 @@ export class AgentStore {
     if (!event?.document) return undefined;
     if (event.document.content !== undefined) return { event, document: event.document };
     if (!event.document.artifactId) return undefined;
-    const file = managedArtifactContentPath(this.dataDir, projectId, event.document.artifactId);
-    if (!existsSync(file)) return undefined;
-    return { event, document: { ...event.document, content: readFileSync(file, "utf8") } };
+    const artifact = this.getProjectArtifact(projectId, event.document.artifactId);
+    if (!artifact?.size || !artifact.sha256) return undefined;
+    const file = readManagedArtifactContent(
+      this.dataDir, projectId, event.document.artifactId, artifact.size, artifact.sha256,
+    );
+    return file ? { event, document: { ...event.document, content: file.body.toString("utf8") } } : undefined;
   }
 
   private communicationProjectionAllowed(
@@ -2173,6 +2178,7 @@ export class AgentStore {
       eq(agents.spawnedByAgentId, agentId),
       eq(agents.spawnedByExecutionId, executionId),
       eq(agents.spawnIdempotencyKey, idempotencyKey),
+      isNull(agents.deletedAt),
     )).get();
     return row ? this.agentRowToDto(row) : undefined;
   }
@@ -2181,13 +2187,14 @@ export class AgentStore {
     return this.db
       .select()
       .from(agents)
-      .where(eq(agents.projectId, projectId))
+      .where(and(eq(agents.projectId, projectId), isNull(agents.deletedAt)))
       .all()
       .map((r) => this.agentRowToDto(r));
   }
 
   getAgent(id: string): AgentDto | undefined {
-    return this.rowToAgentDto(id);
+    const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
+    return row ? this.agentRowToDto(row) : undefined;
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
@@ -2416,7 +2423,7 @@ export class AgentStore {
 
   updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) return undefined;
+    if (!row || row.deletedAt) return undefined;
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
@@ -2674,17 +2681,22 @@ export class AgentStore {
         }).run();
         // Coordination V3 shares this SQLite connection. Its nested
         // transactions become savepoints, so all scheduler outcomes and every
-        // selected Agent projection commit or roll back as one unit.
+        // selected Agent authority fence commit or roll back as one unit.
         for (const agent of current.affectedAgents) beforeProjectionDelete?.(agent.id);
         for (const agent of current.affectedAgents) {
-          tx.delete(events).where(eq(events.agentId, agent.id)).run();
-          tx.delete(artifacts).where(eq(artifacts.agentId, agent.id)).run();
-          tx.delete(workItems).where(eq(workItems.agentId, agent.id)).run();
-          tx.delete(runs).where(eq(runs.agentId, agent.id)).run();
-          this.client.prepare(`DELETE FROM provider_inputs WHERE agent_id = ?`).run(agent.id);
-          tx.delete(messages).where(eq(messages.agentId, agent.id)).run();
           tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, agent.id)).run();
-          tx.delete(agents).where(eq(agents.id, agent.id)).run();
+          tx.update(agents).set({
+            conversationId: null,
+            activeSessionId: null,
+            activeSessionContractHash: null,
+            activeSessionArtifactIdsJson: "[]",
+            archived: 1,
+            managerAgentId: null,
+            allowAutomaticDescendantDeletion: 0,
+            allowAutomaticDescendantReorganization: 0,
+            deletedAt: createdAt,
+            updatedAt: createdAt,
+          }).where(eq(agents.id, agent.id)).run();
         }
       });
     } catch (error) {
@@ -2713,11 +2725,33 @@ export class AgentStore {
     const touchedDirectories = new Set<string>();
     for (const agentId of receipt.deletedAgentIds) {
       const row = this.client.prepare(`
-        SELECT project_id, tombstone_name FROM agent_deletion_tombstones WHERE agent_id = ?
-      `).get(agentId) as { project_id: string; tombstone_name: string } | undefined;
+        SELECT project_id, tombstone_name, created_at FROM agent_deletion_tombstones WHERE agent_id = ?
+      `).get(agentId) as { project_id: string; tombstone_name: string; created_at: string } | undefined;
       if (row) {
         const directory = agentsDir(this.dataDir, row.project_id);
-        rmSync(join(directory, row.tombstone_name), { recursive: true, force: true });
+        const tombstone = join(directory, row.tombstone_name);
+        const canonical = agentDir(this.dataDir, row.project_id, agentId);
+        if (existsSync(tombstone)) {
+          // Upload staging and attachment capability state are live authority,
+          // not deletion-surviving execution audit.
+          rmSync(join(tombstone, "attachments"), { recursive: true, force: true });
+          const metadataPath = join(tombstone, "agent.json");
+          const metadata = readJson<AgentJson>(metadataPath);
+          writeJson(metadataPath, {
+            ...metadata,
+            conversationId: undefined,
+            conversationIds: [],
+            archived: true,
+            deletedAt: row.created_at,
+            updatedAt: row.created_at,
+            managementPermissions: {
+              allowAutomaticDescendantDeletion: false,
+              allowAutomaticDescendantReorganization: false,
+            },
+          });
+          if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
+          renameSync(tombstone, canonical);
+        }
         touchedDirectories.add(directory);
       }
       this.logs.delete(agentId);
@@ -3198,7 +3232,7 @@ export class AgentStore {
   }
 
   getProjectedAgentMessages(agentId: string, limit?: number): MessageDto[] {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return [];
     const projected = this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId, limit);
     return this.projectedAgentMessageDtos(agentId, projected);
@@ -3208,14 +3242,14 @@ export class AgentStore {
     agentId: string,
     input: { limit: number; cursor?: string; focusId?: string },
   ): { messages: MessageDto[]; hasMore: boolean; cursor?: string } {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return { messages: [], hasMore: false };
     const page = this.readProjectedCommunicationMessagePage(agent.projectId, "direct_agent_audit", agentId, input);
     return { ...page, messages: this.projectedAgentMessageDtos(agentId, page.messages) };
   }
 
   getProjectedAgentMessageById(agentId: string, id: string): MessageDto | undefined {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return undefined;
     const row = this.client.prepare(`
       SELECT communication_event_id AS eventId FROM chat_search_messages
@@ -3990,7 +4024,7 @@ export class AgentStore {
   }
 
   private artifactDtoFromProjectionRow(agentId: string, row: ArtifactProjectionReadRow): ArtifactDto | undefined {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return undefined;
     if (row.kind === "generated_file" && row.source_path && row.media_type && row.size !== null) {
       const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
@@ -4202,10 +4236,19 @@ export class AgentStore {
 
   recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
     if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
-    if (artifact.kind === "generated_file" &&
-        (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
-          !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? ""))) {
-      throw new Error("generated artifact immutable metadata is required");
+    if (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
+        !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "") ||
+        !artifact.originAgentId.trim()) {
+      throw new Error("managed artifact immutable metadata is required");
+    }
+    const existing = this.getProjectArtifact(artifact.projectId, artifact.id);
+    if (existing) {
+      const immutableFields = [
+        "id", "projectId", "agentId", "originAgentId", "executionId", "kind", "path",
+        "summary", "createdAt", "mediaType", "sourcePath", "size", "sha256",
+      ] as const;
+      if (immutableFields.every((field) => existing[field] === artifact[field])) return;
+      throw new Error("managed artifact identity and provenance are immutable");
     }
     const event = { type: "created", artifact } satisfies ManagedArtifactEvent;
     appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [event]);
@@ -4274,6 +4317,7 @@ export class AgentStore {
    * event (seq + ts) so the caller can broadcast it over SSE.
    */
   appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
+    if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
     const projectId = this.projectIdOf(agentId);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
       ? event.communicationEventId : undefined;
@@ -4363,10 +4407,29 @@ export class AgentStore {
         throw new Error("invalid Agent deletion recovery journal");
       }
       const directory = agentsDir(this.dataDir, row.projectId);
-      rmSync(join(directory, row.tombstoneName), { recursive: true, force: true });
-      // A committed journal row is authoritative even if a filesystem rollback
-      // resurrected the canonical name after the SQLite commit.
-      rmSync(agentDir(this.dataDir, row.projectId, row.agentId), { recursive: true, force: true });
+      const tombstone = join(directory, row.tombstoneName);
+      const canonical = agentDir(this.dataDir, row.projectId, row.agentId);
+      const auditDirectory = existsSync(tombstone) ? tombstone : canonical;
+      if (!existsSync(auditDirectory)) throw new Error("committed Agent deletion lost its audit directory");
+      rmSync(join(auditDirectory, "attachments"), { recursive: true, force: true });
+      const metadataPath = join(auditDirectory, "agent.json");
+      const metadata = readJson<AgentJson>(metadataPath);
+      writeJson(metadataPath, {
+        ...metadata,
+        conversationId: undefined,
+        conversationIds: [],
+        archived: true,
+        deletedAt: row.createdAt,
+        updatedAt: row.createdAt,
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      });
+      if (auditDirectory === tombstone) {
+        if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
+        renameSync(tombstone, canonical);
+      }
       if (existsSync(directory)) touchedDirectories.add(directory);
     }
     const root = projectsDir(this.dataDir);
@@ -4555,6 +4618,7 @@ export class AgentStore {
             effort: t.effort ?? null,
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
+            deletedAt: t.deletedAt ?? null,
             archived: t.archived ? 1 : 0,
             managerAgentId: organizationalParents.get(t.id) ?? null,
             allowAutomaticDescendantDeletion: t.managementPermissions?.allowAutomaticDescendantDeletion ? 1 : 0,
@@ -4590,6 +4654,20 @@ export class AgentStore {
         pruneArtifactDirectory(artifactsDir(this.dataDir, projectId, agentId), protectedArtifactPaths);
         const ops = projectAll(agentId, stored, t.activeEngine);
         this.applyOps(agentId, projectId, ops);
+        if (t.deletedAt) {
+          this.db.update(agents).set({
+            conversationId: null,
+            activeSessionId: null,
+            activeSessionContractHash: null,
+            activeSessionArtifactIdsJson: "[]",
+            archived: 1,
+            managerAgentId: null,
+            allowAutomaticDescendantDeletion: 0,
+            allowAutomaticDescendantReorganization: 0,
+            deletedAt: t.deletedAt,
+            updatedAt: t.deletedAt,
+          }).where(eq(agents.id, t.id)).run();
+        }
       }
       this.sanitizeOrganizationProjection(projectId);
     }
@@ -4615,10 +4693,39 @@ export class AgentStore {
 
   private applyOps(agentId: string, projectId: string, ops: ProjectionOp[]): void {
     for (const op of ops) {
-      if (op.kind === "insert_artifact" && op.content !== undefined) {
-        const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, op.content, "utf8");
+      if (op.kind === "insert_artifact") {
+        let managed = op.managed;
+        if (op.content !== undefined) {
+          const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, op.content, "utf8");
+          const published = publishManagedArtifactContent(this.dataDir, projectId, op.row.id, op.content);
+          managed = {
+            size: published.size,
+            sha256: published.sha256,
+            mediaType: op.row.kind === "diff" ? "text/x-diff" : "text/markdown",
+          };
+        }
+        if (managed) {
+          const artifact = {
+            id: op.row.id,
+            projectId,
+            agentId: op.row.agentId,
+            originAgentId: op.row.agentId,
+            ...(op.row.executionId ? { executionId: op.row.executionId } : {}),
+            kind: op.row.kind as ArtifactKind,
+            path: op.row.path,
+            ...(op.row.sourcePath ? { sourcePath: op.row.sourcePath } : {}),
+            summary: op.row.summary ?? op.row.path,
+            createdAt: op.row.createdAt,
+            mediaType: managed.mediaType,
+            visibility: op.row.visibility === "published" ? "published" as const : "project" as const,
+            pinned: op.row.pinned === 1,
+            size: managed.size,
+            sha256: managed.sha256,
+          };
+          this.recordProjectArtifact(artifact);
+        }
       }
     }
 
@@ -4918,7 +5025,8 @@ export class AgentStore {
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      archived: row.archived === 1,
+      archived: row.archived === 1 || Boolean(row.deletedAt),
+      ...(row.deletedAt ? { deletedAt: row.deletedAt } : {}),
       managerAgentId: row.managerAgentId ?? undefined,
       managementPermissions: {
         allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,

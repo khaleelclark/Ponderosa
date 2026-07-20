@@ -379,6 +379,8 @@ export interface ConversationDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Present only on a deletion-surviving audit identity with no live authority. */
+  deletedAt?: string;
 }
 
 /** POST /api/projects/:id/conversations body. */
@@ -1527,10 +1529,12 @@ export interface ArtifactDto {
 
 /** GET /api/agents/:id/artifacts/:aid — the artifact plus its rendered content. */
 export interface ArtifactContentDto extends ArtifactDto {
-  /** Raw text content (diff text, report body, log text). */
+  /** UTF-8 preview content, bounded to 2 MiB. */
   content: string;
   /** Hint for the read-only viewer (markdown vs plain vs unified diff). */
   contentType: "markdown" | "diff" | "text";
+  truncated?: boolean;
+  totalBytes?: number;
 }
 
 export interface AgentOutputEvent {

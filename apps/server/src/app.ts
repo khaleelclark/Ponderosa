@@ -7,7 +7,7 @@ import { BlockList, isIP, type Socket } from "node:net";
 import type { IncomingMessage } from "node:http";
 import { Readable, Transform } from "node:stream";
 import { gzipSync } from "node:zlib";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import webpush from "web-push";
@@ -149,7 +149,7 @@ import {
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, publishManagedArtifactContent, readManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -1856,33 +1856,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const content = Buffer.from(input.content, "utf8");
     if (content.length > LONG_TEXT_MAX_UTF8_BYTES) throw new AssetError(413, "long text exceeds the 8 MiB limit");
     const id = `text-${createHash("sha256").update(`${input.communicationId}\0${input.role}`).digest("hex")}`;
-    const blobHash = createHash("sha256").update(content).digest("hex");
-    const destination = managedArtifactContentPath(opts.dataDir, input.projectId, id);
-    await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
-    if (await pathExists(destination)) {
-      const existing = await fs.readFile(destination);
-      if (createHash("sha256").update(existing).digest("hex") !== blobHash) {
-        throw new Error("communication artifact identity collision");
-      }
-    } else {
-      const temporary = `${destination}.staged-${process.pid}-${randomUUID()}`;
-      let staged: Awaited<ReturnType<typeof fs.open>> | undefined;
-      try {
-        staged = await fs.open(temporary, "wx", 0o600);
-        await staged.writeFile(content);
-        await staged.sync();
-        await staged.close();
-        staged = undefined;
-        await fs.rename(temporary, destination);
-        const directory = await fs.open(path.dirname(destination), "r");
-        try { await directory.sync(); }
-        finally { await directory.close(); }
-      } catch (error) {
-        await staged?.close().catch(() => undefined);
-        await fs.rm(temporary, { force: true }).catch(() => undefined);
-        throw error;
-      }
-    }
+    const published = publishManagedArtifactContent(opts.dataDir, input.projectId, id, content);
+    const blobHash = published.sha256;
     const artifact: PreparedCommunicationArtifact = {
       id, role: input.role, title: input.title, mediaType: "text/markdown",
       blobPath: id, blobHash, byteLength: content.length, createdAt: input.createdAt,
@@ -1905,7 +1880,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ...(artifact.executionId ? { executionId: artifact.executionId } : {}),
       kind: "document", path: `communication/${artifact.id}.md`, summary: artifact.title,
       createdAt: artifact.createdAt, mediaType: artifact.mediaType,
-      visibility: "project", pinned: false, size: artifact.byteLength,
+      visibility: "project", pinned: false, size: artifact.byteLength, sha256: artifact.blobHash,
     });
   };
   const prepareUserCommunicationText = async (input: {
@@ -3568,18 +3543,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(candidate).toLowerCase()}`;
           const legacyDestination = artifactContentPath(opts.dataDir, agent.projectId, agent.id, managedPath);
-          const projectDestination = managedArtifactContentPath(opts.dataDir, agent.projectId, artifactId);
           mkdirSync(path.dirname(legacyDestination), { recursive: true });
-          mkdirSync(path.dirname(projectDestination), { recursive: true });
           writeFileSync(legacyDestination, body, { flag: "wx", mode: 0o600 });
-          const destinationFd = openSync(projectDestination, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW, 0o600);
-          try { writeFileSync(destinationFd, body); fsyncSync(destinationFd); }
-          finally { closeSync(destinationFd); }
-          const contentHash = createHash("sha256").update(body).digest("hex");
+          const publishedArtifact = publishManagedArtifactContent(opts.dataDir, agent.projectId, artifactId, body);
+          const contentHash = publishedArtifact.sha256;
           const captured = store.appendEvent(agent.id, {
             type: "generated_artifact", artifactId, executionId: run.executionId, path: managedPath,
             sourcePath: canonicalEvent.path, name: path.basename(candidate), mediaType, size: body.length,
-            visibility: "project",
+            sha256: contentHash, visibility: "project",
           });
           const catalogArtifact = {
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
@@ -5025,7 +4996,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       let names: string[] = [];
       try { names = await fs.readdir(contentDirectory); }
       catch { /* no managed artifact content yet */ }
-      for (const name of names.filter((candidate) => candidate.includes(".staged-"))) {
+      for (const name of names.filter((candidate) =>
+        candidate.includes(".staged-") || (candidate.startsWith(".") && candidate.endsWith(".tmp")))) {
         const candidate = path.join(contentDirectory, name);
         try {
           if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) await fs.rm(candidate, { force: true });
@@ -9769,7 +9741,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     Params: { id: string; stream: AgentTelemetryStream };
     Querystring: { limit?: string; cursor?: string; focusId?: string };
   }>("/api/agents/:id/history/:stream", async (request, reply) => {
-    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
     const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts"]);
     if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
@@ -9803,7 +9775,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     Params: { id: string; seq: string };
     Querystring: { cursor?: string; maxBytes?: string };
   }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
-    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
     const seq = Number(request.params.seq);
     if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
     try {
@@ -9906,17 +9878,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const generated = artifact.kind === "generated_file"
           ? assets.authoritativeGeneratedArtifact(agent.projectId, artifact)
           : undefined;
-        let fallback: Buffer | undefined;
-        if (!runtime && !generated && artifact.kind !== "generated_file") {
-          try {
-            const descriptor = await fs.open(
-              managedArtifactContentPath(opts.dataDir, agent.projectId, artifact.id),
-              fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-            );
-            try { fallback = await descriptor.readFile(); }
-            finally { await descriptor.close(); }
-          } catch { /* unavailable non-generated import */ }
-        }
+        const fallback = !runtime && !generated && artifact.size && artifact.sha256
+          ? readManagedArtifactContent(opts.dataDir, agent.projectId, artifact.id, artifact.size, artifact.sha256)?.body
+          : undefined;
         const data = runtime?.body ?? generated?.body ?? fallback;
         if (!data) throw new AssetError(409, `artifact ${artifact.id} content is unavailable or changed`);
         portableArtifactBytes += data.length;
@@ -10263,7 +10227,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
-    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
     try { return projectedUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
@@ -12908,9 +12872,36 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     artifactId: string,
   ): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> {
     const project = store.getProject(projectId);
+    const generatedPdfSource = async (): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> => {
+      const agent = store.getAgentDetail(agentId, 1, false)?.agent;
+      if (!project || !agent || agent.projectId !== project.id) return undefined;
+      const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
+      if (!generatedPath) return undefined;
+      let descriptor: Awaited<ReturnType<typeof fs.open>> | undefined;
+      try {
+        const root = await fs.realpath(project.hostPath);
+        const candidate = path.isAbsolute(generatedPath) ? generatedPath : path.resolve(root, generatedPath);
+        const resolved = await fs.realpath(candidate);
+        if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) return undefined;
+        descriptor = await fs.open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const before = await descriptor.stat();
+        if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024) return undefined;
+        const body = await descriptor.readFile();
+        const after = await descriptor.stat();
+        if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || body.length !== before.size) return undefined;
+        return { body, name: path.basename(resolved), mediaType: "application/pdf" };
+      } catch {
+        return undefined;
+      } finally {
+        await descriptor?.close().catch(() => undefined);
+      }
+    };
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {
       if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
+      if (managed.kind === "diff" && managed.sourcePath?.toLowerCase().endsWith(".pdf")) {
+        return generatedPdfSource();
+      }
       const runtime = assets.authoritativeRuntimeArtifactById(projectId, artifactId);
       if (runtime) {
         if (!managedProjectArtifactAgreesWithRuntime(managed, runtime.artifact)) return undefined;
@@ -12920,31 +12911,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           mediaType: managed.mediaType ?? "application/octet-stream",
         };
       }
-      if (managed.kind === "document" || managed.size === undefined || !managed.mediaType) return undefined;
-      const authoritative = assets.authoritativeGeneratedArtifact(projectId, managed);
+      if (managed.size === undefined || !managed.mediaType || !managed.sha256) return undefined;
+      if (managed.kind === "generated_file") {
+        const authoritative = assets.authoritativeGeneratedArtifact(projectId, managed);
+        if (authoritative) return {
+          body: authoritative.body,
+          name: managed.summary ?? path.basename(managed.path),
+          mediaType: managed.mediaType,
+        };
+      }
+      const authoritative = readManagedArtifactContent(
+        opts.dataDir, projectId, managed.id, managed.size, managed.sha256,
+      );
       return authoritative ? {
         body: authoritative.body,
         name: managed.summary ?? path.basename(managed.path),
         mediaType: managed.mediaType,
       } : undefined;
     }
-    const agent = store.getAgent(agentId);
-    if (!project || !agent || agent.projectId !== project.id) return undefined;
-    const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
-    if (!generatedPath) return undefined;
-    try {
-      const root = await fs.realpath(project.hostPath);
-      const candidate = path.isAbsolute(generatedPath)
-        ? generatedPath
-        : path.resolve(root, generatedPath);
-      const resolved = await fs.realpath(candidate);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
-      const info = await fs.stat(resolved);
-      if (!info.isFile() || info.size > 32 * 1024 * 1024) return undefined;
-      return { body: await fs.readFile(resolved), name: path.basename(resolved), mediaType: "application/pdf" };
-    } catch {
-      return undefined;
-    }
+    return generatedPdfSource();
   }
 
   function sendGeneratedPreview(
@@ -12952,6 +12937,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     file: { body: Buffer; name: string; mediaType: string },
   ) {
     const activeDocument = file.mediaType === "text/html" || file.mediaType === "image/svg+xml";
+    const textual = file.mediaType.startsWith("text/") || file.mediaType === "application/json";
+    let body = file.body;
+    if (textual && file.body.length > MAX_FILE_BYTES) {
+      let end = MAX_FILE_BYTES;
+      while (end >= 0) {
+        try {
+          body = Buffer.from(new TextDecoder("utf-8", { fatal: true }).decode(file.body.subarray(0, end)), "utf8");
+          break;
+        } catch { end -= 1; }
+      }
+    }
+    if (body.length < file.body.length) {
+      reply.header("X-Ponderosa-Preview-Truncated", "true")
+        .header("X-Ponderosa-Artifact-Bytes", String(file.body.length));
+    }
     // The web app frames previews from this authenticated same-origin route;
     // the iframe/CSP sandbox supplies the untrusted document's opaque origin.
     reply.header("X-Frame-Options", "SAMEORIGIN");
@@ -12967,7 +12967,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     return reply.type(file.mediaType)
       .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
-      .send(file.body);
+      .send(body);
   }
 
   app.get<{ Params: { projectId: string; aid: string } }>(
@@ -13011,34 +13011,44 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { projectId: string; id: string; aid: string }; Querystring: { download?: string } }>(
     "/api/projects/:projectId/agents/:id/browser-artifacts/:aid",
     async (request, reply) => {
-      const agent = store.getAgent(request.params.id);
+      const agent = store.getAgentDetail(request.params.id, 1, false)?.agent;
       if (!agent || agent.projectId !== request.params.projectId) return reply.code(404).send({ error: "agent not found" });
       const artifact = store.getArtifact(agent.id, request.params.aid);
       if (!artifact || artifact.kind !== "screenshot") return reply.code(404).send({ error: "browser screenshot not found" });
-      const file = artifactContentPath(opts.dataDir, agent.projectId, agent.id, artifact.path);
-      try {
-        const info = await fs.stat(file);
-        if (!info.isFile() || info.size > 16 * 1024 * 1024) return reply.code(404).send({ error: "browser screenshot not found" });
-        const response = reply.type("image/png").header("cache-control", "private, no-store");
-        if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(path.basename(artifact.path)));
-        return response.send(await fs.readFile(file));
-      } catch {
-        return reply.code(404).send({ error: "browser screenshot not found" });
-      }
+      const file = await generatedFile(agent.projectId, agent.id, artifact.id);
+      if (!file || file.mediaType !== "image/png") return reply.code(404).send({ error: "browser screenshot not found" });
+      const response = reply.type("image/png").header("cache-control", "private, no-store");
+      if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(file.name));
+      return response.send(file.body);
     },
   );
 
   app.get<{ Params: { id: string; aid: string } }>(
     "/api/agents/:id/artifacts/:aid",
     async (request, reply) => {
-      const agent = store.getAgent(request.params.id);
+      const agent = store.getAgentDetail(request.params.id, 1, false)?.agent;
       if (!agent) return reply.code(404).send({ error: "agent not found" });
       const artifact = store.getArtifact(agent.id, request.params.aid);
       if (!artifact) return reply.code(404).send({ error: "artifact not found" });
-      const file = artifactContentPath(opts.dataDir, agent.projectId, agent.id, artifact.path);
-      if (existsSync(file) && (await fs.stat(file)).size > MAX_FILE_BYTES) return reply.code(413).send({ error: "artifact exceeds 2 MiB viewer limit" });
-      const content = existsSync(file) ? await fs.readFile(file, "utf8") : "";
-      return { ...artifact, content, contentType: contentTypeForArtifact(artifact.path) };
+      const managed = store.getProjectArtifact(agent.projectId, artifact.id);
+      if (!managed?.size || !managed.sha256) return reply.code(404).send({ error: "artifact content not found" });
+      const file = readManagedArtifactContent(opts.dataDir, agent.projectId, managed.id, managed.size, managed.sha256);
+      if (!file) return reply.code(404).send({ error: "artifact content not found" });
+      let previewEnd = Math.min(file.body.length, MAX_FILE_BYTES);
+      let content = "";
+      while (previewEnd >= 0) {
+        try {
+          content = new TextDecoder("utf-8", { fatal: true }).decode(file.body.subarray(0, previewEnd));
+          break;
+        } catch { previewEnd -= 1; }
+      }
+      return {
+        ...managed,
+        content,
+        contentType: contentTypeForArtifact(managed.path),
+        truncated: previewEnd < file.body.length,
+        totalBytes: file.body.length,
+      };
     },
   );
 

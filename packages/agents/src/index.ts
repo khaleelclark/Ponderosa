@@ -50,6 +50,12 @@ export {
   communicationEventsPath,
   communicationProjectionsPath, communicationRevisionsPath,
 } from "./paths.js";
+export {
+  MANAGED_ARTIFACT_MAX_BYTES,
+  publishManagedArtifactContent,
+  readManagedArtifactContent,
+  type ManagedArtifactFile,
+} from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
 
 export {
