@@ -44,23 +44,54 @@ describe("All Chat view contract", () => {
     expect(source).not.toContain("sendConversationMessage");
   });
 
-  it("exposes one named radio choice and a valid checked state for source selection", async () => {
+  it("mounts a single-tab-stop radio group with unique names, wrapped arrow selection, and fixed direct-message routing", async () => {
+    const first = item({
+      directMessageAgent: { id: "agent-1", title: "Reviewer" },
+      text: "First release note",
+    });
+    const second = item({
+      communicationEventId: "event-2",
+      messageId: "message-2",
+      directMessageAgent: { id: "agent-2", title: "Verifier" },
+      text: "Second release note with distinct context",
+      createdAt: "2026-07-19T12:01:00.000Z",
+    });
     vi.spyOn(api, "getAllChat").mockResolvedValue({
-      items: [item({ directMessageAgent: { id: "agent-1", title: "Reviewer" } })],
+      items: [first, second],
       history: { limit: 50, hasMore: false },
     });
+    const sendMessage = vi.spyOn(api, "sendMessage").mockResolvedValue({ queued: false, runId: "run-2", mode: "steer" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><AllChatView onNavigate={vi.fn()} /></QueryClientProvider>);
     });
     const radioControls = () => view.root.findAllByProps({ role: "radio" }).filter((node) => node.type === "button");
-    await vi.waitFor(() => expect(radioControls()).toHaveLength(1));
-    const choice = radioControls()[0]!;
-    expect(choice.props["aria-label"]).toContain("Select message from User");
-    expect(choice.props["aria-checked"]).toBe(false);
-    act(() => choice.props.onClick());
-    expect(radioControls()[0]!.props["aria-checked"]).toBe(true);
+    await vi.waitFor(() => expect(radioControls()).toHaveLength(2));
+    expect(new Set(radioControls().map((choice) => choice.props["aria-label"])).size).toBe(2);
+    expect(radioControls()[0]!.props["aria-label"]).toContain("First release note");
+    expect(radioControls()[1]!.props["aria-label"]).toContain("Second release note");
+    expect(radioControls().map((choice) => choice.props.tabIndex)).toEqual([0, -1]);
+
+    const focus = [vi.fn(), vi.fn()];
+    const group = { querySelectorAll: () => focus.map((focusItem) => ({ focus: focusItem })) };
+    const arrow = (key: string) => ({ key, preventDefault: vi.fn(), currentTarget: { closest: () => group } });
+    const wrapBackward = arrow("ArrowUp");
+    act(() => radioControls()[0]!.props.onKeyDown(wrapBackward));
+    expect(wrapBackward.preventDefault).toHaveBeenCalledOnce();
+    expect(focus[1]).toHaveBeenCalledOnce();
+    expect(radioControls().map((choice) => [choice.props["aria-checked"], choice.props.tabIndex])).toEqual([[false, -1], [true, 0]]);
+
+    const composer = view.root.find((node) => node.props.guidance === "Recipient is fixed by the selected source. This message is private and cannot be broadcast from All Chat.");
+    await act(async () => { await composer.props.onSend("Private follow-up"); });
+    expect(sendMessage).toHaveBeenCalledWith("agent-2", expect.objectContaining({
+      text: "Private follow-up", replyToMessageId: "message-2", activeRunDelivery: "steer",
+    }));
+
+    const wrapForward = arrow("ArrowDown");
+    act(() => radioControls()[1]!.props.onKeyDown(wrapForward));
+    expect(focus[0]).toHaveBeenCalledOnce();
+    expect(radioControls().map((choice) => [choice.props["aria-checked"], choice.props.tabIndex])).toEqual([[true, 0], [false, -1]]);
     const radioGroups = view.root.findAllByProps({ role: "radiogroup" }).filter((node) => node.type === "div");
     expect(radioGroups.some((node) => node.props["aria-label"] === "Source message for direct reply")).toBe(true);
     view.unmount();

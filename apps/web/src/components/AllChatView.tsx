@@ -37,6 +37,12 @@ function sourceLabel(item: AllChatItemDto): string {
   return `${item.project.label} · Agent Chat · ${item.source.title}`;
 }
 
+export function allChatSourceAccessibleName(item: AllChatItemDto): string {
+  const normalized = item.text.replace(/\s+/gu, " ").trim();
+  const excerpt = normalized.length > 80 ? `${normalized.slice(0, 79)}…` : normalized || "Empty message";
+  return `Select message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
+}
+
 export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }): JSX.Element {
   const queryClient = useQueryClient();
   const query = useAllChat();
@@ -54,6 +60,11 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     [older?.items, query.data?.items],
   );
   const selected = items.find((item) => item.communicationEventId === selectedId);
+  const selectItem = (item: AllChatItemDto) => {
+    setSelectedId(item.communicationEventId);
+    setNotice(undefined);
+    send.reset();
+  };
   const history = older ?? {
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
   };
@@ -126,21 +137,33 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load older messages"}</Button></Stack> : null}
       <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
-        {items.map((item) => {
+        {items.map((item, index) => {
           const selectedItem = selectedId === item.communicationEventId;
           return <Paper
             key={item.communicationEventId}
             component="article"
             variant="outlined"
-            onClick={() => { setSelectedId(item.communicationEventId); setNotice(undefined); send.reset(); }}
+            onClick={() => selectItem(item)}
             sx={{ p: 1.75, cursor: "pointer", borderColor: selectedItem ? "primary.main" : "divider", bgcolor: selectedItem ? "action.selected" : "background.paper" }}
           >
             <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
               <ButtonBase
                 role="radio"
                 aria-checked={selectedItem}
-                aria-label={`Select message from ${item.author.label} in ${sourceLabel(item)} for direct reply`}
-                onClick={() => { setSelectedId(item.communicationEventId); setNotice(undefined); send.reset(); }}
+                aria-label={allChatSourceAccessibleName(item)}
+                tabIndex={selectedId ? (selectedItem ? 0 : -1) : (index === 0 ? 0 : -1)}
+                onClick={() => selectItem(item)}
+                onKeyDown={(event) => {
+                  if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
+                  event.preventDefault();
+                  const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+                  const nextIndex = (index + delta + items.length) % items.length;
+                  const nextItem = items[nextIndex];
+                  if (!nextItem) return;
+                  selectItem(nextItem);
+                  const group = event.currentTarget.closest<HTMLElement>('[role="radiogroup"]');
+                  group?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
+                }}
                 sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", borderRadius: 1 }}
               >
                 <Box sx={{ minWidth: 0 }}>
