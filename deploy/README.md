@@ -14,6 +14,32 @@ Before installing the unit, update its `User`, `WorkingDirectory`, data director
 and `PATH` for the host. Reachability is a separate choice; the service does not
 depend on Tailscale.
 
+## Required Linux procfs capability
+
+Ponderosa's managed artifacts and workspace-derived generated files require
+Linux with a visible, functional `/proc/self/fd`. The daemon uses retained file
+descriptors and component-by-component `O_DIRECTORY`/`O_NOFOLLOW` opens to keep
+artifact publication and reads inside their owning Project when paths are
+renamed or replaced concurrently. There is intentionally no pathname-only or
+cross-platform fallback.
+
+On a host, keep procfs mounted normally. In a container, mount procfs and do not
+mask or make `/proc/self/fd` inaccessible with the container runtime, a seccomp
+profile, or systemd path restrictions. Validate the service user in the same
+mount namespace used by Ponderosa:
+
+```sh
+exec 9</dev/null
+test "$(readlink -f /proc/self/fd/9)" = "/dev/null" || exit 1
+```
+
+Ponderosa preflights this capability at startup. When it is absent, liveness
+remains available at `/api/health`, but `/api/ready` returns HTTP 503 with
+`checks.artifactFilesystem.ok=false`, durable work intake and Run leasing remain
+disabled, Trigger sources do not start, and an urgent operational notification
+is recorded. Restore procfs visibility and restart the daemon; do not bypass the
+check or add an unsafe filesystem fallback.
+
 ## Drain provider Runs before an upgrade
 
 Tool schemas and their prompt contract cut over atomically; active provider Runs

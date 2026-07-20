@@ -12,6 +12,10 @@
 #
 # Reachability (how a phone reaches this) is a separate deployment choice — see
 # deploy/README.md. Nothing here depends on Tailscale.
+#
+# Artifact safety requires Linux with visible /proc/self/fd. Do not add
+# InaccessiblePaths=/proc, mask /proc/self/fd, or run this unit in a container
+# without a procfs mount. The daemon reports the capability through /api/ready.
 
 [Unit]
 Description=Ponderosa coding-agent workbench

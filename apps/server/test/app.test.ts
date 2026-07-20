@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
@@ -694,6 +694,9 @@ class MockAdapter implements Adapter {
   failuresRemaining = 0;
   failNextTurn = false;
   failureAfterBeforeResponse?: string;
+  fileChange: Extract<AgentEvent, { type: "file_change" }> = {
+    type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n",
+  };
   turnUsage?: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
@@ -749,7 +752,7 @@ class MockAdapter implements Adapter {
     }
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
-    yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
+    yield this.fileChange;
     yield { type: "text", delta: this.responseText };
     yield { type: "turn_done", ...(this.turnUsage ? { usage: this.turnUsage } : {}) };
   }
@@ -1342,6 +1345,69 @@ describe("generated artifact endpoints", () => {
     expect(download.rawPayload).toEqual(Buffer.from(diff));
     await app.close();
   });
+
+  it("captures an exact in-Project generated file through retained descriptors", async () => {
+    const outputDirectory = path.join(repoDir, "output");
+    const output = path.join(outputDirectory, "report.png");
+    const body = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("generated")]);
+    mkdirSync(outputDirectory);
+    writeFileSync(output, body);
+    adapter.fileChange = { type: "file_change", path: "output/report.png", kind: "create" };
+    const project = store.createProject({ label: "Generated capture", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Generator", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Generate the report" },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    const artifact = store.getProjectArtifacts(project.id).find((item) => item.kind === "generated_file");
+    expect(artifact).toMatchObject({ sourcePath: "output/report.png", summary: "report.png", size: body.length });
+    const downloaded = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifact!.id}/download`,
+    });
+    expect(downloaded.statusCode, downloaded.body).toBe(200);
+    expect(downloaded.rawPayload).toEqual(body);
+    await app.close();
+  });
+
+  it.each(["afterPathValidation", "afterFileOpen"] as const)(
+    "fails generated capture closed on an inside-to-outside ancestor replacement at %s",
+    async (phase) => {
+      const outputDirectory = path.join(repoDir, "output");
+      const retainedDirectory = path.join(repoDir, "output-retained");
+      const outsideDirectory = path.join(dataDir, "outside-output");
+      const original = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("inside")]);
+      const outside = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("outside-private")]);
+      mkdirSync(outputDirectory);
+      mkdirSync(outsideDirectory);
+      writeFileSync(path.join(outputDirectory, "report.png"), original);
+      writeFileSync(path.join(outsideDirectory, "report.png"), outside);
+      adapter.fileChange = { type: "file_change", path: "output/report.png", kind: "create" };
+      const project = store.createProject({ label: "Generated capture race", hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: "Generator", engine: "codex" });
+      let swapped = false;
+      const swap = (context: { purpose: string }) => {
+        if (swapped || context.purpose !== "generated_capture") return;
+        swapped = true;
+        renameSync(outputDirectory, retainedDirectory);
+        symlinkSync(outsideDirectory, outputDirectory);
+      };
+      const app = createServer({
+        dataDir, store, engines, logger: false,
+        workspaceArtifactReadFaults: { [phase]: swap },
+      });
+
+      expect((await app.inject({
+        method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Generate the report" },
+      })).statusCode).toBe(202);
+      await waitForRun(agent.id);
+      expect(swapped).toBe(true);
+      expect(store.getProjectArtifacts(project.id).filter((item) => item.kind === "generated_file")).toEqual([]);
+      expect(readFileSync(path.join(outsideDirectory, "report.png"))).toEqual(outside);
+      await app.close();
+    },
+  );
 
   it("previews and downloads bounded project files without escaping the registered workspace", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
@@ -2031,6 +2097,46 @@ describe("generated artifact endpoints", () => {
     expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
     await app.close();
   });
+
+  it.each(["afterPathValidation", "afterFileOpen"] as const)(
+    "fails the legacy PDF fallback closed on an inside-to-outside ancestor replacement at %s",
+    async (phase) => {
+      const project = store.createProject({ label: "Legacy PDF race", hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: "PDF owner", engine: "codex" });
+      const pdfDirectory = path.join(repoDir, "reports");
+      const retainedDirectory = path.join(repoDir, "reports-retained");
+      const outsideDirectory = path.join(dataDir, "outside-reports");
+      const inside = Buffer.from("%PDF-1.4\ninside\n");
+      const outside = Buffer.from("%PDF-1.4\noutside-private\n");
+      mkdirSync(pdfDirectory);
+      mkdirSync(outsideDirectory);
+      const pdfPath = path.join(pdfDirectory, "report.pdf");
+      writeFileSync(pdfPath, inside);
+      writeFileSync(path.join(outsideDirectory, "report.pdf"), outside);
+      const stored = store.appendEvent(agent.id, { type: "file_change", path: pdfPath, kind: "create" });
+      const artifactId = `${agent.id}:a:${stored.seq}:0`;
+      let swapped = false;
+      const swap = (context: { purpose: string }) => {
+        if (swapped || context.purpose !== "legacy_pdf") return;
+        swapped = true;
+        renameSync(pdfDirectory, retainedDirectory);
+        symlinkSync(outsideDirectory, pdfDirectory);
+      };
+      const app = createServer({
+        dataDir, store, engines, logger: false,
+        workspaceArtifactReadFaults: { [phase]: swap },
+      });
+
+      const preview = await app.inject({
+        method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      });
+      expect(swapped).toBe(true);
+      expect(preview.statusCode).toBe(404);
+      expect(preview.rawPayload).not.toContain(outside);
+      expect(readFileSync(path.join(outsideDirectory, "report.pdf"))).toEqual(outside);
+      await app.close();
+    },
+  );
 });
 
 describe("human-facing chat projection boundary", () => {
@@ -4368,6 +4474,7 @@ describe("server chunk F", () => {
         daemon: { ok: true },
         dataDirectory: { ok: true },
         projections: { ok: true },
+        artifactFilesystem: { ok: true, detail: expect.stringContaining("/proc/self/fd") },
         runtimes: { ok: true },
       },
       runtimes: [{ id: "codex", authenticated: true }],
@@ -4457,6 +4564,60 @@ describe("server chunk F", () => {
       state: "accepting", leasingRuns: true,
     });
     await app.close();
+  });
+
+  it("fails startup readiness and work intake closed when procfs descriptor access is unavailable", async () => {
+    const project = store.createProject({ label: "Missing procfs", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Queued", engine: "codex" });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+
+    const readiness = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({
+      status: "not_ready",
+      canAcceptWork: false,
+      acceptingDurableIntake: false,
+      leasingRuns: false,
+      checks: {
+        artifactFilesystem: {
+          ok: false,
+          detail: expect.stringContaining("masked procfs"),
+        },
+      },
+    });
+    const intake = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Do not accept this work" },
+    });
+    expect(intake.statusCode).toBe(503);
+    expect(intake.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
+    expect(store.getRuns(agent.id)).toEqual([]);
+    expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).statusCode).toBe(409);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        dedupeKey: "startup:artifact-filesystem-capability",
+        severity: "urgent",
+        title: "Artifact filesystem is incompatible",
+      }),
+    ]));
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const restored = createServer({ dataDir, store, engines, logger: false });
+    expect((await restored.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(200);
+    expect((await restored.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: "startup:artifact-filesystem-capability", status: "resolved" }),
+    ]));
+    await restored.close();
   });
 
   it("lets provider-confirmed entitlement failure override a stale login-positive probe", async () => {

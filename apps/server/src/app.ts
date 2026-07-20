@@ -163,6 +163,11 @@ import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
 import {
+  descriptorRelativeFilesystemCapability,
+  readWorkspaceArtifactFile,
+  type WorkspaceArtifactReadFaults,
+} from "./project-file-access.js";
+import {
   BrowserSessionError,
   BrowserSessionManager,
   chromeBrowserDriverFactory,
@@ -607,6 +612,10 @@ export interface CreateServerOptions {
   projectFilePreviewFaults?: {
     afterResolve?: (resolvedPath: string) => void | Promise<void>;
   };
+  /** Deterministic workspace-derived artifact read seams; never enabled in production configuration. */
+  workspaceArtifactReadFaults?: WorkspaceArtifactReadFaults;
+  /** Deterministic startup capability seam; production probes Linux /proc/self/fd. */
+  artifactFilesystemCapabilityProbe?: () => ReadinessDto["checks"]["artifactFilesystem"];
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
   webPush?: {
     publicKey?: string;
@@ -1831,6 +1840,22 @@ export interface PonderosaServer extends FastifyInstance {
 
 export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
+  const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
+    (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
+  const artifactFilesystemError = artifactFilesystem.ok
+    ? undefined
+    : `artifact-dependent work is unavailable: ${artifactFilesystem.detail}`;
+  const isArtifactDependentWorkIntake = (method: string, url: string): boolean => {
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH") return false;
+    const pathname = url.split("?", 1)[0]!;
+    return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
+      pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
+      /^\/api\/agents\/[^/]+\/messages$/u.test(pathname) ||
+      /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(pathname) ||
+      /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
+      /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
+      /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
+  };
   const assets = new AssetStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
     attachmentAuthority: {
@@ -3588,24 +3613,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
       if (agent && project && mediaType) {
         try {
-          const root = realpathSync(project.hostPath);
-          const candidate = realpathSync(path.isAbsolute(canonicalEvent.path) ? canonicalEvent.path : path.resolve(root, canonicalEvent.path));
-          if (candidate === root || !candidate.startsWith(`${root}${path.sep}`)) throw new Error("generated artifact escaped project root");
-          const sourceFd = openSync(candidate, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-          let body: Buffer;
-          try {
-            const info = fstatSync(sourceFd);
-            if (!info.isFile() || info.nlink !== 1 || info.size < 1 || info.size > 64 * 1024 * 1024) {
-              throw new Error("generated artifact is not a bounded file");
-            }
-            body = readFileSync(sourceFd);
-            const after = fstatSync(sourceFd);
-            if (after.dev !== info.dev || after.ino !== info.ino || after.size !== info.size || body.length !== info.size) {
-              throw new Error("generated artifact changed during capture");
-            }
-          } finally { closeSync(sourceFd); }
+          const source = readWorkspaceArtifactFile({
+            rootPath: project.hostPath,
+            requestedPath: canonicalEvent.path,
+            purpose: "generated_capture",
+            maxBytes: 64 * 1024 * 1024,
+            requireNonEmpty: true,
+            faults: opts.workspaceArtifactReadFaults,
+          });
+          if (!source) throw new Error("generated artifact is unavailable through the retained Project root");
+          const body = source.body;
           const artifactId = randomUUID();
-          const managedPath = `generated/${artifactId}${path.extname(candidate).toLowerCase()}`;
+          const managedPath = `generated/${artifactId}${path.extname(source.name).toLowerCase()}`;
           const legacyDestination = artifactContentPath(opts.dataDir, agent.projectId, agent.id, managedPath);
           mkdirSync(path.dirname(legacyDestination), { recursive: true });
           writeFileSync(legacyDestination, body, { flag: "wx", mode: 0o600 });
@@ -3613,13 +3632,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const contentHash = publishedArtifact.sha256;
           const captured = store.appendEvent(agent.id, {
             type: "generated_artifact", artifactId, executionId: run.executionId, path: managedPath,
-            sourcePath: canonicalEvent.path, name: path.basename(candidate), mediaType, size: body.length,
+            sourcePath: canonicalEvent.path, name: source.name, mediaType, size: body.length,
             sha256: contentHash, visibility: "project",
           });
           const catalogArtifact = {
             id: artifactId, projectId: agent.projectId, agentId: agent.id, originAgentId: agent.id,
             executionId: run.executionId, kind: "generated_file", path: managedPath,
-            sourcePath: canonicalEvent.path, summary: path.basename(candidate), createdAt: captured.ts,
+            sourcePath: canonicalEvent.path, summary: source.name, createdAt: captured.ts,
             mediaType, size: body.length, sha256: contentHash, visibility: "project" as const, pinned: false,
           } as const;
           assets.registerGeneratedArtifact(catalogArtifact);
@@ -5018,6 +5037,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.addHook("onRequest", async (request, reply) => {
+    if (artifactFilesystemError && isArtifactDependentWorkIntake(request.method, request.url)) {
+      return reply.code(503).send({ error: artifactFilesystemError });
+    }
+  });
+
+  app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/api/") || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
     if (!origin) return; // Non-browser clients and host-local runtime bridges.
@@ -5051,41 +5076,53 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.addHook("onReady", async () => {
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
-    const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
-      coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
-    if (recoveredAssociations.unavailable) {
-      app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
-    }
-    for (const project of store.listProjects()) {
-      const referenced = new Set([
-        ...store.getProjectArtifacts(project.id).map((artifact) => artifact.id),
-        ...runtimeArtifacts.filter((artifact) => artifact.projectId === project.id).map((artifact) => artifact.id),
-      ]);
-      for (const removed of repairManagedArtifactContent(
-        opts.dataDir,
-        project.id,
-        referenced,
-        orphanGraceBoundary,
-      )) {
-        assets.removeRuntimeArtifactReservation(project.id, removed);
+    if (artifactFilesystem.ok) {
+      resolveOperationalNotification("startup:artifact-filesystem-capability");
+      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
+        coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+      if (recoveredAssociations.unavailable) {
+        app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
       }
-    }
-    await reconcileRuntimeCommunicationProjections();
-    for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
-      const request = coordinationV3.requestForUpdate(artifact.ownerId);
-      if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
-      projectCommunicationArtifact(
-        artifact.projectId,
-        artifact.originAgentId ?? "local-operator",
-        { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
-        requestArtifactAccess(artifact.ownerId, request),
-      );
+      for (const project of store.listProjects()) {
+        const referenced = new Set([
+          ...store.getProjectArtifacts(project.id).map((artifact) => artifact.id),
+          ...runtimeArtifacts.filter((artifact) => artifact.projectId === project.id).map((artifact) => artifact.id),
+        ]);
+        for (const removed of repairManagedArtifactContent(
+          opts.dataDir,
+          project.id,
+          referenced,
+          orphanGraceBoundary,
+        )) {
+          assets.removeRuntimeArtifactReservation(project.id, removed);
+        }
+      }
+      await reconcileRuntimeCommunicationProjections();
+      for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
+        const request = coordinationV3.requestForUpdate(artifact.ownerId);
+        if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
+        projectCommunicationArtifact(
+          artifact.projectId,
+          artifact.originAgentId ?? "local-operator",
+          { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
+          requestArtifactAccess(artifact.ownerId, request),
+        );
+      }
+    } else {
+      createOperationalNotification({
+        dedupeKey: "startup:artifact-filesystem-capability",
+        category: "system",
+        severity: "urgent",
+        title: "Artifact filesystem is incompatible",
+        body: artifactFilesystem.detail,
+      });
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
+    if (!artifactFilesystem.ok) await coordinationV3Scheduler.pauseLeasing();
     coordinationV3Scheduler.start();
-    await triggerSources.start();
+    if (artifactFilesystem.ok) await triggerSources.start();
     reconcileTriggerOperationalNotifications();
     await drainAgentDeletionCleanup();
     agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
@@ -7402,7 +7439,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(409).send({ error: error instanceof Error ? error.message : "deployment drain failed" });
     }
     return {
-      acceptingDurableIntake: true,
+      acceptingDurableIntake: artifactFilesystem.ok,
       leasingRuns: false,
       ...deploymentDrainSnapshot(),
     };
@@ -7410,6 +7447,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post("/api/deployment/resume", async (_request, reply) => {
     if (closed) return reply.code(409).send({ error: "daemon is shutting down" });
+    if (!artifactFilesystem.ok) {
+      return reply.code(409).send({ error: artifactFilesystemError });
+    }
     deploymentDraining = false;
     coordinationV3Scheduler.resumeLeasing();
     return {
@@ -7519,7 +7559,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     };
     // Projection drift is project-scoped diagnostic state. It must not make
     // unrelated clean projects or the entire daemon reject new work.
-    const acceptingDurableIntake = !closed && dataDirectory.ok && projections.ok;
+    const acceptingDurableIntake = !closed && dataDirectory.ok && projections.ok && artifactFilesystem.ok;
     const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
     const canAcceptWork = acceptingDurableIntake && leasingRuns && runtimes.ok;
     const body: ReadinessDto = {
@@ -7534,6 +7574,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         daemon: { ok: !closed, detail: closed ? "daemon is shutting down" : "daemon request loop is running" },
         dataDirectory,
         projections,
+        artifactFilesystem,
         runtimes,
         communicationMigration,
       },
@@ -13013,24 +13054,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!project || !agent || agent.projectId !== project.id) return undefined;
       const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
       if (!generatedPath) return undefined;
-      let descriptor: Awaited<ReturnType<typeof fs.open>> | undefined;
-      try {
-        const root = await fs.realpath(project.hostPath);
-        const candidate = path.isAbsolute(generatedPath) ? generatedPath : path.resolve(root, generatedPath);
-        const resolved = await fs.realpath(candidate);
-        if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) return undefined;
-        descriptor = await fs.open(resolved, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-        const before = await descriptor.stat();
-        if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024) return undefined;
-        const body = await descriptor.readFile();
-        const after = await descriptor.stat();
-        if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || body.length !== before.size) return undefined;
-        return { body, name: path.basename(resolved), mediaType: "application/pdf" };
-      } catch {
-        return undefined;
-      } finally {
-        await descriptor?.close().catch(() => undefined);
-      }
+      const source = readWorkspaceArtifactFile({
+        rootPath: project.hostPath,
+        requestedPath: generatedPath,
+        purpose: "legacy_pdf",
+        maxBytes: 32 * 1024 * 1024,
+        faults: opts.workspaceArtifactReadFaults,
+      });
+      return source ? { body: source.body, name: source.name, mediaType: "application/pdf" } : undefined;
     };
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {

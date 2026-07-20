@@ -1839,6 +1839,8 @@ export interface ReadinessDto {
     daemon: ReadinessCheckDto;
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
+    /** Linux procfs descriptor bridge required for race-safe artifact reads. */
+    artifactFilesystem: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
     communicationMigration: ReadinessCheckDto;
   };
