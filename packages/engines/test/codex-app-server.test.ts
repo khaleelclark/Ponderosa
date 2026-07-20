@@ -65,15 +65,20 @@ describe("Codex app-server persistent runtime", () => {
     expect(text.join("")).toContain("Conversation so far:\nAssistant: History marker\n\nCurrent request:\nCurrent work");
     await session.close();
   });
-  it("normalizes the per-turn usage breakdown without double-counting cached tokens", () => {
-    expect(mapCodexTokenUsage({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 }))
-      .toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+  it("maps the complete current Codex usage breakdown without inventing cache writes", () => {
+    const usage = mapCodexTokenUsage({
+      totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2,
+    });
+    expect(usage).toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+    // Codex 0.144.1's generated app-server TokenUsageBreakdown has no
+    // cache-write field. Ponderosa must not derive one from the other totals.
+    expect(usage).not.toHaveProperty("cacheWriteInputTokens");
   });
   it("derives one execution from compatible absolute thread checkpoints and rejects resets", () => {
     expect(subtractUsage(
-      { totalTokens: 999, inputTokens: 800, cachedInputTokens: 400, outputTokens: 199, reasoningOutputTokens: 100 },
-      { totalTokens: 981, inputTokens: 785, cachedInputTokens: 396, outputTokens: 196, reasoningOutputTokens: 98 },
-    )).toEqual({ totalTokens: 18, inputTokens: 15, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2 });
+      { totalTokens: 999, inputTokens: 800, cachedInputTokens: 400, cacheWriteInputTokens: 50, outputTokens: 199, reasoningOutputTokens: 100 },
+      { totalTokens: 981, inputTokens: 785, cachedInputTokens: 396, cacheWriteInputTokens: 48, outputTokens: 196, reasoningOutputTokens: 98 },
+    )).toEqual({ totalTokens: 18, inputTokens: 15, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 2 });
     expect(subtractUsage(
       { totalTokens: 10, inputTokens: 8, outputTokens: 2 },
       { totalTokens: 20, inputTokens: 16, outputTokens: 4 },
@@ -81,23 +86,23 @@ describe("Codex app-server persistent runtime", () => {
   });
   it("keeps request detail only when it reconciles to the turn aggregate", () => {
     const requests = [
-      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2 },
-      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6 },
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, cacheWriteInputTokens: 1, outputTokens: 2 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 6 },
     ];
     expect(reconcileProviderRequestUsage(
-      { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8 },
+      { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8 },
       requests,
     )).toEqual(requests);
     expect(reconcileProviderRequestUsage(
-      { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, outputTokens: 8 },
+      { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8 },
       requests,
     )).toBeUndefined();
   });
   it("derives an exact aggregate from complete per-request checkpoints", () => {
     expect(sumProviderRequestUsage([
-      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
-      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 },
-    ])).toEqual({ totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 });
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, cacheWriteInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 0 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 6, reasoningOutputTokens: 2 },
+    ])).toEqual({ totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8, reasoningOutputTokens: 2 });
     expect(sumProviderRequestUsage([{ totalTokens: 7, inputTokens: 5 }])).toBeUndefined();
   });
   it("separates completed response blocks in Work log output", () => {
@@ -179,6 +184,7 @@ describe("Codex app-server persistent runtime", () => {
         }],
       }) },
     });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
     const first = await session.capabilities();
     expect(first.mcpServers[0]).toMatchObject({ initialization: "not_initialized", usable: false });
     for (let attempt = 0; attempt < 20 && changes.length === 0; attempt += 1) await sleep(10);
@@ -188,6 +194,116 @@ describe("Codex app-server persistent runtime", () => {
     expect(refreshed.mcpServers[0]).toMatchObject({
       initialization: "failed", usable: false, health: "unknown", detail: "provider handshake failed",
     });
+    await session.close();
+    await draining;
+  });
+
+  it("single-flights discovery and retries an invalidated in-flight generation", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "single-flight", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-b",
+        skillsDelayMs: 40,
+        modelResponses: [
+          { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+          { data: [
+            { id: "model-a", hidden: false, isDefault: true },
+            { id: "model-b", hidden: false, isDefault: false },
+          ], nextCursor: null },
+        ],
+        notificationsAfterMcpDiscoveryOnce: true,
+        notificationsAfterMcpDiscovery: [{ method: "skills/changed", params: {} }],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    const [first, concurrent] = await Promise.all([session.capabilities(), session.capabilities()]);
+    expect(concurrent).toBe(first);
+    expect(first).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(first.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(1);
+    expect(await session.capabilities()).toBe(first);
+    await session.close();
+    await draining;
+  });
+
+  it("uses the provider-accepted model when resuming a thread", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "resume-model", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-b",
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+          { id: "model-b", hidden: false, isDefault: false },
+        ], nextCursor: null },
+      }) },
+    });
+    const capabilities = await session.capabilities();
+    expect(capabilities.model).toBe("model-b");
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.close();
+  });
+
+  it("updates the live catalog only after an A-to-B turn override is accepted", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "override-model", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+        ], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    expect(before.model).toBe("model-a");
+    await session.startTurn({ prompt: "use model B", kind: "user_message", model: "model-b" });
+    const after = await session.capabilities();
+    expect(after).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(after.commands.find((command) => command.name === "compact")).toMatchObject({
+      status: "unavailable", unavailableReason: "The selected model (model-b) is not currently available.",
+    });
+    expect(changes).toHaveLength(1);
+    await session.close();
+  });
+
+  it("retains the active model when a turn override is rejected", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "rejected-model", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        rejectTurnStartModel: "model-b",
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    await expect(session.startTurn({ prompt: "reject model B", kind: "user_message", model: "model-b" }))
+      .rejects.toThrow("model model-b was rejected");
+    expect(await session.capabilities()).toBe(before);
+    expect(before.model).toBe("model-a");
+    expect(changes).toHaveLength(0);
     await session.close();
   });
 

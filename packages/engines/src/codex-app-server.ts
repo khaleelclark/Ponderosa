@@ -14,7 +14,7 @@ import type { SpawnFn } from "./process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 
-interface ThreadResponse { thread: { id: string } }
+interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
 interface DynamicToolCallParams {
@@ -172,6 +172,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
   private capabilitiesSnapshot?: EngineCapabilities;
+  private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
   private catalogGeneration = 0;
   private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
@@ -183,7 +184,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly cwd: string,
     fresh: boolean,
     private readonly seedHistory: OpenRuntimeSessionOptions["history"],
-    private readonly selectedModel: string | undefined,
+    private activeModel: string | undefined,
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
   ) {
@@ -256,7 +257,7 @@ export class CodexAppServerSession implements RuntimeSession {
       opts.cwd,
       !opts.resumeSessionId,
       opts.resumeSessionId ? [] : [...opts.history],
-      opts.model,
+      typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
       opts.configuredMcps ?? [],
       opts.onCapabilitiesChanged,
     );
@@ -265,31 +266,49 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async capabilities(): Promise<EngineCapabilities> {
     if (!this.capabilitiesDirty && this.capabilitiesSnapshot) return this.capabilitiesSnapshot;
-    const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
-      optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
-      optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
-      optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
-      optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
-      optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
-    ]);
-    const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
-    const snapshot = normalizeCodexProviderDiscovery({
-      cwd: this.cwd,
-      selectedModel: this.selectedModel,
-      sessionId: this.engineAgentId,
-      skills,
-      plugins,
-      pluginDetails,
-      models,
-      modelProviderCapabilities,
-      mcpStatuses,
-      mcpStartup: this.mcpStartup,
-      configuredMcps: this.configuredMcps,
-    });
-    snapshot.catalogVersion = `${this.engineAgentId}:${this.catalogGeneration}`;
-    this.capabilitiesSnapshot = snapshot;
-    this.capabilitiesDirty = false;
-    return snapshot;
+    if (this.capabilitiesDiscovery) return this.capabilitiesDiscovery;
+    const discovery = this.discoverCapabilities();
+    this.capabilitiesDiscovery = discovery;
+    try {
+      return await discovery;
+    } finally {
+      if (this.capabilitiesDiscovery === discovery) this.capabilitiesDiscovery = undefined;
+    }
+  }
+
+  private async discoverCapabilities(): Promise<EngineCapabilities> {
+    // A provider notification can invalidate the catalog while its requests are
+    // in flight. Repeat inside the same single-flight operation so no caller can
+    // publish or observe that stale generation as the refreshed snapshot.
+    for (;;) {
+      const generation = this.catalogGeneration;
+      const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
+        optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
+        optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
+        optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
+        optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
+        optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
+      ]);
+      const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
+      const snapshot = normalizeCodexProviderDiscovery({
+        cwd: this.cwd,
+        selectedModel: this.activeModel,
+        sessionId: this.engineAgentId,
+        skills,
+        plugins,
+        pluginDetails,
+        models,
+        modelProviderCapabilities,
+        mcpStatuses,
+        mcpStartup: this.mcpStartup,
+        configuredMcps: this.configuredMcps,
+      });
+      snapshot.catalogVersion = `${this.engineAgentId}:${generation}`;
+      if (generation !== this.catalogGeneration) continue;
+      this.capabilitiesSnapshot = snapshot;
+      this.capabilitiesDirty = false;
+      return snapshot;
+    }
   }
 
   async invokeCommand(name: string, argumentsText?: string): Promise<void> {
@@ -335,6 +354,11 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(input.effort ? { effort: input.effort } : {}),
     });
     this.activeTurnId = response.turn.id;
+    const acceptedModel = input.model?.trim() || this.activeModel;
+    if (acceptedModel !== this.activeModel) {
+      this.activeModel = acceptedModel;
+      this.invalidateCapabilities();
+    }
     return { turnId: response.turn.id };
   }
 
@@ -379,10 +403,6 @@ export class CodexAppServerSession implements RuntimeSession {
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
-      if (notification.method === "skills/changed" || notification.method === "app/list/updated" ||
-          notification.method === "mcpServer/startupStatus/updated") {
-        this.observeCapabilityNotification(notification);
-      }
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
@@ -449,7 +469,14 @@ export class CodexAppServerSession implements RuntimeSession {
 }
 
 function zeroUsage(): TokenUsage {
-  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
 }
 
 const USAGE_KEYS: Array<keyof TokenUsage> = [
@@ -527,15 +554,17 @@ export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsa
   };
   const inputTokens = delta("inputTokens");
   const cachedInputTokens = delta("cachedInputTokens");
+  const cacheWriteInputTokens = delta("cacheWriteInputTokens");
   const outputTokens = delta("outputTokens");
   const reasoningOutputTokens = delta("reasoningOutputTokens");
   const totalTokens = delta("totalTokens");
   if (totalTokens === undefined || inputTokens === undefined || outputTokens === undefined) return undefined;
-  if (cachedInputTokens !== undefined && cachedInputTokens > inputTokens) return undefined;
+  if ((cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0) > inputTokens) return undefined;
   if (reasoningOutputTokens !== undefined && reasoningOutputTokens > outputTokens) return undefined;
   return {
     inputTokens,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens } : {}),
     outputTokens,
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     totalTokens,
@@ -551,6 +580,10 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   const outputTokens = number("outputTokens");
   const reasoningOutputTokens = number("reasoningOutputTokens");
   const providerTotal = number("totalTokens");
+  // Codex's generated app-server TokenUsageBreakdown currently exposes cached
+  // reads but no cache-write counter. Keep that gap explicit rather than
+  // guessing from input totals; downstream TokenUsage still preserves cache
+  // writes for providers that report them canonically.
   if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
