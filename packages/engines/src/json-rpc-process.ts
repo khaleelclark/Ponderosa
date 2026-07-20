@@ -2,7 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import type { RuntimeProcessHandle } from "@ponderosa/core";
 import type { SpawnFn } from "./process.js";
-import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
+import { assertPersistentRuntimeHostingSupported, processGroupAlive, terminateProcessGroup } from "./process-termination.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -106,7 +106,10 @@ export class JsonRpcProcess {
     this.child.stdout?.once("close", clearPostExitDrain);
     lines.on("line", (line) => this.receive(line));
     const rootExited = () => {
-      reportRootExit();
+      // Host-initiated rollover, replacement, cancellation, and shutdown are
+      // expected closes. Only an independently exiting root is a crash that
+      // fences the active Run through onRuntimeRootExit.
+      if (!this.closed) reportRootExit();
       // A descendant outside the owned process group can inherit stdout and
       // otherwise keep the provider event stream open forever. Allow already
       // buffered output to drain briefly, then close the transport locally.
@@ -117,7 +120,9 @@ export class JsonRpcProcess {
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
       : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}`)));
-    opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
+    const abort = (): void => { void this.close().catch(() => undefined); };
+    opts.signal.addEventListener("abort", abort);
+    if (opts.signal.aborted) abort();
   }
 
   async initialize(): Promise<void> {
@@ -143,7 +148,7 @@ export class JsonRpcProcess {
   }
 
   isAlive(): boolean {
-    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
+    return processGroupAlive(this.child);
   }
 
   close(): Promise<void> {

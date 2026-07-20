@@ -12,6 +12,7 @@ import type {
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
+  EngineCapabilityDiscoveryOptions,
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
@@ -96,8 +97,8 @@ export class ClaudeAdapter implements Adapter {
     return claudeApiPriceProfile(model);
   }
 
-  async capabilities(cwd: string, context?: { model?: string }): Promise<EngineCapabilities> {
-    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList);
+  async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
+    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList, context, this.killGraceMs, this.spawnFn);
     return {
       steering: true,
       persistentSessions: true,

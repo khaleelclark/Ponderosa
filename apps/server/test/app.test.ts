@@ -11,7 +11,7 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
 import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -8864,6 +8864,85 @@ describe("server chunk F", () => {
     expect(cached.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-1");
     expect(refreshed.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-2");
     expect(discoveries).toBe(2);
+    await app.close();
+  });
+
+  it("drains a spawned capability-discovery helper before deleting its Project", async () => {
+    let registered = false;
+    let closeAttempts = 0;
+    Object.assign(adapter, { capabilities: async (_cwd: string, context: EngineCapabilityDiscoveryOptions) => {
+      const handle: RuntimeProcessHandle = {
+        isAlive: () => closeAttempts === 0,
+        close: async () => { closeAttempts += 1; },
+      };
+      context.onRuntimeSpawned(handle);
+      registered = true;
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener("abort", () => reject(new Error("discovery aborted for Project deletion")), { once: true });
+      });
+      throw new Error("unreachable");
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Discovery deletion", hostPath: repoDir });
+    const discovery = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    await vi.waitFor(() => expect(registered).toBe(true));
+
+    const [deleted, discoveryResponse] = await Promise.all([
+      app.inject({ method: "DELETE", url: `/api/projects/${project.id}` }),
+      discovery,
+    ]);
+
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(discoveryResponse.statusCode).toBe(500);
+    expect(closeAttempts).toBe(1);
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("retains failed capability-discovery cleanup until a later deletion retry observes exit", async () => {
+    let registered = false;
+    let closeAttempts = 0;
+    let closeOperation: Promise<void> | undefined;
+    Object.assign(adapter, { capabilities: async (_cwd: string, context: EngineCapabilityDiscoveryOptions) => {
+      const handle: RuntimeProcessHandle = {
+        isAlive: () => closeAttempts < 3,
+        close: () => {
+          if (closeOperation) return closeOperation;
+          closeAttempts += 1;
+          const attempt = closeAttempts < 3
+            ? Promise.reject(new Error(`simulated discovery group close failure ${closeAttempts}`))
+            : Promise.resolve();
+          const shared = attempt.catch((error) => {
+            if (closeOperation === shared) closeOperation = undefined;
+            throw error;
+          });
+          closeOperation = shared;
+          return shared;
+        },
+      };
+      context.onRuntimeSpawned(handle);
+      registered = true;
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener("abort", () => reject(new Error("discovery aborted for Project deletion")), { once: true });
+      });
+      throw new Error("unreachable");
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Retry discovery deletion", hostPath: repoDir });
+    const discovery = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    await vi.waitFor(() => expect(registered).toBe(true));
+
+    const firstDeletion = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(firstDeletion.statusCode, firstDeletion.body).toBe(503);
+    expect(firstDeletion.json()).toMatchObject({ cleanupPending: true, quarantined: true, retryable: true });
+    expect(store.getProject(project.id)).toBeDefined();
+    expect(closeAttempts).toBe(2);
+
+    const retriedDeletion = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retriedDeletion.statusCode, retriedDeletion.body).toBe(200);
+    expect(closeAttempts).toBe(3);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect((await discovery).statusCode).toBe(500);
     await app.close();
   });
 

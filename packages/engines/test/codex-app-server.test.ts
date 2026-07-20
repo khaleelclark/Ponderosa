@@ -47,6 +47,8 @@ describe("Codex app-server persistent runtime", () => {
       sandboxMode: "workspace-write",
       killGraceMs: 25,
       timeoutMs: 25,
+      signal: new AbortController().signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       configuredMcps: [{
         name: "configured",
         configured: true,
@@ -593,7 +595,7 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
-  it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
+  it("treats a planned rollover/replacement close as expected and waits for observed SIGKILL exit", async () => {
     const controller = new AbortController();
     let child: ChildProcess | undefined;
     let rootExitCount = 0;
@@ -609,16 +611,37 @@ describe("Codex app-server persistent runtime", () => {
       environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
     });
     const pid = child!.pid!;
-    controller.abort();
-    const shutdownClose = session.close();
-    expect(session.close()).toBe(shutdownClose);
+    const plannedClose = session.close();
+    expect(session.close()).toBe(plannedClose);
     let settled = false;
-    void shutdownClose.then(() => { settled = true; }, () => { settled = true; });
+    void plannedClose.then(() => { settled = true; }, () => { settled = true; });
     await sleep(20);
     expect(settled).toBe(false);
     expect(processAlive(pid)).toBe(true);
-    await shutdownClose;
+    await plannedClose;
     expect(processAlive(pid)).toBe(false);
+    expect(rootExitCount).toBe(0);
+  });
+
+  it("reports an independently exiting persistent root exactly once", async () => {
+    const controller = new AbortController();
+    let child: ChildProcess | undefined;
+    let rootExitCount = 0;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
+      child = spawn(process.execPath, [fake], opts);
+      return child;
+    }) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "crashing-codex", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onRuntimeRootExit: () => { rootExitCount += 1; },
+    });
+
+    child!.kill("SIGKILL");
+    await vi.waitFor(() => expect(rootExitCount).toBe(1));
+    expect(session.isAlive()).toBe(false);
+    await session.close();
     expect(rootExitCount).toBe(1);
   });
 

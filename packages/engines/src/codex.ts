@@ -18,6 +18,7 @@ import type {
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
+  EngineCapabilityDiscoveryOptions,
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
@@ -191,8 +192,9 @@ export class CodexAdapter implements Adapter {
     return codexApiPriceProfile(model);
   }
 
-  async capabilities(cwd: string, context?: { model?: string }): Promise<EngineCapabilities> {
-    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], cwd, parseCodexMcpList);
+  async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
+    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], cwd, parseCodexMcpList, context, this.killGraceMs, this.spawnFn);
+    if (context.signal.aborted) throw new Error("codex capability discovery aborted");
     return discoverCodexAppServerCapabilities({
       bin: this.bin,
       spawnFn: this.spawnFn,
@@ -201,6 +203,8 @@ export class CodexAdapter implements Adapter {
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
       configuredMcps,
+      signal: context.signal,
+      onRuntimeSpawned: context.onRuntimeSpawned,
     });
   }
 

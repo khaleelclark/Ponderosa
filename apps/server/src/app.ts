@@ -713,6 +713,22 @@ interface OneShotRuntimeTeardown {
   lastError?: string;
 }
 
+interface CapabilityDiscoveryProcess {
+  handle: RuntimeProcessHandle;
+  operation?: Promise<void>;
+  terminationConfirmed?: boolean;
+}
+
+interface CapabilityDiscoveryAuthority {
+  projectId: string;
+  engineId: string;
+  key: string;
+  controller: AbortController;
+  processes: Set<CapabilityDiscoveryProcess>;
+  operation?: Promise<EngineCapabilities>;
+  settled: boolean;
+}
+
 /** One Agent-indexed registry owns every provider process handle. Scheduler Run
  * ownership remains separately fenced in SQLite; this registry is the local
  * admission barrier that prevents overlapping host authority. */
@@ -2547,11 +2563,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     expiresAt: number;
     value: EngineCapabilities;
   }>();
-  const engineCapabilityDiscoveries = new Map<string, {
-    generation: number;
-    promise: Promise<EngineCapabilities>;
-  }>();
-  const engineCapabilityDiscoveryOperations = new Set<Promise<EngineCapabilities>>();
+  const engineCapabilityDiscoveries = new Map<string, CapabilityDiscoveryAuthority>();
+  const engineCapabilityDiscoveryAuthorities = new Set<CapabilityDiscoveryAuthority>();
   const engineCapabilityGenerations = new Map<string, number>();
   const engineCapabilityScopeKey = (projectId: string, engineId: string): string =>
     `${projectId}\0${engineId}`;
@@ -2566,6 +2579,47 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     invalidateEngineCapabilities(projectId, engineId);
     appendWorkspace({ type: "runtime_capabilities_changed", projectId, engineId });
   };
+  const closeCapabilityDiscoveryProcess = (state: CapabilityDiscoveryProcess): Promise<void> => {
+    if (state.terminationConfirmed) return Promise.resolve();
+    if (state.operation) return state.operation;
+    const operation = Promise.resolve()
+      .then(() => state.handle.close())
+      .then(() => { state.terminationConfirmed = true; })
+      .finally(() => {
+        if (state.operation === operation) state.operation = undefined;
+      });
+    state.operation = operation;
+    return operation;
+  };
+  const closeCapabilityDiscoveryAuthority = async (authority: CapabilityDiscoveryAuthority): Promise<void> => {
+    authority.controller.abort();
+    const processes = [...authority.processes].filter((state) => !state.terminationConfirmed);
+    const results = await Promise.allSettled(processes.map(closeCapabilityDiscoveryProcess));
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, `${authority.engineId} capability-discovery cleanup failed`);
+    for (const process of [...authority.processes]) {
+      if (process.terminationConfirmed) authority.processes.delete(process);
+    }
+    if (authority.settled && authority.processes.size === 0) {
+      engineCapabilityDiscoveryAuthorities.delete(authority);
+      if (engineCapabilityDiscoveries.get(authority.key) === authority) {
+        engineCapabilityDiscoveries.delete(authority.key);
+      }
+    }
+  };
+  const drainEngineCapabilityDiscoveries = async (projectId?: string): Promise<void> => {
+    for (let pass = 0; pass < 100; pass += 1) {
+      const entries = [...engineCapabilityDiscoveryAuthorities]
+        .filter((authority) => !projectId || authority.projectId === projectId);
+      if (entries.length === 0) return;
+      for (const authority of entries) authority.controller.abort();
+      await Promise.allSettled(entries.flatMap((authority) => authority.operation ? [authority.operation] : []));
+      const cleanup = await Promise.allSettled(entries.map(closeCapabilityDiscoveryAuthority));
+      const failures = cleanup.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Engine capability-discovery authority did not drain");
+    }
+    throw new Error("Engine capability-discovery authority did not reach a fixed point");
+  };
   const discoverEngineCapabilities = (
     projectId: string,
     hostPath: string,
@@ -2573,6 +2627,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     model: string | undefined,
     forceRefresh: boolean,
   ): Promise<EngineCapabilities> => {
+    if (closed || deletingProjectIds.has(projectId)) {
+      return Promise.reject(new Error("Project capability discovery is unavailable during deletion or shutdown"));
+    }
     if (!adapter.capabilities) {
       return Promise.resolve({
         steering: false,
@@ -2589,14 +2646,39 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // A cache invalidation may make this result ineligible for storage, but it
     // must not create a second provider process beside discovery already in
     // progress. The next request can refresh after this operation settles.
-    if (running) return running.promise;
+    if (running) return running.operation!;
     const cached = engineCapabilityCache.get(key);
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
     if (cached) engineCapabilityCache.delete(key);
 
-    const promise = Promise.resolve()
-      .then(() => adapter.capabilities!(hostPath, { ...(model ? { model } : {}) }))
-      .then((value) => {
+    const authority: CapabilityDiscoveryAuthority = {
+      projectId,
+      engineId: adapter.id,
+      key,
+      controller: new AbortController(),
+      processes: new Set(),
+      settled: false,
+    };
+    engineCapabilityDiscoveryAuthorities.add(authority);
+    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
+      if (closed || deletingProjectIds.has(projectId) || authority.controller.signal.aborted) {
+        void closeCapabilityDiscoveryProcess(state).catch((error) => {
+          app.log.error({ err: error, projectId, engineId: adapter.id }, "late capability-discovery process cleanup remains pending");
+        });
+      }
+    };
+    const adapterOperation = Promise.resolve()
+      .then(() => adapter.capabilities!(hostPath, {
+        ...(model ? { model } : {}),
+        signal: authority.controller.signal,
+        onRuntimeSpawned: registerProcess,
+      }));
+    const promise = adapterOperation
+      .then(async (value) => {
+        authority.settled = true;
+        await closeCapabilityDiscoveryAuthority(authority);
         if ((engineCapabilityGenerations.get(scopeKey) ?? 0) === generation) {
           engineCapabilityCache.set(key, {
             projectId,
@@ -2606,14 +2688,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           });
         }
         return value;
+      }, async (error: unknown) => {
+        authority.settled = true;
+        try {
+          await closeCapabilityDiscoveryAuthority(authority);
+        } catch (closeError) {
+          throw new AggregateError([error, closeError], `${adapter.id} capability discovery and cleanup failed`);
+        }
+        throw error;
       });
-    const discovery = { generation, promise };
-    engineCapabilityDiscoveries.set(key, discovery);
-    engineCapabilityDiscoveryOperations.add(promise);
-    void promise.finally(() => {
-      engineCapabilityDiscoveryOperations.delete(promise);
-      if (engineCapabilityDiscoveries.get(key) === discovery) engineCapabilityDiscoveries.delete(key);
-    }).catch(() => undefined);
+    authority.operation = promise;
+    engineCapabilityDiscoveries.set(key, authority);
     return promise;
   };
   const contextCursors = new ContextCursorStore(opts.dataDir);
@@ -4970,8 +5055,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   const finalizeProviderRuntimeShutdown = async (): Promise<void> => {
     if (!providerRuntimeShutdownFinalized) {
-      await drainProviderRuntimeAuthority("server_shutdown");
+      const results = await Promise.allSettled([
+        drainProviderRuntimeAuthority("server_shutdown"),
+        drainEngineCapabilityDiscoveries(),
+      ]);
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");
       runtimeAuthorities.clear();
+      engineCapabilityDiscoveryAuthorities.clear();
+      engineCapabilityDiscoveries.clear();
       activeRuns.clear();
       providerRuntimeShutdownFinalized = true;
     }
@@ -5009,10 +5101,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ...runBrowserClosures,
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
-      Promise.allSettled([...engineCapabilityDiscoveryOperations]).then((results) => {
-        const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-        if (failures.length) throw new AggregateError(failures, "Engine capability discovery did not settle during shutdown");
-      }),
       Promise.resolve().then(() => opts.shutdownFaults?.backgroundCleanup?.()),
     ]);
     // Provider authority revocation is an independent barrier. No earlier
@@ -7695,6 +7783,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const barriers = await Promise.allSettled([
         ...browserClosures,
         drainProviderRuntimeAuthority("Project deletion", agentIds),
+        drainEngineCapabilityDiscoveries(project.id),
       ]);
       const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
@@ -7703,7 +7792,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // final assertion beside the irreversible storage boundary.
       if ([...activeRuns.keys()].some((agentId) => agentIds.has(agentId)) ||
         [...runtimeAuthorities].some(([agentId, authority]) => agentIds.has(agentId) &&
-          Boolean(authority.opening || authority.reusable || authority.closing || authority.oneShots.size))) {
+          Boolean(authority.opening || authority.reusable || authority.closing || authority.oneShots.size)) ||
+        [...engineCapabilityDiscoveryAuthorities].some((authority) => authority.projectId === project.id)) {
         throw new Error("Project deletion provider authority changed after draining");
       }
 
@@ -10405,7 +10495,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const catalog: EngineCapabilities = await Promise.resolve(runtimeSession?.capabilities
           ? runtimeSession.capabilities()
           : engine.adapter.capabilities
-            ? engine.adapter.capabilities(project.hostPath, { ...(effectiveModel ? { model: effectiveModel } : {}) })
+            ? discoverEngineCapabilities(project.id, project.hostPath, engine.adapter, effectiveModel, false)
             : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
         const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
         if (!command || command.status !== "available") {

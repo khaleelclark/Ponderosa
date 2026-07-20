@@ -7,6 +7,7 @@ import type {
   RuntimeSession,
   RuntimeSteerResult,
   RuntimeTurnInput,
+  RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
@@ -186,9 +187,15 @@ export async function discoverCodexAppServerCapabilities(opts: {
   sandboxMode: string;
   killGraceMs: number;
   configuredMcps: EngineMcpServer[];
+  signal: AbortSignal;
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   timeoutMs?: number;
 }): Promise<EngineCapabilities> {
+  if (opts.signal.aborted) throw new Error("codex app-server capability discovery aborted");
   const controller = new AbortController();
+  const abortFromHost = (): void => controller.abort();
+  opts.signal.addEventListener("abort", abortFromHost);
+  if (opts.signal.aborted) controller.abort();
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -206,7 +213,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
     signal: controller.signal,
     spawnFn: opts.spawnFn,
     killGraceMs: opts.killGraceMs,
-    onRuntimeSpawned: () => undefined,
+    onRuntimeSpawned: opts.onRuntimeSpawned,
     onRuntimeRootExit: () => undefined,
   });
   try {
@@ -241,8 +248,12 @@ export async function discoverCodexAppServerCapabilities(opts: {
     });
   } finally {
     clearTimeout(timeout);
+    opts.signal.removeEventListener("abort", abortFromHost);
     controller.abort();
-    await rpc.close().catch(() => undefined);
+    // Cleanup failure is authoritative: the host retains the spawn-time handle
+    // and must keep Project deletion/shutdown pending until a retry observes
+    // the complete process group gone.
+    await rpc.close();
   }
 }
 

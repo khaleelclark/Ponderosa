@@ -1,10 +1,12 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentEvent } from "@ponderosa/core";
+import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { streamProcess } from "../src/process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "../src/process-termination.js";
 
@@ -101,6 +103,7 @@ describe("observed process-group termination", () => {
     const controller = new AbortController();
     const events: AgentEvent[] = [];
     let rootAuthorityRevoked = false;
+    let runtimeHandle: RuntimeProcessHandle | undefined;
     let settled = false;
     try {
       const collection = (async () => {
@@ -115,11 +118,13 @@ describe("observed process-group termination", () => {
           label: "root-exit inherited-stdout",
           map: () => [{ type: "session", sessionId: "root-exited" }],
           onRuntimeRootExit: () => { rootAuthorityRevoked = true; },
+          onRuntimeSpawned: (handle) => { runtimeHandle = handle; },
         })) events.push(event);
       })().finally(() => { settled = true; });
       await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
       const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
       await vi.waitFor(() => expect(rootAuthorityRevoked).toBe(true), { timeout: 5_000 });
+      expect(runtimeHandle?.isAlive()).toBe(true);
       expect(settled).toBe(false);
       expect(processAlive(descendantPid.descendantPid)).toBe(true);
       await collection;
@@ -129,5 +134,55 @@ describe("observed process-group termination", () => {
       controller.abort();
       rmSync(temp, { recursive: true, force: true });
     }
+  });
+
+  it("preserves successful one-shot records buffered behind a slow consumer after root exit", async () => {
+    const controller = new AbortController();
+    const records = [JSON.stringify({ ordinal: 1 }), JSON.stringify({ ordinal: 2 })].join("\n") + "\n";
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr,
+      stdin: null,
+      pid: undefined,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => true,
+    }) as unknown as ChildProcess;
+    const spawnFn = (() => {
+      setImmediate(() => {
+        stdout.write(records);
+        (child as unknown as { exitCode: number | null }).exitCode = 0;
+        child.emit("exit", 0, null);
+        // Deliberately leave stdout open like an inherited descriptor. The
+        // runtime's bounded post-root deadline must close it without dropping
+        // either complete record already delivered to the parser.
+      });
+      return child;
+    }) as unknown as typeof spawn;
+    let decoded = 0;
+    const events: AgentEvent[] = [];
+    for await (const event of streamProcess({
+      bin: "buffered-success",
+      args: [],
+      cwd: process.cwd(),
+      signal: controller.signal,
+      spawnFn,
+      killGraceMs: 50,
+      label: "buffered successful one-shot",
+      map: (raw) => [{ type: "text", delta: String((raw as { ordinal: number }).ordinal) }],
+      faults: {
+        afterDecodeBeforeYield: async () => {
+          decoded += 1;
+          if (decoded === 1) await sleep(350);
+        },
+      },
+    })) events.push(event);
+
+    expect(events).toEqual([
+      { type: "text", delta: "1" },
+      { type: "text", delta: "2" },
+    ]);
   });
 });
