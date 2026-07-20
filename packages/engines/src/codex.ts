@@ -205,14 +205,18 @@ export class CodexAdapter implements Adapter {
   }
 
   async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
-    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], opts.cwd, parseCodexMcpList);
+    // A persistent session must have exactly one spawn path, registered through
+    // onRuntimeSpawned before readiness. Running a CLI inventory helper here
+    // creates an unregistered provider process that daemon shutdown cannot
+    // terminate while openSession() is still pending. The live app-server's
+    // mcpServerStatus/list response is the authoritative session projection;
+    // sessionless discovery still joins it with `codex mcp list --json` above.
     return CodexAppServerSession.open({
       ...opts,
       bin: this.bin,
       spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
-      configuredMcps,
     });
   }
 
