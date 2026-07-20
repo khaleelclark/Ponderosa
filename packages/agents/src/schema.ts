@@ -24,6 +24,18 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
   /** Exact hidden directory used across the filesystem/SQLite commit boundary. */
   tombstoneName: text("tombstone_name"),
 });
+
+/** Durable receipt for an irreversible Project purge and its retryable
+ * filesystem tombstone cleanup. */
+export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
+  projectId: text("project_id").primaryKey(),
+  tombstoneName: text("tombstone_name").notNull(),
+  storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
+});
 export const agentPresets = sqliteTable("agent_presets", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),
   description: text("description").notNull(), guidance: text("guidance").notNull(), engine: text("engine").notNull(),

@@ -3640,6 +3640,7 @@ export class CoordinationV3Store {
    * SQLite transaction that deletes the canonical project projections. */
   purgeProject(projectId: string): void {
     this.sqlite.transaction(() => {
+      this.sqlite.prepare(`DELETE FROM trigger_filesystem_bursts WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM trigger_definitions WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM trigger_occurrences WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM activation_outbox WHERE activation_id IN (

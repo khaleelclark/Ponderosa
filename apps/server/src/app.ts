@@ -632,6 +632,11 @@ export interface CreateServerOptions {
   /** Bound each fallible Project-deletion cleanup barrier. Production defaults
    * to five seconds; tests may shorten the quarantine path. */
   projectDeletionCleanupTimeoutMs?: number;
+  /** Deterministic post-commit Project tombstone cleanup seam; never enabled
+   * in production configuration. */
+  projectDeletionCleanupFaults?: {
+    afterTombstoneRemoval?: (projectId: string) => void;
+  };
 }
 
 const nonPublicFaviconAddresses = new BlockList();
@@ -4679,11 +4684,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const browserCleanupOperations = browser.reduce((total, status) => total + status.pendingCleanup, 0);
     const browserFailures = browser.reduce((total, status) => total + status.retainedFailures, 0);
     const projectCleanup = store.listPendingProjectDeletions();
+    const committedProjectCleanup = store.listPendingProjectDeletionReceipts();
     const agentCleanup = store.listPendingAgentDeletionReceipts();
     const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations +
-      projectCleanup.length + agentCleanup.length;
+      projectCleanup.length + committedProjectCleanup.length + agentCleanup.length;
     const retainedTeardownFailures = runtimeFailures + browserFailures +
       projectCleanup.filter((entry) => Boolean(entry.lastError)).length +
+      committedProjectCleanup.filter((entry) => Boolean(entry.lastError)).length +
       agentCleanup.filter((entry) => Boolean(entry.lastError)).length;
     const activeRunsCount = Math.max(schedulerRuns, localRuns);
     return {
@@ -7963,6 +7970,45 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+    const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
+    if (previousReceipt) {
+      if (!previousReceipt.storageCleanupCompleted) {
+        try {
+          store.finishProjectDeletionStorageCleanup(
+            previousReceipt,
+            opts.projectDeletionCleanupFaults?.afterTombstoneRemoval,
+          );
+        } catch (error) {
+          try {
+            store.recordProjectDeletionReceiptCleanupError(
+              previousReceipt.projectId,
+              error instanceof Error ? error.message : String(error),
+            );
+          } catch { /* the durable committed receipt remains authoritative */ }
+        }
+      }
+      const refreshed = store.getProjectDeletionReceipt(previousReceipt.projectId)!;
+      try {
+        if (refreshed.storageCleanupCompleted) {
+          resolveOperationalNotification(`project-deletion:${refreshed.projectId}`);
+        } else {
+          createOperationalNotification({
+            dedupeKey: `project-deletion:${refreshed.projectId}`,
+            category: "system",
+            severity: "attention",
+            title: "Project deletion cleanup needs attention",
+            body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
+            projectId: refreshed.projectId,
+          });
+        }
+      } catch { /* the committed receipt remains the cleanup authority */ }
+      return {
+        deleted: true,
+        deletionReceiptId: refreshed.projectId,
+        cleanupPending: !refreshed.storageCleanupCompleted,
+        replayed: true,
+      };
+    }
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
     const agents = store.listAgents(project.id);
@@ -8037,13 +8083,50 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       userReactions.deleteProject(project.id);
       contextCursors.deleteAgents(agentIds);
-      store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
-      appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
-      for (const { adapter } of engines.values()) invalidateEngineCapabilities(project.id, adapter.id);
+      const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
+      if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
       deleted = true;
-      try { resolveOperationalNotification(`project-deletion:${project.id}`); }
-      catch { /* completed deletion remains authoritative */ }
-      return { deleted: true };
+      try {
+        store.finishProjectDeletionStorageCleanup(
+          receipt,
+          opts.projectDeletionCleanupFaults?.afterTombstoneRemoval,
+        );
+      } catch (error) {
+        try {
+          store.recordProjectDeletionReceiptCleanupError(
+            receipt.projectId,
+            error instanceof Error ? error.message : String(error),
+          );
+        } catch { /* the durable committed receipt remains authoritative */ }
+      }
+      // Live invalidation and notification repair are best effort after the
+      // durable purge receipt exists. They cannot reopen or obscure deletion.
+      try { appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" }); }
+      catch { /* clients reconcile from durable state on reconnect */ }
+      for (const { adapter } of engines.values()) {
+        try { invalidateEngineCapabilities(project.id, adapter.id); }
+        catch { /* the Project no longer owns provider capability state */ }
+      }
+      const refreshed = store.getProjectDeletionReceipt(project.id)!;
+      try {
+        if (refreshed.storageCleanupCompleted) {
+          resolveOperationalNotification(`project-deletion:${project.id}`);
+        } else {
+          createOperationalNotification({
+            dedupeKey: `project-deletion:${project.id}`,
+            category: "system",
+            severity: "attention",
+            title: "Project deletion cleanup needs attention",
+            body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
+            projectId: project.id,
+          });
+        }
+      } catch { /* the committed receipt remains the cleanup authority */ }
+      return {
+        deleted: true,
+        deletionReceiptId: refreshed.projectId,
+        cleanupPending: !refreshed.storageCleanupCompleted,
+      };
     } catch (error) {
       try { store.recordProjectDeletionCleanupError(project.id, error instanceof Error ? error.message : String(error)); }
       catch { /* the existing durable quarantine remains fail closed */ }

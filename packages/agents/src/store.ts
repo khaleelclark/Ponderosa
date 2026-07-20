@@ -133,6 +133,7 @@ import {
   agentConversationMemberships,
   continuationHandoffs,
   projectDeletionPending,
+  projectDeletionReceipts,
 } from "./schema.js";
 
 export interface ContextReadBoundary {
@@ -430,6 +431,16 @@ export interface AgentDeletionReceipt {
   deletedAgentIds: string[];
   storageCleanupCompleted: boolean;
   serverCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface ProjectDeletionReceipt {
+  projectId: string;
+  tombstoneName: string;
+  storageCleanupCompleted: boolean;
   lastError?: string;
   createdAt: string;
   updatedAt: string;
@@ -1474,12 +1485,80 @@ export class AgentStore {
     }));
   }
 
-  /** Permanently remove the canonical project tree and every rebuildable
-   * projection. The callback shares the projection-deletion transaction so
-   * authoritative runtime state cannot survive a deleted Project row. */
-  deleteProject(id: string, beforeProjectionDelete?: (projectId: string) => void): boolean {
+  getProjectDeletionReceipt(projectId: string): ProjectDeletionReceipt | undefined {
+    const row = this.db.select().from(projectDeletionReceipts)
+      .where(eq(projectDeletionReceipts.projectId, projectId)).get();
+    return row ? {
+      projectId: row.projectId,
+      tombstoneName: row.tombstoneName,
+      storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+    } : undefined;
+  }
+
+  listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
+    return this.db.select().from(projectDeletionReceipts)
+      .where(eq(projectDeletionReceipts.storageCleanupCompleted, 0)).all()
+      .map((row) => ({
+        projectId: row.projectId,
+        tombstoneName: row.tombstoneName,
+        storageCleanupCompleted: false,
+        ...(row.lastError ? { lastError: row.lastError } : {}),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+      }));
+  }
+
+  recordProjectDeletionReceiptCleanupError(projectId: string, error: string): void {
+    this.db.update(projectDeletionReceipts).set({
+      lastError: error.slice(0, 4_000),
+      updatedAt: new Date().toISOString(),
+    }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
+  }
+
+  finishProjectDeletionStorageCleanup(
+    receipt: ProjectDeletionReceipt,
+    afterTombstoneRemoval?: (projectId: string) => void,
+  ): void {
+    const current = this.getProjectDeletionReceipt(receipt.projectId);
+    if (!current) throw new Error("Project deletion receipt not found");
+    if (current.storageCleanupCompleted) return;
+    const prefix = `.${current.projectId}.deleting-`;
+    if (current.tombstoneName.includes("/") || current.tombstoneName.includes("\\") ||
+        !current.tombstoneName.startsWith(prefix)) {
+      throw new Error("invalid Project deletion receipt");
+    }
+    const root = projectsDir(this.dataDir);
+    const canonical = projectDir(this.dataDir, current.projectId);
+    if (existsSync(canonical)) throw new Error("committed Project deletion storage was resurrected");
+    const tombstone = join(root, current.tombstoneName);
+    if (existsSync(tombstone)) {
+      rmSync(tombstone, { recursive: true, force: true });
+      afterTombstoneRemoval?.(current.projectId);
+    }
+    // Also fsync when the tombstone was already absent: a previous attempt may
+    // have removed it and failed before durably recording the directory entry.
+    fsyncDirectory(root);
+    const now = new Date().toISOString();
+    this.db.update(projectDeletionReceipts).set({
+      storageCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: now,
+      completedAt: now,
+    }).where(eq(projectDeletionReceipts.projectId, current.projectId)).run();
+  }
+
+  /** Commit the irreversible SQLite purge and its durable receipt. Fallible
+   * tombstone removal is deliberately a separate retryable operation. */
+  commitProjectDeletion(id: string, beforeProjectionDelete?: (projectId: string) => void): ProjectDeletionReceipt | undefined {
+    const priorReceipt = this.getProjectDeletionReceipt(id);
+    if (priorReceipt) return priorReceipt;
     const current = this.getProject(id);
-    if (!current) return false;
+    if (!current) return undefined;
     const agentIds = this.listAgents(id).map((agent) => agent.id);
     const canonicalDir = projectDir(this.dataDir, id);
     this.markProjectDeletionPending(id);
@@ -1496,6 +1575,7 @@ export class AgentStore {
     const deletingDir = join(parentDir, tombstoneName);
     renameSync(canonicalDir, deletingDir);
     fsyncDirectory(parentDir);
+    const now = new Date().toISOString();
     try {
       this.db.transaction(() => {
         beforeProjectionDelete?.(id);
@@ -1523,22 +1603,38 @@ export class AgentStore {
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+        this.db.insert(projectDeletionReceipts).values({
+          projectId: id,
+          tombstoneName,
+          storageCleanupCompleted: 0,
+          createdAt: now,
+          updatedAt: now,
+        }).run();
       });
     } catch (error) {
       renameSync(deletingDir, canonicalDir);
       fsyncDirectory(parentDir);
       throw error;
     }
-    // A crash before this cleanup leaves a hidden tombstone directory which
-    // startup projection repair already discards rather than resurrecting.
-    rmSync(deletingDir, { recursive: true, force: true });
-    fsyncDirectory(parentDir);
     this.communicationEventCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
       this.logs.delete(agentId);
       this.states.delete(agentId);
+    }
+    return this.getProjectDeletionReceipt(id)!;
+  }
+
+  /** Permanently remove the canonical project tree and every rebuildable
+   * projection. The callback shares the projection-deletion transaction so
+   * authoritative runtime state cannot survive a deleted Project row. */
+  deleteProject(id: string, beforeProjectionDelete?: (projectId: string) => void): boolean {
+    const receipt = this.commitProjectDeletion(id, beforeProjectionDelete);
+    if (!receipt) return false;
+    try { this.finishProjectDeletionStorageCleanup(receipt); }
+    catch (error) {
+      this.recordProjectDeletionReceiptCleanupError(id, error instanceof Error ? error.message : String(error));
     }
     return true;
   }
@@ -4580,9 +4676,21 @@ export class AgentStore {
           .where(eq(projectDeletionPending.projectId, row.projectId)).run();
       }
     }
+    const receiptNames = new Set<string>();
+    for (const receipt of this.db.select().from(projectDeletionReceipts).all()) {
+      receiptNames.add(receipt.tombstoneName);
+      if (receipt.storageCleanupCompleted === 1) continue;
+      try { this.finishProjectDeletionStorageCleanup(this.getProjectDeletionReceipt(receipt.projectId)!); }
+      catch (error) {
+        this.recordProjectDeletionReceiptCleanupError(
+          receipt.projectId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
     let removedCommitted = false;
     for (const name of readdirSync(root)) {
-      if (!/^\..+\.deleting-.+$/.test(name) || journalNames.has(name)) continue;
+      if (!/^\..+\.deleting-.+$/.test(name) || journalNames.has(name) || receiptNames.has(name)) continue;
       rmSync(join(root, name), { recursive: true, force: true });
       removedCommitted = true;
     }

@@ -2577,6 +2577,82 @@ describe("interactive browser API", () => {
     await app.close();
   });
 
+  it("keeps a committed Project deletion authoritative when tombstone cleanup fails and completes it on retry", async () => {
+    let failCleanup = true;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      projectDeletionCleanupFaults: {
+        afterTombstoneRemoval: () => {
+          if (failCleanup) throw new Error("injected tombstone cleanup failure");
+        },
+      },
+    });
+    const project = store.createProject({ label: "Committed cleanup retry", hostPath: repoDir });
+
+    const committed = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: true,
+    });
+    expect(store.getProject(project.id)).toBeUndefined();
+    const pending = store.getProjectDeletionReceipt(project.id)!;
+    expect(pending).toMatchObject({
+      projectId: project.id,
+      storageCleanupCompleted: false,
+      lastError: "injected tombstone cleanup failure",
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "open" }),
+      ]));
+    // The injected failure is in the exact remove-before-fsync/receipt-update
+    // window. Retry must accept the already-absent tombstone idempotently.
+    expect(existsSync(path.join(dataDir, "projects", pending.tombstoneName))).toBe(false);
+
+    failCleanup = false;
+    const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(retried.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+      replayed: true,
+    });
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      storageCleanupCompleted: true,
+      completedAt: expect.any(String),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "resolved" }),
+      ]));
+    expect(existsSync(path.join(dataDir, "projects", pending.tombstoneName))).toBe(false);
+    await app.close();
+  });
+
+  it("replays a durable Project deletion receipt after the successful response is lost", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Lost deletion response", hostPath: repoDir });
+
+    // The caller loses this successful response and retries the same request.
+    const lost = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(lost.statusCode, lost.body).toBe(200);
+    expect(lost.json()).toMatchObject({ deleted: true, cleanupPending: false });
+
+    const replay = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+      replayed: true,
+    });
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
   it("restores a failed Project deletion quarantine after restart and rejects all new intake until retry", async () => {
     let releaseClose!: () => void;
     const closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
@@ -5613,7 +5689,11 @@ describe("server chunk F", () => {
 
     const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
     expect(retried.statusCode, retried.body).toBe(200);
-    expect(retried.json()).toEqual({ deleted: true });
+    expect(retried.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+    });
     expect(persistent.closed).toBe(2);
     expect(store.getProject(project.id)).toBeUndefined();
     await app.close();

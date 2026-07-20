@@ -1952,6 +1952,30 @@ describe("project lifecycle", () => {
     expect(existsSync(projectDir(dir, project.id))).toBe(false);
   });
 
+  it("retains a committed Project deletion receipt across restart and finishes its tombstone cleanup", () => {
+    const project = store.createProject({ label: "Committed receipt", hostPath: "/repo" });
+    const receipt = store.commitProjectDeletion(project.id)!;
+
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      projectId: project.id,
+      tombstoneName: receipt.tombstoneName,
+      storageCleanupCompleted: false,
+    });
+    expect(existsSync(join(dir, "projects", receipt.tombstoneName))).toBe(true);
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      projectId: project.id,
+      tombstoneName: receipt.tombstoneName,
+      storageCleanupCompleted: true,
+      completedAt: expect.any(String),
+    });
+    expect(existsSync(join(dir, "projects", receipt.tombstoneName))).toBe(false);
+  });
+
   it("permanently deletes one canonical project tree and all of its projections", () => {
     const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
     const room = store.createConversation(removed.id, { title: "Room" });
