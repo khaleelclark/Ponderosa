@@ -2808,8 +2808,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const v3DispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
   const directReplyClaims = new Set<string>();
-  const deletingAgentIds = new Set<string>();
-  const deletingProjectIds = new Set<string>();
+  const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
+  const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
+    store.listAgents(projectId).map((agent) => agent.id)));
+  // A crashed daemon may leave scheduler Runs or Activations behind. Reapply
+  // the durable Project deletion fence before scheduler leasing starts.
+  for (const projectId of deletingProjectIds) coordinationV3.prepareProjectDeletion(projectId);
   const projectDeletionInFlightIds = new Set<string>();
   let closed = false;
   let assetSweep: NodeJS.Timeout | undefined;
@@ -3677,6 +3681,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // or late async continuation from this generation therefore fails its CAS.
     void closeRunBrowser(agentId, run, "run_lease_expired");
     activeRuns.delete(agentId);
+    drainDeploymentIdleAuthorities();
     closeLinkPreviewsForAgent(agentId, "run lease expired");
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
@@ -3736,6 +3741,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         !coordinationV3.ownsRunForCleanup(run.v3SchedulerRunId, run.v3FencingToken, coordinationV3WorkerId)) return false;
     void closeRunBrowser(agentId, run, `run_${state}`);
     activeRuns.delete(agentId);
+    drainDeploymentIdleAuthorities();
     closeLinkPreviewsForAgent(agentId, `run ${state}`);
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
@@ -4510,7 +4516,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const runtime = persistentRuntimeForTermination(agentId);
         const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
         if (terminationError) return { accepted: false, retryable: true, error: terminationError };
-        if (activeRuns.get(agentId) === run) activeRuns.delete(agentId);
+        if (activeRuns.get(agentId) === run) {
+          activeRuns.delete(agentId);
+          drainDeploymentIdleAuthorities();
+        }
         return { accepted: true };
       },
       processOutbox: async (item) => {
@@ -4553,10 +4562,62 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
   let deploymentDraining = false;
+  const deploymentDrainSnapshot = () => {
+    const schedulerRuns = coordinationV3.activeRunCount();
+    const localRuns = activeRuns.size;
+    const authorities = [...runtimeAuthorities.values()];
+    const providerAuthorities = authorities.reduce((total, authority) => total + pendingRuntimeAuthorityCount(authority), 0);
+    const runtimeCleanupOperations = authorities.reduce((total, authority) =>
+      total + Number(Boolean(authority.closing)) + authority.oneShots.size +
+      Number(Boolean(authority.opening?.terminationOperation)), 0);
+    const runtimeFailures = authorities.reduce((total, authority) => total +
+      Number(Boolean(authority.opening?.lastError)) + Number(Boolean(authority.closing?.lastError)) +
+      [...authority.oneShots.values()].filter((state) => Boolean(state.lastError)).length, 0);
+    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus()];
+    const browserAuthorities = browser.reduce((total, status) =>
+      total + status.openings + status.active + status.pendingCleanup, 0);
+    const browserCleanupOperations = browser.reduce((total, status) => total + status.pendingCleanup, 0);
+    const browserFailures = browser.reduce((total, status) => total + status.retainedFailures, 0);
+    const projectCleanup = store.listPendingProjectDeletions();
+    const agentCleanup = store.listPendingAgentDeletionReceipts();
+    const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations +
+      projectCleanup.length + agentCleanup.length;
+    const retainedTeardownFailures = runtimeFailures + browserFailures +
+      projectCleanup.filter((entry) => Boolean(entry.lastError)).length +
+      agentCleanup.filter((entry) => Boolean(entry.lastError)).length;
+    const activeRunsCount = Math.max(schedulerRuns, localRuns);
+    return {
+      state: deploymentDraining ? "draining" as const : "accepting" as const,
+      readyForRestart: deploymentDraining && activeRunsCount === 0 && providerAuthorities === 0 &&
+        browserAuthorities === 0 && pendingCleanupOperations === 0 && retainedTeardownFailures === 0,
+      activeRuns: activeRunsCount,
+      schedulerRuns,
+      localRuns,
+      providerAuthorities,
+      browserAuthorities,
+      pendingCleanupOperations,
+      retainedTeardownFailures,
+    };
+  };
+
+  function drainDeploymentIdleAuthorities(): void {
+    if (!deploymentDraining || activeRuns.size > 0) return;
+    for (const [agentId, authority] of runtimeAuthorities) {
+      if (authority.reusable) teardownPersistentRuntimeInBackground(agentId, authority.reusable, "deployment drain");
+    }
+    projectBrowserGrants.clear();
+    void browserSessions.closeAll("deployment_drain").catch((error) => {
+      app.log.error({ err: error }, "Run browser deployment cleanup remains pending");
+    });
+    void projectBrowserSessions.closeAll("deployment_drain").catch((error) => {
+      app.log.error({ err: error }, "Project browser deployment cleanup remains pending");
+    });
+  }
   const triggerSources = new TriggerSourceService({
     store,
     coordination: coordinationV3,
     dataDir: opts.dataDir,
+    projectAvailable: (projectId) => !deletingProjectIds.has(projectId),
     notify: (triggerId) => {
       coordinationV3Scheduler.notify();
       if (!triggerId) return;
@@ -7242,16 +7303,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     deploymentDraining = true;
     try {
       await coordinationV3Scheduler.pauseLeasing();
+      drainDeploymentIdleAuthorities();
     } catch (error) {
       deploymentDraining = false;
       if (!closed) coordinationV3Scheduler.resumeLeasing();
       return reply.code(409).send({ error: error instanceof Error ? error.message : "deployment drain failed" });
     }
     return {
-      state: "draining" as const,
       acceptingDurableIntake: true,
       leasingRuns: false,
-      activeRuns: coordinationV3.activeRunCount(),
+      ...deploymentDrainSnapshot(),
     };
   });
 
@@ -7260,10 +7321,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     deploymentDraining = false;
     coordinationV3Scheduler.resumeLeasing();
     return {
-      state: "accepting" as const,
       acceptingDurableIntake: true,
       leasingRuns: true,
-      activeRuns: coordinationV3.activeRunCount(),
+      ...deploymentDrainSnapshot(),
     };
   });
 
@@ -7377,10 +7437,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       canAcceptWork,
       acceptingDurableIntake,
       leasingRuns,
-      deploymentDrain: {
-        state: deploymentDraining ? "draining" : "accepting",
-        activeRuns: coordinationV3.activeRunCount(),
-      },
+      deploymentDrain: deploymentDrainSnapshot(),
       checks: {
         daemon: { ok: !closed, detail: closed ? "daemon is shutting down" : "daemon request loop is running" },
         dataDirectory,
@@ -7754,6 +7811,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }
     const agentIds = new Set(agents.map((agent) => agent.id));
+    try {
+      // Persist fail-closed intent before exposing any in-memory quarantine or
+      // beginning fallible browser/provider cleanup.
+      store.markProjectDeletionPending(project.id);
+    } catch (error) {
+      return reply.code(503).send({
+        error: error instanceof Error ? error.message : "Project deletion quarantine could not be persisted",
+        cleanupPending: false,
+        quarantined: false,
+        retryable: true,
+      });
+    }
     projectDeletionInFlightIds.add(project.id);
     deletingProjectIds.add(project.id);
     for (const agentId of agentIds) deletingAgentIds.add(agentId);
@@ -7764,6 +7833,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // authority, even when a browser close hangs or rejects.
       projectBrowserGrants.delete(project.id);
       coordinationV3.prepareProjectDeletion(project.id);
+      void triggerSources.refresh().catch((error) => {
+        app.log.error({ err: error, projectId: project.id }, "Project Trigger source quarantine cleanup failed");
+      });
       for (const agentId of agentIds) {
         closeLinkPreviewsForAgent(agentId, "project deleted");
         const active = activeRuns.get(agentId);
@@ -7812,6 +7884,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       catch { /* completed deletion remains authoritative */ }
       return { deleted: true };
     } catch (error) {
+      try { store.recordProjectDeletionCleanupError(project.id, error instanceof Error ? error.message : String(error)); }
+      catch { /* the existing durable quarantine remains fail closed */ }
       try {
         createOperationalNotification({
           dedupeKey: `project-deletion:${project.id}`,
@@ -8056,6 +8130,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
+    if (deletingProjectIds.has(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
@@ -8164,6 +8239,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+      if (deletingProjectIds.has(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const targets = agentIds.map((agentId) => store.getAgent(agentId));
       if (targets.some((target) => !target || target.archived || !target.conversationIds.includes(master.id))) {
         return reply.code(404).send({ error: "direct message recipient not found" });
@@ -8296,6 +8372,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const emoji = request.body?.emoji?.trim() ?? "";
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!projectId || !communicationEventId) return reply.code(400).send({ error: "projectId and communicationEventId are required" });
+    if (deletingProjectIds.has(projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     if (!isSingleEmoji(emoji)) return reply.code(400).send({ error: "emoji must be one emoji grapheme" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const communication = store.getCommunicationEvent(projectId, communicationEventId);
@@ -8403,6 +8480,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       const master = store.getConversation(request.params.id);
       if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
+      if (deletingProjectIds.has(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const target = store.getAgent(targetAuthorAgentId);
       if (!target || target.archived || !target.conversationIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
       const attached = await Promise.all(attachmentIds.map((id) => assetMetadata(target.id, id)));
@@ -8931,6 +9009,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     Params: { id: string };
     Body: CreateCollaborationMessageRequest & { directReplyToAuthorAgentId?: string };
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
+    const conversation = store.getConversation(request.params.id);
+    if (conversation && deletingProjectIds.has(conversation.projectId)) {
+      return reply.code(409).send({ error: "Project deletion is in progress" });
+    }
     const text = canonicalizeProviderText(request.body?.text ?? "").trim();
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
     if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
@@ -11987,9 +12069,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }
           const retainedRuntime = reusableRuntime(agent.id);
           if (released && retainedRuntime && !closed && !controller.signal.aborted &&
-              !deletingAgentIds.has(agent.id) && store.getAgent(agent.id)?.projectId === project.id) {
+              !deploymentDraining && !deletingAgentIds.has(agent.id) && store.getAgent(agent.id)?.projectId === project.id) {
             scheduleRuntimeIdleClose(agent.id, retainedRuntime);
-          } else if (released && retainedRuntime && (closed || controller.signal.aborted || deletingAgentIds.has(agent.id))) {
+          } else if (released && retainedRuntime && (closed || deploymentDraining || controller.signal.aborted || deletingAgentIds.has(agent.id))) {
             teardownPersistentRuntimeInBackground(agent.id, retainedRuntime, "Run authority ended during teardown");
           }
           if (released) coordinationV3Scheduler.notify();
@@ -12003,6 +12085,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       void execution.finally(() => {
         if (activeRuns.get(agent.id) === activeRun && !ownsActiveRun(agent.id, activeRun)) {
           activeRuns.delete(agent.id);
+          drainDeploymentIdleAuthorities();
           coordinationV3Scheduler?.notify();
         }
       }).catch(() => undefined);
@@ -12166,6 +12249,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>("/api/decisions/:id/respond", async (request, reply) => {
     const current = workspace.getDecision(request.params.id);
     if (!current) return reply.code(404).send({ error: "Decision not found" });
+    if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
     if (current.status !== "pending") return current;
     const optionId = request.body?.optionId?.trim();
     const text = request.body?.text?.trim();
@@ -12373,6 +12457,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const operatorBrowserScope = (params: BrowserRouteParams): BrowserScope => {
     const agent = store.getAgent(params.id);
     if (!agent || agent.projectId !== params.projectId) throw new BrowserSessionError("agent not found", 404);
+    if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
+      throw new BrowserSessionError("Project deletion is in progress", 409);
+    }
     const run = activeRuns.get(agent.id);
     if (!run || run.runId !== params.runId || !ownsActiveRun(agent.id, run)) {
       throw new BrowserSessionError("browser access requires the exact active run", 404);
@@ -13194,6 +13281,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
       const project = store.getProject(request.params.id);
       if (!project) return reply.code(404).send({ error: "project not found" });
+      if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
       const scopedAgent = request.query.agentId ? store.getAgent(request.query.agentId) : undefined;
       if (request.query.agentId && (!scopedAgent || scopedAgent.projectId !== project.id)) {
         return reply.code(404).send({ error: "agent not found in project" });

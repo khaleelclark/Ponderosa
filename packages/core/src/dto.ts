@@ -1813,7 +1813,16 @@ export interface ReadinessDto {
   leasingRuns: boolean;
   deploymentDrain: {
     state: "accepting" | "draining";
+    /** True only when every durable and local execution/cleanup authority has
+     * reached zero; this is the deployment replacement gate. */
+    readyForRestart: boolean;
     activeRuns: number;
+    schedulerRuns: number;
+    localRuns: number;
+    providerAuthorities: number;
+    browserAuthorities: number;
+    pendingCleanupOperations: number;
+    retainedTeardownFailures: number;
   };
   checks: {
     daemon: ReadinessCheckDto;

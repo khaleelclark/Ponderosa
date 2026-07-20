@@ -105,6 +105,29 @@ describe("run-scoped browser sessions", () => {
     expect(driver.close).toHaveBeenCalledTimes(2);
   });
 
+  it("retains a spawn-time browser handle when readiness and its first cleanup fail", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    let failClose = true;
+    const handle = {
+      close: vi.fn(async () => {
+        if (failClose) throw new Error("simulated spawn-handle close failure");
+      }),
+    };
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      onSpawned?.(handle);
+      throw new Error("simulated browser readiness failure");
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+
+    await expect(manager.open(scope)).rejects.toThrow(/browser readiness and cleanup failed/);
+    expect(manager.authorityStatus()).toMatchObject({ pendingCleanup: 1, retainedFailures: 1 });
+    failClose = false;
+    await expect(manager.close(scope, "cleanup_retry")).resolves.toMatchObject({ status: "closed" });
+    expect(handle.close).toHaveBeenCalledTimes(2);
+    expect(manager.authorityStatus()).toMatchObject({ openings: 0, active: 0, pendingCleanup: 0, retainedFailures: 0 });
+  });
+
   it("accepts only non-credentialed http(s) navigation", () => {
     expect(validateBrowserUrl("https://example.com/a")).toBe("https://example.com/a");
     expect(() => validateBrowserUrl("file:///etc/passwd")).toThrow(BrowserSessionError);

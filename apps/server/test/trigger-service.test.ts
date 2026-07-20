@@ -12,7 +12,7 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function setup(now: Date) {
+function setup(now: Date, projectAvailable: (projectId: string) => boolean = () => true) {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-triggers-"));
   directories.push(directory);
   const workspace = join(directory, "workspace");
@@ -25,6 +25,7 @@ function setup(now: Date) {
   let notifications = 0;
   const service = new TriggerSourceService({
     store: agents, coordination, dataDir: join(directory, "secrets"), now: () => now,
+    projectAvailable,
     notify: () => { notifications += 1; },
   });
   return { directory, agents, project, conversation, agent, coordination, service, notifications: () => notifications };
@@ -115,6 +116,41 @@ describe("V3.2 Trigger sources", () => {
       });
       expect(context.coordination.getTriggerDefinition(trigger.id)?.nextFireAt).toBe("2026-07-16T12:04:00.000Z");
       expect(context.notifications()).toBe(1);
+    } finally {
+      context.agents.close();
+    }
+  });
+
+  it("rejects webhook and schedule intake while the owning Project is quarantined", async () => {
+    const now = new Date("2026-07-16T12:03:30.000Z");
+    const context = setup(now, () => false);
+    try {
+      const generated = context.service.createWebhookSecret();
+      const webhook = context.coordination.createTriggerDefinition({
+        id: "quarantined-webhook", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Webhook", instructions: "Review the event",
+        sourceKind: "webhook", sourceConfig: { replayWindowSeconds: 300 },
+        secretCiphertext: generated.ciphertext, secretFingerprint: generated.fingerprint,
+      });
+      const rawBody = Buffer.from('{"action":"opened"}');
+      const timestamp = String(Math.floor(now.getTime() / 1_000));
+      const signature = `v1=${createHmac("sha256", generated.secret).update(`${timestamp}.delivery-1.`).update(rawBody).digest("hex")}`;
+      expect(() => context.service.verifyAndRecordWebhook({
+        triggerId: webhook.id, eventId: "delivery-1", timestamp, signature, rawBody, payload: { action: "opened" },
+      })).toThrow("owner is unavailable");
+
+      const schedule = context.coordination.createTriggerDefinition({
+        id: "quarantined-schedule", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Schedule", instructions: "Refresh the report",
+        sourceKind: "schedule",
+        sourceConfig: { scheduleKind: "interval", everyMs: 60_000, startsAt: "2026-07-16T12:01:00.000Z" },
+        nextFireAt: "2026-07-16T12:01:00.000Z",
+      });
+      await context.service.processDueSchedules();
+      expect(context.coordination.listTriggerOccurrences(webhook.id)).toHaveLength(0);
+      expect(context.coordination.listTriggerOccurrences(schedule.id)).toHaveLength(0);
+      expect(context.coordination.getTriggerDefinition(schedule.id)?.nextFireAt).toBe("2026-07-16T12:01:00.000Z");
+      expect(context.notifications()).toBe(0);
     } finally {
       context.agents.close();
     }

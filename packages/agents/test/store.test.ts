@@ -1732,6 +1732,22 @@ describe("project lifecycle", () => {
     expect(store.getProject(project.id)?.label).toBe("After");
   });
 
+  it("persists Project deletion quarantine until the Project purge commits", () => {
+    const project = store.createProject({ label: "Pending deletion", hostPath: "/repo" });
+    store.markProjectDeletionPending(project.id, "2026-07-20T00:00:00.000Z");
+    store.recordProjectDeletionCleanupError(project.id, "browser cleanup pending");
+    store.close();
+    store = new AgentStore(dir);
+
+    expect(store.listPendingProjectDeletions()).toEqual([{
+      projectId: project.id,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      lastError: "browser cleanup pending",
+    }]);
+    expect(store.deleteProject(project.id)).toBe(true);
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+  });
+
   it("permanently deletes one canonical project tree and all of its projections", () => {
     const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
     const room = store.createConversation(removed.id, { title: "Room" });

@@ -2244,6 +2244,58 @@ describe("interactive browser API", () => {
     await app.close();
   });
 
+  it("restores a failed Project deletion quarantine after restart and rejects all new intake until retry", async () => {
+    let releaseClose!: () => void;
+    const closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const driver = trackedBrowserDriver();
+    driver.close = vi.fn(() => closeBarrier);
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      browserDriverFactory: async () => driver,
+      projectDeletionCleanupTimeoutMs: 30,
+    });
+    const project = store.createProject({ label: "Restart quarantine", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, { title: "Quarantined", engine: "codex", conversationId });
+    expect((await first.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(200);
+
+    const blocked = await first.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(store.listPendingProjectDeletions()).toEqual([
+      expect.objectContaining({ projectId: project.id, lastError: expect.any(String) }),
+    ]);
+    releaseClose();
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect((await restarted.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Must remain blocked", engine: "codex" },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { text: "Must not enqueue" },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/direct-messages`,
+      payload: { text: "Must remain private and blocked", idempotencyKey: "blocked-dm", recipients: [{ agentId: agent.id }] },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Must not open a provider" },
+    })).statusCode).toBe(404);
+    expect(adapter.seeds).toHaveLength(0);
+    expect((await restarted.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(409);
+    expect((await restarted.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      deploymentDrain: { pendingCleanupOperations: 1, retainedTeardownFailures: 1 },
+    });
+
+    const retried = await restarted.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+    await restarted.close();
+  });
+
   it("tears down the browser before deleting its owning agent", async () => {
     adapter.mode = "hang";
     const driver = trackedBrowserDriver();
@@ -4164,6 +4216,51 @@ describe("server chunk F", () => {
       runtimes: [{ id: "codex", authenticated: false, detail: "login required" }],
     });
     await unavailable.close();
+  });
+
+  it("keeps cancellation cleanup running during deployment drain and never reports a false zero", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseClose!: () => void;
+    persistent.closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Drain cancellation", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Draining", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const target = activeRunCancellationPayload(store, agent.id, "cancel-during-deployment-drain");
+    const drain = await app.inject({ method: "POST", url: "/api/deployment/drain" });
+    expect(drain.statusCode, drain.body).toBe(200);
+    expect(drain.json()).toMatchObject({
+      state: "draining", leasingRuns: false, schedulerRuns: 1, localRuns: 1,
+      readyForRestart: false,
+    });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: target,
+    })).statusCode).toBe(200);
+
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/ready" }))
+      .json<{ deploymentDrain: { schedulerRuns: number } }>().deploymentDrain.schedulerRuns).toBe(0);
+    const falseZero = (await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      deploymentDrain: {
+        activeRuns: number; localRuns: number; providerAuthorities: number;
+        pendingCleanupOperations: number; readyForRestart: boolean;
+      };
+    }>().deploymentDrain;
+    expect(falseZero).toMatchObject({ activeRuns: 1, localRuns: 1, readyForRestart: false });
+    expect(falseZero.providerAuthorities).toBeGreaterThan(0);
+    expect(falseZero.pendingCleanupOperations).toBeGreaterThan(0);
+
+    releaseClose();
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/ready" }))
+      .json<{ deploymentDrain: { readyForRestart: boolean } }>().deploymentDrain.readyForRestart).toBe(true);
+    expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).json()).toMatchObject({
+      state: "accepting", leasingRuns: true,
+    });
+    await app.close();
   });
 
   it("lets provider-confirmed entitlement failure override a stale login-positive probe", async () => {

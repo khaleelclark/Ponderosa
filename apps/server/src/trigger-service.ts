@@ -127,6 +127,7 @@ export class TriggerSourceService {
     }): void;
     onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence"): void;
     onBudgetReset?(): void;
+    projectAvailable?(projectId: string): boolean;
     now?: () => Date;
   }) {
     this.secrets = new TriggerSecretStore(options.dataDir);
@@ -167,7 +168,8 @@ export class TriggerSourceService {
       .filter((trigger) => {
         const agent = this.options.store.getAgent(trigger.agentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
-        return trigger.enabled && trigger.sourceKind === "filesystem" && Boolean(
+        return trigger.enabled && trigger.sourceKind === "filesystem" &&
+          (this.options.projectAvailable?.(trigger.projectId) ?? true) && Boolean(
           agent && !agent.archived && conversation && !conversation.archived && agent.conversationIds.includes(conversation.id),
         );
       });
@@ -266,6 +268,7 @@ export class TriggerSourceService {
   }): { occurrenceId: string; state: "pending" | "activated" | "cancelled" | "dead_lettered"; replayed: boolean } {
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Trigger not found");
+    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Trigger owner is unavailable");
     const agent = this.options.store.getAgent(trigger.agentId);
     const conversation = this.options.store.getConversation(trigger.conversationId);
     if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) {
@@ -307,6 +310,7 @@ export class TriggerSourceService {
     }
     for (const trigger of this.options.coordination.listDueScheduleTriggers(now.toISOString())) {
       try {
+        if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) continue;
         const agent = this.options.store.getAgent(trigger.agentId);
         const conversation = this.options.store.getConversation(trigger.conversationId);
         if (!agent || agent.archived || !conversation || conversation.archived || !agent.conversationIds.includes(conversation.id)) continue;
@@ -382,6 +386,7 @@ export class TriggerSourceService {
   }
 
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string): void {
+    if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) return;
     const now = this.now().toISOString();
     try {
       const burst = this.options.coordination.recordFilesystemTriggerEvent({
@@ -404,6 +409,8 @@ export class TriggerSourceService {
 
   private flushFileBurst(triggerId: string): void {
     this.clearBurst(triggerId);
+    const owner = this.options.coordination.getTriggerDefinition(triggerId);
+    if (!owner || !owner.enabled || !(this.options.projectAvailable?.(owner.projectId) ?? true)) return;
     try {
       const result = this.options.coordination.flushFilesystemTriggerBurst(triggerId);
       if (result) this.options.notify(triggerId);

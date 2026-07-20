@@ -15,6 +15,13 @@ export const projects = sqliteTable("projects", {
   defaultEffort: text("default_effort"),
   lastConversationId: text("last_conversation_id"),
 });
+
+/** Durable fail-closed quarantine created before Project runtime cleanup. */
+export const projectDeletionPending = sqliteTable("project_deletion_pending", {
+  projectId: text("project_id").primaryKey(),
+  createdAt: text("created_at").notNull(),
+  lastError: text("last_error"),
+});
 export const agentPresets = sqliteTable("agent_presets", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),
   description: text("description").notNull(), guidance: text("guidance").notNull(), engine: text("engine").notNull(),

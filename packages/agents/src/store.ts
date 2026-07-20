@@ -128,6 +128,7 @@ import {
   agentManagementApprovals,
   agentConversationMemberships,
   continuationHandoffs,
+  projectDeletionPending,
 } from "./schema.js";
 
 export interface ContextReadBoundary {
@@ -1367,6 +1368,25 @@ export class AgentStore {
     return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
   }
 
+  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): void {
+    if (!this.getProject(projectId)) throw new Error("project not found");
+    this.db.insert(projectDeletionPending).values({ projectId, createdAt: now })
+      .onConflictDoNothing({ target: projectDeletionPending.projectId }).run();
+  }
+
+  recordProjectDeletionCleanupError(projectId: string, error: string): void {
+    this.db.update(projectDeletionPending).set({ lastError: error.slice(0, 4_000) })
+      .where(eq(projectDeletionPending.projectId, projectId)).run();
+  }
+
+  listPendingProjectDeletions(): Array<{ projectId: string; createdAt: string; lastError?: string }> {
+    return this.db.select().from(projectDeletionPending).all().map((row) => ({
+      projectId: row.projectId,
+      createdAt: row.createdAt,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+    }));
+  }
+
   /** Permanently remove the canonical project tree and every rebuildable
    * projection. The callback shares the projection-deletion transaction so
    * authoritative runtime state cannot survive a deleted Project row. */
@@ -1395,6 +1415,7 @@ export class AgentStore {
           .run(id);
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_management_approvals WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM project_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
@@ -4363,6 +4384,13 @@ export class AgentStore {
       }
       this.sanitizeOrganizationProjection(projectId);
     }
+    // Project rows are rebuildable and are deleted/reinserted above. The
+    // deletion quarantine is authoritative, so prune it only after canonical
+    // Project folders have been fully reconstructed.
+    this.client.prepare(`
+      DELETE FROM project_deletion_pending
+      WHERE project_id NOT IN (SELECT id FROM projects)
+    `).run();
     this.rebuildGlobalChatSearchProjection();
   }
 

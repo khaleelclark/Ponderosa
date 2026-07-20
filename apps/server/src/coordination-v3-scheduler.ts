@@ -141,7 +141,10 @@ export class CoordinationV3Scheduler {
           this.store.failOutbox(item.id, this.options.workerId, message);
         }
       }
-      if (!this.leasingPaused && this.options.dispatchProviderOperation) {
+      // Deployment draining pauses only new Run/steering admission. Exact-Run
+      // interrupt and cleanup operations must continue so active authority can
+      // actually reach the drained state.
+      if (this.options.dispatchProviderOperation) {
         for (const operation of this.store.claimProviderOperations(this.options.workerId, 50, now)) {
           let result: CoordinationV3DispatchResult;
           try {

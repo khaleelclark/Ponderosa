@@ -28,8 +28,11 @@ curl -sS http://127.0.0.1:8787/api/ready
 ```
 
 The readiness response distinguishes `acceptingDurableIntake` from
-`leasingRuns`. Wait until `deploymentDrain.activeRuns` is zero, then replace and
-restart the service. If the deployment is aborted, explicitly restore leasing:
+`leasingRuns`. Wait until `deploymentDrain.readyForRestart` is true; the
+response separately exposes scheduler/local Runs, provider/browser authorities,
+pending cleanup, and retained teardown failures so a false zero is visible.
+Then replace and restart the service. If the deployment is aborted, explicitly
+restore leasing:
 
 ```sh
 curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \

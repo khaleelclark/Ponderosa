@@ -59,6 +59,31 @@ describe("Communication V3 central scheduler", () => {
     expect(leases).toHaveLength(1);
   });
 
+  it("dispatches exact-Run interrupts while new Run leasing is paused", async () => {
+    store.enqueueMessageActivation({ projectId, agentId: agentA, messageId: "cancel-during-drain", kind: "human", payload: {} });
+    const lease = store.leaseNextRun({ workerId: "scheduler" })!;
+    store.preparePromptInjection({
+      injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken, prompt: "work",
+    });
+    store.markRunStarted(lease.runId, lease.fencingToken);
+    store.markPromptSubmitted({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+    store.acknowledgePromptInjection({ injectionId: lease.injectionId, runId: lease.runId, fencingToken: lease.fencingToken });
+    store.cancelAgentRun({ agentId: agentA, idempotencyKey: "cancel-during-drain" });
+    const operations: string[] = [];
+    const scheduler = new CoordinationV3Scheduler(store, async () => ({ accepted: true }), {
+      workerId: "scheduler",
+      dispatchProviderOperation: async (operation) => {
+        operations.push(operation.runId);
+        return { accepted: true };
+      },
+    });
+
+    await scheduler.pauseLeasing();
+    expect(await scheduler.drainOnce()).toBe(0);
+    expect(operations).toEqual([lease.runId]);
+    expect(store.schedulerMetrics()).toMatchObject({ pendingProviderOperations: 0 });
+  });
+
   it("leaves denied-runtime work queued without leasing or consuming attempts", async () => {
     const now = Date.parse("2026-07-15T00:00:00.000Z");
     store.enqueueMessageActivation({
