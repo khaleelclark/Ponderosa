@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { LineBuffer, parseJsonLine, parseJsonlChunks } from "../src/jsonl.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "../src/jsonl.js";
 
 describe("LineBuffer", () => {
   it("splits complete lines and retains a partial trailing line", () => {
@@ -28,6 +28,13 @@ describe("LineBuffer", () => {
     expect(lb.flush()).toBe('{"a":1}');
     expect(lb.flush()).toBeUndefined();
   });
+
+  it("rejects a record by UTF-8 bytes before buffering the complete frame", () => {
+    const lb = new LineBuffer(8);
+    expect(lb.push("€€")).toEqual([]);
+    expect(() => lb.push("€\n")).toThrow(JsonlRecordLimitError);
+    expect(lb.flush()).toBeUndefined();
+  });
 });
 
 describe("parseJsonLine", () => {
@@ -54,5 +61,20 @@ describe("parseJsonlChunks", () => {
     const out: unknown[] = [];
     for await (const v of parseJsonlChunks(chunks())) out.push(v);
     expect(out).toEqual([{ type: "a" }, { type: "b" }, { type: "c" }]);
+  });
+
+  it("stops pulling an oversized partial live record at the hard byte limit", async () => {
+    let chunksSupplied = 0;
+    async function* chunks(): AsyncIterable<Buffer> {
+      while (chunksSupplied < 1_000) {
+        chunksSupplied += 1;
+        yield Buffer.alloc(64 * 1024, 0x78);
+      }
+    }
+    const consume = async () => {
+      for await (const _ of parseJsonlChunks(chunks())) { /* no complete records */ }
+    };
+    await expect(consume()).rejects.toMatchObject({ limitBytes: JSONL_MAX_RECORD_BYTES });
+    expect(chunksSupplied).toBe((JSONL_MAX_RECORD_BYTES / (64 * 1024)) + 1);
   });
 });

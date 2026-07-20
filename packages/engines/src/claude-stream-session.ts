@@ -10,7 +10,7 @@ import type {
   RuntimeTurnInput,
 } from "@ponderosa/core";
 import { mapClaudeEvent } from "./claude-events.js";
-import { parseJsonlChunks } from "./jsonl.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -170,17 +170,27 @@ export class ClaudeStreamSession implements RuntimeSession {
       yield { type: "error", message: "Claude runtime stdout is unavailable" };
       return;
     }
-    stdout.setEncoding("utf8");
-    for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
-      const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
-      if (capabilities) {
-        this.capabilitiesSnapshot = capabilities;
-        this.opts.onCapabilitiesChanged?.();
+    try {
+      for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+        const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
+        if (capabilities) {
+          this.capabilitiesSnapshot = capabilities;
+          this.opts.onCapabilitiesChanged?.();
+        }
+        for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
+          if (event.type === "turn_done" || event.type === "error") this.active = false;
+          yield event;
+        }
       }
-      for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
-        if (event.type === "turn_done" || event.type === "error") this.active = false;
-        yield event;
-      }
+    } catch (error) {
+      if (!(error instanceof JsonlRecordLimitError)) throw error;
+      this.active = false;
+      yield {
+        type: "error",
+        message: `Claude stream JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`,
+      };
+      await this.close();
+      return;
     }
     if (!this.closed) {
       yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };

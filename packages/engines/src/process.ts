@@ -6,7 +6,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
-import { parseJsonlChunks } from "./jsonl.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 
 /** A minimal spawn signature so tests can inject a fake CLI. */
@@ -58,6 +58,10 @@ const TERMINAL_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
 function bufferedRecordBytes(raw: unknown): number {
   try { return Buffer.byteLength(JSON.stringify(raw), "utf8"); }
   catch { return TERMINAL_STDOUT_BUFFER_BYTES + 1; }
+}
+
+function jsonlRecordLimitMessage(label: string): string {
+  return `${label} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`;
 }
 
 /**
@@ -151,7 +155,6 @@ export async function* streamProcess(
   try {
     const stdout = child.stdout;
     if (stdout) {
-      stdout.setEncoding("utf8");
       // Consume provider stdout independently of downstream persistence. A
       // successful short-lived CLI can exit while its final JSONL records are
       // already buffered; a slow consumer must not lose those records merely
@@ -172,7 +175,7 @@ export async function* streamProcess(
       });
       const parsing = (async () => {
         try {
-          for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
+          for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
             const bytes = bufferedRecordBytes(raw);
             if (rootHasExited && (bytes > TERMINAL_STDOUT_BUFFER_BYTES ||
                 buffered.length >= TERMINAL_STDOUT_BUFFER_RECORDS ||
@@ -199,6 +202,10 @@ export async function* streamProcess(
           }
         } catch (error) {
           parsingError = error;
+          if (error instanceof JsonlRecordLimitError) {
+            stdout.destroy();
+            void terminate().catch(() => undefined);
+          }
         } finally {
           parsingDone = true;
           wake?.();
@@ -229,7 +236,11 @@ export async function* streamProcess(
       await parsing;
       // A local deadline close is expected when an out-of-group process holds
       // an inherited descriptor. Preserve actual parser failures otherwise.
-      if (parsingError && !stdoutDrainDeadlineReached && !terminalBufferExceeded) throw parsingError;
+      const recordLimitExceeded = parsingError instanceof JsonlRecordLimitError;
+      if (parsingError && !stdoutDrainDeadlineReached && !terminalBufferExceeded && !recordLimitExceeded) throw parsingError;
+      if (recordLimitExceeded) {
+        yield { type: "error", message: jsonlRecordLimitMessage(label) };
+      }
       if (terminalBufferExceeded) {
         yield {
           type: "error",

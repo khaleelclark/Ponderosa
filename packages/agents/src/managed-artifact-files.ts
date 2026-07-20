@@ -40,6 +40,8 @@ export interface ManagedArtifactContentHandle {
 
 export interface ManagedArtifactAsyncReadFaults {
   afterOpen?: (path: string) => void | Promise<void>;
+  afterSnapshotOpen?: (path: string) => void | Promise<void>;
+  afterVerification?: (path: string) => void | Promise<void>;
 }
 
 export interface ManagedArtifactPublicationFaults {
@@ -57,6 +59,7 @@ interface OpenedManagedDirectory {
 
 const SAFE_LEAF = /^[A-Za-z0-9_-]{1,128}$/u;
 const activePublications = new Set<string>();
+const activeSnapshots = new Set<string>();
 
 function publicationKey(dataDir: string, projectId: string, artifactId: string): string {
   return `${path.resolve(dataDir)}\0${projectId}\0${artifactId}`;
@@ -70,6 +73,15 @@ function publicationLeafIsActive(dataDir: string, projectId: string, leaf: strin
     if (leaf === artifactId || leaf.startsWith(`.${artifactId}.`)) return true;
   }
   return false;
+}
+
+function snapshotKey(dataDir: string, projectId: string, leaf: string): string {
+  return `${path.resolve(dataDir)}\0${projectId}\0${leaf}`;
+}
+
+function managedLeafIsActive(dataDir: string, projectId: string, leaf: string): boolean {
+  return publicationLeafIsActive(dataDir, projectId, leaf) ||
+    activeSnapshots.has(snapshotKey(dataDir, projectId, leaf));
 }
 
 function descriptorPath(descriptor: number, leaf?: string): string {
@@ -270,7 +282,7 @@ export function repairManagedArtifactContent(
     opened = openManagedDirectory(dataDir, projectId, false);
     for (const name of readdirSync(descriptorPath(opened.directoryDescriptor))) {
       if (!safeArtifactId(name) || referencedArtifactIds.has(name) ||
-          publicationLeafIsActive(dataDir, projectId, name)) continue;
+          managedLeafIsActive(dataDir, projectId, name)) continue;
       let descriptor: number | undefined;
       try {
         descriptor = openSync(
@@ -280,7 +292,7 @@ export function repairManagedArtifactContent(
         const info = fstatSync(descriptor);
         if (!info.isFile() || info.mtimeMs >= graceBoundaryMs) continue;
         if (!sameManagedDirectory(dataDir, projectId, opened) || referencedArtifactIds.has(name) ||
-            publicationLeafIsActive(dataDir, projectId, name)) continue;
+            managedLeafIsActive(dataDir, projectId, name)) continue;
         rmSync(descriptorPath(opened.directoryDescriptor, name));
         fsyncSync(opened.directoryDescriptor);
         removed.push(name);
@@ -347,12 +359,30 @@ function sameOpenedFile(
     after.size === before.size;
 }
 
+async function writeAllAsync(handle: FileHandle, body: Buffer, position: number): Promise<void> {
+  let offset = 0;
+  while (offset < body.length) {
+    const { bytesWritten } = await handle.write(body, offset, body.length - offset, position + offset);
+    if (bytesWritten < 1) throw new Error("managed artifact snapshot write made no progress");
+    offset += bytesWritten;
+  }
+}
+
+function sameSnapshotFile(
+  expected: Awaited<ReturnType<FileHandle["stat"]>>,
+  current: Awaited<ReturnType<FileHandle["stat"]>>,
+  expectedSize: number,
+): boolean {
+  return current.isFile() && current.nlink === 0 && current.dev === expected.dev && current.ino === expected.ino &&
+    current.size === expectedSize;
+}
+
 /**
- * Verify one immutable managed blob without retaining its complete contents.
- * Directory ancestry remains descriptor-pinned for the handle lifetime; reads
- * and SHA-256 work are chunked through libuv so a 64 MiB blob cannot monopolize
- * the event loop. Callers may then read a bounded prefix or stream the same
- * verified descriptor and must close the returned handle when not streaming it.
+ * Copy and verify one managed blob into a private, pathless snapshot inode.
+ * Copying, SHA-256 work, bounded reads, and transfer streaming remain chunked
+ * through libuv. The snapshot's writable handle is closed before this function
+ * returns, so every later byte comes from the exact stable inode whose copied
+ * bytes matched the ledger digest, even if the source inode is changed in place.
  */
 export async function openManagedArtifactContent(
   dataDir: string,
@@ -367,18 +397,40 @@ export async function openManagedArtifactContent(
       !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
   const signal = options?.signal;
   let opened: OpenedManagedDirectory | undefined;
-  let handle: FileHandle | undefined;
+  let sourceHandle: FileHandle | undefined;
+  let snapshotWriter: FileHandle | undefined;
+  let snapshotReader: FileHandle | undefined;
+  let snapshotLeaf: string | undefined;
+  let snapshotActiveKey: string | undefined;
   try {
     signal?.throwIfAborted();
     opened = openManagedDirectory(dataDir, projectId, false);
     const file = managedArtifactContentPath(dataDir, projectId, artifactId);
     if (file !== path.join(opened.nominalPath, artifactId)) return undefined;
-    handle = await fs.open(
+    sourceHandle = await fs.open(
       descriptorPath(opened.directoryDescriptor, artifactId),
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
     );
-    const before = await handle.stat();
+    const before = await sourceHandle.stat();
     if (!before.isFile() || before.nlink !== 1 || before.size !== expectedSize) return undefined;
+
+    snapshotLeaf = `.${artifactId}.${randomUUID()}.snapshot`;
+    snapshotActiveKey = snapshotKey(dataDir, projectId, snapshotLeaf);
+    activeSnapshots.add(snapshotActiveKey);
+    const snapshotPath = descriptorPath(opened.directoryDescriptor, snapshotLeaf);
+    snapshotWriter = await fs.open(
+      snapshotPath,
+      fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | fsConstants.O_NOFOLLOW,
+      0o600,
+    );
+    snapshotReader = await fs.open(snapshotPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const emptySnapshot = await snapshotReader.stat();
+    const writerIdentity = await snapshotWriter.stat();
+    if (!emptySnapshot.isFile() || emptySnapshot.nlink !== 1 || emptySnapshot.size !== 0 ||
+        writerIdentity.dev !== emptySnapshot.dev || writerIdentity.ino !== emptySnapshot.ino) return undefined;
+    await options?.faults?.afterSnapshotOpen?.(path.join(opened.nominalPath, snapshotLeaf));
+    await fs.rm(snapshotPath);
+    snapshotLeaf = undefined;
     await options?.faults?.afterOpen?.(file);
 
     const digest = createHash("sha256");
@@ -387,27 +439,33 @@ export async function openManagedArtifactContent(
     while (position < expectedSize) {
       signal?.throwIfAborted();
       const requested = Math.min(chunk.length, expectedSize - position);
-      const { bytesRead } = await handle.read(chunk, 0, requested, position);
+      const { bytesRead } = await sourceHandle.read(chunk, 0, requested, position);
       if (bytesRead < 1) return undefined;
+      await writeAllAsync(snapshotWriter, chunk.subarray(0, bytesRead), position);
       digest.update(chunk.subarray(0, bytesRead));
       position += bytesRead;
     }
     signal?.throwIfAborted();
-    const after = await handle.stat();
+    const after = await sourceHandle.stat();
     if (!sameOpenedFile(before, after) || position !== expectedSize ||
         !sameManagedDirectory(dataDir, projectId, opened) || digest.digest("hex") !== expectedSha256) return undefined;
+    const completedSnapshot = await snapshotReader.stat();
+    if (!sameSnapshotFile(emptySnapshot, completedSnapshot, expectedSize)) return undefined;
+    await snapshotWriter.close();
+    snapshotWriter = undefined;
+    await sourceHandle.close();
+    sourceHandle = undefined;
+    signal?.throwIfAborted();
+    await options?.faults?.afterVerification?.(file);
 
-    const retainedDirectory = opened;
-    const retainedHandle = handle;
-    opened = undefined;
-    handle = undefined;
+    const retainedHandle = snapshotReader;
+    snapshotReader = undefined;
     let closed = false;
     const close = async (): Promise<void> => {
       if (closed) return;
       closed = true;
       try { await retainedHandle.close(); }
       catch { /* a stream may already have closed the descriptor */ }
-      closeManagedDirectory(retainedDirectory);
     };
     const readRange = async (maxBytes: number, readSignal?: AbortSignal): Promise<Buffer> => {
       if (closed) throw new Error("managed artifact handle is closed");
@@ -423,7 +481,7 @@ export async function openManagedArtifactContent(
       }
       readSignal?.throwIfAborted();
       const current = await retainedHandle.stat();
-      if (!sameOpenedFile(before, current) || !sameManagedDirectory(dataDir, projectId, retainedDirectory)) {
+      if (!sameSnapshotFile(emptySnapshot, current, expectedSize)) {
         throw new Error("managed artifact changed during bounded read");
       }
       return body;
@@ -450,7 +508,13 @@ export async function openManagedArtifactContent(
     if (signal?.aborted) throw error;
     return undefined;
   } finally {
-    await handle?.close().catch(() => undefined);
+    await sourceHandle?.close().catch(() => undefined);
+    await snapshotWriter?.close().catch(() => undefined);
+    await snapshotReader?.close().catch(() => undefined);
+    if (snapshotLeaf && opened) {
+      await fs.rm(descriptorPath(opened.directoryDescriptor, snapshotLeaf), { force: true }).catch(() => undefined);
+    }
+    if (snapshotActiveKey) activeSnapshots.delete(snapshotActiveKey);
     closeManagedDirectory(opened);
   }
 }

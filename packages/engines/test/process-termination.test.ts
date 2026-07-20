@@ -238,4 +238,56 @@ describe("observed process-group termination", () => {
     expect(events.filter((event) => event.type === "text").length).toBeLessThan(700);
     expect(events.filter((event) => event.type === "text").length).toBeLessThanOrEqual(512);
   });
+
+  it("terminates a live provider before buffering one oversized JSONL record", async () => {
+    const controller = new AbortController();
+    let runtimeHandle: RuntimeProcessHandle | undefined;
+    const events: AgentEvent[] = [];
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    let writes = 0;
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr,
+      stdin: null,
+      pid: undefined,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => {
+        if ((child as unknown as { exitCode: number | null }).exitCode === null) {
+          (child as unknown as { exitCode: number | null }).exitCode = 143;
+          child.emit("exit", 143, "SIGTERM");
+        }
+        return true;
+      },
+    }) as unknown as ChildProcess;
+    const spawnFn = (() => {
+      const write = () => {
+        if ((child as unknown as { exitCode: number | null }).exitCode !== null || writes >= 80) return;
+        writes += 1;
+        stdout.write(Buffer.alloc(64 * 1024, 0x78));
+        setImmediate(write);
+      };
+      setImmediate(write);
+      return child;
+    }) as unknown as typeof spawn;
+    for await (const event of streamProcess({
+      bin: "oversized-live-provider",
+      args: [],
+      cwd: process.cwd(),
+      signal: controller.signal,
+      spawnFn,
+      killGraceMs: 50,
+      label: "oversized live provider",
+      map: () => [],
+      onRuntimeSpawned: (handle) => { runtimeHandle = handle; },
+    })) events.push(event);
+
+    expect(events).toContainEqual({
+      type: "error",
+      message: "oversized live provider JSONL record exceeded the 4 MiB limit",
+    });
+    expect(runtimeHandle?.isAlive()).toBe(false);
+    expect(writes).toBeLessThan(80);
+  });
 });

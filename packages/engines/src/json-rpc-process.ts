@@ -1,8 +1,8 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
 import type { RuntimeProcessHandle } from "@ponderosa/core";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, processGroupAlive, terminateProcessGroup } from "./process-termination.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -97,14 +97,35 @@ export class JsonRpcProcess {
     this.child.stderr?.on("data", (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
-    const lines = createInterface({ input: this.child.stdout! });
+    const lines = new LineBuffer();
     let postExitDrainTimer: NodeJS.Timeout | undefined;
     const clearPostExitDrain = () => {
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
       postExitDrainTimer = undefined;
     };
     this.child.stdout?.once("close", clearPostExitDrain);
-    lines.on("line", (line) => this.receive(line));
+    const failRecord = () => {
+      if (this.closed) return;
+      reportRootExit();
+      this.child.stdout?.destroy();
+      this.finish(new Error(
+        `${opts.bin} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`,
+      ));
+      void this.close().catch(() => undefined);
+    };
+    this.child.stdout?.on("data", (chunk: Buffer | string) => {
+      try {
+        for (const line of lines.push(chunk)) this.receive(line);
+      } catch (error) {
+        if (error instanceof JsonlRecordLimitError) failRecord();
+        else throw error;
+      }
+    });
+    this.child.stdout?.once("end", () => {
+      if (this.closed) return;
+      const tail = lines.flush();
+      if (tail !== undefined) this.receive(tail);
+    });
     const rootExited = () => {
       // Host-initiated rollover, replacement, cancellation, and shutdown are
       // expected closes. Only an independently exiting root is a crash that

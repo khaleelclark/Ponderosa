@@ -2095,6 +2095,11 @@ describe("generated artifact endpoints", () => {
     const screenshot = publishManagedArtifactContent(dataDir, project.id, screenshotId, Buffer.from("screenshot"));
     publishManagedArtifactContent(dataDir, project.id, rejectedGeneratedId, Buffer.from("rejected generated"));
     publishManagedArtifactContent(dataDir, project.id, lateScreenshotId, Buffer.from("late screenshot"));
+    const abandonedSnapshot = path.join(
+      path.dirname(managedArtifactContentPath(dataDir, project.id, generatedId)),
+      `.${generatedId}.abandoned.snapshot`,
+    );
+    writeFileSync(abandonedSnapshot, "abandoned transfer snapshot");
     store.appendEvent(agent.id, {
       type: "generated_artifact", artifactId: generatedId, executionId: randomUUID(),
       path: `generated/${generatedId}.txt`, sourcePath: "generated.txt", name: "generated.txt",
@@ -2109,6 +2114,7 @@ describe("generated artifact endpoints", () => {
     for (const id of [generatedId, screenshotId, rejectedGeneratedId, lateScreenshotId]) {
       utimesSync(managedArtifactContentPath(dataDir, project.id, id), old, old);
     }
+    utimesSync(abandonedSnapshot, old, old);
 
     const app = createServer({ dataDir, store, engines, logger: false });
     await app.ready();
@@ -2116,6 +2122,7 @@ describe("generated artifact endpoints", () => {
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    expect(existsSync(abandonedSnapshot)).toBe(false);
     await app.close();
 
     store = new AgentStore(dataDir);
@@ -2125,6 +2132,7 @@ describe("generated artifact endpoints", () => {
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
     expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    expect(existsSync(abandonedSnapshot)).toBe(false);
     await restarted.close();
   });
 

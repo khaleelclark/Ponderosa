@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -143,6 +144,48 @@ describe("Project-owned managed artifact files", () => {
     expect(streamedHash.digest("hex")).toBe(hash);
   });
 
+  it("streams the verified snapshot after a same-size source mutation", async () => {
+    const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
+    const mutated = Buffer.alloc(body.length, 0x78);
+    const opened = await openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
+      faults: { afterVerification: (file) => writeFileSync(file, mutated) },
+    });
+    expect(opened).toBeDefined();
+    expect(readFileSync(published.path)).toEqual(mutated);
+    expect(await opened!.readRange(body.length)).toEqual(body);
+    const streamed: Buffer[] = [];
+    for await (const chunk of opened!.createReadStream()) {
+      streamed.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    expect(Buffer.concat(streamed)).toEqual(body);
+  });
+
+  it("protects an opening snapshot from repair and removes it after failure", async () => {
+    publishManagedArtifactContent(dataDir, projectId, artifactId, body);
+    const repaired: string[][] = [];
+    const opened = await openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
+      faults: {
+        afterSnapshotOpen: () => {
+          repaired.push(repairManagedArtifactContent(dataDir, projectId, new Set([artifactId]), Date.now() + 60_000));
+          throw new Error("snapshot setup failed");
+        },
+      },
+    });
+    expect(opened).toBeUndefined();
+    expect(repaired).toEqual([[]]);
+    expect(readdirSync(path.dirname(managedArtifactContentPath(dataDir, projectId, artifactId))))
+      .toEqual([artifactId]);
+  });
+
+  it("removes an abandoned snapshot during startup-style orphan repair", () => {
+    const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
+    const abandoned = path.join(path.dirname(published.path), `.${artifactId}.abandoned.snapshot`);
+    writeFileSync(abandoned, body);
+    expect(repairManagedArtifactContent(dataDir, projectId, new Set([artifactId]), Date.now() + 60_000))
+      .toEqual([path.basename(abandoned)]);
+    expect(readdirSync(path.dirname(published.path))).toEqual([artifactId]);
+  });
+
   it("cancels an async managed-artifact verification while retaining descriptor safety", async () => {
     publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const controller = new AbortController();
@@ -150,5 +193,7 @@ describe("Project-owned managed artifact files", () => {
       signal: controller.signal,
       faults: { afterOpen: () => controller.abort(new Error("cancelled test read")) },
     })).rejects.toThrow(/cancelled test read/);
+    expect(readdirSync(path.dirname(managedArtifactContentPath(dataDir, projectId, artifactId))))
+      .toEqual([artifactId]);
   });
 });
