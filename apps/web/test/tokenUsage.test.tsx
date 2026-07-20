@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { costSummaryLabel, formatTokens, formatUsd, TokenUsageDetails } from "../src/components/TokenUsageButton";
+import { costSummaryLabel, formatTokens, formatUsd, providerUsageSummaryLabel, TokenUsageDetails } from "../src/components/TokenUsageButton";
 
 describe("token usage UI", () => {
   it("leads with provider usage, separates cached and new input, and makes coverage explicit", () => {
@@ -72,5 +72,28 @@ describe("token usage UI", () => {
         breakdown: [],
       },
     })).toContain("Partial · $1.25");
+  });
+
+  it("shows provider telemetry only when a provider actually reported it", () => {
+    const data = {
+      scope: "overall",
+      inputTokens: 10,
+      cachedInputTokens: 0,
+      cacheWriteInputTokens: 0,
+      outputTokens: 5,
+      reasoningOutputTokens: 0,
+      totalTokens: 15,
+      finalizedRuns: 1,
+      reportedRuns: 1,
+      unreportedRuns: 0,
+      coverage: 1,
+      metricAvailability: { inputTokens: "available", cachedInputTokens: "available", cacheWriteInputTokens: "available", outputTokens: "available", reasoningOutputTokens: "available", totalTokens: "available" },
+      recentTurns: [],
+      wakeCauses: [],
+      breakdown: [{ projectId: "project", agentId: "agent", agentTitle: "Agent", engine: "codex", runs: 1, pricingAvailableRuns: 0, unpricedRuns: 1, usage: { totalTokens: 15 } }],
+    } as const;
+    expect(providerUsageSummaryLabel("codex", data)).toContain("15 tokens across 1 finalized Run");
+    expect(providerUsageSummaryLabel("claude", data)).toContain("unknown");
+    expect(providerUsageSummaryLabel("codex", undefined, true)).toContain("checking");
   });
 });

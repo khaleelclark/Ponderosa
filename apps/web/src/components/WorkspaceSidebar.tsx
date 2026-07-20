@@ -43,7 +43,6 @@ import { useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
-import { chatStateKey, writeChatState } from "../chatState";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { routeProjectId, type Route } from "../routing";
@@ -277,8 +276,7 @@ export function WorkspaceSidebar({
     setFilter("");
   };
   const openTriggerManager = (projectId: string, agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "triggers");
-    onNavigate({ kind: "agent", projectId, agentId });
+    onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
   };
 
   const openProject = (snapshot: WorkspaceProjectSnapshot) => {
@@ -442,7 +440,7 @@ export function WorkspaceSidebar({
             key={trigger.id}
             aria-label={`Manage trigger ${trigger.name}`}
             onClick={() => openTriggerManager(destination.project.id, destination.agent.id)}
-            onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id } }); }}
+            onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } }); }}
             sx={{ borderRadius: 1.25, px: 1, py: .75, mb: .35, minWidth: 0 }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}><BoltOutlinedIcon sx={{ fontSize: 18 }} /></ListItemIcon>
@@ -459,7 +457,7 @@ export function WorkspaceSidebar({
           key={agent.id}
           aria-label={`Manage triggers for ${agent.title}`}
           onClick={() => openTriggerManager(triggerProject.id, agent.id)}
-          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: triggerProject.id, agentId: agent.id } }); }}
+          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: triggerProject.id, agentId: agent.id, view: "triggers" } }); }}
           sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}
         >
           <ListItemIcon sx={{ minWidth: 38 }}><SmartToyOutlinedIcon sx={{ fontSize: 17 }} /></ListItemIcon>
@@ -529,7 +527,10 @@ export function WorkspaceSidebar({
       sx={{ position: "absolute", zIndex: 2, insetBlock: 0, right: -3, width: 7, cursor: "col-resize", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }}
     /> : null}
     {menu ? <Menu anchorEl={menu.anchor} open onClose={() => setMenu(undefined)}>
-      <MenuItem disabled={!onOpenInNewTab} onClick={() => { onOpenInNewTab?.(menu.route); setMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+      <MenuItem disabled={!onOpenInNewTab} onClick={() => {
+        onOpenInNewTab?.(menu.route);
+        setMenu(undefined);
+      }}>Open in new Ponderosa tab</MenuItem>
       {menu.conversation ? <MenuItem onClick={() => { onRenameConversation(menu.conversation!); setMenu(undefined); }}>Rename</MenuItem> : null}
       {menu.conversation ? <MenuItem sx={{ color: "error.main" }} onClick={() => { onDeleteConversation(menu.conversation!); setMenu(undefined); }}>Delete</MenuItem> : null}
     </Menu> : null}

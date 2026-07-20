@@ -19,6 +19,14 @@ export interface AgentTelemetryFocus {
   id: string;
 }
 
+export type AgentDetailView = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
+
+const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "runOutput", "activity", "changed_files", "review", "runs", "artifacts", "triggers"];
+
+export function isAgentDetailView(value: unknown): value is AgentDetailView {
+  return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
+}
+
 export type Route =
   | { kind: "home" }
   | { kind: "projects" }
@@ -29,7 +37,7 @@ export type Route =
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
   | { kind: "agents"; projectId: string }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; view?: AgentDetailView }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -45,6 +53,8 @@ export function parseRoute(pathname: string, search = ""): Route {
     : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
   const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
+  const requestedAgentView = query.get("view")?.trim();
+  const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
@@ -70,6 +80,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       kind: "agent", projectId, agentId: decodeURIComponent(parts[3]),
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
+      ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
     };
   }
   if (parts[2] === "reviews" && parts[3]) {
@@ -106,12 +117,15 @@ export function routeToPath(route: Route): string {
     }
     case "agents":
       return `/projects/${encodeURIComponent(route.projectId)}/agents`;
-    case "agent":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${
-        route.focusMessageId ? `?message=${encodeURIComponent(route.focusMessageId)}`
-          : route.focusTelemetry ? `?stream=${encodeURIComponent(route.focusTelemetry.stream)}&item=${encodeURIComponent(route.focusTelemetry.id)}`
-            : ""
-      }`;
+    case "agent": {
+      const query = new URLSearchParams();
+      if (route.focusMessageId) query.set("message", route.focusMessageId);
+      else if (route.focusTelemetry) {
+        query.set("stream", route.focusTelemetry.stream);
+        query.set("item", route.focusTelemetry.id);
+      } else if (route.view) query.set("view", route.view);
+      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
+    }
     case "review":
       return `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`;
     default:

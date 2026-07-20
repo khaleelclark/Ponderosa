@@ -58,6 +58,9 @@ describe("workspace tab bar", () => {
     expect(releaseTabContainer.props.sx.borderRadius).toBe(2);
     expect(releaseTabContainer.props.sx.minWidth).toBe(38);
     expect(releaseTabContainer.props.sx.flex).toBe("1 1 200px");
+    const tabStrip = view.root.findByProps({ className: "workspace-tab-strip" });
+    expect(tabStrip.props.sx.overflowX).toBe("auto");
+    expect(tabStrip.props.sx.scrollbarWidth).toBe("none");
     expect(onCloseOthers).not.toHaveBeenCalled();
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());

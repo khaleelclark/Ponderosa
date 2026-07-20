@@ -32,11 +32,11 @@ import {
   Typography,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
-import { TokenUsageButton } from "./components/TokenUsageButton";
+import { providerUsageSummaryLabel, TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -161,6 +161,12 @@ export default function App({
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
+  const providerUsageQuery = useQuery({
+    queryKey: ["token-usage", "overall", undefined, "all"],
+    queryFn: () => api.getTokenUsage("overall", undefined, {}),
+    enabled: engineStatusOpen,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, route));
@@ -840,7 +846,8 @@ export default function App({
         <DialogContent>
           <Stack spacing={1.5} sx={{ pt: 1 }}>
             <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, operator availability, and runtime access. It cannot see subscription quotas or provider-account billing.</Typography>
-            {engines.map((engine) => <Box key={engine.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
+            {engines.map((engine) => {
+              return <Box key={engine.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
               <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
                 <Typography variant="subtitle1" fontWeight={750} sx={{ flex: 1 }}>{engine.displayName}</Typography>
                 <Chip size="small" label={engine.enabled === false ? "Disabled" : "Enabled"} color={engine.enabled === false ? "default" : "success"} variant="outlined" />
@@ -850,11 +857,14 @@ export default function App({
               <Typography variant="body2" sx={{ mt: 1 }}>{engine.availabilityDetail ?? (engine.available ? "Runtime access is available." : "Runtime access is unavailable.")}</Typography>
               {engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
               <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+                {providerUsageSummaryLabel(engine.id, providerUsageQuery.data, providerUsageQuery.isLoading)}
+              </Typography>
               {!engine.available && engine.authenticated ? <Button size="small" sx={{ mt: 1 }} disabled={recheckEngine.isPending} onClick={() => {
                 if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
                 recheckEngine.mutate(engine.id);
               }}>{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test access"}</Button> : null}
-            </Box>)}
+            </Box>})}
             {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
           </Stack>
         </DialogContent>

@@ -22,4 +22,10 @@ describe("agent detail return navigation", () => {
     expect(projectShellSource).not.toContain("detailByAgentId");
     expect(projectShellSource).not.toContain("api.getAgent(");
   });
+
+  it("opens focused reviews in user-managed Ponderosa tabs", () => {
+    expect(projectShellSource).toContain("onOpenReviewInNewTab");
+    expect(projectShellSource).toContain('openInNewTab?.({ kind: "review", projectId, agentId: route.agentId');
+    expect(projectShellSource).toContain('onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}');
+  });
 });

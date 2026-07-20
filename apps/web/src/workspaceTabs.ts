@@ -1,4 +1,4 @@
-import type { Route } from "./routing";
+import { isAgentDetailView, type Route } from "./routing";
 
 export type WorkspaceTabRoute = Route;
 
@@ -33,7 +33,8 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (candidate.kind === "browser") return (candidate.agentId === undefined && candidate.runId === undefined)
     || (typeof candidate.agentId === "string" && Boolean(candidate.agentId) && typeof candidate.runId === "string" && Boolean(candidate.runId));
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
-  if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId);
+  if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
+    && (candidate.view === undefined || isAgentDetailView(candidate.view));
   if (candidate.kind === "review") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
     && (candidate.path === undefined || typeof candidate.path === "string");
   return false;

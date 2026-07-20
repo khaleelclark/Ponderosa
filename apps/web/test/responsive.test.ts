@@ -40,6 +40,7 @@ describe("responsive compact controls", () => {
     expect(sidebar).toContain("drawer?: boolean");
     expect(sidebar).toContain('width: 48');
     expect(sidebar).toContain('onContextMenu={(event)');
+    expect(sidebar).toContain('view: "triggers"');
     expect(app).toContain('onRenameConversation={(conversation) => { setMobileNavOpen(false);');
     expect(app).toContain('onDeleteConversation={(conversation) => { setMobileNavOpen(false);');
     expect(sidebar).not.toContain("<Dialog");

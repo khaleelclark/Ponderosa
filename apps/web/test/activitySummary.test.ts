@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffLineKind, formatActivitySpan, groupActivityByExecution, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
+import { diffLineKind, formatActivitySpan, groupActivityByExecution, resolveWorkspaceReviewPath, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
 
 describe("activity summaries", () => {
   it("collapses multiline output and bounds large payloads", () => {
@@ -30,5 +30,13 @@ describe("activity summaries", () => {
     expect(diffLineKind("-removed")).toBe("deletion");
     expect(diffLineKind("+++ b/file.ts")).toBe("neutral");
     expect(diffLineKind("--- a/file.ts")).toBe("neutral");
+  });
+
+  it("keeps an operator-selected review file until it disappears", () => {
+    const changes = [{ path: "first.ts" }, { path: "selected.ts" }];
+    expect(resolveWorkspaceReviewPath(changes, "selected.ts", "first.ts")).toBe("selected.ts");
+    expect(resolveWorkspaceReviewPath([{ path: "first.ts" }], "selected.ts", "first.ts")).toBe("first.ts");
+    expect(resolveWorkspaceReviewPath([{ path: "fallback.ts" }], "missing.ts", "also-missing.ts")).toBe("fallback.ts");
+    expect(resolveWorkspaceReviewPath([], "missing.ts", "also-missing.ts")).toBeUndefined();
   });
 });

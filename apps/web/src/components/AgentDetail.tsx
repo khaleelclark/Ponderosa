@@ -61,7 +61,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
-import type { AgentTelemetryFocus } from "../routing";
+import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 import { telemetryElementId } from "../telemetryFocus";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
@@ -69,7 +69,7 @@ import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 
-type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
+type AgentTab = AgentDetailView;
 
 const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
   stream === "runOutput" ? "runOutput"
@@ -227,6 +227,8 @@ export function AgentDetail({
   agentId,
   focusMessageId,
   focusTelemetry,
+  initialView,
+  onViewChange,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -241,6 +243,7 @@ export function AgentDetail({
   onOpenArtifact,
   onOpenArtifactInNewTab,
   onOpenReview,
+  onOpenReviewInNewTab,
   onOpenBrowser,
   onNewSubagent,
   onDeleted,
@@ -248,6 +251,8 @@ export function AgentDetail({
   agentId: string;
   focusMessageId?: string;
   focusTelemetry?: AgentTelemetryFocus;
+  initialView?: AgentDetailView;
+  onViewChange?(view: AgentDetailView): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
@@ -262,6 +267,7 @@ export function AgentDetail({
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;
   onOpenReview(path?: string): void;
+  onOpenReviewInNewTab(path?: string): void;
   onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
@@ -279,6 +285,7 @@ export function AgentDetail({
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
   const [tab, setTab] = useState<AgentTab>(() => {
+    if (initialView) return initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     return AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat";
   });
@@ -322,13 +329,17 @@ export function AgentDetail({
   });
 
   useEffect(() => {
+    if (initialView) {
+      setTab(initialView);
+      return;
+    }
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
     setOlderMessages(undefined);
     setOlderTelemetry({});
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
-  }, [agentId]);
+  }, [agentId, initialView]);
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
@@ -780,11 +791,15 @@ export function AgentDetail({
           onOpenReview(file.path);
         }
       }}
+      onOpenFileInNewTab={(file: ResponseFileActivityDto) => {
+        if (file.artifactId) onOpenArtifactInNewTab(file.artifactId);
+        else onOpenReviewInNewTab(file.path);
+      }}
       onViewAll={() => setTab("review")}
     />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
-    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} />,
-    review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
+    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} onOpenReview={onOpenReview} onOpenReviewInNewTab={onOpenReviewInNewTab} />,
+    review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} onOpenInNewTab={onOpenReviewInNewTab} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
@@ -1023,7 +1038,7 @@ export function AgentDetail({
       <Tabs
         aria-label="Agent details"
         value={tab}
-        onChange={(_event, value: AgentTab) => setTab(value)}
+        onChange={(_event, value: AgentTab) => { setTab(value); onViewChange?.(value); }}
         variant="scrollable"
         scrollButtons="auto"
         allowScrollButtonsMobile

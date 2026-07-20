@@ -20,6 +20,15 @@ export function costSummaryLabel(data?: TokenUsageSummaryDto): string {
   return cost.unpricedRuns > 0 ? `Partial · ${formatUsd(cost.usd)}` : formatUsd(cost.usd);
 }
 
+export function providerUsageSummaryLabel(engineId: string, data?: TokenUsageSummaryDto, loading = false): string {
+  if (loading) return "Provider-reported usage: checking Ponderosa Run telemetry…";
+  const usage = data?.breakdown.filter((item) => item.engine === engineId);
+  const runs = usage?.reduce((total, item) => total + item.runs, 0) ?? 0;
+  if (runs === 0) return "Provider-reported usage: unknown — no Run telemetry is available for this provider.";
+  const tokens = usage?.reduce((total, item) => total + (item.usage.totalTokens ?? 0), 0) ?? 0;
+  return `Provider-reported usage: ${new Intl.NumberFormat().format(tokens)} tokens across ${runs} finalized Run${runs === 1 ? "" : "s"}.`;
+}
+
 function runsLabel(value: number): string {
   return `${value} run${value === 1 ? "" : "s"}`;
 }

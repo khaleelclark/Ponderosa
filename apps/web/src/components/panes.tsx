@@ -1088,14 +1088,17 @@ export function summarizeActivityText(value: string, maxLength: number): string 
 export function ResponseFileActivity({
   files,
   onOpenFile,
+  onOpenFileInNewTab,
   onViewAll,
   projectId,
 }: {
   files: ResponseFileActivityDto[];
   onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
 }): JSX.Element | null {
+  const [fileMenu, setFileMenu] = useState<{ anchor: HTMLElement; file: ResponseFileActivityDto }>();
   if (files.length === 0) return null;
   const additions = files.reduce((total, file) => total + (file.additions ?? 0), 0);
   const deletions = files.reduce((total, file) => total + (file.deletions ?? 0), 0);
@@ -1120,7 +1123,16 @@ export function ResponseFileActivity({
           {files.map((file) => {
             const generated = file.artifactKind === "generated_file" && file.artifactId && projectId;
             const root = generated ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}` : undefined;
-            return <Stack key={`${file.sourceSeq}:${file.path}`} direction="row" sx={{ alignItems: "center", minWidth: 0 }}>
+            return <Stack
+              key={`${file.sourceSeq}:${file.path}`}
+              direction="row"
+              onContextMenu={(event) => {
+                if (!onOpenFileInNewTab) return;
+                event.preventDefault();
+                setFileMenu({ anchor: event.currentTarget, file });
+              }}
+              sx={{ alignItems: "center", minWidth: 0 }}
+            >
               <Button
                 size="small"
                 color="inherit"
@@ -1145,13 +1157,17 @@ export function ResponseFileActivity({
       </Paper>
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review all</Button> : null}
     </Stack>
+    {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
+      <MenuItem onClick={() => { onOpenFileInNewTab?.(fileMenu.file); setFileMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+    </Menu> : null}
   </Box>;
 }
 
-export function WorkLogPane({ entries, focusId, onOpenFile, onViewAll, projectId }: {
+export function WorkLogPane({ entries, focusId, onOpenFile, onOpenFileInNewTab, onViewAll, projectId }: {
   entries: RunOutputDto[];
   focusId?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   onViewAll?(): void;
   projectId?: string;
 }): JSX.Element {
@@ -1174,7 +1190,7 @@ export function WorkLogPane({ entries, focusId, onOpenFile, onViewAll, projectId
             {entry.text}
           </Typography>
           {entry.kind === "response" && entry.fileActivity?.length
-            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onViewAll={onViewAll} projectId={projectId} />
+            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
             : null}
         </Paper>
       ))}
@@ -1515,7 +1531,24 @@ export function formatActivitySpan(firstAt: string, lastAt: string): string {
   return `${minutes}m ${seconds % 60}s activity span`;
 }
 
-export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath }: { projectId: string; agentId?: string; files: ChangedFileDto[]; running: boolean; initialPath?: string }): JSX.Element {
+export function resolveWorkspaceReviewPath(
+  changes: ReadonlyArray<{ path: string }>,
+  selectedPath?: string,
+  initialPath?: string,
+): string | undefined {
+  if (selectedPath && changes.some((change) => change.path === selectedPath)) return selectedPath;
+  if (initialPath && changes.some((change) => change.path === initialPath)) return initialPath;
+  return changes[0]?.path;
+}
+
+export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onOpenInNewTab }: {
+  projectId: string;
+  agentId?: string;
+  files: ChangedFileDto[];
+  running: boolean;
+  initialPath?: string;
+  onOpenInNewTab?(path: string): void;
+}): JSX.Element {
   const workspace = useQuery({
     queryKey: ["workspace", projectId],
     queryFn: () => api.getWorkspaceStatus(projectId),
@@ -1525,27 +1558,30 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const changes = workspace.data?.changes ?? [];
   const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
   const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
+  const [fileMenu, setFileMenu] = useState<{ anchor: HTMLElement; path: string }>();
+  const lastInitialPath = useRef(initialPath);
+  const activePath = resolveWorkspaceReviewPath(changes, selectedPath, initialPath);
 
   useEffect(() => {
-    if (initialPath && changes.some((change) => change.path === initialPath)) {
-      setSelectedPath(initialPath);
-    } else if (!selectedPath || !changes.some((change) => change.path === selectedPath)) {
-      setSelectedPath(changes[0]?.path);
-    }
-  }, [changes, initialPath, selectedPath]);
+    setSelectedPath((current) => {
+      const initialChanged = lastInitialPath.current !== initialPath;
+      lastInitialPath.current = initialPath;
+      return resolveWorkspaceReviewPath(changes, initialChanged ? undefined : current, initialPath);
+    });
+  }, [changes, initialPath]);
 
   const review = useQuery({
-    queryKey: ["workspace-file", projectId, selectedPath],
-    queryFn: () => api.getWorkspaceFile(projectId, selectedPath ?? ""),
-    enabled: Boolean(selectedPath),
+    queryKey: ["workspace-file", projectId, activePath],
+    queryFn: () => api.getWorkspaceFile(projectId, activePath ?? ""),
+    enabled: Boolean(activePath),
     refetchInterval: running ? 1_500 : false,
   });
-  const selectedChange = changes.find((change) => change.path === selectedPath);
-  const selectedProvenanceSummary = selectedPath ? provenance.get(selectedPath) : undefined;
+  const selectedChange = changes.find((change) => change.path === activePath);
+  const selectedProvenanceSummary = activePath ? provenance.get(activePath) : undefined;
   const selectedProvenanceQuery = useQuery({
-    queryKey: ["changed-file", agentId, selectedPath, selectedProvenanceSummary?.lastSeq],
-    queryFn: () => api.getChangedFileDetail(agentId!, selectedPath!),
-    enabled: Boolean(agentId && selectedPath),
+    queryKey: ["changed-file", agentId, activePath, selectedProvenanceSummary?.lastSeq],
+    queryFn: () => api.getChangedFileDetail(agentId!, activePath!),
+    enabled: Boolean(agentId && activePath),
     staleTime: Infinity,
   });
   const selectedProvenance = selectedProvenanceQuery.data ?? selectedProvenanceSummary;
@@ -1572,8 +1608,13 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                     data-testid="workspace-change"
                     data-workspace-path={change.path}
                     onClick={() => setSelectedPath(change.path)}
-                    variant={change.path === selectedPath ? "contained" : "text"}
-                    color={change.path === selectedPath ? "primary" : "inherit"}
+                    onContextMenu={(event) => {
+                      if (!onOpenInNewTab) return;
+                      event.preventDefault();
+                      setFileMenu({ anchor: event.currentTarget, path: change.path });
+                    }}
+                    variant={change.path === activePath ? "contained" : "text"}
+                    color={change.path === activePath ? "primary" : "inherit"}
                     sx={{ borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
                   >
                     <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
@@ -1590,11 +1631,12 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               </Stack>
               <Box data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
                 <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{selectedPath}</Typography>
+                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activePath}</Typography>
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
                   {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
+                  {activePath && onOpenInNewTab ? <Button size="small" color="inherit" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in new tab</Button> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
@@ -1611,12 +1653,21 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>
             </Box>}
+    {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
+      <MenuItem onClick={() => { onOpenInNewTab?.(fileMenu.path); setFileMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+    </Menu> : null}
   </Box>;
 }
 
 /** Durable execution provenance, distinct from the live Git working-tree Review surface. */
-function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFileDto }): JSX.Element {
+function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }: {
+  agentId: string;
+  file: ChangedFileDto;
+  onOpenReview?(path: string): void;
+  onOpenReviewInNewTab?(path: string): void;
+}): JSX.Element {
   const [expanded, setExpanded] = useState(false);
+  const [fileMenuAnchor, setFileMenuAnchor] = useState<HTMLElement>();
   const detail = useQuery({
     queryKey: ["changed-file", agentId, file.path, file.lastSeq],
     queryFn: () => api.getChangedFileDetail(agentId, file.path),
@@ -1624,7 +1675,15 @@ function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFil
     staleTime: Infinity,
   });
   const current = detail.data ?? file;
-  return <Paper variant="outlined" sx={{ p: 1.25 }}>
+  return <Paper
+    variant="outlined"
+    onContextMenu={(event) => {
+      if (!onOpenReviewInNewTab) return;
+      event.preventDefault();
+      setFileMenuAnchor(event.currentTarget);
+    }}
+    sx={{ p: 1.25 }}
+  >
     <Button
       fullWidth
       color="inherit"
@@ -1640,15 +1699,24 @@ function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFil
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
       Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
+    {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open current diff</Button> : null}
     {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
       : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
         : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
           : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>
       : null}
+    {fileMenuAnchor ? <Menu anchorEl={fileMenuAnchor} open onClose={() => setFileMenuAnchor(undefined)}>
+      <MenuItem onClick={() => { onOpenReviewInNewTab?.(file.path); setFileMenuAnchor(undefined); }}>Open in new Ponderosa tab</MenuItem>
+    </Menu> : null}
   </Paper>;
 }
 
-export function ChangedFilesPane({ agentId, files }: { agentId: string; files: ChangedFileDto[] }): JSX.Element {
+export function ChangedFilesPane({ agentId, files, onOpenReview, onOpenReviewInNewTab }: {
+  agentId: string;
+  files: ChangedFileDto[];
+  onOpenReview?(path: string): void;
+  onOpenReviewInNewTab?(path: string): void;
+}): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
     <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
@@ -1656,7 +1724,7 @@ export function ChangedFilesPane({ agentId, files }: { agentId: string; files: C
       <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
     </Stack>
     {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
-      <ChangedFileEntry key={file.path} agentId={agentId} file={file} />)}
+      <ChangedFileEntry key={file.path} agentId={agentId} file={file} onOpenReview={onOpenReview} onOpenReviewInNewTab={onOpenReviewInNewTab} />)}
   </Stack>;
 }
 

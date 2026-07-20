@@ -76,7 +76,10 @@ export function WorkspaceTabs({
     display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 52 }, px: 1, py: 0.75,
     bgcolor: "background.paper", alignItems: "center", overflow: "hidden", borderBottom: 1, borderColor: "divider",
   }}>
-    <Stack direction="row" spacing={0.5} sx={{ minWidth: 0, flex: 1, height: 38, overflow: "hidden", alignItems: "stretch" }}>
+    <Stack className="workspace-tab-strip" direction="row" spacing={0.5} sx={{
+      minWidth: 0, flex: 1, height: 38, overflowX: "auto", overflowY: "hidden", alignItems: "stretch",
+      scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
+    }}>
       {tabs.map((tab) => {
         const tabRoute = tab.route;
         const projectId = "projectId" in tabRoute ? tabRoute.projectId : undefined;
