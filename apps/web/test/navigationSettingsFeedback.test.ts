@@ -11,7 +11,7 @@ describe("navigation and settings feedback", () => {
   it("keeps Project import exact, icon-backed, and available from Project settings", () => {
     expect(app).toContain('startIcon={<FileUploadOutlinedIcon />}');
     expect(app).toContain(">Import Agent or Organization</Button>");
-    expect(app).not.toContain(">Import Agent or Organization…</Button>");
+    expect(app).not.toContain("Import Agent or Organization…");
   });
 
   it("keeps keyboard helpers out of local Project-chat search and mobile navigation", () => {
@@ -19,7 +19,10 @@ describe("navigation and settings feedback", () => {
     expect(projectSearch).not.toContain("component=\"kbd\"");
     expect(sidebar).toContain('display: drawer ? "none" : "inline-flex"');
     expect(sidebar).toContain("globalSearchShortcutLabel()");
+    expect(sidebar).toContain("globalSearchShortcutAccessibleLabel()");
+    expect(sidebar).toContain('aria-label={drawer ? "Search all chats"');
     expect(globalSearch).toContain('display: { xs: "none", md: "inline-flex" }');
+    expect(globalSearch).toContain('aria-label="Escape"');
   });
 
   it("allows Project titles and Wiki content to consume their available width", () => {
@@ -36,9 +39,18 @@ describe("navigation and settings feedback", () => {
 
   it("uploads Operator pictures to the managed API without browser storage or base64", () => {
     expect(app).toContain("api.uploadOperatorAvatar(file)");
-    expect(app).toContain('accept="image/png,image/jpeg,image/webp"');
+    expect(app).toContain('OPERATOR_PROFILE_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/avif"');
+    expect(app).toContain("OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024");
+    expect(app).toContain("HEIC is not accepted");
     const profileDialog = app.slice(app.indexOf("<Dialog open={operatorProfileOpen}"), app.indexOf("<Dialog open={projectSettingsOpen}"));
     expect(profileDialog).not.toContain("localStorage");
     expect(profileDialog).not.toContain("base64");
+  });
+
+  it("keeps mobile drawer dismissal both gestural and explicit", () => {
+    expect(app).toContain("<SwipeableDrawer");
+    expect(app).toContain("onClose={() => setMobileNavOpen(false)}");
+    expect(app).toContain('aria-label="Close workspace navigation"');
+    expect(app).toContain('right: 8, minWidth: 44, minHeight: 44');
   });
 });

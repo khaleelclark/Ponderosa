@@ -75,6 +75,10 @@ export function globalSearchShortcutLabel(platform = typeof navigator === "undef
   return /Mac|iPhone|iPad/iu.test(platform) ? "⌘K" : "Ctrl K";
 }
 
+export function globalSearchShortcutAccessibleLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "Command K" | "Control K" {
+  return /Mac|iPhone|iPad/iu.test(platform) ? "Command K" : "Control K";
+}
+
 function actionableProjectHealth(
   health: AgentHealthDto[] | undefined,
   agents: Pick<AgentDto, "id" | "activeEngine">[],
@@ -332,7 +336,7 @@ export function WorkspaceSidebar({
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
-      {collapsed && !drawer ? <RailButton label={`Search All Chats (${globalSearchShortcutLabel()})`} onClick={() => onSearch?.()}><SearchIcon /></RailButton> : null}
+      {collapsed && !drawer ? <RailButton label={`Search All Chats (${globalSearchShortcutAccessibleLabel()})`} onClick={() => onSearch?.()}><SearchIcon /></RailButton> : null}
       {!drawer && onCollapsedChange ? <RailButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}</RailButton> : null}
       <RailButton label="Settings" onClick={() => onOpenSettings?.()}><SettingsOutlinedIcon /></RailButton>
       <Tooltip title="Operator Profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42 }}><OperatorAvatar profile={preferences.profile} size={42} fallback={operatorInitials(preferences.profile.displayName)} /><Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
@@ -500,9 +504,9 @@ export function WorkspaceSidebar({
   const panelWithSearch = <Box sx={{ minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr) auto" }}>
     {panel}
     <Box sx={{ px: 1.5, py: 1, borderTop: 1, borderColor: "divider", bgcolor: sidebarSurface }}>
-      <Button fullWidth color="inherit" startIcon={<SearchIcon />} onClick={() => onSearch?.()} aria-label="Search all chats" sx={{ minHeight: 44, justifyContent: "space-between", color: "text.secondary" }}>
+      <Button fullWidth color="inherit" startIcon={<SearchIcon />} onClick={() => onSearch?.()} aria-label={drawer ? "Search all chats" : `Search all chats, ${globalSearchShortcutAccessibleLabel()}`} sx={{ minHeight: 44, justifyContent: "space-between", color: "text.secondary" }}>
         <Box component="span">Search All Chats</Box>
-        <Box component="kbd" sx={{ display: drawer ? "none" : "inline-flex", px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{globalSearchShortcutLabel()}</Box>
+        <Box component="kbd" aria-label={globalSearchShortcutAccessibleLabel()} sx={{ display: drawer ? "none" : "inline-flex", px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{globalSearchShortcutLabel()}</Box>
       </Button>
     </Box>
   </Box>;

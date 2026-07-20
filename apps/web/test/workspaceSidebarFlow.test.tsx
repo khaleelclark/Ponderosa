@@ -2,7 +2,7 @@ import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePrefere
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { globalSearchShortcutLabel, operatorInitials, projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { globalSearchShortcutAccessibleLabel, globalSearchShortcutLabel, operatorInitials, projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -112,6 +112,8 @@ describe("responsive workspace sidebar flow", () => {
   it("puts the OS-correct global search helper in the desktop sidebar footer and hides it in the mobile drawer", () => {
     expect(globalSearchShortcutLabel("MacIntel")).toBe("⌘K");
     expect(globalSearchShortcutLabel("Win32")).toBe("Ctrl K");
+    expect(globalSearchShortcutAccessibleLabel("MacIntel")).toBe("Command K");
+    expect(globalSearchShortcutAccessibleLabel("Linux x86_64")).toBe("Control K");
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     projects.forEach((project) => {
       client.setQueryData(["conversations", project.id], []);
@@ -125,11 +127,13 @@ describe("responsive workspace sidebar flow", () => {
       onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={onSearch}
     /></QueryClientProvider>);
     const desktop = render();
-    const search = desktop.root.findByProps({ "aria-label": "Search all chats" });
+    const search = desktop.root.findByProps({ "aria-label": `Search all chats, ${globalSearchShortcutAccessibleLabel()}` });
     act(() => search.props.onClick());
     expect(onSearch).toHaveBeenCalledOnce();
     expect(desktop.root.findAllByType("kbd")).toHaveLength(1);
+    expect(desktop.root.findByType("kbd").props["aria-label"]).toBe(globalSearchShortcutAccessibleLabel());
     const mobile = render(true);
+    expect(mobile.root.findByProps({ "aria-label": "Search all chats" })).toBeTruthy();
     expect(mobile.root.find((node) => node.props.component === "kbd").props.sx.display).toBe("none");
     desktop.unmount();
     mobile.unmount();

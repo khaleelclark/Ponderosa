@@ -236,7 +236,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
             "aria-controls": "global-search-results",
             "aria-activedescendant": activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined,
           }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />

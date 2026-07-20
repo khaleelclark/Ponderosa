@@ -85,7 +85,6 @@ import type {
   WorkspaceEventEnvelope,
   WorkspaceEvent,
   WorkspaceNotificationDto,
-  UploadedOperatorAvatarDto,
   NotificationPreferencesDto,
   NotificationPreference,
   VerifiedCitationDto,
@@ -164,7 +163,7 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
-import { isManagedOperatorAvatarId, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
+import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
 import {
   descriptorRelativeFilesystemCapability,
   readWorkspaceArtifactFile,
@@ -4846,7 +4845,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     webhookRawBodies.set(request.raw, raw);
     return Readable.from(raw);
   });
-  for (const mediaType of ["image/png", "image/jpeg", "image/webp", "application/pdf", "application/zip", "application/octet-stream"]) {
+  for (const mediaType of OPERATOR_AVATAR_MEDIA_TYPES) {
+    app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: MAX_OPERATOR_AVATAR_BYTES }, (_request, body, done) => done(null, body));
+  }
+  for (const mediaType of ["application/pdf", "application/zip", "application/octet-stream"]) {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
 
@@ -12569,11 +12571,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
 
-  app.post<{ Body: Buffer }>("/api/workspace/profile-images", async (request, reply) => {
+  app.post<{ Body: Buffer }>("/api/workspace/profile-images", { bodyLimit: MAX_OPERATOR_AVATAR_BYTES }, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "profile image body is required" });
     try {
       const uploaded = await storeOperatorProfileImage(opts.dataDir, request.body, request.headers["content-type"]);
-      return reply.code(201).send(uploaded satisfies UploadedOperatorAvatarDto);
+      return reply.code(201).send(uploaded);
     } catch (error) {
       if (error instanceof OperatorProfileImageError) return reply.code(error.statusCode).send({ error: error.message });
       throw error;

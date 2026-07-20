@@ -20,7 +20,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
-import { browserTouchScrollDelta, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
+import { browserTouchScrollDelta, createBrowserFrameScheduler, decodeBrowserFrame, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
 
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
@@ -104,46 +104,29 @@ export function BrowserPanel({
       return undefined;
     }
     let cancelled = false;
-    let timer: number | undefined;
-    let loading = false;
-    let refreshRequested = false;
-    const load = async (): Promise<void> => {
-      if (loading) { refreshRequested = true; return; }
-      loading = true;
-      refreshRequested = false;
-      try {
-        const frame = await api.getBrowserFrame(projectId, agentId, runId);
-        if (cancelled) return;
-        const next = URL.createObjectURL(frame.blob);
-        const preload = new Image();
-        preload.onload = () => {
-          if (cancelled) { URL.revokeObjectURL(next); return; }
+    const scheduler = createBrowserFrameScheduler({
+      capture: async () => {
+        try {
+          const frame = await api.getBrowserFrame(projectId, agentId, runId);
+          if (cancelled || document.visibilityState !== "visible") return;
+          const next = await decodeBrowserFrame(frame.blob);
+          if (cancelled || document.visibilityState !== "visible") { URL.revokeObjectURL(next); return; }
           setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return next; });
           setFrameError(undefined);
-        };
-        preload.onerror = () => { URL.revokeObjectURL(next); if (!cancelled) setFrameError("Browser frame could not be decoded."); };
-        preload.src = next;
-      } catch (error) {
-        if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
-      } finally {
-        loading = false;
-        if (!cancelled) {
-          const delay = refreshRequested ? 0 : 1_500;
-          refreshRequested = false;
-          timer = window.setTimeout(() => void load(), delay);
+        } catch (error) {
+          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
         }
-      }
-    };
-    refreshFrame.current = () => {
-      if (timer !== undefined) window.clearTimeout(timer);
-      refreshRequested = true;
-      void load();
-    };
-    void load();
+      },
+    });
+    const updateVisibility = () => scheduler.setVisible(document.visibilityState === "visible");
+    refreshFrame.current = () => scheduler.requestInteractionRefresh();
+    document.addEventListener("visibilitychange", updateVisibility);
+    updateVisibility();
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", updateVisibility);
+      scheduler.dispose();
       refreshFrame.current = () => undefined;
-      if (timer !== undefined) window.clearTimeout(timer);
       setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return undefined; });
     };
   }, [agentId, expanded, projectId, runId, session?.id, session?.status]);

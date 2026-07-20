@@ -87,6 +87,9 @@ import {
 import { hasUnreadConversationNotifications } from "./workspaceNavigation";
 import { WORKSPACE_SIDEBAR_STORAGE_KEY, restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "./workspaceSidebarState";
 
+const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const OPERATOR_PROFILE_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/avif";
+
 export default function App({
   colorMode,
   onToggleColorMode,
@@ -968,10 +971,14 @@ export default function App({
               <OperatorAvatar profile={{ displayName: profileNameDraft || "User", handle: profileHandleDraft || "operator", avatarId: profileAvatarDraft }} size={56} />
               <Button component="label" variant="outlined" startIcon={<PhotoCameraOutlinedIcon />} disabled={profileUploadBusy}>
                 {profileUploadBusy ? "Uploading…" : "Upload Picture"}
-                <input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
+                <input hidden type="file" accept={OPERATOR_PROFILE_IMAGE_ACCEPT} onChange={(event) => {
                   const file = event.target.files?.[0];
                   event.target.value = "";
                   if (!file) return;
+                  if (file.size > OPERATOR_PROFILE_IMAGE_MAX_BYTES) {
+                    setProfileUploadError("Picture must be 10 MiB or smaller.");
+                    return;
+                  }
                   setProfileUploadBusy(true);
                   setProfileUploadError(undefined);
                   void api.uploadOperatorAvatar(file).then((uploaded) => setProfileAvatarDraft(uploaded.avatarId))
@@ -981,7 +988,7 @@ export default function App({
               </Button>
             </Stack>
             <FormControl fullWidth><InputLabel id="operator-profile-avatar-label">Generated Picture</InputLabel><Select labelId="operator-profile-avatar-label" label="Generated Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}>{profileAvatarDraft.startsWith("uploaded:") ? <MenuItem value={profileAvatarDraft}>Uploaded Picture</MenuItem> : null}<MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
-            <Typography variant="caption" color="text.secondary">PNG, JPEG, or WebP up to 2 MiB. Uploaded pictures are stored in Ponderosa-managed workspace data.</Typography>
+            <Typography variant="caption" color="text.secondary">PNG, JPEG, WebP, GIF, or AVIF up to 10 MiB. HEIC is not accepted because current browsers cannot render it reliably. Uploaded pictures are stored in Ponderosa-managed workspace data.</Typography>
             {profileUploadError ? <Alert severity="error">{profileUploadError}</Alert> : null}
           </Stack>
         </DialogContent>

@@ -1157,6 +1157,12 @@ describe("notification panel actions", () => {
     });
     expect(saved.statusCode).toBe(200);
     expect(new WorkspaceStore(dataDir).getPreferences().profile.avatarId).toBe(avatar.avatarId);
+    const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
+    const gifUpload = await app.inject({ method: "POST", url: "/api/workspace/profile-images", headers: { "content-type": "image/gif" }, payload: gif });
+    expect(gifUpload.statusCode).toBe(201);
+    const gifAvatar = gifUpload.json<{ avatarId: string; mediaType: string; url: string }>();
+    expect(gifAvatar).toMatchObject({ avatarId: expect.stringMatching(/^uploaded:gif:[a-f0-9]{64}$/u), mediaType: "image/gif" });
+    expect((await app.inject({ method: "GET", url: gifAvatar.url })).headers["content-type"]).toContain("image/gif");
     expect((await app.inject({
       method: "PATCH", url: "/api/workspace/preferences",
       payload: { profile: { displayName: "Operator", handle: "operator", avatarId: `uploaded:png:${"0".repeat(64)}` } },
