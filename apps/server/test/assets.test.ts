@@ -26,6 +26,58 @@ describe("secure staged assets", () => {
     expect(await assets.remove("project", "agent", staged.id)).toBe(false);
   });
 
+  it("does not settle a staged asset until the trusted attachment directory has synced", async () => {
+    assets.close();
+    assets = new AssetStore(dataDir, {
+      beforeDirectorySync(phase) {
+        if (phase === "stage") throw new Error("injected attachment directory sync failure");
+      },
+    });
+
+    await expect(assets.stage({
+      projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\ndurability"),
+      name: "durability.pdf", declaredType: "application/pdf",
+    })).rejects.toThrow("injected attachment directory sync failure");
+
+    const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true });
+    expect(authority.prepare("SELECT count(*) count FROM asset_committed").get()).toEqual({ count: 0 });
+    expect(authority.prepare("SELECT count(*) count FROM asset_reservations").get()).toEqual({ count: 0 });
+    authority.close();
+
+    // A failed sync leaves no settled authority. A fresh store can safely retry
+    // after restart without relying on the failed upload's names.
+    assets.close();
+    assets = new AssetStore(dataDir);
+    await expect(assets.stage({
+      projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\nretry"),
+      name: "retry.pdf", declaredType: "application/pdf",
+    })).resolves.toMatchObject({ state: "staged" });
+  });
+
+  it("requires a directory-sync retry before reporting an associated metadata replacement", async () => {
+    const staged = await assets.stage({
+      projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\nassociate"),
+      name: "associate.pdf", declaredType: "application/pdf",
+    });
+    assets.close();
+    assets = new AssetStore(dataDir, {
+      beforeDirectorySync(phase) {
+        if (phase === "associate") throw new Error("injected association directory sync failure");
+      },
+    });
+
+    await expect(assets.associate("project", "agent", [staged.id]))
+      .rejects.toThrow("injected association directory sync failure");
+
+    // The metadata rename can be visible after a failed fsync, but a restart
+    // must not treat that as a completed association barrier: retry syncs the
+    // retained directory before returning the associated result.
+    assets.close();
+    assets = new AssetStore(dataDir);
+    await expect(assets.associate("project", "agent", [staged.id]))
+      .resolves.toEqual([expect.objectContaining({ id: staged.id, state: "associated" })]);
+  });
+
   it("resolves one immutable runtime snapshot only from exact Project, owner, ID, and bytes", async () => {
     const staged = await assets.stage({
       projectId: "project", agentId: "agent", body: Buffer.from("%PDF-1.7\nruntime"),
