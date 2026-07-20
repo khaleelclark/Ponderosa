@@ -23,6 +23,14 @@ describe("updateAgentDetail", () => {
     expect(formatFinalizedWorkDuration(23 * 60_000 + 15_000)).toBe("23m 15s");
     expect(formatFinalizedWorkDuration(3_723_000)).toBe("1h 2m 3s");
   });
+  it("attaches finalized worked time to the completed Agent message while leaving the live stopwatch separate", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const detail = await readFile(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(detail).toContain("const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);");
+    expect(detail).toContain("completedWorkDurationLabel={completedWorkDurationLabel}");
+    expect(detail).toContain("startedAt={runtimeActivity?.startedAt}");
+    expect(detail).not.toContain("finalizedDurationMs={");
+  });
   it("does not resurrect a finished run when its terminal lifecycle record arrives", () => {
     expect(runningAfterAgentEvent(true, { type: "turn_done" })).toBe(false);
     expect(runningAfterAgentEvent(false, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run" })).toBe(false);

@@ -192,12 +192,10 @@ function AgentRunState({
   status,
   connected,
   startedAt,
-  finalizedDurationMs,
 }: {
   status: AgentStatus;
   connected: boolean;
   startedAt?: string;
-  finalizedDurationMs: number;
 }): JSX.Element {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -210,16 +208,13 @@ function AgentRunState({
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
   const connectionState = connected ? "Live" : "Reconnecting";
-  return <Stack spacing={0.25} sx={{ alignItems: { xs: "flex-start", sm: "flex-end" } }}>
-    <Chip
-      size="small"
-      label={`${runState} · ${connectionState}`}
-      color={connected ? agentStatusColor(status) : "warning"}
-      variant={connected ? "filled" : "outlined"}
-      aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
-    />
-    <Typography variant="caption" color="text.secondary">Worked for {formatFinalizedWorkDuration(finalizedDurationMs)}</Typography>
-  </Stack>;
+  return <Chip
+    size="small"
+    label={`${runState} · ${connectionState}`}
+    color={connected ? agentStatusColor(status) : "warning"}
+    variant={connected ? "filled" : "outlined"}
+    aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
+  />;
 }
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
@@ -803,8 +798,13 @@ export function AgentDetail({
       return sent;
     };
 
+  const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);
+  const completedWorkDurationLabel = detail.finalizedWorkDurationMs !== undefined || detail.runs.some((run) => Boolean(run.completedAt))
+    ? `Worked for ${formatFinalizedWorkDuration(finalizedDuration)}`
+    : undefined;
+
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={onChatScroll} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={onChatScroll} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -830,7 +830,7 @@ export function AgentDetail({
       onViewAll={() => setTab("review")}
     />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
-    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} onOpenReview={onOpenReview} onOpenReviewInNewTab={onOpenReviewInNewTab} />,
+    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} onOpenReviewInNewTab={onOpenReviewInNewTab} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} onOpenInNewTab={onOpenReviewInNewTab} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
@@ -838,8 +838,8 @@ export function AgentDetail({
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
+      <Box data-mobile-chat-header-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={1}
@@ -863,7 +863,7 @@ export function AgentDetail({
               </Link> : lineageAgentId}
             </Typography> : null}
           </Box>
-          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} finalizedDurationMs={detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs)} />
+          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
           {running ? (
             <Button
               size="small"
@@ -902,9 +902,9 @@ export function AgentDetail({
               { label: "Organization Template", onSelect: () => void downloadAgentPackage("template", true) },
               { label: "Full Organization", onSelect: () => void downloadAgentPackage("full", true) },
             ]}
-            details={<Stack spacing={1.5} aria-label="Run settings" sx={{ px: 0.5, py: 0.25 }}>
+            details={<Stack spacing={2} aria-label="Run settings" sx={{ px: 2, py: 1.5 }}>
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run setup</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run Settings</Typography>
                 <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
               </Stack>
               <Chip
@@ -961,7 +961,8 @@ export function AgentDetail({
               <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
                 {detail.state.branch ?? "No branch"}{detail.state.commit ? ` · ${detail.state.commit}` : ""}
               </Typography>
-              <Box sx={{ pt: 0.5 }}>
+              <Divider flexItem />
+              <Box>
                 <Typography variant="caption" color="text.secondary">Organization permissions</Typography>
                 <FormControlLabel
                   control={<Switch
@@ -995,6 +996,7 @@ export function AgentDetail({
                 </Typography>
                 {updateManagementPermissions.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateManagementPermissions.error)}</Alert> : null}
               </Box>
+              <Divider flexItem />
               <Typography variant="caption" color="text.secondary">
                 {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
                 {" · "}{organizationalParent
@@ -1043,7 +1045,7 @@ export function AgentDetail({
                   setMembershipOpen(true);
                 },
               },
-              { label: "Import Agent or Organization…", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
+              { label: "Import Agent or Organization", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
               ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon fontSize="small" />, onSelect: () => void quickCopyIntoProjectChat() }] : []),
               {
                 label: "Reports To",
@@ -1081,13 +1083,13 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
         {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}
       </Box>
 
-      {tab === "chat" ? <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} sx={{ minWidth: 0, display: composerHidden ? { xs: "none", sm: "block" } : "block" }}>
+      {tab === "chat" ? <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-composer" sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>

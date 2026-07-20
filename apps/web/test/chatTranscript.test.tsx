@@ -110,7 +110,8 @@ describe("chat transcript export", () => {
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(agentDetail).toContain('label="Agent Chat Actions"');
     expect(agentDetail).toContain('detailsLabel="Run Settings"');
-    expect(agentDetail).toContain('aria-label="Run settings" sx={{ px: 0.5, py: 0.25 }}');
+    expect(agentDetail).toContain('aria-label="Run settings" sx={{ px: 2, py: 1.5 }}');
+    expect(agentDetail).toContain("<Divider flexItem />");
     expect(agentDetail).toContain('label: "Start Fresh Provider Session",\n                icon: <RestartAltIcon');
     expect(agentDetail).toContain('label: "Assign Chats"');
     expect(agentDetail).toContain('icon: <ForumOutlinedIcon fontSize="small" />');
@@ -119,12 +120,14 @@ describe("chat transcript export", () => {
     expect(agentDetail).toContain('label: "Full Agent"');
     expect(agentDetail).toContain('label: "Full Organization"');
     expect(agentDetail).not.toContain("Copy Agent context");
-    expect(agentDetail).toContain('label: "Import Agent or Organization…"');
+    expect(agentDetail).toContain('label: "Import Agent or Organization"');
+    expect(agentDetail).not.toContain("Import Agent or Organization…");
     expect(agentDetail).toContain('icon: <FileUploadOutlinedIcon fontSize="small" />');
     expect(agentDetail).toContain("Created by");
     expect(agentDetail).not.toContain("Original message");
     expect(conversation).toContain('label: "Create Agent"');
-    expect(conversation).toContain('label: "Import Agent or Organization…"');
+    expect(conversation).toContain('label: "Import Agent or Organization"');
+    expect(conversation).not.toContain("Import Agent or Organization…");
     expect(conversation).toContain('icon: <FileUploadOutlinedIcon fontSize="small" />');
     expect(conversation).toContain("ChatOverflowMenu");
     expect(conversation).not.toContain("Describe a request — starts a new agent");

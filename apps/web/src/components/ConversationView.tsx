@@ -232,6 +232,7 @@ export function ConversationMessage({
         <MessageReactions reactions={message.reactions} />
           </Box>
           <MessageActionsAndTimestamp
+            mobileTimestampAlign={fromManager && message.role === "user" ? "end" : "start"}
             mobileTimestampRevealed={mobileTimestampRevealed}
             showTimestamp={false}
             value={message.createdAt}
@@ -965,7 +966,7 @@ export function ConversationView({
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+      <Box data-mobile-chat-header-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={0.5}
@@ -1003,7 +1004,7 @@ export function ConversationView({
                 onSelect: () => onNewAgent(conversation),
               },
               {
-                label: "Import Agent or Organization…",
+                label: "Import Agent or Organization",
                 icon: <FileUploadOutlinedIcon fontSize="small" />,
                 onSelect: () => setImportOpen(true),
               },
@@ -1242,7 +1243,7 @@ export function ConversationView({
         onClose={() => setAgentWorkOpen(false)}
       />
 
-      <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} sx={{ display: composerHidden ? { xs: "none", sm: "block" } : "block" }}>
+      <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-composer">
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (

@@ -7,6 +7,8 @@ const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", im
 const allChat = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
 const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
 const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx", import.meta.url), "utf8");
+const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 
 describe("mobile feedback slice", () => {
   it("hides on upward chat movement and restores on downward movement or at the bottom", () => {
@@ -30,6 +32,18 @@ describe("mobile feedback slice", () => {
     expect(panes).toContain("mobileTimestampRevealed={mobileTimestampMessageId === message.id}");
     expect(conversation).toContain("mobileTimestampRevealed={mobileTimestampRevealed}");
     expect(allChat).toContain("mobileTimestampId === item.communicationEventId");
+    expect(timestamps.indexOf("data-mobile-message-timestamp")).toBeLessThan(timestamps.indexOf("chat-message-action-buttons"));
+  });
+
+  it("animates the mobile composer and chat header from the same scroll-direction state", () => {
+    expect(agentDetail).toContain('data-mobile-chat-header-hidden={composerHidden ? "true" : "false"}');
+    expect(conversation).toContain('data-mobile-chat-header-hidden={composerHidden ? "true" : "false"}');
+    expect(agentDetail).toContain('className="mobile-chat-chrome mobile-chat-composer"');
+    expect(conversation).toContain('className="mobile-chat-chrome mobile-chat-composer"');
+    expect(globalCss).toContain("transition: max-height 180ms ease, opacity 140ms ease, transform 180ms ease");
+    expect(globalCss).toContain('[data-mobile-chat-header-hidden="true"]');
+    expect(globalCss).toContain('[data-mobile-composer-hidden="true"]');
+    expect(globalCss).toContain("@media (prefers-reduced-motion: reduce)");
   });
 
   it("keeps operational rows actionable while mobile copy omits agent identity", () => {

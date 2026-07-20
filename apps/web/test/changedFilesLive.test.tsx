@@ -165,8 +165,13 @@ function dispose(view: ReturnType<typeof create>, client: QueryClient): void {
 }
 
 describe("live Changed Files detail", () => {
-  it("opens the identical current Review diff from the file path and Open Current Diff action", async () => {
-    const onOpenReview = vi.fn();
+  it("reveals the same durable recorded diff inline from the file path and Open Current Diff action", async () => {
+    const recorded = {
+      path: "src/live.ts", kind: "edit", lastSeq: 2, lastChangedAt: secondChangedAt,
+      executionCount: 2, diffAvailable: true, executionIds: ["run-2"], provenanceTruncated: false,
+      diff: "--- a/src/live.ts\n+++ b/src/live.ts\n-before\n+durable-recorded",
+    } satisfies ChangedFileDetailDto;
+    const getChangedFileDetail = vi.spyOn(api, "getChangedFileDetail").mockResolvedValue(recorded);
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
@@ -176,14 +181,35 @@ describe("live Changed Files detail", () => {
           path: "src/live.ts", kind: "edit", lastSeq: 2, lastChangedAt: secondChangedAt,
           executionCount: 2, diffAvailable: true,
         }]}
-        onOpenReview={onOpenReview}
       /></QueryClientProvider>);
     });
 
-    act(() => view.root.findByProps({ "aria-label": "Open current diff for src/live.ts" }).props.onClick());
+    act(() => view.root.findByProps({ "aria-label": "Open recorded diff for src/live.ts" }).props.onClick());
+    await vi.waitFor(() => expect(renderedText(view.toJSON())).toContain("+durable-recorded"));
+
+    act(() => view.root.findByProps({ "aria-label": "Hide recorded diff for src/live.ts" }).props.onClick());
+    expect(renderedText(view.toJSON())).not.toContain("+durable-recorded");
     const openAction = view.root.findAll((node) => node.type === "button" && renderedText(node.props.children) === "Open Current Diff")[0];
     act(() => openAction!.props.onClick());
-    expect(onOpenReview.mock.calls).toEqual([["src/live.ts"], ["src/live.ts"]]);
+    await vi.waitFor(() => expect(renderedText(view.toJSON())).toContain("+durable-recorded"));
+    expect(getChangedFileDetail).toHaveBeenCalledWith("agent-review", "src/live.ts");
+    dispose(view, client);
+  });
+
+  it("explains missing historical diffs without consulting the current working tree", async () => {
+    const getChangedFileDetail = vi.spyOn(api, "getChangedFileDetail");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><ChangedFilesPane agentId="agent-no-diff" files={[{
+        path: "image.bin", kind: "create", lastSeq: 1, lastChangedAt: firstChangedAt,
+        executionCount: 1, diffAvailable: false,
+      }]} /></QueryClientProvider>);
+    });
+    act(() => view.root.findByProps({ "aria-label": "Open recorded diff for image.bin" }).props.onClick());
+    expect(renderedText(view.toJSON())).toContain("durable recorded diff is unavailable");
+    expect(renderedText(view.toJSON())).toContain("Current working-tree state is separate");
+    expect(getChangedFileDetail).not.toHaveBeenCalled();
     dispose(view, client);
   });
 
@@ -208,7 +234,7 @@ describe("live Changed Files detail", () => {
     await act(async () => pending.reject(new Error("detail unavailable")));
     await vi.waitFor(() => {
       expectImmediateRunB(mounted.view);
-      expect(renderedText(mounted.view.toJSON())).toContain("File provenance could not be loaded");
+      expect(renderedText(mounted.view.toJSON())).toContain("durable recorded diff could not be loaded");
     });
 
     dispose(mounted.view, mounted.client);

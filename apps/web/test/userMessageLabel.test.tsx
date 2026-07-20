@@ -1,5 +1,6 @@
 import type { ConversationMessageDto, MessageDto } from "@ponderosa/core";
 import { renderToStaticMarkup } from "react-dom/server";
+import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { ConversationMessage } from "../src/components/ConversationView";
 import { ChatPane, UserMessageLabel } from "../src/components/panes";
@@ -56,20 +57,52 @@ describe("user message labels on chat surfaces", () => {
     expect(html).not.toContain("aria-hidden");
   });
 
-  it("places the ChatPane user timestamp beside the identity before bubble content and actions", () => {
+  it("preserves generated and managed uploaded profile pictures in the reordered identity", () => {
+    const generated = renderToStaticMarkup(<UserMessageLabel profile={{ displayName: "User", handle: "operator", avatarId: "fox" }} createdAt={createdAt} />);
+    const uploadedId = `uploaded:png:${"a".repeat(64)}`;
+    const uploaded = renderToStaticMarkup(<UserMessageLabel profile={{ displayName: "User", handle: "operator", avatarId: uploadedId }} createdAt={createdAt} />);
+
+    expect(generated).toContain("🦊");
+    expect(uploaded).toContain(`/api/workspace/profile-images/${encodeURIComponent(uploadedId)}`);
+    expect(uploaded.indexOf("data-user-message-timestamp")).toBeLessThan(uploaded.indexOf("data-user-message-avatar"));
+  });
+
+  it("reveals a mobile timestamp only beneath the exact tapped message", () => {
+    let view!: ReturnType<typeof create>;
+    act(() => {
+      view = create(<ChatPane messages={[
+        agentMessage({ id: "first", text: "First message" }),
+        agentMessage({ id: "second", seq: 2, text: "Second message" }),
+      ]} />);
+    });
+    const messages = view.root.findAll((node) => node.type === "article" && node.props.className === "chat-message");
+    const mobileTimestamps = (root: typeof view.root) => root.findAll((node) => node.type === "div" && node.props["data-mobile-message-timestamp"] === true);
+
+    expect(mobileTimestamps(view.root)).toHaveLength(0);
+    act(() => messages[0]!.props.onClick());
+    const revealed = mobileTimestamps(view.root);
+    expect(revealed).toHaveLength(1);
+    expect(mobileTimestamps(messages[0]!)).toHaveLength(1);
+    expect(mobileTimestamps(messages[1]!)).toHaveLength(0);
+    act(() => view.unmount());
+  });
+
+  it("places the ChatPane desktop user identity in timestamp-name-avatar order before the bubble", () => {
     const html = renderToStaticMarkup(<ChatPane messages={[agentMessage({
       attachments: [{ id: "attachment-1", agentId: "agent-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
     })]} onReply={vi.fn()} />);
 
-    const label = html.indexOf(">User</div>");
+    const timestamp = html.indexOf("data-user-message-timestamp");
+    const label = html.indexOf("data-user-message-name");
+    const avatar = html.indexOf("data-user-message-avatar");
     const bubble = html.indexOf('data-message-bubble="true"');
     const content = html.indexOf("Manager request");
     const attachment = html.indexOf('aria-label="Download diagram.png"');
     const reply = html.indexOf('aria-label="Reply to message"');
-    const timestamp = html.indexOf("<time");
     expect(label).toBeGreaterThanOrEqual(0);
-    expect(label).toBeLessThan(timestamp);
-    expect(timestamp).toBeLessThan(bubble);
+    expect(timestamp).toBeLessThan(label);
+    expect(label).toBeLessThan(avatar);
+    expect(avatar).toBeLessThan(bubble);
     expect(bubble).toBeLessThan(content);
     expect(content).toBeLessThan(attachment);
     expect(attachment).toBeLessThan(reply);
@@ -83,6 +116,22 @@ describe("user message labels on chat surfaces", () => {
     expect(assistant).not.toContain(">User</div>");
     expect(system).not.toContain("System notice");
     expect(system).not.toContain(">User</div>");
+  });
+
+  it("shows finalized worked time with the latest completed Agent message as status metadata", () => {
+    const html = renderToStaticMarkup(<ChatPane
+      agentName="Pinnacles"
+      completedWorkDurationLabel="Worked for 23m 15s"
+      messages={[
+        agentMessage({ id: "answer-1", role: "assistant", text: "First result" }),
+        agentMessage({ id: "answer-2", seq: 2, role: "assistant", text: "Completed result" }),
+      ]}
+    />);
+
+    expect(html.match(/Worked for 23m 15s/g)).toHaveLength(2); // accessible label and visible text
+    expect(html).toContain('aria-label="Pinnacles completed work. Worked for 23m 15s total across finalized Runs."');
+    expect(html.indexOf("Completed result")).toBeLessThan(html.indexOf("Worked for 23m 15s"));
+    expect(html.indexOf("First result")).toBeLessThan(html.indexOf("Completed result"));
   });
 
   it("labels only manager-authored user-role master and collaboration messages", () => {
@@ -106,8 +155,9 @@ describe("user message labels on chat surfaces", () => {
     }));
     const agent = renderMaster(masterMessage({ role: "assistant", authorAgentId: "agent-1", text: "#everyone result" }));
 
-    expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf("<time"));
-    expect(manager.indexOf("<time")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
+    expect(manager.indexOf("data-user-message-timestamp")).toBeLessThan(manager.indexOf("data-user-message-name"));
+    expect(manager.indexOf("data-user-message-name")).toBeLessThan(manager.indexOf("data-user-message-avatar"));
+    expect(manager.indexOf("data-user-message-avatar")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
     expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
     expect(agent).toContain('data-message-tag="everyone"');

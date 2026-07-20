@@ -24,7 +24,7 @@ describe("activity summaries", () => {
     expect(formatActivitySpan(groups[0]!.firstAt, groups[0]!.lastAt)).toBe("2s activity span");
   });
 
-  it("owns a keyboard-focusable bounded scroll region for long canonical logs", () => {
+  it("owns a keyboard-focusable bounded scroll region through the complete Agent pane height chain", () => {
     const activity = Array.from({ length: 80 }, (_, index) => ({
       id: `event-${index}`,
       agentId: "agent",
@@ -33,18 +33,23 @@ describe("activity summaries", () => {
       createdAt: new Date(Date.UTC(2026, 6, 12, 0, 0, index)).toISOString(),
       event: { type: "command" as const, command: `printf ${index}`, cwd: "/repo" },
     }));
-    const markup = renderToStaticMarkup(createElement(ActivityPane, {
-      activity, connected: true, running: false,
-    }));
+    const markup = renderToStaticMarkup(createElement("div", { style: { height: 180, minHeight: 0, overflow: "hidden" } },
+      createElement(ActivityPane, { activity, connected: true, running: false })));
 
+    expect(markup).toContain("height:180px");
     expect(markup).toContain('data-testid="activity-scroll-region"');
     expect(markup).toContain('tabindex="0"');
     expect(markup).toContain("overflow-y:auto");
     expect(markup).toContain("max-height:100%");
+    expect(markup).toContain("height:100%");
+    expect(markup).toContain("align-self:stretch");
     expect(markup).toContain("overscroll-behavior:contain");
     expect(markup).toContain("printf 79");
     const detailSource = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(detailSource).toContain('height: "100%", maxHeight: "100%", minHeight: 0');
+    expect(detailSource).toContain('maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid"');
     expect(detailSource).toContain('tab === "chat" || tab === "activity" ? "hidden" : "auto"');
+    expect(detailSource).toContain('gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
   });
 
   it("counts content lines without treating unified-diff headers as changes", () => {

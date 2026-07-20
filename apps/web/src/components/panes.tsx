@@ -825,14 +825,23 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
 export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorProfileDto; createdAt?: string }): JSX.Element {
   const name = profile?.displayName ?? "User";
   return (
-    <Stack direction="row" spacing={0.75} sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center" }}>
-      <OperatorAvatar profile={profile} compactOnMobile />
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
-        <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
-        {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="start" desktopOnly /></Box> : null}
-      </Stack>
+    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
+      {createdAt ? <Box data-user-message-timestamp sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="end" desktopOnly /></Box> : null}
+      <Box data-user-message-name sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
+      <Box data-user-message-avatar sx={{ display: "flex", flex: "0 0 auto" }}><OperatorAvatar profile={profile} compactOnMobile /></Box>
     </Stack>
   );
+}
+
+function CompletedWorkDurationStatus({ agentName, label }: { agentName: string; label: string }): JSX.Element {
+  return <Box
+    role="status"
+    aria-label={`${agentName} completed work. ${label} total across finalized Runs.`}
+    sx={{ display: "flex", alignItems: "center", minHeight: 28, maxWidth: "100%", px: 0.75, py: 0.25, borderRadius: 999, color: "success.main", bgcolor: "action.hover" }}
+  >
+    <CheckCircleOutlineIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
+    <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>{label}</Typography>
+  </Box>;
 }
 
 export function ChatPane({
@@ -850,6 +859,7 @@ export function ChatPane({
   scrollStorageKey,
   operatorProfile,
   projectId,
+  completedWorkDurationLabel,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -865,6 +875,8 @@ export function ChatPane({
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
   projectId?: string;
+  /** Authoritative aggregate of finalized Run intervals, already formatted for display. */
+  completedWorkDurationLabel?: string;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -875,6 +887,7 @@ export function ChatPane({
   const restoredScrollKey = useRef<string>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [mobileTimestampMessageId, setMobileTimestampMessageId] = useState<string>();
+  const lastCompletedAgentMessageId = [...chatMessages].reverse().find((message) => message.role === "assistant")?.id;
 
   useLayoutEffect(() => {
     if (!scrollRef.current) return;
@@ -1004,16 +1017,21 @@ export function ChatPane({
             <MessageReactions reactions={message.reactions} />
               </Box>
               <MessageActionsAndTimestamp
+                mobileTimestampAlign={fromUser ? "end" : "start"}
                 mobileTimestampRevealed={mobileTimestampMessageId === message.id}
                 showTimestamp={false}
                 value={message.createdAt}
-                status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
-                  projectId={projectId ?? previewScope?.projectId}
-                  receipts={message.deliveryReceipts}
-                  recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
-                  onOpenAgent={onOpenAgent}
-                  onOpenWorkLog={onOpenWorkLog}
-                /> : undefined}
+                status={message.role === "user" && message.deliveryReceipts?.length
+                  ? <MessageDeliveryStatus
+                    projectId={projectId ?? previewScope?.projectId}
+                    receipts={message.deliveryReceipts}
+                    recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
+                    onOpenAgent={onOpenAgent}
+                    onOpenWorkLog={onOpenWorkLog}
+                  />
+                  : message.id === lastCompletedAgentMessageId && completedWorkDurationLabel
+                    ? <CompletedWorkDurationStatus agentName={senderLabel} label={completedWorkDurationLabel} />
+                    : undefined}
                 actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
               <CopyMessageButton text={message.text} />
@@ -1470,7 +1488,7 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
     className="ponderosa-scroll"
     data-testid="activity-scroll-region"
     tabIndex={0}
-    sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
+    sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", alignSelf: "stretch", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
     aria-label="Agent activity"
   >
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
@@ -1708,10 +1726,9 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
 }
 
 /** Durable execution provenance, distinct from the live Git working-tree Review surface. */
-function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }: {
+function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
   agentId: string;
   file: ChangedFileDto;
-  onOpenReview?(path: string): void;
   onOpenReviewInNewTab?(path: string): void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
@@ -1719,7 +1736,7 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
   const detail = useQuery({
     queryKey: ["changed-file", agentId, file.path, file.lastSeq],
     queryFn: () => api.getChangedFileDetail(agentId, file.path),
-    enabled: expanded,
+    enabled: expanded && file.diffAvailable,
     staleTime: Infinity,
   });
   const current = detail.data ?? file;
@@ -1735,9 +1752,9 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
     <Button
       fullWidth
       color="inherit"
-      onClick={() => onOpenReview ? onOpenReview(file.path) : setExpanded((value) => !value)}
-      aria-label={onOpenReview ? `Open current diff for ${file.path}` : `Show recorded change for ${file.path}`}
-      aria-expanded={onOpenReview ? undefined : expanded}
+      onClick={() => setExpanded((value) => !value)}
+      aria-label={`${expanded ? "Hide" : "Open"} recorded diff for ${file.path}`}
+      aria-expanded={expanded}
       sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
@@ -1748,12 +1765,13 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
       Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
-    {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open Current Diff</Button> : null}
-    {onOpenReview && file.diffAvailable ? <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5, ml: 0.5 }}>{expanded ? "Hide Recorded Change" : "Show Recorded Change"}</Button> : null}
-    {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
-      : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
-        : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
-          : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>
+    <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5 }}>{expanded ? "Hide Current Diff" : "Open Current Diff"}</Button>
+    {expanded ? !file.diffAvailable
+      ? <Alert severity="info" sx={{ mt: 1 }}>A durable recorded diff is unavailable for this historical Agent file event. Current working-tree state is separate and is not used here.</Alert>
+      : detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
+        : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>The durable recorded diff could not be loaded.</Alert>
+          : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
+            : <Alert severity="info" sx={{ mt: 1 }}>The Agent did not provide a durable recorded diff for this historical file event. Current working-tree state is separate and is not used here.</Alert>
       : null}
     {fileMenuAnchor ? <Menu anchorEl={fileMenuAnchor} open onClose={() => setFileMenuAnchor(undefined)}>
       <MenuItem onClick={() => { onOpenReviewInNewTab?.(file.path); setFileMenuAnchor(undefined); }}>Open in New Ponderosa Tab</MenuItem>
@@ -1761,10 +1779,9 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
   </Paper>;
 }
 
-export function ChangedFilesPane({ agentId, files, onOpenReview, onOpenReviewInNewTab }: {
+export function ChangedFilesPane({ agentId, files, onOpenReviewInNewTab }: {
   agentId: string;
   files: ChangedFileDto[];
-  onOpenReview?(path: string): void;
   onOpenReviewInNewTab?(path: string): void;
 }): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
@@ -1774,7 +1791,7 @@ export function ChangedFilesPane({ agentId, files, onOpenReview, onOpenReviewInN
       <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
     </Stack>
     {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
-      <ChangedFileEntry key={file.path} agentId={agentId} file={file} onOpenReview={onOpenReview} onOpenReviewInNewTab={onOpenReviewInNewTab} />)}
+      <ChangedFileEntry key={file.path} agentId={agentId} file={file} onOpenReviewInNewTab={onOpenReviewInNewTab} />)}
   </Stack>;
 }
 

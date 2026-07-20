@@ -54,14 +54,16 @@ describe("message timestamps", () => {
     expect(markup).not.toMatch(/>\s*2:05 PM\s*</);
   });
 
-  it("places the user's dated timestamp beside the identity just like an Agent message", () => {
+  it("orders the desktop user identity as timestamp, name, then profile circle", () => {
     const markup = renderToStaticMarkup(<UserMessageLabel
       profile={{ displayName: "User", handle: "operator", avatarId: "default-user" }}
       createdAt="2026-07-11T14:05:06.789Z"
     />);
 
-    expect(markup.indexOf("User")).toBeLessThan(markup.indexOf("<time"));
+    expect(markup.indexOf("data-user-message-timestamp")).toBeLessThan(markup.indexOf("data-user-message-name"));
+    expect(markup.indexOf("data-user-message-name")).toBeLessThan(markup.indexOf("data-user-message-avatar"));
     expect(markup).toMatch(/<time[^>]*>[^<]*2026[^<]*<\/time>/);
+    expect(markup).toContain('aria-label="User avatar"');
   });
 
   it.each(["light", "dark"] as const)(
@@ -105,5 +107,6 @@ describe("message timestamps", () => {
     expect(hidden).not.toContain("data-mobile-message-timestamp");
     expect(revealed).toContain("data-mobile-message-timestamp");
     expect(revealed).toContain("display:none");
+    expect(revealed.indexOf("data-mobile-message-timestamp")).toBeLessThan(revealed.indexOf("chat-message-action-buttons"));
   });
 });
