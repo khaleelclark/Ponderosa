@@ -68,6 +68,7 @@ describe("Communication V3 request reducer", () => {
   it("keeps authorization outside the reducer as an exhaustive contract", () => {
     expect(REQUEST_UPDATE_AUTHORIZATION).toMatchObject({
       completed: "recipient",
+      failed: "recipient_or_supervisor",
       question: "recipient",
       answer: "requester_or_user",
       superseded: "requester_or_user",

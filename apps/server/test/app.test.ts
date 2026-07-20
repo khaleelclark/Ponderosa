@@ -6419,15 +6419,6 @@ describe("server chunk F", () => {
     persistent.completeTurn(persistent.openedOptions.lastIndexOf(requesterQuestionRuntime));
     await vi.waitFor(() => expect(persistent.starts.length).toBeGreaterThanOrEqual(4));
     const resumedRecipientRuntime = persistent.openedOptions.filter((options) => options.agentId === recipient.id).at(-1)!;
-    const report = await resumedRecipientRuntime.handleDynamicToolCall!({
-      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
-    });
-    expect(report.success, report.text).toBe(true);
-    expect(JSON.parse(report.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
-    const reportReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
-      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
-    });
-    expect(JSON.parse(reportReplay.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
     const asked = await resumedRecipientRuntime.handleDynamicToolCall!({
       name: "ponderosa_decision", arguments: { question: "What should happen next?" },
     });
@@ -6437,6 +6428,15 @@ describe("server chunk F", () => {
       name: "ponderosa_decision", arguments: { question: "What should happen next?" },
     });
     expect(JSON.parse(askedReplay.text)).toMatchObject({ id: JSON.parse(asked.text).id });
+    const report = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(report.success, report.text).toBe(true);
+    expect(JSON.parse(report.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
+    const reportReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(JSON.parse(reportReplay.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
     await app.close();
   });
 
@@ -6996,14 +6996,14 @@ describe("server chunk F", () => {
         idempotencyKey: "duplicate-review-outcome",
       },
     });
-    expect(duplicateOutcomeMessage.success, duplicateOutcomeMessage.text).toBe(true);
+    expect(duplicateOutcomeMessage.success).toBe(false);
     expect(JSON.parse(duplicateOutcomeMessage.text)).toMatchObject({
-      passiveRecipientAgentIds: [requester.id],
+      error: "invalid or expired agent messaging capability",
     });
     expect(store.sqlite.prepare(`
-      SELECT actionable FROM runtime_communications
+      SELECT COUNT(*) AS count FROM runtime_communications
       WHERE json_extract(payload_json, '$.idempotencyKey') = 'duplicate-review-outcome'
-    `).get()).toEqual({ actionable: 0 });
+    `).get()).toEqual({ count: 0 });
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations
       WHERE kind = 'ordinary_message' AND agent_id = ?

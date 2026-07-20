@@ -3260,6 +3260,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3.ownsRun(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId),
   );
 
+  const capabilityMatchesCleanupRun = (capability: AgentMessageCapability, run: ActiveRun | undefined): boolean => Boolean(
+    run && run.runId === capability.runId && run.messageCapability &&
+    run.v3SchedulerRunId === capability.v3SchedulerRunId &&
+    run.v3FencingToken === capability.v3FencingToken &&
+    coordinationV3.ownsRunForCleanup(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId),
+  );
+
   function ownsActiveRun(agentId: string, run: ActiveRun): boolean {
     return activeRuns.get(agentId) === run && ownsV3Run(run);
   }
@@ -3612,7 +3619,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
 
   function releaseActiveRun(agentId: string, run: ActiveRun, state: "completed" | "failed" | "cancelled"): boolean {
-    if (!ownsActiveRun(agentId, run)) return false;
+    if (activeRuns.get(agentId) !== run || !run.v3SchedulerRunId || run.v3FencingToken === undefined ||
+        !coordinationV3.ownsRunForCleanup(run.v3SchedulerRunId, run.v3FencingToken, coordinationV3WorkerId)) return false;
     void closeRunBrowser(agentId, run, `run_${state}`);
     activeRuns.delete(agentId);
     closeLinkPreviewsForAgent(agentId, `run ${state}`);
@@ -6418,7 +6426,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
     const active = capability ? activeRuns.get(capability.agentId) : undefined;
-    if (!capability || !capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
+    if (!capability || !capabilityMatchesCleanupRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);

@@ -1341,6 +1341,7 @@ export class CoordinationV3Store {
           terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
         WHERE id = ? AND state IN ('pending', 'retry_pending')
       `).run(now, error, now, activation.id).changes;
+      if (changed === 1) this.settleRequestsForFailedActivations([activation.id], now);
       const result: Omit<SettleUnavailableActivationResult, "replayed"> = changed === 1 || activation.terminal_outcome === "recipient_unavailable"
         ? { settled: changed === 1, status: "recipient_unavailable" }
         : { settled: false, status: "not_pending" };
@@ -1356,19 +1357,31 @@ export class CoordinationV3Store {
    * Orphaned Runs must be recovered first so their pre-submission Activations
    * return to retry_pending before this scan. */
   reconcileUnavailableActivationRecipients(now = new Date().toISOString()): { settled: number } {
-    const error = "activation recipient is missing or archived during startup reconciliation";
-    const changed = this.sqlite.prepare(`
-      UPDATE agent_activations
-      SET state = 'failed', terminal_outcome = 'recipient_unavailable',
-        terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
-      WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
-        SELECT 1 FROM agents
-        WHERE agents.id = agent_activations.agent_id
-          AND agents.project_id = agent_activations.project_id
-          AND agents.archived = 0
-      )
-    `).run(now, error, now).changes;
-    return { settled: changed };
+    return this.sqlite.transaction(() => {
+      const error = "activation recipient is missing or archived during startup reconciliation";
+      const candidates = (this.sqlite.prepare(`
+        SELECT id FROM agent_activations
+        WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
+          SELECT 1 FROM agents
+          WHERE agents.id = agent_activations.agent_id
+            AND agents.project_id = agent_activations.project_id
+            AND agents.archived = 0
+        )
+      `).all() as Array<{ id: string }>).map((row) => row.id);
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
+        WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
+          SELECT 1 FROM agents
+          WHERE agents.id = agent_activations.agent_id
+            AND agents.project_id = agent_activations.project_id
+            AND agents.archived = 0
+        )
+      `).run(now, error, now).changes;
+      this.settleRequestsForFailedActivations(candidates, now);
+      return { settled: changed };
+    })();
   }
 
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
@@ -2224,6 +2237,18 @@ export class CoordinationV3Store {
     const row = this.sqlite.prepare(`
       SELECT 1 FROM scheduler_runs
       WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
+        AND side_effects_fenced_at IS NULL
+        AND (? IS NULL OR lease_owner = ?)
+    `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
+    return Boolean(row);
+  }
+
+  /** Host cleanup retains the original scheduler fence after provider-facing
+   * side effects close, so it can consume Activations and finish the Run. */
+  ownsRunForCleanup(runId: string, fencingToken: number, workerId?: string): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_runs
+      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
         AND (? IS NULL OR lease_owner = ?)
     `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
     return Boolean(row);
@@ -3021,19 +3046,6 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       const request = this.getRequestRow(input.requestId);
       if (request.project_id !== initialRequest.project_id) throw new Error("request Project changed during artifact admission");
-      if (input.runAuthorization) {
-        this.requireAuthorizedRun(input.runAuthorization);
-        const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
-        const requesterOwnedTerminalControl =
-          (input.kind === "cancelled" || input.kind === "superseded") &&
-          input.actor.kind === "agent" &&
-          input.actor.id === request.requester_agent_id &&
-          input.runAuthorization.agentId === request.requester_agent_id;
-        if (!attached.includes(input.requestId) && !requesterOwnedTerminalControl) {
-          throw new Error("request is not attached to the authoritative run");
-        }
-      }
-      this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
         FROM coordination_request_updates WHERE id = ?
@@ -3053,6 +3065,20 @@ export class CoordinationV3Store {
           replayed: true,
         };
       }
+
+      if (input.runAuthorization) {
+        this.requireAuthorizedRun(input.runAuthorization);
+        const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
+        const requesterOwnedTerminalControl =
+          (input.kind === "cancelled" || input.kind === "superseded") &&
+          input.actor.kind === "agent" &&
+          input.actor.id === request.requester_agent_id &&
+          input.runAuthorization.agentId === request.requester_agent_id;
+        if (!attached.includes(input.requestId) && !requesterOwnedTerminalControl) {
+          throw new Error("request is not attached to the authoritative run");
+        }
+      }
+      this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
 
       this.authorizeUpdate(request, input.kind, input.actor);
       const next = reduceCoordinationRequest(
@@ -3103,8 +3129,34 @@ export class CoordinationV3Store {
       const joined = (this.sqlite.prepare(`
         SELECT COUNT(*) AS count FROM coordination_join_members WHERE request_id = ?
       `).get(request.id) as { count: number }).count > 0;
+      if (input.kind === "cancelled" || input.kind === "superseded" || input.kind === "expired") {
+        this.cancelPendingRequestWork(request.id, input.kind, now);
+      }
       this.reevaluateRequestJoins(request.id, now);
       this.activateForRequestTransition(request, input.kind, next.state, joined, input.updateId, input.payload, now);
+      if (
+        input.runAuthorization &&
+        request.recipient_agent_id === input.runAuthorization.agentId &&
+        !TERMINAL_REQUEST_STATES.has(request.state) &&
+        TERMINAL_REQUEST_STATES.has(next.state) &&
+        this.nonterminalInboundRequestIdsAttachedToRun(
+          input.runAuthorization.runId,
+          input.runAuthorization.agentId,
+        ).length === 0
+      ) {
+        this.sqlite.prepare(`
+          UPDATE scheduler_runs
+          SET side_effects_fenced_at = COALESCE(side_effects_fenced_at, ?), updated_at = ?
+          WHERE id = ? AND agent_id = ? AND fencing_token = ?
+            AND status IN ('leased', 'running')
+        `).run(
+          now,
+          now,
+          input.runAuthorization.runId,
+          input.runAuthorization.agentId,
+          input.runAuthorization.fencingToken,
+        );
+      }
       return { requestId: request.id, state: next.state, version: next.version, replayed: false };
     })();
   }
@@ -4165,6 +4217,14 @@ export class CoordinationV3Store {
           UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state IN ('submitted', 'injected')
         `).run(now, now, input.runId);
+        const terminalActivations = (this.sqlite.prepare(`
+          SELECT attached.activation_id AS id
+          FROM scheduler_run_activations attached
+          JOIN agent_activations activation ON activation.id = attached.activation_id
+          WHERE attached.run_id = ? AND activation.state = 'failed'
+            AND activation.terminal_outcome IS NOT NULL
+        `).all(input.runId) as Array<{ id: string }>).map((row) => row.id);
+        this.settleRequestsForFailedActivations(terminalActivations, now);
         const pending = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM agent_activations
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
@@ -5077,14 +5137,84 @@ export class CoordinationV3Store {
         activation.agent_id,
         activation.scope_key,
       )) continue;
-      settled += fail.run(
+      const changed = fail.run(
         now,
         "activation recipient is no longer authorized for its scope",
         now,
         activation.id,
       ).changes;
+      settled += changed;
+      if (changed === 1) this.settleRequestsForFailedActivations([activation.id], now);
     }
     return settled;
+  }
+
+  private cancelPendingRequestWork(
+    requestId: string,
+    reason: "cancelled" | "superseded" | "expired",
+    now: string,
+  ): void {
+    this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'cancelled', terminal_outcome = NULL, terminal_at = ?,
+        last_delivery_error = ?, updated_at = ?
+      WHERE state IN ('pending', 'retry_pending')
+        AND kind = 'coordination_request'
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'request' AND source_id = ?
+        )
+    `).run(now, `request ${reason} before delivery`, now, requestId);
+  }
+
+  private settleRequestsForFailedActivations(activationIds: string[], now: string): void {
+    if (activationIds.length === 0) return;
+    const placeholders = activationIds.map(() => "?").join(", ");
+    const requests = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, activation.id AS activation_id,
+        activation.terminal_outcome, activation.last_delivery_error
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id AND source.source_kind = 'request'
+      JOIN coordination_requests request ON request.id = source.source_id
+      WHERE activation.id IN (${placeholders})
+        AND activation.state = 'failed'
+        AND activation.terminal_outcome IS NOT NULL
+        AND activation.agent_id = request.recipient_agent_id
+        AND request.state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      ORDER BY request.created_at, request.id
+    `).all(...activationIds) as Array<{
+      id: string;
+      activation_id: string;
+      terminal_outcome: ActivationTerminalOutcome;
+      last_delivery_error: string | null;
+    }>;
+    for (const request of requests) {
+      const kind: CoordinationRequestUpdateKind = request.terminal_outcome === "recipient_unavailable"
+        ? "recipient_unavailable"
+        : "failed";
+      this.updateRequest({
+        requestId: request.id,
+        updateId: `system:activation-terminal:${request.activation_id}:${request.terminal_outcome}`,
+        kind,
+        actor: request.terminal_outcome === "recipient_unavailable"
+          ? { kind: "system", id: "v3-activation-supervisor" }
+          : { kind: "supervisor", id: "v3-activation-supervisor" },
+        payload: {
+          activationId: request.activation_id,
+          activationOutcome: request.terminal_outcome,
+          reason: request.last_delivery_error ?? "activation could not execute",
+        },
+        now,
+      });
+    }
+  }
+
+  private nonterminalInboundRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return this.requestIdsAttachedToRun(runId, agentId).filter((requestId) => {
+      const request = this.getRequestRow(requestId);
+      return request.recipient_agent_id === agentId && !TERMINAL_REQUEST_STATES.has(request.state);
+    });
   }
 
   private agentSurvives(agentId: string): boolean {
@@ -5103,6 +5233,8 @@ export class CoordinationV3Store {
     const isRequester = actor.kind === "agent" && actor.id === request.requester_agent_id;
     const allowed = authorization === "recipient"
       ? isRecipient
+      : authorization === "recipient_or_supervisor"
+        ? isRecipient || actor.kind === "supervisor"
       : authorization === "requester_or_user"
         ? isRequester || actor.kind === "user"
         : authorization === "system"
@@ -5726,6 +5858,7 @@ export class CoordinationV3Store {
       SELECT scope_key FROM scheduler_runs
       WHERE id = ? AND agent_id = ? AND fencing_token = ?
         AND status IN ('leased', 'running')
+        AND side_effects_fenced_at IS NULL
     `).get(authorization.runId, authorization.agentId, authorization.fencingToken) as { scope_key: string } | undefined;
     if (!authoritative) throw new Error("run is no longer authoritative");
     if (expectedScopeKey && authoritative.scope_key !== expectedScopeKey) {
