@@ -846,15 +846,6 @@ export function AgentDetail({
   return (
     <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
       <Box className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
-        <Box sx={{ display: { xs: "flex", sm: "none" }, justifyContent: "flex-end", minHeight: 36 }}>
-          <Tooltip title={mobileHeaderCollapsed ? "Expand Agent Header" : "Minimize Agent Header"}><IconButton
-            size="small"
-            aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}
-            onClick={() => setMobileHeaderCollapsed((current) => !current)}
-            sx={{ minWidth: 36, minHeight: 36 }}
-          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
-        </Box>
-        <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}>
         <Stack
           direction="row"
           spacing={1}
@@ -867,7 +858,7 @@ export function AgentDetail({
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
-          <Box sx={{ minWidth: 0, maxWidth: "100%", width: { xs: "calc(100% - 52px)", sm: "auto" }, flex: { xs: "0 0 calc(100% - 52px)", sm: 1 }, overflow: "hidden" }}>
+          <Box sx={{ minWidth: 0, maxWidth: "100%", flex: 1, overflow: "hidden" }}>
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
@@ -878,6 +869,18 @@ export function AgentDetail({
               </Link> : lineageAgentId}
             </Typography> : null}
           </Box>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Agent Header" : "Minimize Agent Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
+          <Collapse
+            in={!mobileHeaderCollapsed || !mobileViewport}
+            timeout={180}
+            sx={{ flexBasis: { xs: "100%", sm: "auto" }, minWidth: 0 }}
+          >
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: { sm: "flex-end" } }}>
           <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
           {running ? (
             <Button
@@ -1078,9 +1081,10 @@ export function AgentDetail({
               },
             ]}
           />
+          </Stack>
+          </Collapse>
         </Stack>
-        {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
-        </Collapse>
+        {running ? <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}><LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /></Collapse> : null}
       </Box>
 
       <Box sx={{ minWidth: 0 }}>

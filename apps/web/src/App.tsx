@@ -560,7 +560,7 @@ export default function App({
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
-          <Box component="img" src={appIconSource} alt="" sx={{ display: { xs: "none", sm: "block" }, width: 28, height: 28, mr: 1, borderRadius: 1, objectFit: "contain" }} />
+          <Box component="img" src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }, height: { xs: 26, sm: 28 }, mr: { xs: 0.75, sm: 1 }, borderRadius: 1, objectFit: "contain", flexShrink: 0 }} />
           <ButtonBase aria-label="Open All Chat" onClick={() => navigateWorkspace({ kind: "allChat" })} sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", borderRadius: 1 }}>
             <Typography variant="h6" component="h1" sx={{ fontWeight: 800, minWidth: 0 }} noWrap>Ponderosa</Typography>
           </ButtonBase>

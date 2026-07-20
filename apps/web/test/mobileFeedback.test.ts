@@ -58,6 +58,9 @@ describe("mobile feedback slice", () => {
     const projectHeader = conversation.slice(conversation.indexOf('className="mobile-chat-chrome mobile-chat-header"'), conversation.indexOf('className="chat-scroll-region"'));
     expect(projectHeader.indexOf('aria-label="Open Agent work"')).toBeLessThan(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"'));
     expect(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"')).toBeLessThan(projectHeader.indexOf("<ChatOverflowMenu"));
+    const agentHeader = agentDetail.slice(agentDetail.indexOf('className="mobile-chat-chrome mobile-chat-header"'), agentDetail.indexOf('aria-label="Agent details"'));
+    expect(agentHeader.indexOf("{detail.agent.title}")).toBeLessThan(agentHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand agent header"'));
+    expect(agentHeader).toContain('flexBasis: { xs: "100%", sm: "auto" }');
   });
 
   it("keeps operational rows actionable while mobile copy omits agent identity", () => {
@@ -70,6 +73,7 @@ describe("mobile feedback slice", () => {
   it("makes mobile Ponderosa open All Chat and provides swipe and explicit-close navigation", () => {
     expect(app).toContain('aria-label="Open All Chat"');
     expect(app).toContain('navigateWorkspace({ kind: "allChat" })');
+    expect(app).toContain('src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }');
     expect(app).toContain("<SwipeableDrawer");
     expect(app).toContain('aria-label="Close workspace navigation"');
   });
