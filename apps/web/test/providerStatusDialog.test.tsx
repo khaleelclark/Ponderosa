@@ -46,7 +46,9 @@ describe("provider status dialog", () => {
 
     const rendered = JSON.stringify(view.toJSON());
     expect(rendered).toContain("Trusted Tailnet");
-    expect(rendered).toContain("Bound to 100.100.101.102");
+    expect(rendered).toContain("The listener is restricted to one literal Tailscale address.");
+    expect(rendered).toContain("Bound to ");
+    expect(rendered).toContain("100.100.101.102");
     expect(rendered).toContain("peers have full operator access");
     view.unmount();
   });
