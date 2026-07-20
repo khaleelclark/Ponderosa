@@ -11,7 +11,7 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
 import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -801,6 +801,8 @@ class SteerableMockAdapter extends MockAdapter {
   completeSteers = true;
   onStartedTurn?: (turnNumber: number, environment: NonNullable<OpenRuntimeSessionOptions["environment"]>) => Promise<void>;
   readonly queues: TestEventQueue[] = [];
+  runtimeCapabilities?: EngineCapabilities;
+  readonly invokedCommands: Array<{ name: string; argumentsText?: string }> = [];
 
   crashRoot(sessionIndex: number): void {
     this.openedOptions[sessionIndex]?.onRuntimeRootExit();
@@ -831,6 +833,13 @@ class SteerableMockAdapter extends MockAdapter {
       engineAgentId: "persistent-session",
       events: queue,
       isAlive: () => alive,
+      capabilities: async () => this.runtimeCapabilities ?? {
+        steering: true, persistentSessions: true, sessionId: "persistent-session",
+        commands: [], mcpServers: [], composerCapabilities: [],
+      },
+      invokeCommand: async (name, argumentsText) => {
+        this.invokedCommands.push({ name, ...(argumentsText ? { argumentsText } : {}) });
+      },
       startTurn: async (input) => {
         this.starts.push(input);
         if (this.completeStartedTurns) {
@@ -2779,6 +2788,52 @@ describe("persistent engine steering", () => {
       .json<import("@ponderosa/core").ConversationDetailDto>();
     expect(detail.messages.find((message) => message.text.includes("change direction"))?.deliveryReceipts)
       .toEqual([expect.objectContaining({ state: "recovering" })]);
+    await app.close();
+  });
+
+  it("serves the live session catalog, rejects stale slash text, and invokes structured commands", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.completeStartedTurns = true;
+    persistent.runtimeCapabilities = {
+      steering: true,
+      persistentSessions: true,
+      sessionId: "persistent-session",
+      model: "mock-model",
+      catalogVersion: "catalog-a",
+      commands: [{
+        name: "compact", description: "Compact", source: "built-in", acceptsArguments: false,
+        insertText: "/compact", status: "available", invocation: "runtime",
+      }],
+      mcpServers: [{
+        name: "callable", configured: true, initialization: "initialized", usable: true,
+        toolsDiscovered: true, toolCount: 1, health: "unknown",
+      }],
+      composerCapabilities: [],
+    };
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, runtimeSessionScheduling: { maxIdleSessions: 1 } });
+    const project = store.createProject({ label: "Live catalog", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Catalog Agent", engine: "codex", conversationId: conversation.id });
+
+    expect((await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "open session" } })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    const catalog = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?engineId=codex&model=mock-model&agentId=${agent.id}`,
+    });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json<ProjectEngineCapabilitiesDto[]>()[0]).toMatchObject({
+      sessionId: "persistent-session", model: "mock-model", catalogVersion: "catalog-a",
+      mcpServers: [expect.objectContaining({ name: "callable", usable: true, toolCount: 1, health: "unknown" })],
+    });
+
+    const stale = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "/missing" } });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json()).toMatchObject({ error: expect.stringContaining("does not advertise /missing") });
+    const invoked = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/provider-commands`, payload: { name: "compact" } });
+    expect(invoked.statusCode).toBe(200);
+    expect(persistent.invokedCommands).toEqual([{ name: "compact" }]);
     await app.close();
   });
 

@@ -2,7 +2,7 @@ import { execFile as nodeExecFile } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import type { EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
+import type { EngineCapabilities, EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
 
 const execFile = promisify(nodeExecFile);
 
@@ -127,6 +127,8 @@ export function discoverEnginePlugins(
           commands: discoverMarkdownCommands([{ path: skillsPath, source: "plugin", skillFilesOnly: true }]).map((command) => ({
             ...command,
             name: `${name}:${command.name}`,
+            insertText: `$${name}:${command.name} `,
+            pluginName: name,
           })),
         });
       } catch {
@@ -153,13 +155,16 @@ export function composerCapabilities(
       kind: "skill",
       label: command.name,
       description: command.description,
-      status: "available",
-      insertText: `${skillInvocationPrefix}${command.name}${command.acceptsArguments ? " " : ""}`,
+      status: command.status,
+      ...(command.status === "available" ? {
+        insertText: command.insertText || `${skillInvocationPrefix}${command.name}${command.acceptsArguments ? " " : ""}`,
+      } : {}),
+      ...(command.unavailableReason ? { unavailableReason: command.unavailableReason } : {}),
     });
   }
   for (const plugin of plugins) capabilities.set(plugin.capability.id, plugin.capability);
   for (const server of mcpServers) {
-    if (server.status === "disconnected") continue;
+    if (!server.usable && (server.toolCount ?? 0) === 0) continue;
     capabilities.set(`connector:${server.name}`, {
       id: `connector:${server.name}`,
       kind: "connector",
@@ -187,6 +192,9 @@ export function discoverMarkdownCommands(
         description: markdownSummary(markdown),
         source: root.source,
         acceptsArguments: true,
+        insertText: `/${name} `,
+        status: "available",
+        invocation: "prompt",
       });
     }
   }
@@ -195,11 +203,41 @@ export function discoverMarkdownCommands(
 
 export function parseCodexMcpList(output: string): EngineMcpServer[] {
   if (/No MCP servers configured/i.test(output)) return [];
+  try {
+    const parsed = JSON.parse(output) as unknown;
+    if (Array.isArray(parsed)) return parsed.flatMap((item) => {
+      if (!item || typeof item !== "object") return [];
+      const raw = item as Record<string, unknown>;
+      if (typeof raw.name !== "string" || !raw.name.trim()) return [];
+      const enabled = raw.enabled !== false;
+      return [{
+        name: raw.name.trim(),
+        configured: true,
+        initialization: "not_initialized" as const,
+        usable: false,
+        toolsDiscovered: false,
+        toolCount: 0,
+        health: "unknown" as const,
+        ...(!enabled ? { detail: typeof raw.disabled_reason === "string" && raw.disabled_reason.trim()
+          ? raw.disabled_reason.trim() : "Disabled in the provider configuration" } : {}),
+      }];
+    });
+  } catch {
+    // Older harnesses expose only the human-readable table.
+  }
   return output.split("\n").flatMap((line) => {
     const trimmed = line.trim();
     if (!trimmed || /^Name\s+/i.test(trimmed) || /^-+$/.test(trimmed)) return [];
     const [name] = trimmed.split(/\s{2,}/);
-    return name ? [{ name, status: "unknown" as const }] : [];
+    return name ? [{
+      name,
+      configured: true,
+      initialization: "not_initialized" as const,
+      usable: false,
+      toolsDiscovered: false,
+      toolCount: 0,
+      health: "unknown" as const,
+    }] : [];
   });
 }
 
@@ -209,10 +247,243 @@ export function parseClaudeMcpList(output: string): EngineMcpServer[] {
     if (!match) return [];
     return [{
       name: match[1]!.trim(),
-      status: match[3] === "✔" ? "connected" as const : "disconnected" as const,
+      configured: true,
+      initialization: match[3] === "✔" ? "initialized" as const : "failed" as const,
+      usable: match[3] === "✔",
+      toolsDiscovered: false,
+      toolCount: 0,
+      health: "unknown" as const,
       ...(match[4]?.trim() ? { detail: match[4].trim() } : {}),
     }];
   });
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function record(value: unknown): UnknownRecord | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as UnknownRecord : undefined;
+}
+
+function string(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function array(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+export interface CodexProviderDiscovery {
+  cwd: string;
+  selectedModel?: string;
+  sessionId?: string;
+  skills?: unknown;
+  plugins?: unknown;
+  pluginDetails?: unknown[];
+  models?: unknown;
+  modelProviderCapabilities?: unknown;
+  mcpStatuses?: unknown;
+  mcpStartup?: ReadonlyMap<string, { status: string; error?: string }>;
+  configuredMcps?: EngineMcpServer[];
+}
+
+/** Normalize only provider-owned app-server responses. No docs/TUI command
+ * catalog is copied into Ponderosa. The one semantic structured action is
+ * explicit and gated by a live thread plus the provider's model catalog. */
+export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): EngineCapabilities {
+  const installedPlugins = new Map<string, { label: string; description: string }>();
+  for (const marketplace of array(record(input.plugins)?.marketplaces)) {
+    for (const candidate of array(record(marketplace)?.plugins)) {
+      const plugin = record(candidate);
+      const name = string(plugin?.name);
+      if (!name || plugin?.installed !== true || plugin?.enabled !== true || plugin?.availability === "DISABLED_BY_ADMIN") continue;
+      const ui = record(plugin.interface);
+      installedPlugins.set(name, {
+        label: string(ui?.displayName) ?? name,
+        description: string(ui?.shortDescription) ?? "Provider plugin",
+      });
+    }
+  }
+
+  const commands = new Map<string, EngineCommand>();
+  for (const entry of array(record(input.skills)?.data)) {
+    for (const candidate of array(record(entry)?.skills)) {
+      const skill = record(candidate);
+      const name = string(skill?.name);
+      if (!name || skill?.enabled === false || commands.has(name)) continue;
+      const pluginName = [...installedPlugins.keys()].find((plugin) => name.startsWith(`${plugin}:`));
+      commands.set(name, {
+        name,
+        description: string(skill?.description) ?? string(skill?.shortDescription) ?? "Provider skill",
+        source: pluginName ? "plugin" : "skill",
+        acceptsArguments: true,
+        insertText: `$${name} `,
+        status: "available",
+        invocation: "prompt",
+        ...(pluginName ? { pluginName } : {}),
+      });
+    }
+  }
+  for (const response of input.pluginDetails ?? []) {
+    const detail = record(record(response)?.plugin);
+    const summary = record(detail?.summary);
+    const pluginName = string(summary?.name);
+    if (!pluginName || summary?.installed !== true || summary?.enabled !== true) continue;
+    for (const candidate of array(detail?.skills)) {
+      const skill = record(candidate);
+      const shortName = string(skill?.name);
+      if (!shortName || skill?.enabled === false) continue;
+      const name = `${pluginName}:${shortName}`;
+      if (commands.has(name)) continue;
+      commands.set(name, {
+        name,
+        description: string(skill?.description) ?? string(skill?.shortDescription) ?? "Provider plugin skill",
+        source: "plugin",
+        acceptsArguments: true,
+        insertText: `$${name} `,
+        status: "available",
+        invocation: "prompt",
+        pluginName,
+      });
+    }
+  }
+
+  const models = array(record(input.models)?.data).flatMap((candidate) => {
+    const model = record(candidate);
+    const id = string(model?.id) ?? string(model?.model);
+    return id && model?.hidden !== true ? [{ id, isDefault: model?.isDefault === true }] : [];
+  });
+  const selectedModel = input.selectedModel || models.find((model) => model.isDefault)?.id;
+  const modelAvailable = Boolean(selectedModel && models.some((model) => model.id === selectedModel));
+  const compactUnavailable = !input.sessionId
+    ? "Requires an active Codex session."
+    : models.length === 0
+      ? "The provider model catalog is unavailable."
+      : !modelAvailable
+        ? `The selected model (${selectedModel ?? "unknown"}) is not currently available.`
+        : undefined;
+  commands.set("compact", {
+    name: "compact",
+    description: "Compact the active Codex thread",
+    source: "built-in",
+    acceptsArguments: false,
+    insertText: "/compact",
+    status: compactUnavailable ? "unavailable" : "available",
+    ...(compactUnavailable ? { unavailableReason: compactUnavailable } : {}),
+    invocation: "runtime",
+  });
+
+  const mcpByName = new Map((input.configuredMcps ?? []).map((server) => [server.name, { ...server }]));
+  for (const candidate of array(record(input.mcpStatuses)?.data)) {
+    const status = record(candidate);
+    const name = string(status?.name);
+    if (!name) continue;
+    const toolCount = Object.keys(record(status?.tools) ?? {}).length;
+    mcpByName.set(name, {
+      name,
+      configured: true,
+      initialization: "initialized",
+      usable: true,
+      toolsDiscovered: true,
+      toolCount,
+      health: "unknown",
+    });
+  }
+  for (const [name, startup] of input.mcpStartup ?? []) {
+    const current = mcpByName.get(name) ?? {
+      name, configured: true, initialization: "not_initialized" as const, usable: false,
+      toolsDiscovered: false, toolCount: 0, health: "unknown" as const,
+    };
+    if (startup.status === "failed" || startup.status === "cancelled") {
+      mcpByName.set(name, { ...current, initialization: "failed", usable: false, ...(startup.error ? { detail: startup.error } : {}) });
+    } else if (startup.status === "starting") {
+      mcpByName.set(name, { ...current, initialization: "initializing", usable: false });
+    } else if (startup.status === "ready") {
+      mcpByName.set(name, { ...current, initialization: "initialized", usable: true });
+    }
+  }
+
+  const mcpServers = [...mcpByName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const plugins: DiscoveredEnginePlugin[] = [...installedPlugins].map(([name, meta]) => ({
+    capability: { id: `plugin:${name}`, kind: "plugin", label: meta.label, description: meta.description, status: "available" },
+    commands: [],
+  }));
+  const commandList = [...commands.values()];
+  return {
+    steering: true,
+    persistentSessions: true,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(selectedModel ? { model: selectedModel } : {}),
+    commands: commandList,
+    mcpServers,
+    composerCapabilities: composerCapabilities(commandList, plugins, mcpServers, "$"),
+  };
+}
+
+export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: string): EngineCapabilities | undefined {
+  const raw = record(init);
+  if (raw?.type !== "system" || raw.subtype !== "init") return undefined;
+  const skillNames = new Set(array(raw.skills).flatMap((candidate) => {
+    const name = typeof candidate === "string" ? string(candidate) : string(record(candidate)?.name);
+    return name ? [name] : [];
+  }));
+  const pluginNames = new Set(array(raw.plugins).flatMap((candidate) => {
+    const name = typeof candidate === "string" ? string(candidate) : string(record(candidate)?.name);
+    return name ? [name] : [];
+  }));
+  const commands = new Map<string, EngineCommand>();
+  for (const candidate of array(raw.slash_commands)) {
+    const advertised = typeof candidate === "string" ? { name: string(candidate) } : record(candidate);
+    const name = string(advertised?.name)?.replace(/^\/+/, "");
+    if (!name || commands.has(name)) continue;
+    const declaredSource = string(advertised?.source);
+    const pluginName = string(advertised?.plugin_name) ?? [...pluginNames].find((plugin) => name.startsWith(`${plugin}:`));
+    const source: EngineCommand["source"] = declaredSource === "plugin" || pluginName
+      ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "built-in";
+    commands.set(name, {
+      name,
+      description: string(advertised?.description) ?? "Claude-advertised command",
+      source,
+      acceptsArguments: advertised?.accepts_arguments !== false,
+      insertText: `/${name}${advertised?.accepts_arguments === false ? "" : " "}`,
+      status: "available",
+      invocation: "prompt",
+      ...(pluginName ? { pluginName } : {}),
+    });
+  }
+
+  const toolNames = array(raw.tools).flatMap((candidate) => typeof candidate === "string"
+    ? [candidate] : string(record(candidate)?.name) ? [string(record(candidate)?.name)!] : []);
+  const mcpServers = array(raw.mcp_servers).flatMap((candidate) => {
+    const server = record(candidate);
+    const name = string(server?.name);
+    if (!name) return [];
+    const providerStatus = string(server?.status)?.toLowerCase();
+    const normalizedToolPrefix = `mcp__${name.replace(/[^\p{L}\p{N}_-]/gu, "_")}__`;
+    const toolCount = toolNames.filter((tool) => tool.startsWith(`mcp__${name}__`) || tool.startsWith(normalizedToolPrefix)).length;
+    const failed = providerStatus === "failed" || providerStatus === "disconnected" || providerStatus === "error";
+    const initialized = providerStatus === "connected" || providerStatus === "ready" || toolCount > 0;
+    return [{
+      name,
+      configured: true,
+      initialization: failed ? "failed" as const : initialized ? "initialized" as const : "not_initialized" as const,
+      usable: !failed && initialized,
+      toolsDiscovered: true,
+      toolCount,
+      health: server?.health === "healthy" ? "healthy" as const : server?.health === "unhealthy" ? "unhealthy" as const : "unknown" as const,
+      ...(string(server?.error) ? { detail: string(server?.error)! } : {}),
+    }];
+  });
+  const commandList = [...commands.values()];
+  return {
+    steering: true,
+    persistentSessions: true,
+    ...(string(raw.session_id) ? { sessionId: string(raw.session_id)! } : {}),
+    ...(selectedModel ?? string(raw.model) ? { model: selectedModel ?? string(raw.model)! } : {}),
+    ...(string(raw.claude_code_version) ? { catalogVersion: string(raw.claude_code_version)! } : {}),
+    commands: commandList,
+    mcpServers,
+    composerCapabilities: composerCapabilities(commandList, [], mcpServers, "/"),
+  };
 }
 
 export async function discoverCliMcps(

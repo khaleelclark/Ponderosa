@@ -28,8 +28,8 @@ import type {
 import { codexApiPriceProfile } from "./api-pricing.js";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
-import { composerCapabilities, discoverCliMcps, discoverEnginePlugins, discoverMarkdownCommands, parseCodexMcpList } from "./capabilities.js";
-import { CodexAppServerSession } from "./codex-app-server.js";
+import { discoverCliMcps, parseCodexMcpList } from "./capabilities.js";
+import { CodexAppServerSession, discoverCodexAppServerCapabilities } from "./codex-app-server.js";
 import { renderSeedPrompt } from "./seed-history.js";
 
 export type { SpawnFn };
@@ -191,33 +191,28 @@ export class CodexAdapter implements Adapter {
     return codexApiPriceProfile(model);
   }
 
-  async capabilities(cwd: string): Promise<EngineCapabilities> {
-    const codexHome = process.env.CODEX_HOME ?? path.join(homedir(), ".codex");
-    const plugins = discoverEnginePlugins([
-      { path: path.join(cwd, ".codex", "plugins"), requireInstallMarker: false },
-      { path: path.join(codexHome, "plugins", "cache"), requireInstallMarker: true },
-    ]);
-    const commands = [...discoverMarkdownCommands([
-      { path: path.join(cwd, ".codex", "skills"), source: "skill", skillFilesOnly: true },
-      { path: path.join(codexHome, "skills"), source: "skill", skillFilesOnly: true },
-    ]), ...plugins.flatMap((plugin) => plugin.commands)];
-    const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseCodexMcpList);
-    return {
-      steering: true,
-      persistentSessions: true,
-      commands,
-      mcpServers,
-      composerCapabilities: composerCapabilities(commands, plugins, mcpServers, "$"),
-    };
+  async capabilities(cwd: string, context?: { model?: string }): Promise<EngineCapabilities> {
+    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], cwd, parseCodexMcpList);
+    return discoverCodexAppServerCapabilities({
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      cwd,
+      model: context?.model,
+      sandboxMode: this.sandboxMode,
+      killGraceMs: this.killGraceMs,
+      configuredMcps,
+    });
   }
 
-  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+  async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    const configuredMcps = await discoverCliMcps(this.bin, ["mcp", "list", "--json"], opts.cwd, parseCodexMcpList);
     return CodexAppServerSession.open({
       ...opts,
       bin: this.bin,
       spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
+      configuredMcps,
     });
   }
 

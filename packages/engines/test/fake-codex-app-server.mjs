@@ -5,6 +5,9 @@ import { fileURLToPath } from "node:url";
 const lines = readline.createInterface({ input: process.stdin });
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 let dynamicToolEnabled = false;
+const discovery = process.env.PONDEROSA_TEST_CODEX_CATALOG
+  ? JSON.parse(process.env.PONDEROSA_TEST_CODEX_CATALOG)
+  : {};
 if (process.env.PONDEROSA_TEST_IGNORE_SIGTERM === "1") setInterval(() => undefined, 1_000);
 
 process.on("SIGTERM", () => {
@@ -36,8 +39,30 @@ lines.on("line", (line) => {
       return send({ id: message.id, error: { code: -32000, message: "simulated thread open failure" } });
     }
     dynamicToolEnabled = Array.isArray(message.params?.dynamicTools) && message.params.dynamicTools.length > 0;
-    return send({ id: message.id, result: { thread: { id: "codex-thread-v1" } } });
+    send({ id: message.id, result: { thread: { id: "codex-thread-v1" } } });
+    for (const notification of discovery.notifications ?? []) send(notification);
+    return;
   }
+  if (message.method === "skills/list") return send({ id: message.id, result: discovery.skills ?? { data: [{ cwd: process.cwd(), skills: [], errors: [] }] } });
+  if (message.method === "plugin/installed") return send({ id: message.id, result: discovery.plugins ?? { marketplaces: [], marketplaceLoadErrors: [] } });
+  if (message.method === "plugin/read") {
+    const detail = discovery.pluginDetails?.[message.params?.pluginName];
+    return detail
+      ? send({ id: message.id, result: detail })
+      : send({ id: message.id, error: { code: -32000, message: `unknown plugin ${message.params?.pluginName}` } });
+  }
+  if (message.method === "model/list") return send({ id: message.id, result: discovery.models ?? { data: [{ id: "test-model", model: "test-model", hidden: false, isDefault: true }], nextCursor: null } });
+  if (message.method === "modelProvider/capabilities/read") return send({ id: message.id, result: discovery.modelProviderCapabilities ?? { namespaceTools: true, imageGeneration: false, webSearch: true } });
+  if (message.method === "mcpServerStatus/list") {
+    send({ id: message.id, result: discovery.mcpStatuses ?? { data: [], nextCursor: null } });
+    if (discovery.notificationsAfterMcpDiscovery) {
+      setTimeout(() => {
+        for (const notification of discovery.notificationsAfterMcpDiscovery) send(notification);
+      }, 10);
+    }
+    return;
+  }
+  if (message.method === "thread/compact/start") return send({ id: message.id, result: {} });
   if (message.method === "turn/start") {
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "inProgress" } } });

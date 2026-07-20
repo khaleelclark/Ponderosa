@@ -291,7 +291,7 @@ export function ConversationView({
   initialView?: ConversationChannel;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
-  onRefreshCapabilities(): Promise<unknown> | unknown;
+  onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
@@ -1261,7 +1261,7 @@ export function ConversationView({
           mentionHandles={mentionHandles}
           commands={commands}
           capabilities={composerRuntime.capabilities}
-          onCapabilitiesOpen={onRefreshCapabilities}
+          onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady

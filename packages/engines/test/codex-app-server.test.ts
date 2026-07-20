@@ -125,6 +125,64 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
+  it("invalidates an MCP catalog when provider startup status changes", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "mcp-refresh", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      configuredMcps: [{
+        name: "refreshing", configured: true, initialization: "not_initialized", usable: false,
+        toolsDiscovered: false, toolCount: 0, health: "unknown",
+      }],
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        mcpStatuses: { data: [], nextCursor: null },
+        notificationsAfterMcpDiscovery: [{
+          method: "mcpServer/startupStatus/updated",
+          params: { name: "refreshing", status: "failed", error: "provider handshake failed" },
+        }],
+      }) },
+    });
+    const first = await session.capabilities();
+    expect(first.mcpServers[0]).toMatchObject({ initialization: "not_initialized", usable: false });
+    for (let attempt = 0; attempt < 20 && changes.length === 0; attempt += 1) await sleep(10);
+    expect(changes).toHaveLength(1);
+    const refreshed = await session.capabilities();
+    expect(refreshed.catalogVersion).not.toBe(first.catalogVersion);
+    expect(refreshed.mcpServers[0]).toMatchObject({
+      initialization: "failed", usable: false, health: "unknown", detail: "provider handshake failed",
+    });
+    await session.close();
+  });
+
+  it("reads installed remote plugin skills by the provider-owned plugin id", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "plugin-discovery", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        plugins: { marketplaces: [{ name: "remote", path: null, plugins: [{
+          name: "acme", remotePluginId: "remote-acme", installed: true, enabled: true, availability: "AVAILABLE",
+        }] }] },
+        pluginDetails: { "remote-acme": { plugin: {
+          summary: { name: "acme", installed: true, enabled: true },
+          skills: [{ name: "release", description: "Release through Acme", enabled: true }],
+        } } },
+      }) },
+    });
+    expect((await session.capabilities()).commands).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "acme:release", source: "plugin", pluginName: "acme", insertText: "$acme:release " }),
+    ]));
+    await session.close();
+  });
+
   it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
     const controller = new AbortController();
     let child: ChildProcess | undefined;

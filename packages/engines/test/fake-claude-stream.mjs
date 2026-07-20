@@ -12,7 +12,22 @@ process.on("SIGTERM", () => {
   process.exit(0);
 });
 
-send({ type: "system", subtype: "init", session_id: "claude-stream-v1", cwd: process.cwd() });
+const catalog = process.env.PONDEROSA_TEST_CLAUDE_CATALOG
+  ? JSON.parse(process.env.PONDEROSA_TEST_CLAUDE_CATALOG)
+  : {};
+send({
+  type: "system",
+  subtype: "init",
+  session_id: catalog.session_id ?? "claude-stream-v1",
+  cwd: process.cwd(),
+  model: catalog.model ?? "sonnet",
+  slash_commands: catalog.slash_commands ?? [],
+  skills: catalog.skills ?? [],
+  plugins: catalog.plugins ?? [],
+  tools: catalog.tools ?? [],
+  mcp_servers: catalog.mcp_servers ?? [],
+  claude_code_version: catalog.claude_code_version ?? "test",
+});
 lines.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.type !== "user") return;

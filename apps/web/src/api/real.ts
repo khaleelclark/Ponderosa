@@ -492,8 +492,10 @@ export const realApi = {
   recheckEngine(engineId: string): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });
   },
-  getEngineCapabilities(projectId: string): Promise<ProjectEngineCapabilitiesDto[]> {
-    return requestJson<ProjectEngineCapabilitiesDto[]>(`/api/projects/${encodeURIComponent(projectId)}/engine-capabilities`);
+  getEngineCapabilities(projectId: string, context?: { engineId?: string; model?: string; agentId?: string }): Promise<ProjectEngineCapabilitiesDto[]> {
+    return requestJson<ProjectEngineCapabilitiesDto[]>(
+      `/api/projects/${encodeURIComponent(projectId)}/engine-capabilities${toQuery(context ?? {})}`,
+    );
   },
   getFiles(projectId: string, path?: string): Promise<FilesResponse> {
     return requestJson<FilesResponse>(`/api/files${toQuery({ projectId, path })}`);
@@ -543,6 +545,12 @@ export const realApi = {
   },
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
+  },
+  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string }> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
   },
   getBrowserSession(projectId: string, agentId: string, runId: string): Promise<BrowserSessionDto> {
     return requestJson<BrowserSessionDto>(browserPath(projectId, agentId, runId));
