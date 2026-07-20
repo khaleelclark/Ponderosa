@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, create } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
 import type { AllChatItemDto } from "@ponderosa/core";
-import { allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
+import { api } from "../src/api";
+import { AllChatView, allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
 
 const item = (overrides: Partial<AllChatItemDto> = {}): AllChatItemDto => ({
   communicationEventId: "event-1",
@@ -39,5 +42,28 @@ describe("All Chat view contract", () => {
     expect(source).toContain("replyToMessageId: selected.messageId");
     expect(source).not.toContain("shareWithOrganization");
     expect(source).not.toContain("sendConversationMessage");
+  });
+
+  it("exposes one named radio choice and a valid checked state for source selection", async () => {
+    vi.spyOn(api, "getAllChat").mockResolvedValue({
+      items: [item({ directMessageAgent: { id: "agent-1", title: "Reviewer" } })],
+      history: { limit: 50, hasMore: false },
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><AllChatView onNavigate={vi.fn()} /></QueryClientProvider>);
+    });
+    const radioControls = () => view.root.findAllByProps({ role: "radio" }).filter((node) => node.type === "button");
+    await vi.waitFor(() => expect(radioControls()).toHaveLength(1));
+    const choice = radioControls()[0]!;
+    expect(choice.props["aria-label"]).toContain("Select message from User");
+    expect(choice.props["aria-checked"]).toBe(false);
+    act(() => choice.props.onClick());
+    expect(radioControls()[0]!.props["aria-checked"]).toBe(true);
+    const radioGroups = view.root.findAllByProps({ role: "radiogroup" }).filter((node) => node.type === "div");
+    expect(radioGroups.some((node) => node.props["aria-label"] === "Source message for direct reply")).toBe(true);
+    view.unmount();
+    client.clear();
   });
 });

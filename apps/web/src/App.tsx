@@ -59,7 +59,7 @@ import {
 import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
-import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
+import { consumeProjectBrowserRequest, ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { effortOptionsForModel, engineAvailabilityPresentation, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
@@ -651,6 +651,7 @@ export default function App({
             engines={engines}
             navigate={goHome}
             browserRequest={projectBrowserRequest}
+            onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
             openInNewTab={openWorkspaceRoute}
             onResourceDeleted={removeWorkspaceView}
           />
@@ -753,6 +754,13 @@ export default function App({
             void api.markProjectUsed(selection.projectId, selection.chat.id);
           }
           navigate(routeForGlobalSearchSelection(selection));
+        }}
+        onOpenInNewTab={(selection) => {
+          saveLastProjectId(selection.projectId);
+          if (selection.chat.kind === "conversation") {
+            void api.markProjectUsed(selection.projectId, selection.chat.id);
+          }
+          openWorkspaceRoute(routeForGlobalSearchSelection(selection));
         }}
       />
 

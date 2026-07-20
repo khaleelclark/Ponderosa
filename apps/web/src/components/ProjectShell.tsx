@@ -50,6 +50,7 @@ export function ProjectShell({
   engines,
   navigate,
   browserRequest,
+  onBrowserRequestHandled,
   openInNewTab,
   onResourceDeleted,
 }: {
@@ -59,6 +60,7 @@ export function ProjectShell({
   engines: EngineDto[];
   navigate(route: Route, options?: { replace?: boolean }): void;
   browserRequest?: ProjectBrowserRequest;
+  onBrowserRequestHandled?(requestId: number): void;
   openInNewTab?(route: Route): void;
   onResourceDeleted?(route: Route): void;
 }): JSX.Element {
@@ -287,7 +289,7 @@ export function ProjectShell({
   } else if (route.kind === "browser") {
     main = route.agentId && route.runId
       ? <BrowserPanel projectId={projectId} agentId={route.agentId} runId={route.runId} standalone />
-      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onClose={() => navigate({ kind: "project", projectId })} />;
+      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "agents") {
     main = (
       <AgentsTab

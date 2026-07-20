@@ -208,7 +208,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             >
               <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="overline" color="secondary.main" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
+                <Typography variant="overline" color="text.secondary" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
                 <Typography variant="subtitle2" noWrap>{conversation?.title ?? (group.projectId ? "Project notifications" : "Operations")}</Typography>
               </Stack>
               {groupUnread ? <Badge color="primary" badgeContent={groupUnread} sx={{ mr: 1 }} /> : null}

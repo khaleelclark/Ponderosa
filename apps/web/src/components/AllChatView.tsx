@@ -1,6 +1,6 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
-  Alert, Box, Button, Chip, CircularProgress, Divider, Paper, Stack, Typography,
+  Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -125,28 +125,29 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load older messages"}</Button></Stack> : null}
-      <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }}>
+      <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
         {items.map((item) => {
           const selectedItem = selectedId === item.communicationEventId;
           return <Paper
             key={item.communicationEventId}
             component="article"
             variant="outlined"
-            tabIndex={0}
-            aria-selected={selectedItem}
             onClick={() => { setSelectedId(item.communicationEventId); setNotice(undefined); send.reset(); }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault(); setSelectedId(item.communicationEventId); setNotice(undefined); send.reset();
-              }
-            }}
             sx={{ p: 1.75, cursor: "pointer", borderColor: selectedItem ? "primary.main" : "divider", bgcolor: selectedItem ? "action.selected" : "background.paper" }}
           >
             <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="subtitle2">{item.author.label}</Typography>
-                <Typography variant="caption" color="text.secondary">{sourceLabel(item)} · {new Date(item.createdAt).toLocaleString()}</Typography>
-              </Box>
+              <ButtonBase
+                role="radio"
+                aria-checked={selectedItem}
+                aria-label={`Select message from ${item.author.label} in ${sourceLabel(item)} for direct reply`}
+                onClick={() => { setSelectedId(item.communicationEventId); setNotice(undefined); send.reset(); }}
+                sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", borderRadius: 1 }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle2">{item.author.label}</Typography>
+                  <Typography variant="caption" color="text.secondary">{sourceLabel(item)} · {new Date(item.createdAt).toLocaleString()}</Typography>
+                </Box>
+              </ButtonBase>
               <Button
                 size="small"
                 color="inherit"

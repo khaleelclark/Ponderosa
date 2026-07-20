@@ -17,11 +17,12 @@ type Input = BrowserOperatorInputRequest extends infer Item
   : never;
 
 export function ProjectBrowserDialog({
-  projectId, open, request, onClose, embedded = false,
+  projectId, open, request, onRequestHandled, onClose, embedded = false,
 }: {
   projectId?: string;
   open: boolean;
   request?: ProjectBrowserRequest;
+  onRequestHandled?(requestId: number): void;
   onClose(): void;
   embedded?: boolean;
 }): JSX.Element {
@@ -80,9 +81,10 @@ export function ProjectBrowserDialog({
   useEffect(() => {
     if (!open || !projectId || !request || request.requestId === handledRequest.current) return;
     handledRequest.current = request.requestId;
+    onRequestHandled?.(request.requestId);
     if (request.url) setAddress(request.url);
     openBrowser.mutate(request.url);
-  }, [open, projectId, request?.requestId]);
+  }, [open, projectId, request?.requestId, onRequestHandled]);
 
   useEffect(() => {
     if (session?.url && session.url !== "about:blank") setAddress(session.url);

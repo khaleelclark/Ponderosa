@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { consumeProjectBrowserRequest } from "../src/components/ProjectBrowserContext";
 
 describe("persistent Project browser surfaces", () => {
   it("makes the Project browser globally reachable and keeps link choice explicit", () => {
@@ -31,5 +32,18 @@ describe("persistent Project browser surfaces", () => {
     expect(dialog).toContain('owner: "agent"');
     expect(dialog).toContain("Take control back");
     expect(dialog).toContain("Start an agent Run to make it available");
+  });
+
+  it("consumes link-open requests so remounting cannot replay stale navigation", () => {
+    const request = { requestId: 7, url: "https://example.com/review" };
+    const consumed = consumeProjectBrowserRequest(request, 7);
+    expect(consumed).toBeUndefined();
+    expect(consumeProjectBrowserRequest(consumed, 7)).toBeUndefined();
+    expect(consumeProjectBrowserRequest(request, 6)).toBe(request);
+
+    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+    const dialog = readFileSync(new URL("../src/components/ProjectBrowserDialog.tsx", import.meta.url), "utf8");
+    expect(app).toContain("onBrowserRequestHandled");
+    expect(dialog).toContain("onRequestHandled?.(request.requestId)");
   });
 });

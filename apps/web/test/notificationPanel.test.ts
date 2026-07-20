@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
 import { groupNotificationsByChat } from "../src/components/NotificationPanel";
+import { createPonderosaTheme } from "../src/theme";
+
+function luminance(color: string): number {
+  const channels = color.match(/[\da-f]{2}/gi)!.map((value) => Number.parseInt(value, 16) / 255)
+    .map((value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const [lighter, darker] = [luminance(foreground), luminance(background)].sort((a, b) => b - a);
+  return (lighter! + 0.05) / (darker! + 0.05);
+}
 
 function notification(id: string, projectId: string, conversationId: string | undefined, createdAt: string): WorkspaceNotificationDto {
   return {
@@ -29,5 +41,10 @@ describe("notification panel grouping", () => {
       ["project"],
     ]);
     expect(groups[1]).toMatchObject({ projectId: "project-a", conversationId: "chat-a" });
+  });
+
+  it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {
+    const theme = createPonderosaTheme(mode);
+    expect(contrastRatio(theme.palette.text.secondary, theme.palette.action.hover)).toBeGreaterThanOrEqual(4.5);
   });
 });
