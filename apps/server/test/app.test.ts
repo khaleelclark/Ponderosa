@@ -2083,6 +2083,148 @@ describe("generated artifact endpoints", () => {
     await restarted.close();
   });
 
+  it("repairs long direct and Broadcast projections before an exact same-process retry succeeds", async () => {
+    const project = store.createProject({ label: "Exact append recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let remainingCrashes = 2;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (remainingCrashes-- > 0) throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await app.ready();
+    const directText = `Private recovery\n${"d".repeat(10_100)}`;
+    const directPayload = {
+      text: directText,
+      idempotencyKey: "exact-long-direct",
+      sourceChannel: "main" as const,
+      sourceConversationId: conversation.id,
+    };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: directPayload,
+    })).statusCode).toBe(500);
+    const directEvent = store.readCommunicationEvents(project.id)[0]!;
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)).toHaveLength(0);
+    expect(store.getConversationMessages(conversation.id, "main")).toHaveLength(0);
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { detail?: string } };
+    }>().checks.communicationMigration.detail)).toContain("drift");
+
+    const directRetry = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: directPayload,
+    });
+    expect(directRetry.statusCode, directRetry.body).toBe(202);
+    expect(directRetry.json<{ communicationEventId: string }>().communicationEventId).toBe(directEvent.eventId);
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { ok: boolean } };
+    }>().checks.communicationMigration.ok)).toBe(true);
+
+    const broadcastText = `Shared recovery\n${"b".repeat(10_100)}`;
+    const broadcastPayload = { text: broadcastText, idempotencyKey: "exact-long-broadcast" };
+    expect((await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: broadcastPayload,
+    })).statusCode).toBe(500);
+    const broadcastEvent = store.readCommunicationEvents(project.id).find((event) => event.intent === "broadcast")!;
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { detail?: string } };
+    }>().checks.communicationMigration.detail)).toContain("drift");
+    const broadcastRetry = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: broadcastPayload,
+    });
+    expect(broadcastRetry.statusCode, broadcastRetry.body).toBe(200);
+    expect(broadcastRetry.json<{ communicationEventId: string }>().communicationEventId).toBe(broadcastEvent.eventId);
+
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(2);
+    for (const event of [directEvent, broadcastEvent]) {
+      const projections = store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === event.eventId);
+      const tuples = projections.map((projection) => `${projection.surface}:${projection.projectionKey}`);
+      expect(new Set(tuples).size).toBe(tuples.length);
+      expect(projections.filter((projection) =>
+        projection.surface === "conversation" || projection.surface === "direct_agent_audit")
+        .every((projection) => Boolean(projection.message))).toBe(true);
+    }
+    const timelineIds = store.getConversationMessages(conversation.id, "main").map((message) => message.communicationEventId);
+    expect(timelineIds.filter((eventId) => eventId === directEvent.eventId)).toHaveLength(1);
+    expect(timelineIds.filter((eventId) => eventId === broadcastEvent.eventId)).toHaveLength(1);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)
+      .filter((message) => message.eventId === directEvent.eventId)).toHaveLength(1);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { ok: boolean } };
+    }>().checks.communicationMigration.ok)).toBe(true);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true });
+    await app.close();
+  });
+
+  it("repairs long direct and Broadcast timelines and audits on daemon restart", async () => {
+    const project = store.createProject({ label: "Restart append recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let remainingCrashes = 2;
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (remainingCrashes-- > 0) throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await first.ready();
+    expect((await first.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: `Private restart recovery\n${"d".repeat(10_100)}`,
+        idempotencyKey: "restart-long-direct",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+      },
+    })).statusCode).toBe(500);
+    expect((await first.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/messages`,
+      payload: { text: `Shared restart recovery\n${"b".repeat(10_100)}`, idempotencyKey: "restart-long-broadcast" },
+    })).statusCode).toBe(500);
+    const eventIds = store.readCommunicationEvents(project.id).map((event) => event.eventId);
+    expect(eventIds).toHaveLength(2);
+    expect(store.getConversationMessages(conversation.id, "main")).toHaveLength(0);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+    });
+    await restarted.ready();
+    expect(store.readCommunicationEvents(project.id).map((event) => event.eventId)).toEqual(eventIds);
+    const timelineIds = store.getConversationMessages(conversation.id, "main").map((message) => message.communicationEventId);
+    for (const eventId of eventIds) expect(timelineIds.filter((candidate) => candidate === eventId)).toHaveLength(1);
+    const directEvent = store.readCommunicationEvents(project.id).find((event) => event.intent === "user_dm")!;
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)
+      .filter((message) => message.eventId === directEvent.eventId)).toHaveLength(1);
+    for (const eventId of eventIds) {
+      const projections = store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId);
+      const tuples = projections.map((projection) => `${projection.surface}:${projection.projectionKey}`);
+      expect(new Set(tuples).size).toBe(tuples.length);
+      expect(projections.filter((projection) =>
+        projection.surface === "conversation" || projection.surface === "direct_agent_audit")
+        .every((projection) => Boolean(projection.message))).toBe(true);
+    }
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    expect((await restarted.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      checks: { communicationMigration: { ok: true } },
+    });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true });
+    await restarted.close();
+  });
+
   it("repairs every aged unreferenced managed blob while retaining generated and screenshot event references", async () => {
     const project = store.createProject({ label: "Artifact orphan repair", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });

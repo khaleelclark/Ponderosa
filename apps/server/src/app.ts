@@ -4838,9 +4838,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     app.addContentTypeParser(mediaType, { parseAs: "buffer", bodyLimit: ASSET_LIMITS.maxRequestBytes }, (_request, body, done) => done(null, body));
   }
 
-  async function reconcileRuntimeCommunicationProjections(): Promise<number> {
+  async function reconcileRuntimeCommunicationProjections(filter?: {
+    projectId?: string;
+    communicationEventId?: string;
+  }): Promise<number> {
     let repaired = 0;
+    const repairedProjectIds = new Set<string>();
+    const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     for (const row of coordinationV3.runtimeCommunications()) {
+      if (filter?.projectId && row.projectId !== filter.projectId) continue;
       const payload = row.payload && typeof row.payload === "object"
         ? row.payload as Record<string, unknown>
         : undefined;
@@ -4855,6 +4861,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         event.projectId !== row.projectId
       ) continue;
       const communicationEventId = event.eventId;
+      if (filter?.communicationEventId && communicationEventId !== filter.communicationEventId) continue;
       const runtimeArtifacts = coordinationV3.runtimeArtifacts("communication", row.id);
       let artifactsAvailable = true;
       for (const artifact of runtimeArtifacts) {
@@ -5004,14 +5011,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         event = { ...event, attachments: firstRecoveredAttachments };
       }
       try {
-        if (!store.getCommunicationEvent(row.projectId, communicationEventId)) {
+        let canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
+        if (!canonical) {
           reservedAttachments = validateReservedAttachments();
           if (!reservedAttachments) throw new Error("runtime Communication attachment changed before canonical projection");
-          recordCommunication(event as CommunicationEvent);
+          canonical = recordCommunication(event as CommunicationEvent);
           repaired += 1;
+          repairedProjectIds.add(row.projectId);
         }
-        const canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
         if (!canonical) continue;
+        if (filter?.projectId && filter.communicationEventId) exactCanonicalEvents.set(canonical.eventId, canonical);
         for (const artifact of runtimeArtifacts) {
           projectCommunicationArtifact(
             row.projectId,
@@ -5021,34 +5030,67 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           );
         }
 
-        if (canonical.intent === "collaboration" && canonical.conversationId && dispatch) {
-          const renderedText = typeof dispatch.text === "string" ? dispatch.text : canonical.text;
-          const roomMessage = store.getConversationMessages(canonical.conversationId, "collaboration")
+        const behavior = deriveCommunicationBehavior(canonical);
+        const recipientIds = behavior.deliveryRecipients.flatMap((recipient) =>
+          recipient.kind === "agent" ? [recipient.agentId] : []);
+        const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
+        const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
+        const dispatchText = typeof dispatch?.text === "string" ? dispatch.text : canonical.text;
+        const conversationText = canonical.intent === "broadcast"
+          ? canonical.sender.kind === "agent" || dispatch?.shareWithOrganization === true
+            ? dispatchText
+            : renderScopedMessage("broadcast", canonical.text)
+          : canonical.schemaVersion === 2 && canonical.intent === "user_dm" && canonical.sender.kind === "agent"
+            ? renderScopedMessage("user", canonical.text)
+            : canonical.schemaVersion === 2 && canonical.intent === "user_dm" &&
+                canonical.sender.kind === "user" && !Array.isArray(dispatch?.recipients)
+              ? (() => {
+                  const targetAgentId = typeof dispatch?.targetAuthorAgentId === "string"
+                    ? dispatch.targetAuthorAgentId
+                    : recipientIds.length === 1 ? recipientIds[0] : undefined;
+                  const target = targetAgentId ? store.getAgent(targetAgentId) : undefined;
+                  return target ? `#${agentMentionHandle(target.title)} ${dispatchText}`.trimEnd() : dispatchText;
+                })()
+              : dispatchText;
+        const roomTarget = behavior.projectionTargets.find((target) =>
+          target.surface === "conversation" || target.surface === "collaboration_view");
+        if (roomTarget && canonical.conversationId) {
+          const channel = roomTarget.surface === "collaboration_view" ? "collaboration" : "main";
+          const roomMessage = store.getConversationMessages(canonical.conversationId, channel)
             .find((message) => message.communicationEventId === canonical.eventId);
-          const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
-          const deliveryIntents: ConversationDeliveryIntent[] = canonical.audience.agentIds.map((agentId) => ({
-            targetAgentId: agentId, relayDepth: 0, mentionTrail: [], kind: "tag", audience: canonical.audienceSelector ?? "mention",
-            ...(attachmentsByAgent.get(agentId)?.length ? { attachmentIds: attachmentsByAgent.get(agentId)!.map((item) => item.id) } : {}),
+          const deliveryIntents: ConversationDeliveryIntent[] = recipientIds.map((agentId) => ({
+            targetAgentId: agentId,
+            relayDepth: 0,
+            mentionTrail: [],
+            kind: canonical.intent === "collaboration" ? "tag" : "direct",
+            ...(canonical.intent === "collaboration" ? { audience: canonical.audienceSelector ?? "mention" } : {}),
+            ...(attachmentsByAgent.get(agentId)?.length
+              ? { attachmentIds: attachmentsByAgent.get(agentId)!.map((item) => item.id) }
+              : {}),
           }));
           if (!roomMessage) {
             store.appendConversationMessage(
               canonical.conversationId,
               {
-                role: canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant",
-                text: renderedText,
-                ...(typeof dispatch.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
+                role,
+                text: conversationText,
+                ...(typeof dispatch?.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
+                ...(typeof dispatch?.targetAuthorAgentId === "string"
+                  ? { directReplyToAuthorAgentId: dispatch.targetAuthorAgentId }
+                  : {}),
                 ...(roomAttachments?.length ? { attachments: roomAttachments } : {}),
               },
               canonical.sender.kind === "agent" ? canonical.sender.agentId : undefined,
-              "collaboration",
-              deliveryIntents,
-              undefined,
+              channel,
+              deliveryIntents.length ? deliveryIntents : undefined,
+              canonical.idempotencyKey,
               canonical.eventId,
             );
             repaired += 1;
+            repairedProjectIds.add(canonical.projectId);
           } else if (roomAttachments?.length && !roomMessage.attachments?.length) {
-            store.appendCommunicationProjection(canonical.projectId, {
-              eventId: canonical.eventId, surface: "collaboration_view", projectionKey: canonical.conversationId,
+            const enriched = store.appendCommunicationProjection(canonical.projectId, {
+              eventId: canonical.eventId, surface: roomTarget.surface, projectionKey: canonical.conversationId,
               projectedAt: roomMessage.createdAt,
               message: {
                 messageId: roomMessage.id, role: roomMessage.role, renderedText: roomMessage.text,
@@ -5057,24 +5099,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 ...(roomMessage.replyTo ? { replyTo: roomMessage.replyTo } : {}),
               },
             });
-            repaired += 1;
-          }
-
-          for (const agentId of canonical.audience.agentIds) {
-            store.appendCommunicationProjection(canonical.projectId, {
-              eventId: canonical.eventId, surface: "agent_inbox", projectionKey: agentId, projectedAt: canonical.createdAt,
-            });
-            const recipientAttachments = attachmentsByAgent.get(agentId) ?? [];
-            if (recipientAttachments.length) {
-              await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+            if (!enriched.replayed) {
+              repaired += 1;
+              repairedProjectIds.add(canonical.projectId);
             }
-            projectCommunicationToAgentAudit(agentId, canonical, renderedText, recipientAttachments);
           }
-        } else {
-          for (const [agentId, recipientAttachments] of attachmentsByAgent) {
-            if (!recipientAttachments.length) continue;
-            await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
+        }
+
+        for (const target of behavior.projectionTargets.filter((item) => item.surface === "direct_agent_audit")) {
+          const before = store.readCommunicationProjections(canonical.projectId).find((projection) =>
+            projection.eventId === canonical.eventId && projection.surface === target.surface &&
+            projection.projectionKey === target.projectionKey);
+          const targetAttachments = attachmentsByAgent.get(target.projectionKey) ??
+            (canonical.sender.kind === "agent" && canonical.sender.agentId === target.projectionKey
+              ? roomAttachments ?? []
+              : []);
+          const auditText = canonical.intent === "broadcast"
+            ? renderScopedMessage("broadcast", canonical.text)
+            : dispatchText;
+          projectCommunicationToAgentAudit(target.projectionKey, canonical, auditText, targetAttachments);
+          const after = store.readCommunicationProjections(canonical.projectId).find((projection) =>
+            projection.eventId === canonical.eventId && projection.surface === target.surface &&
+            projection.projectionKey === target.projectionKey);
+          if (JSON.stringify(before) !== JSON.stringify(after)) {
+            repaired += 1;
+            repairedProjectIds.add(canonical.projectId);
           }
+        }
+
+        for (const [agentId, recipientAttachments] of attachmentsByAgent) {
+          if (!recipientAttachments.length) continue;
+          await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
         }
       } catch (error) {
         app.log.error({
@@ -5083,6 +5138,32 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           communicationEventId,
         }, "runtime communication projection recovery failed");
       }
+    }
+    for (const projectId of repairedProjectIds) scheduleCommunicationReconciliation(projectId);
+    if (filter?.projectId && filter.communicationEventId) {
+      const canonical = [...exactCanonicalEvents.values()][0] ??
+        store.getCommunicationEvent(filter.projectId, filter.communicationEventId);
+      const projections = canonical ? store.readCommunicationProjections(filter.projectId) : [];
+      // Legacy audit-first recovery can already own the one stable room
+      // dispatch under the canonical idempotency receipt while the newer V3
+      // runtime row has a different deterministic event ID. That durable
+      // dispatch is the exact-once visible placement; manufacturing a second
+      // room message would violate its identity.
+      const receiptMessage = canonical?.conversationId && canonical.idempotencyKey
+        ? store.getConversationMessageByReceiptKey(canonical.conversationId, canonical.idempotencyKey)
+        : undefined;
+      const incompleteTargets = canonical ? deriveCommunicationBehavior(canonical).projectionTargets.filter((target) =>
+        (target.surface === "conversation" || target.surface === "collaboration_view" || target.surface === "direct_agent_audit") &&
+        !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
+        !projections.some((projection) => projection.eventId === canonical.eventId &&
+          projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message)) : [];
+      if (!canonical || incompleteTargets.length > 0) {
+        throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe");
+      }
+      // A prior crash may have left cached red evidence even when another
+      // durable handoff already supplied the missing metadata. Exact replay
+      // always invalidates that evidence before it can report success.
+      scheduleCommunicationReconciliation(filter.projectId);
     }
     return repaired;
   }
@@ -7095,7 +7176,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         artifactIds: preparedArtifacts.map((artifact) => artifact.id),
       });
       if (intake.replayed) {
-        await reconcileRuntimeCommunicationProjections();
+        await reconcileRuntimeCommunicationProjections({
+          projectId: proposedCommunication.projectId,
+          communicationEventId: proposedCommunication.eventId,
+        });
         const existing = store.readEvents(capability.agentId).find((item) =>
           item.event.type === "communication_projection" && item.event.communicationEventId === proposedCommunication.eventId);
         return {
@@ -7238,7 +7322,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       artifactIds: preparedArtifacts.map((artifact) => artifact.id),
     });
     if (intake.replayed) {
-      await reconcileRuntimeCommunicationProjections();
+      await reconcileRuntimeCommunicationProjections({
+        projectId: proposedCommunication.projectId,
+        communicationEventId: proposedCommunication.eventId,
+      });
       const existing = store.getConversationMessages(capability.conversationId, channel)
         .find((candidate) => candidate.communicationEventId === proposedCommunication.eventId);
       return {
@@ -8467,8 +8554,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       createdAt,
       ...(idempotencyKey ? { idempotencyKey: `broadcast:${master.id}:${idempotencyKey}` } : {}),
     };
+    let intake;
     try {
-      coordinationV3.recordRuntimeCommunication({
+      intake = coordinationV3.recordRuntimeCommunication({
         id: eventId,
         projectId: master.projectId,
         sender: communicationInput.sender,
@@ -8485,6 +8573,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
     });
     const communication = recordCommunication(communicationInput);
+    if (intake.replayed) await reconcileRuntimeCommunicationProjections({
+      projectId: communicationInput.projectId,
+      communicationEventId: communicationInput.eventId,
+    });
     if (prepared.artifact) projectCommunicationArtifact(
       master.projectId,
       "local-operator",
@@ -8623,6 +8715,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
         });
         const canonicalCommunication = recordCommunication(communication);
+        if (intake.replayed) await reconcileRuntimeCommunicationProjections({
+          projectId: communication.projectId,
+          communicationEventId: communication.eventId,
+        });
         if (prepared.artifact) projectCommunicationArtifact(
           master.projectId,
           "local-operator",
@@ -8859,6 +8955,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(status).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
       }
       const canonicalCommunication = recordCommunication(communication);
+      if (intake.replayed) await reconcileRuntimeCommunicationProjections({
+        projectId: communication.projectId,
+        communicationEventId: communication.eventId,
+      });
       if (prepared.artifact) projectCommunicationArtifact(
         master.projectId,
         "local-operator",
@@ -9478,6 +9578,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
     }
     const canonicalCommunication = recordCommunication(communication);
+    if (intake.replayed) await reconcileRuntimeCommunicationProjections({
+      projectId: communication.projectId,
+      communicationEventId: communication.eventId,
+    });
     if (prepared.artifact) projectCommunicationArtifact(
       master.projectId,
       "local-operator",
@@ -11060,6 +11164,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const communicationEventId = internalV3Dispatch
         ? v3CommunicationEventId
         : proposedCommunication ? recordCommunication(proposedCommunication).eventId : undefined;
+      if (!internalV3Dispatch && v3Intake?.replayed && proposedCommunication) {
+        await reconcileRuntimeCommunicationProjections({
+          projectId: proposedCommunication.projectId,
+          communicationEventId: proposedCommunication.eventId,
+        });
+      }
       const communication = communicationEventId
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
