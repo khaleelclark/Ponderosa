@@ -42,6 +42,77 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isApprovalPolicy(value: unknown): boolean {
+  if (value === "untrusted" || value === "on-request" || value === "never") return true;
+  const granular = object(object(value)?.granular);
+  return typeof granular?.sandbox_approval === "boolean" &&
+    typeof granular.rules === "boolean" &&
+    typeof granular.skill_approval === "boolean" &&
+    typeof granular.request_permissions === "boolean" &&
+    typeof granular.mcp_elicitations === "boolean";
+}
+
+function isSandboxPolicy(value: unknown): boolean {
+  const policy = object(value);
+  if (policy?.type === "dangerFullAccess") return true;
+  if (policy?.type === "readOnly") return typeof policy.networkAccess === "boolean";
+  if (policy?.type === "externalSandbox") {
+    return policy.networkAccess === "restricted" || policy.networkAccess === "enabled";
+  }
+  return policy?.type === "workspaceWrite" &&
+    Array.isArray(policy.writableRoots) && policy.writableRoots.every((root) => typeof root === "string") &&
+    typeof policy.networkAccess === "boolean" &&
+    typeof policy.excludeTmpdirEnvVar === "boolean" &&
+    typeof policy.excludeSlashTmp === "boolean";
+}
+
+function isActivePermissionProfile(value: unknown): boolean {
+  if (value === null) return true;
+  const profile = object(value);
+  return typeof profile?.id === "string" && isNullableString(profile.extends);
+}
+
+function isCollaborationMode(value: unknown): boolean {
+  const mode = object(value);
+  const settings = object(mode?.settings);
+  return (mode?.mode === "plan" || mode?.mode === "default") &&
+    typeof settings?.model === "string" &&
+    isNullableString(settings.reasoning_effort) &&
+    isNullableString(settings.developer_instructions);
+}
+
+function isThreadSettings(value: unknown): value is Record<string, unknown> & { model: string } {
+  const settings = object(value);
+  return typeof settings?.cwd === "string" &&
+    isApprovalPolicy(settings.approvalPolicy) &&
+    (settings.approvalsReviewer === "user" || settings.approvalsReviewer === "auto_review" ||
+      settings.approvalsReviewer === "guardian_subagent") &&
+    isSandboxPolicy(settings.sandboxPolicy) &&
+    isActivePermissionProfile(settings.activePermissionProfile) &&
+    typeof settings.model === "string" && !!settings.model.trim() &&
+    typeof settings.modelProvider === "string" && !!settings.modelProvider.trim() &&
+    isNullableString(settings.serviceTier) &&
+    isNullableString(settings.effort) &&
+    (settings.summary === null || settings.summary === "auto" || settings.summary === "concise" ||
+      settings.summary === "detailed" || settings.summary === "none") &&
+    isCollaborationMode(settings.collaborationMode) &&
+    (settings.personality === null || settings.personality === "none" ||
+      settings.personality === "friendly" || settings.personality === "pragmatic");
+}
+
+function isModelReroutedNotification(value: unknown): value is Record<string, unknown> & { toModel: string } {
+  const notification = object(value);
+  return typeof notification?.threadId === "string" &&
+    typeof notification.turnId === "string" && !!notification.turnId.trim() &&
+    typeof notification.fromModel === "string" && !!notification.fromModel.trim() &&
+    typeof notification.toModel === "string" && !!notification.toModel.trim() &&
+    notification.reason === "highRiskCyberActivity";
+}
+
 async function optionalPaginatedRequest(
   rpc: JsonRpcProcess,
   method: string,
@@ -323,18 +394,14 @@ export class CodexAppServerSession implements RuntimeSession {
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
     if (notification.method === "model/rerouted") {
-      const raw = object(notification.params);
-      if (raw?.threadId !== this.engineAgentId ||
-          typeof raw.turnId !== "string" || !raw.turnId.trim() ||
-          typeof raw.fromModel !== "string" || !raw.fromModel.trim() ||
-          typeof raw.toModel !== "string" || !raw.toModel.trim() ||
-          typeof raw.reason !== "string" || !raw.reason.trim()) return;
+      if (!isModelReroutedNotification(notification.params) ||
+          notification.params.threadId !== this.engineAgentId) return;
+      const raw = notification.params;
       this.observeProviderModel(raw.toModel.trim());
     } else if (notification.method === "thread/settings/updated") {
       const raw = object(notification.params);
-      const threadSettings = object(raw?.threadSettings);
-      if (raw?.threadId !== this.engineAgentId ||
-          typeof threadSettings?.model !== "string" || !threadSettings.model.trim()) return;
+      if (raw?.threadId !== this.engineAgentId || !isThreadSettings(raw.threadSettings)) return;
+      const threadSettings = raw.threadSettings;
       this.observeProviderModel(threadSettings.model.trim());
     } else if (notification.method === "mcpServer/startupStatus/updated") {
       const raw = notification.params && typeof notification.params === "object"

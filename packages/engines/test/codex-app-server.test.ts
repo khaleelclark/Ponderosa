@@ -13,6 +13,23 @@ const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
 };
+const codexThreadSettings = (model: string) => ({
+  cwd: here,
+  approvalPolicy: "never",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "dangerFullAccess" },
+  activePermissionProfile: null,
+  model,
+  modelProvider: "openai",
+  serviceTier: null,
+  effort: null,
+  summary: null,
+  collaborationMode: {
+    mode: "default",
+    settings: { model, reasoning_effort: null, developer_instructions: null },
+  },
+  personality: null,
+});
 
 describe("Codex app-server persistent runtime", () => {
   it("bounds sessionless capability discovery and terminates an unresponsive app-server", async () => {
@@ -348,7 +365,7 @@ describe("Codex app-server persistent runtime", () => {
     }],
     ["thread/settings/updated", {
       method: "thread/settings/updated",
-      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+      params: { threadId: "codex-thread-v1", threadSettings: codexThreadSettings("model-a") },
     }],
   ])("keeps authoritative %s state when it arrives before turn/start completes", async (_method, notification) => {
     const controller = new AbortController();
@@ -385,7 +402,7 @@ describe("Codex app-server persistent runtime", () => {
     }],
     ["thread/settings/updated", {
       method: "thread/settings/updated",
-      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+      params: { threadId: "codex-thread-v1", threadSettings: codexThreadSettings("model-a") },
     }],
   ])("applies authoritative %s state once when it arrives after turn/start", async (_method, notification) => {
     const controller = new AbortController();
@@ -409,6 +426,54 @@ describe("Codex app-server persistent runtime", () => {
     const capabilities = await session.capabilities();
     expect(capabilities).toMatchObject({ model: "model-a", catalogVersion: "codex-thread-v1:2" });
     expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.close();
+    await draining;
+  });
+
+  it.each([
+    ["an unknown reroute reason", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "loadBalancing",
+      },
+    }],
+    ["partial thread settings", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+    }],
+    ["invalid complete thread settings", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), approvalPolicy: "sometimes" },
+      },
+    }],
+  ])("ignores same-thread provider state with %s", async (_label, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "schema-invalid-model-notification", cwd: here, history: [], model: "model-b",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-b", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    const before = await session.capabilities();
+    expect(before).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:0" });
+    expect(before.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.startTurn({ prompt: "keep the active model", kind: "user_message" });
+    const after = await session.capabilities();
+    expect(after).toBe(before);
+    expect(after).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:0" });
+    expect(after.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(0);
     await session.close();
     await draining;
   });
