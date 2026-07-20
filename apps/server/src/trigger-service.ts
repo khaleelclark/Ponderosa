@@ -1,9 +1,9 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHmac } from "node:crypto";
 import path from "node:path";
 import { watch, type FSWatcher } from "chokidar";
 import { Cron } from "croner";
 import picomatch from "picomatch";
-import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
+import type { AgentStore, CoordinationV3Store, TriggerFilesystemBurst } from "@ponderosa/agents";
 import type {
   TriggerDefinitionDto,
   TriggerFilesystemConfig,
@@ -89,9 +89,6 @@ export function normalizeTriggerSourceConfig(
 interface FileBurst {
   startedAt: string;
   lastAt: string;
-  eventCount: number;
-  changes: Map<string, Set<string>>;
-  droppedPathEventCount: number;
   quietTimer: NodeJS.Timeout;
   maxTimer: NodeJS.Timeout;
 }
@@ -123,6 +120,13 @@ export class TriggerSourceService {
     coordination: CoordinationV3Store;
     dataDir: string;
     notify(triggerId?: string): void;
+    onSourceFailure?(input: {
+      trigger: TriggerDefinitionDto;
+      kind: "watcher" | "filesystem_persistence";
+      error: string;
+    }): void;
+    onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence"): void;
+    onBudgetReset?(): void;
     now?: () => Date;
   }) {
     this.secrets = new TriggerSecretStore(options.dataDir);
@@ -130,6 +134,7 @@ export class TriggerSourceService {
 
   async start(): Promise<void> {
     await this.refresh();
+    this.restorePendingFileBursts();
     this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
     this.scheduleTimer.unref();
     await this.processDueSchedules();
@@ -211,11 +216,19 @@ export class TriggerSourceService {
       });
       const ready = new Promise<void>((resolve) => watcher.once("ready", resolve));
       const active: ProjectFilesystemWatcher = { watcher, projectPath: project.hostPath, routes, ready };
-      watcher.on("error", () => {
+      watcher.on("ready", () => {
+        for (const route of active.routes.values()) this.options.onSourceRecovered?.(route.trigger.id, "watcher");
+      });
+      watcher.on("error", (error) => {
         // Fail closed and make the inert source visible as disabled instead of
         // silently presenting an enabled automation that cannot observe files.
         for (const route of active.routes.values()) {
           this.options.coordination.updateTriggerDefinition(route.trigger.id, { enabled: false });
+          this.options.onSourceFailure?.({
+            trigger: route.trigger,
+            kind: "watcher",
+            error: error instanceof Error ? error.message : String(error),
+          });
           this.options.notify(route.trigger.id);
         }
         void this.refresh().catch(() => undefined);
@@ -229,6 +242,7 @@ export class TriggerSourceService {
       });
       this.watchers.set(projectId, active);
     }
+    this.restorePendingFileBursts();
   }
 
   /** Deterministic qualification seam; production CRUD does not wait for a
@@ -249,7 +263,7 @@ export class TriggerSourceService {
     rawBody: Buffer;
     payload: unknown;
     remoteAddress?: string;
-  }): { occurrenceId: string; replayed: boolean } {
+  }): { occurrenceId: string; state: "pending" | "activated" | "cancelled" | "dead_lettered"; replayed: boolean } {
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Trigger not found");
     const agent = this.options.store.getAgent(trigger.agentId);
@@ -283,11 +297,14 @@ export class TriggerSourceService {
       now: this.now().toISOString(),
     });
     if (!result.replayed) this.options.notify(trigger.id);
-    return { occurrenceId: result.occurrenceId, replayed: result.replayed };
+    return { occurrenceId: result.occurrenceId, state: result.state, replayed: result.replayed };
   }
 
   async processDueSchedules(): Promise<void> {
     const now = this.now();
+    if (this.options.coordination.resetExpiredTriggerBudgets(now.toISOString()) > 0) {
+      this.options.onBudgetReset?.();
+    }
     for (const trigger of this.options.coordination.listDueScheduleTriggers(now.toISOString())) {
       try {
         const agent = this.options.store.getAgent(trigger.agentId);
@@ -366,59 +383,64 @@ export class TriggerSourceService {
 
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string): void {
     const now = this.now().toISOString();
-    const config = trigger.sourceConfig as TriggerFilesystemConfig;
-    const current = this.bursts.get(trigger.id);
-    if (current) {
-      current.lastAt = now;
-      current.eventCount += 1;
-      const kinds = current.changes.get(changedPath);
-      if (kinds) kinds.add(type);
-      else if (current.changes.size < MAX_FILES_PER_OCCURRENCE) current.changes.set(changedPath, new Set([type]));
-      else current.droppedPathEventCount += 1;
-      clearTimeout(current.quietTimer);
-      current.quietTimer = setTimeout(() => this.flushFileBurst(trigger), config.quietMs);
-      return;
+    try {
+      const burst = this.options.coordination.recordFilesystemTriggerEvent({
+        triggerId: trigger.id,
+        path: changedPath,
+        eventType: type,
+        maxCapturedPaths: MAX_FILES_PER_OCCURRENCE,
+        now,
+      });
+      this.scheduleFileBurst(trigger, burst);
+      this.options.onSourceRecovered?.(trigger.id, "filesystem_persistence");
+    } catch (error) {
+      this.options.onSourceFailure?.({
+        trigger,
+        kind: "filesystem_persistence",
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    const burst: FileBurst = {
-      startedAt: now,
-      lastAt: now,
-      eventCount: 1,
-      changes: new Map([[changedPath, new Set([type])]]),
-      droppedPathEventCount: 0,
-      quietTimer: setTimeout(() => this.flushFileBurst(trigger), config.quietMs),
-      maxTimer: setTimeout(() => this.flushFileBurst(trigger), config.maxWindowMs),
-    };
-    this.bursts.set(trigger.id, burst);
   }
 
-  private flushFileBurst(trigger: TriggerDefinitionDto): void {
-    const burst = this.bursts.get(trigger.id);
-    if (!burst) return;
-    this.clearBurst(trigger.id);
-    const changed = [...burst.changes].map(([filePath, types]) => ({ path: filePath, types: [...types] }));
+  private flushFileBurst(triggerId: string): void {
+    this.clearBurst(triggerId);
     try {
-      this.options.coordination.recordTriggerOccurrence({
-        triggerId: trigger.id,
-        occurrenceKey: `filesystem:${randomUUID()}`,
-        payload: {
-          changes: changed,
-          lowLevelEventCount: burst.eventCount,
-          capturedPathCount: burst.changes.size,
-          startedAt: burst.startedAt,
-          endedAt: burst.lastAt,
-          ...(burst.droppedPathEventCount ? {
-            pathLimitReached: true,
-            droppedPathEventCount: burst.droppedPathEventCount,
-          } : {}),
-        },
-        provenance: { source: "project_filesystem", watcher: "project_root", contentInjected: false },
-        now: burst.lastAt,
+      const result = this.options.coordination.flushFilesystemTriggerBurst(triggerId);
+      if (result) this.options.notify(triggerId);
+      this.options.onSourceRecovered?.(triggerId, "filesystem_persistence");
+    } catch (error) {
+      const trigger = this.options.coordination.getTriggerDefinition(triggerId);
+      if (!trigger || !trigger.enabled) return;
+      this.options.onSourceFailure?.({
+        trigger,
+        kind: "filesystem_persistence",
+        error: error instanceof Error ? error.message : String(error),
       });
-      this.options.notify(trigger.id);
-    } catch {
-      // The Trigger may have been disabled or deleted while its quiet-window
-      // timer was pending. Its buffered event must not escape that lifecycle.
+      const pending = this.options.coordination.listPendingFilesystemTriggerBursts()
+        .find((burst) => burst.triggerId === triggerId);
+      if (pending) this.scheduleFileBurst(trigger, pending);
     }
+  }
+
+  private restorePendingFileBursts(): void {
+    for (const burst of this.options.coordination.listPendingFilesystemTriggerBursts()) {
+      const trigger = this.options.coordination.getTriggerDefinition(burst.triggerId);
+      if (trigger?.enabled && trigger.sourceKind === "filesystem") this.scheduleFileBurst(trigger, burst);
+    }
+  }
+
+  private scheduleFileBurst(trigger: TriggerDefinitionDto, burst: TriggerFilesystemBurst): void {
+    this.clearBurst(trigger.id);
+    const config = trigger.sourceConfig as TriggerFilesystemConfig;
+    const now = this.now().getTime();
+    const quietDelay = Math.max(0, Date.parse(burst.lastAt) + config.quietMs - now);
+    const maxDelay = Math.max(0, Date.parse(burst.startedAt) + config.maxWindowMs - now);
+    this.bursts.set(trigger.id, {
+      startedAt: burst.startedAt,
+      lastAt: burst.lastAt,
+      quietTimer: setTimeout(() => this.flushFileBurst(trigger.id), quietDelay),
+      maxTimer: setTimeout(() => this.flushFileBurst(trigger.id), maxDelay),
+    });
   }
 
   private clearBurst(id: string): void {

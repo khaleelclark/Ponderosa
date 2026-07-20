@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { connect as connectTcp } from "node:net";
@@ -1063,6 +1063,136 @@ describe("notification panel actions", () => {
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ readAt?: string }>>().every((item) => Boolean(item.readAt))).toBe(true);
     expect((await app.inject({ method: "DELETE", url: "/api/notifications" })).json()).toEqual({ cleared: 2 });
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
+    await app.close();
+  });
+});
+
+describe("Trigger webhook admission", () => {
+  it("returns accurate bounded-JSON errors and exposes durable acceptance state", async () => {
+    const project = store.createProject({ label: "Webhook", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Receiver", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/triggers`,
+      payload: {
+        conversationId: conversation.id,
+        name: "Signed input",
+        instructions: "Process the event safely",
+        sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const webhook = created.json<{ trigger: { id: string }; webhookSecret: string }>();
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const deliver = (eventId: string, payload: unknown) => {
+      const raw = JSON.stringify(payload);
+      const signature = `v1=${createHmac("sha256", webhook.webhookSecret).update(`${timestamp}.${eventId}.`).update(raw).digest("hex")}`;
+      return app.inject({
+        method: "POST",
+        url: `/api/trigger-webhooks/${webhook.trigger.id}`,
+        headers: {
+          "content-type": "application/json",
+          "x-ponderosa-event-id": eventId,
+          "x-ponderosa-timestamp": timestamp,
+          "x-ponderosa-signature": signature,
+        },
+        payload: raw,
+      });
+    };
+
+    let deep: unknown = "leaf";
+    for (let depth = 0; depth < 100; depth += 1) deep = { nested: deep };
+    const rejected = await deliver("too-deep", deep);
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: "canonical JSON exceeds maximum depth 64" });
+
+    const accepted = await deliver("accepted", { action: "sync" });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({ state: "activated", replayed: false });
+    const replay = await deliver("accepted", { action: "sync" });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ state: "activated", replayed: true });
+    await app.close();
+  });
+});
+
+describe("Trigger operational notification reconciliation", () => {
+  it("deduplicates restart state and resolves budget, disable, and deleted-Trigger notices", async () => {
+    const project = store.createProject({ label: "Trigger notices", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Receiver", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const budgeted = coordination.createTriggerDefinition({
+      id: "budget-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Budgeted", instructions: "Process events", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, runBudget: { limit: 1, period: "lifetime" },
+    });
+    store.sqlite.prepare(`UPDATE trigger_definitions SET run_budget_used = 1 WHERE id = ?`).run(budgeted.id);
+    const filesystem = coordination.createTriggerDefinition({
+      id: "watcher-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Files", instructions: "Process file events", sourceKind: "filesystem",
+      sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 1_000 }, enabled: false,
+    });
+    const expired = coordination.createTriggerDefinition({
+      id: "expired-budget-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Expired budget", instructions: "Process events", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, runBudget: { limit: 1, period: "day" },
+    });
+    store.sqlite.prepare(`
+      UPDATE trigger_definitions
+      SET run_budget_used = 1, run_budget_period_started_at = '2020-01-01T00:00:00.000Z'
+      WHERE id = ?
+    `).run(expired.id);
+    const workspace = new WorkspaceStore(dataDir);
+    for (const dedupeKey of [
+      `trigger:${budgeted.id}:budget-held`,
+      `trigger:${filesystem.id}:watcher-failed`,
+      `trigger:${filesystem.id}:filesystem-persistence`,
+      `trigger:${expired.id}:budget-held`,
+      "trigger:deleted-trigger:watcher-failed",
+    ]) {
+      workspace.createNotification({
+        kind: "operational", category: "trigger", severity: "attention", status: "open",
+        dedupeKey, title: "Existing Trigger notice", body: "Persisted before restart",
+      });
+    }
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    const notifications = () => app.inject({ method: "GET", url: "/api/notifications" })
+      .then((response) => response.json<Array<{ dedupeKey?: string; status?: string }>>());
+    const initial = await notifications();
+    expect(initial.filter((item) => item.dedupeKey === `trigger:${budgeted.id}:budget-held`)).toEqual([
+      expect.objectContaining({ status: "open" }),
+    ]);
+    expect(initial.find((item) => item.dedupeKey === "trigger:deleted-trigger:watcher-failed")).toMatchObject({ status: "resolved" });
+    expect(initial.find((item) => item.dedupeKey === `trigger:${expired.id}:budget-held`)).toMatchObject({ status: "resolved" });
+
+    expect((await app.inject({
+      method: "PATCH", url: `/api/triggers/${budgeted.id}`, payload: { runBudget: null },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "PATCH", url: `/api/triggers/${filesystem.id}`, payload: { enabled: false },
+    })).statusCode).toBe(200);
+    const resolved = await notifications();
+    for (const key of [
+      `trigger:${budgeted.id}:budget-held`,
+      `trigger:${filesystem.id}:watcher-failed`,
+      `trigger:${filesystem.id}:filesystem-persistence`,
+    ]) expect(resolved.find((item) => item.dedupeKey === key)).toMatchObject({ status: "resolved" });
     await app.close();
   });
 });

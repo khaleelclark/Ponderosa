@@ -2169,6 +2169,34 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     workspace.setNotificationStatus(current.id, "resolved");
     publishWorkspaceSince(cursor);
   };
+  const reconcileTriggerOperationalNotifications = (): void => {
+    const triggers = coordinationV3.listTriggerDefinitions();
+    const retained = new Set<string>();
+    for (const trigger of triggers) {
+      if (trigger.budgetState?.held) {
+        const key = `trigger:${trigger.id}:budget-held`;
+        retained.add(key);
+        createOperationalNotification({
+          dedupeKey: key,
+          category: "budget",
+          severity: "attention",
+          title: `${trigger.name} reached its automatic Run budget`,
+          body: `${trigger.budgetState.used} of ${trigger.runBudget!.limit + trigger.budgetState.allowance} ${trigger.runBudget!.period === "lifetime" ? "lifetime automatic Runs" : `automatic Runs per ${trigger.runBudget!.period}`} have been used. New outside events remain queued until the period resets or you allow more Runs.`,
+          projectId: trigger.projectId,
+          conversationId: trigger.conversationId,
+          action: { kind: "open_agent", targetId: trigger.agentId },
+        });
+      }
+      if (trigger.sourceKind === "filesystem" && !trigger.enabled) retained.add(`trigger:${trigger.id}:watcher-failed`);
+      if (trigger.sourceKind === "filesystem" && trigger.enabled) retained.add(`trigger:${trigger.id}:filesystem-persistence`);
+    }
+    for (const notification of workspace.listNotifications()) {
+      const key = notification.dedupeKey;
+      if (!key?.startsWith("trigger:") || (notification.status ?? "open") !== "open") continue;
+      if (![":budget-held", ":watcher-failed", ":filesystem-persistence"].some((suffix) => key.endsWith(suffix))) continue;
+      if (!retained.has(key)) resolveOperationalNotification(key);
+    }
+  };
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
     const cursor = workspace.cursor();
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
@@ -4435,29 +4463,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           authority.opening || authority.closing || authority.oneShots.size > 0 ? [agentId] : []),
         ...activeRuns.keys(),
       ])],
-      onRunLeased: (lease) => {
-        const triggerId = lease.activations.flatMap((activation) => {
-          if (activation.kind !== "trigger_occurrence" || !activation.payload || typeof activation.payload !== "object") return [];
-          const trigger = (activation.payload as { trigger?: { id?: unknown } }).trigger;
-          return typeof trigger?.id === "string" ? [trigger.id] : [];
-        })[0];
-        if (!triggerId) return;
-        const trigger = coordinationV3.getTriggerDefinition(triggerId);
-        if (!trigger?.budgetState?.held) {
-          resolveOperationalNotification(`trigger:${triggerId}:budget-held`);
-          return;
-        }
-        createOperationalNotification({
-          dedupeKey: `trigger:${trigger.id}:budget-held`,
-          category: "budget",
-          severity: "attention",
-          title: `${trigger.name} reached its automatic Run budget`,
-          body: `${trigger.budgetState.used} of ${trigger.runBudget!.limit + trigger.budgetState.allowance} ${trigger.runBudget!.period === "lifetime" ? "lifetime automatic Runs" : `automatic Runs per ${trigger.runBudget!.period}`} have been used. New outside events remain queued until the period resets or you allow more Runs.`,
-          projectId: trigger.projectId,
-          conversationId: trigger.conversationId,
-          action: { kind: "open_agent", targetId: trigger.agentId },
-        });
-      },
+      onRunLeased: () => { reconcileTriggerOperationalNotifications(); },
       onMessageDeliveryChanged: publishMessageDeliveryChanged,
     },
   );
@@ -4471,6 +4477,27 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!triggerId) return;
       const trigger = coordinationV3.getTriggerDefinition(triggerId);
       if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId, action: "occurrence" });
+    },
+    onSourceFailure: ({ trigger, kind, error }) => {
+      createOperationalNotification({
+        dedupeKey: `trigger:${trigger.id}:${kind === "watcher" ? "watcher-failed" : "filesystem-persistence"}`,
+        category: "trigger",
+        severity: "attention",
+        title: kind === "watcher" ? `${trigger.name} filesystem watcher stopped` : `${trigger.name} could not persist filesystem activity`,
+        body: kind === "watcher"
+          ? `The Trigger was disabled after its Project watcher failed: ${error}`
+          : `Filesystem activity remains durably pending when possible, but the latest watcher event could not be persisted: ${error}`,
+        projectId: trigger.projectId,
+        conversationId: trigger.conversationId,
+        action: { kind: "open_agent", targetId: trigger.agentId },
+      });
+    },
+    onSourceRecovered: (triggerId, kind) => {
+      resolveOperationalNotification(`trigger:${triggerId}:${kind === "watcher" ? "watcher-failed" : "filesystem-persistence"}`);
+    },
+    onBudgetReset: () => {
+      reconcileTriggerOperationalNotifications();
+      coordinationV3Scheduler.notify();
     },
   });
   const drainAgentDeletionCleanup = async (): Promise<void> => {
@@ -4865,6 +4892,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3.expireDue();
     coordinationV3Scheduler.start();
     await triggerSources.start();
+    reconcileTriggerOperationalNotifications();
     await drainAgentDeletionCleanup();
     agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
     agentDeletionCleanupSweep.unref();
@@ -9412,6 +9440,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ...(normalized ? { sourceConfig: normalized.config, nextFireAt: normalized.nextFireAt ?? null } : {}),
       });
       await triggerSources.refresh();
+      reconcileTriggerOperationalNotifications();
+      if (body.enabled === false) {
+        resolveOperationalNotification(`trigger:${current.id}:watcher-failed`);
+        resolveOperationalNotification(`trigger:${current.id}:filesystem-persistence`);
+      }
       if (trigger) appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
       return trigger;
     } catch (error) {
@@ -9424,6 +9457,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!current) return reply.code(404).send({ error: "Trigger not found" });
     coordinationV3.deleteTriggerDefinition(current.id);
     await triggerSources.refresh();
+    reconcileTriggerOperationalNotifications();
     appendWorkspace({ type: "trigger_changed", projectId: current.projectId, agentId: current.agentId, triggerId: current.id, action: "deleted" });
     return { deleted: true };
   });
@@ -9445,7 +9479,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     try {
       const trigger = coordinationV3.allowTriggerRuns(request.params.id, request.body?.additionalRuns ?? 0);
       if (!trigger) return reply.code(404).send({ error: "Trigger not found" });
-      resolveOperationalNotification(`trigger:${trigger.id}:budget-held`);
+      reconcileTriggerOperationalNotifications();
       coordinationV3Scheduler.notify();
       appendWorkspace({ type: "trigger_changed", projectId: trigger.projectId, agentId: trigger.agentId, triggerId: trigger.id, action: "updated" });
       return trigger;
@@ -9513,6 +9547,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     } catch (error) {
       const message = error instanceof Error ? error.message : "webhook rejected";
       if (message.includes("idempotency conflict")) return reply.code(409).send({ error: message });
+      if (message.startsWith("canonical JSON exceeds")) return reply.code(400).send({ error: message });
+      if (message === "webhook Trigger not found" || message === "webhook Trigger owner is unavailable") {
+        return reply.code(404).send({ error: message });
+      }
       return reply.code(401).send({ error: message });
     }
   });

@@ -3694,8 +3694,20 @@ describe("CoordinationV3Store scheduler", () => {
     const batched = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:01.000Z" })!;
     expect(batched.activations).toHaveLength(2);
     expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 1, allowance: 0, held: true } });
-    acknowledgeLease(batched);
-    store.completeRun(batched.runId, batched.fencingToken, "2026-07-15T00:00:02.000Z");
+    expect(store.failRun({
+      runId: batched.runId,
+      fencingToken: batched.fencingToken,
+      workerId: "worker",
+      sameRunResumable: false,
+      confirmedNotExecuted: true,
+      now: "2026-07-15T00:00:01.100Z",
+      retryDelayMs: 1,
+    })).toBe("retry");
+    const retried = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:01.101Z" })!;
+    expect(retried.activationIds).toEqual(batched.activationIds);
+    expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 1, allowance: 0, held: true } });
+    acknowledgeLease(retried);
+    store.completeRun(retried.runId, retried.fencingToken, "2026-07-15T00:00:02.000Z");
     store.recordTriggerOccurrence({
       triggerId: "budgeted", occurrenceKey: "held", payload: { index: 3 }, provenance: { source: "test" }, now: "2026-07-15T00:00:03.000Z",
     });
@@ -3706,7 +3718,7 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 2, allowance: 2, held: false } });
   });
 
-  it("bounds trigger backpressure, retries, and pending intake", () => {
+  it("keeps every admitted Trigger occurrence pending until activation capacity recovers", () => {
     store = new CoordinationV3Store(opened.client, {
       maxPendingActivationsPerAgent: 1,
       maxPendingTriggerOccurrencesPerAgent: 1,
@@ -3728,14 +3740,49 @@ describe("CoordinationV3Store scheduler", () => {
     })).toMatchObject({ state: "pending" });
     expect(store.recordTriggerOccurrence({
       ...base, occurrenceKey: "tick-2", now: "2026-07-15T00:00:00.000Z",
-    })).toMatchObject({ state: "dead_lettered" });
+    })).toMatchObject({ state: "pending" });
     expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.002Z"))
-      .toEqual({ activated: 0, pending: 0, deadLettered: 1 });
+      .toEqual({ activated: 0, pending: 2, deadLettered: 0 });
     expect(store.schedulerMetrics()).toMatchObject({
-      pendingTriggerOccurrences: 0,
-      deadLetteredTriggerOccurrences: 2,
+      pendingTriggerOccurrences: 2,
+      deadLetteredTriggerOccurrences: 0,
       activeRuns: 0,
     });
+    const occupying = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:00.003Z" })!;
+    acknowledgeLease(occupying);
+    store.completeRun(occupying.runId, occupying.fencingToken, "2026-07-15T00:00:00.004Z");
+    expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.005Z"))
+      .toEqual({ activated: 1, pending: 1, deadLettered: 0 });
+    const firstTriggerRun = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:00.006Z" })!;
+    acknowledgeLease(firstTriggerRun);
+    store.completeRun(firstTriggerRun.runId, firstTriggerRun.fencingToken, "2026-07-15T00:00:00.007Z");
+    expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.008Z"))
+      .toEqual({ activated: 1, pending: 0, deadLettered: 0 });
+    expect(store.listTriggerOccurrences("timer:tick").every((occurrence) => occurrence.state === "activated")).toBe(true);
+  });
+
+  it("rejects excessively deep Trigger JSON deterministically without recursive overflow", () => {
+    createTrigger("webhook:deep");
+    let payload: unknown = "leaf";
+    for (let depth = 0; depth < 100; depth += 1) payload = { nested: payload };
+    expect(() => store.recordTriggerOccurrence({
+      triggerId: "webhook:deep",
+      occurrenceKey: "deep",
+      payload,
+      provenance: { source: "signed_webhook" },
+    })).toThrow("canonical JSON exceeds maximum depth 64");
+    expect(store.listTriggerOccurrences("webhook:deep")).toHaveLength(0);
+  });
+
+  it("rejects over-wide Trigger JSON before scheduling an unbounded canonicalization stack", () => {
+    createTrigger("webhook:wide");
+    expect(() => store.recordTriggerOccurrence({
+      triggerId: "webhook:wide",
+      occurrenceKey: "wide",
+      payload: Array.from({ length: 250_001 }, () => 0),
+      provenance: { source: "signed_webhook" },
+    })).toThrow("canonical JSON exceeds 250000 nodes");
+    expect(store.listTriggerOccurrences("webhook:wide")).toHaveLength(0);
   });
 
   it("cancels unstarted Trigger work on disable without deleting occurrence history", () => {

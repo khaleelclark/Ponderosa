@@ -27,7 +27,7 @@ function setup(now: Date) {
     store: agents, coordination, dataDir: join(directory, "secrets"), now: () => now,
     notify: () => { notifications += 1; },
   });
-  return { agents, project, conversation, agent, coordination, service, notifications: () => notifications };
+  return { directory, agents, project, conversation, agent, coordination, service, notifications: () => notifications };
 }
 
 describe("V3.2 Trigger sources", () => {
@@ -188,6 +188,56 @@ describe("V3.2 Trigger sources", () => {
       expect(JSON.stringify(occurrence)).not.toContain("SECRET_FILE_CONTENT");
       expect(context.coordination.listTriggerOccurrences(second.id)).toHaveLength(1);
     } finally {
+      await context.service.stop();
+      context.agents.close();
+    }
+  });
+
+  it("restores a persisted filesystem quiet-window burst after service restart", async () => {
+    const now = new Date("2026-07-16T12:00:00.000Z");
+    const context = setup(now);
+    let restarted: TriggerSourceService | undefined;
+    try {
+      const trigger = context.coordination.createTriggerDefinition({
+        id: "filesystem-restart", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Files", instructions: "Inspect relevant changes",
+        sourceKind: "filesystem",
+        sourceConfig: { include: ["src/**"], exclude: [], quietMs: 500, maxWindowMs: 1_000 },
+      });
+      await context.service.start();
+      await context.service.waitForFilesystemWatchers();
+      mkdirSync(join(context.project.hostPath, "src"), { recursive: true });
+      writeFileSync(join(context.project.hostPath, "src", "durable.ts"), "durable metadata only");
+      const persistenceDeadline = Date.now() + 2_000;
+      while (context.coordination.listPendingFilesystemTriggerBursts().length === 0 && Date.now() < persistenceDeadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toMatchObject([{
+        triggerId: trigger.id,
+        changes: expect.arrayContaining([{ path: "src/durable.ts", types: expect.any(Array) }]),
+      }]);
+      await context.service.stop();
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(0);
+
+      restarted = new TriggerSourceService({
+        store: context.agents,
+        coordination: context.coordination,
+        dataDir: join(context.directory, "secrets"),
+        now: () => now,
+        notify: () => undefined,
+      });
+      await restarted.start();
+      const flushDeadline = Date.now() + 2_000;
+      while (context.coordination.listTriggerOccurrences(trigger.id).length === 0 && Date.now() < flushDeadline) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+      expect(context.coordination.listTriggerOccurrences(trigger.id)[0]).toMatchObject({
+        state: "activated",
+        payload: { changes: expect.arrayContaining([{ path: "src/durable.ts", types: expect.any(Array) }]) },
+      });
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toHaveLength(0);
+    } finally {
+      await restarted?.stop();
       await context.service.stop();
       context.agents.close();
     }

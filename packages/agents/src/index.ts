@@ -39,6 +39,7 @@ export type {
   RecordTriggerOccurrenceInput,
   TriggerOccurrenceResult,
   TriggerOccurrenceState,
+  TriggerFilesystemBurst,
 } from "./coordination-v3-store.js";
 export type { ConversationDeliveryIntent } from "./store.js";
 export type { AgentDeletionReceipt, AgentManagementAuthorization } from "./store.js";
