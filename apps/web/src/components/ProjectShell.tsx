@@ -2,7 +2,7 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, ConversationDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import type { AgentHealthDto, EngineDto, ConversationDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -16,6 +16,7 @@ import { AgentsTab } from "./AgentsTab";
 import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
+import { AgentWorkInspector } from "./AgentWorkInspector";
 import { WorkspaceReviewPane } from "./panes";
 
 interface AgentDialogState {
@@ -41,12 +42,14 @@ export function agentBackRoute(projectId: string, context?: AgentReturnContext):
 
 export function ProjectShell({
   projectId,
+  project,
   route,
   engines,
   navigate,
   onResourceDeleted,
 }: {
   projectId: string;
+  project: ProjectDto;
   route: Route;
   engines: EngineDto[];
   navigate(route: Route, options?: { replace?: boolean }): void;
@@ -77,6 +80,7 @@ export function ProjectShell({
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [agentReturnContext, setAgentReturnContext] = useState<AgentReturnContext>();
+  const [projectAgentWorkOpen, setProjectAgentWorkOpen] = useState(false);
 
   const statusByAgentId = useMemo(() => {
     return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], new Map());
@@ -288,7 +292,18 @@ export function ProjectShell({
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
     main = <WorkspaceReviewPane projectId={projectId} files={detail?.changedFiles ?? []} running={running} initialPath={route.path} />;
   } else if (route.kind === "project") {
-    main = <ProjectArtifactsView projectId={projectId} agents={agents} onOpenArtifact={openProjectArtifact} />;
+    main = <>
+      <ProjectArtifactsView
+        projectId={projectId}
+        project={project}
+        agents={agents}
+        healthByAgentId={healthByAgentId}
+        onOpenArtifact={openProjectArtifact}
+        onOpenRun={(agentId, runId) => navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "runs", id: runId } })}
+        onOpenAgentWork={() => setProjectAgentWorkOpen(true)}
+      />
+      <AgentWorkInspector open={projectAgentWorkOpen} projectId={projectId} onClose={() => setProjectAgentWorkOpen(false)} />
+    </>;
   } else {
     main = (
       <Box sx={{ p: 3 }}>

@@ -89,7 +89,7 @@ export function WorkspaceTabs({
               : tabRoute.kind === "agents" ? "Agents"
                 : tabRoute.kind === "allAgents" ? "All Agents"
                   : tabRoute.kind === "allChat" ? "All Chat"
-                  : tabRoute.kind === "project" ? "Project files"
+                  : tabRoute.kind === "project" ? "Project overview"
                     : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";
         const label = tab.title ?? generatedLabel;

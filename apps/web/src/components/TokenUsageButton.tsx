@@ -1,5 +1,5 @@
 import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
-import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Select, Stack, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Select, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectedApiCostComponentsDto, TokenUsageRangeDto, TokenUsageScope, TokenUsageSummaryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
@@ -88,6 +88,13 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
       {data.unreportedRuns ? ` ${data.unreportedRuns} older or unsupported runs have no usage data.` : ""}
       {cost?.unpricedRuns ? ` ${runsLabel(cost.unpricedRuns)} ${cost.unpricedRuns === 1 ? "is" : "are"} excluded because model pricing, usage, or request-level detail required for long-context pricing is unavailable.` : ""}
     </Alert>
+    {data.wakeCauses.length ? <Box sx={{ mt: 2 }}>
+      <Typography variant="subtitle2" sx={{ mb: 0.75 }}>Why Runs started</Typography>
+      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+        {data.wakeCauses.map((item) => <Chip key={item.cause} size="small" variant="outlined" label={`${item.cause.replaceAll("_", " ")} · ${item.runs} ${item.runs === 1 ? "Run" : "Runs"}${item.activations !== item.runs ? ` · ${item.activations} wake-ups` : ""}`} />)}
+      </Stack>
+      <Typography variant="caption" color="text.secondary">Exact Activation kinds attached by the scheduler. A coalesced Run may appear in more than one category; inspect its full trace in Agent work.</Typography>
+    </Box> : null}
     {data.breakdown?.length ? <Box>
       <Typography variant="subtitle2" sx={{ mb: 1 }}>Usage by chat and agent</Typography>
       {data.breakdown.map((item) => <Stack key={`${item.projectId}:${item.conversationId ?? ""}:${item.agentId}:${item.engine}:${item.model ?? ""}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: .5 }}>

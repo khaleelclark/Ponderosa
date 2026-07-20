@@ -427,7 +427,7 @@ export function AgentDetail({
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = [
     { name: "cancel", description: "Stop the active agent turn", source: "ponderosa", acceptsArguments: false },
-    { name: "compact", description: "Compact this agent session", source: "ponderosa", acceptsArguments: false },
+    { name: "fresh", description: "Start a fresh provider session; canonical history stays available", source: "ponderosa", acceptsArguments: false },
     { name: "status", description: "Show this agent's runtime status", source: "ponderosa", acceptsArguments: false },
     ...(engineCapability?.commands ?? []),
   ];
@@ -764,7 +764,7 @@ export function AgentDetail({
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
   };
 
@@ -1042,9 +1042,9 @@ export function AgentDetail({
               setQueuedMessageNotice("Cancelling the active turn…");
               return stopActiveRun().then(() => setQueuedMessageNotice("Active turn cancelled."));
             }
-            if (files.length === 0 && text === "/compact") {
-              setQueuedMessageNotice("Compacting this agent session…");
-              return api.compactSession(agentId).then(() => setQueuedMessageNotice("Agent session compacted."));
+            if (files.length === 0 && text === "/fresh") {
+              setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
+              return api.compactSession(agentId).then(() => setQueuedMessageNotice("Fresh provider session scheduled. Canonical history remains available."));
             }
             if (files.length === 0 && text === "/status") {
               setQueuedMessageNotice(`${detail.agent.title} is ${agentStatusLabel(status).toLocaleLowerCase()}.`);

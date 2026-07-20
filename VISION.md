@@ -141,6 +141,14 @@ Run-bound capability; the older-context reference appears only when bounded
 input actually omitted scoped history. Ponderosa records exactly what it submitted and never claims visibility
 into additional opaque context retained by Codex or Claude.
 
+When an active Agent deliberately retires an opaque provider session, it may
+attach one bounded continuation handoff to that exact successful Run. Ponderosa
+submits the handoff once as relevant background in the next fresh seed and
+records it in the exact provider-input manifest. It never becomes authored
+communication, shared Project knowledge, artifact reachability, or scheduler
+authority. Canonical history remains authoritative; the handoff only reduces
+repeated work across a safe provider-session boundary.
+
 Workspace and Project rules have explicit precedence and are stored by
 Ponderosa. Global provider switches hold queued work without sacrificing Runs.
 Provider denial remains a separate durable availability fact. The operator has

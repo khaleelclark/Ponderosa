@@ -35,6 +35,24 @@ export interface SessionSnapshotEvent {
   artifactIds: string[];
 }
 
+/** Bounded working-state bridge supplied by the authoritative Run that asked
+ * Ponderosa to replace its provider session. Canonical history remains the
+ * source of truth. */
+export interface ContinuationHandoffEvent {
+  type: "continuation_handoff";
+  handoffId: string;
+  executionId: string;
+  text: string;
+}
+
+/** Durable acknowledgement that a fresh provider session accepted the handoff.
+ * Until this event exists, a failed fresh attempt may safely receive it again. */
+export interface ContinuationHandoffConsumedEvent {
+  type: "continuation_handoff_consumed";
+  handoffId: string;
+  executionId: string;
+}
+
 /** Direct Agent audit projection of one canonical communication event. */
 export interface CommunicationProjectionEvent {
   type: "communication_projection";
@@ -89,7 +107,7 @@ export interface ArtifactVisibilityEvent {
 export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { executionId?: string };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
+export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
   AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */

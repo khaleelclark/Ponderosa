@@ -142,6 +142,27 @@ export const PONDEROSA_CONTEXT_TOOL: RuntimeDynamicToolSpec = {
   },
 };
 
+/** A bounded, non-authoritative bridge between two provider sessions. The
+ * canonical Agent log, coordination state, and artifacts remain authoritative;
+ * this merely preserves the current worker's useful working understanding. */
+export const PONDEROSA_ROLLOVER_TOOL: RuntimeDynamicToolSpec = {
+  name: "ponderosa_rollover",
+  description: "Schedule a fresh provider session after this Run and carry one bounded continuation handoff into it. Use only when the current provider context should be replaced. Describe the current objective, changed state, completed work, important discoveries, decisions, failed approaches, risks, next action, and relevant file/artifact references. The handoff is a temporary relevance bridge, not authoritative history or organizational memory.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["handoff"],
+    properties: {
+      handoff: {
+        type: "string",
+        minLength: 1,
+        maxLength: 20_000,
+        description: "Continuation handoff, up to 20,000 Unicode code points. Do not summarize the entire conversation; preserve only working state needed by the next provider session.",
+      },
+    },
+  },
+};
+
 /** Read-only access to the version-controlled product wiki. Prompts receive a
  * compact reference index; article bodies stay behind this run-scoped tool. */
 export const PONDEROSA_DOCS_TOOL: RuntimeDynamicToolSpec = {
@@ -378,6 +399,7 @@ export const PONDEROSA_RUNTIME_TOOLS: RuntimeDynamicToolSpec[] = [
   PONDEROSA_MESSAGE_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_CONTEXT_TOOL,
+  PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_DOCS_TOOL,
   ...PONDEROSA_BROWSER_TOOLS,
 ];

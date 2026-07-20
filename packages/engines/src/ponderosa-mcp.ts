@@ -15,6 +15,7 @@ const decisionUrl = process.env.PONDEROSA_AGENT_DECISION_URL;
 const manageUrl = process.env.PONDEROSA_AGENT_MANAGE_URL;
 const directoryUrl = process.env.PONDEROSA_AGENT_DIRECTORY_URL;
 const contextUrl = process.env.PONDEROSA_AGENT_CONTEXT_URL;
+const rolloverUrl = process.env.PONDEROSA_AGENT_ROLLOVER_URL;
 const messageToken = process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
 
 function send(value: unknown): void {
@@ -57,6 +58,7 @@ async function handle(request: RpcRequest): Promise<void> {
     const isDirectory = params?.name === "team_directory";
     const isContext = params?.name === "context";
     const isResult = params?.name === "result";
+    const isRollover = params?.name === "rollover";
     const args = params?.arguments && typeof params.arguments === "object"
       ? params.arguments as { agentId?: unknown; cursor?: unknown; limit?: unknown }
       : {};
@@ -69,6 +71,8 @@ async function handle(request: RpcRequest): Promise<void> {
         ? coordinateUrl
         : isResult
           ? resultUrl
+          : isRollover
+            ? rolloverUrl
           : params?.name === "update_request"
             ? updateRequestUrl
             : params?.name === "message"

@@ -49,6 +49,18 @@ export const agents = sqliteTable("agents", {
   presetSnapshotJson: text("preset_snapshot_json"),
 });
 
+/** Rebuildable projection of the one unconsumed provider-session continuation
+ * handoff for an Agent. The append-only Agent log remains authoritative. */
+export const continuationHandoffs = sqliteTable("continuation_handoffs", {
+  id: text("id").primaryKey(),
+  agentId: text("agent_id").notNull(),
+  sourceExecutionId: text("source_execution_id").notNull(),
+  consumedByExecutionId: text("consumed_by_execution_id"),
+  text: text("text").notNull(),
+  createdAt: text("created_at").notNull(),
+  consumedAt: text("consumed_at"),
+});
+
 /** Authoritative crash-recovery journal for filesystem-backed Agent deletion. */
 export const agentDeletionTombstones = sqliteTable("agent_deletion_tombstones", {
   agentId: text("agent_id").primaryKey(),

@@ -21,11 +21,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, ArtifactDto } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { artifactDisplayLabel } from "./panes";
+import { ProjectOverview } from "./ProjectOverview";
 
 interface ProjectArtifactRecord {
   agent?: AgentDto;
@@ -42,13 +43,22 @@ const projectOutputKinds = new Set<ArtifactDto["kind"]>([
 
 export function ProjectArtifactsView({
   projectId,
+  project,
   agents,
+  healthByAgentId,
   onOpenArtifact,
+  onOpenRun,
+  onOpenAgentWork,
 }: {
   projectId: string;
+  project: ProjectDto;
   agents: AgentDto[];
+  healthByAgentId: Map<string, AgentHealthDto>;
   onOpenArtifact(agentId: string, artifactId: string): void;
+  onOpenRun(agentId: string, runId: string): void;
+  onOpenAgentWork(): void;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
@@ -61,6 +71,14 @@ export function ProjectArtifactsView({
   const projectArtifacts = useQuery({
     queryKey: ["project-artifacts", projectId],
     queryFn: () => api.listProjectArtifacts(projectId),
+  });
+  const updateArtifact = useMutation({
+    mutationFn: ({ artifactId, pinned, visibility }: { artifactId: string; pinned?: boolean; visibility?: "project" | "published" }) =>
+      api.updateProjectArtifact(projectId, artifactId, { ...(pinned !== undefined ? { pinned } : {}), ...(visibility ? { visibility } : {}) }),
+    onSuccess: (artifact) => {
+      setPreviewArtifact(artifact);
+      void queryClient.invalidateQueries({ queryKey: ["project-artifacts", projectId] });
+    },
   });
   const records = useMemo(() => {
     const agentById = new Map(agents.map((agent) => [agent.id, agent] as const));
@@ -85,8 +103,24 @@ export function ProjectArtifactsView({
 
   return <Box sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
+      <ProjectOverview
+        project={project}
+        agents={agents}
+        healthByAgentId={healthByAgentId}
+        importantArtifacts={(projectArtifacts.data?.items ?? []).filter((artifact) => artifact.pinned || artifact.visibility === "published")}
+        onOpenAgentWork={onOpenAgentWork}
+        onOpenProjectFiles={() => document.getElementById("project-files-and-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+        onOpenImportantArtifact={(artifact) => {
+          if (artifact.previewUrl) setPreviewArtifact(artifact);
+          else {
+            const owner = agents.find((agent) => agent.id === (artifact.originAgentId ?? artifact.agentId));
+            if (owner) onOpenArtifact(owner.id, artifact.id);
+            else document.getElementById("project-files-and-results")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }}
+      />
       <Box>
-        <Typography variant="h5" component="h2" fontWeight={800}>Project files</Typography>
+        <Typography id="project-files-and-results" variant="h5" component="h2" fontWeight={800} sx={{ scrollMarginTop: 16 }}>Files & results</Typography>
         <Typography variant="body2" color="text.secondary">Documents, images, downloads, test results, and generated artifacts created across this project.</Typography>
       </Box>
       <TextField
@@ -124,7 +158,8 @@ export function ProjectArtifactsView({
       <List aria-label="Project files" disablePadding sx={{ display: "grid", gap: 0.75 }}>
         {filtered.map(({ agent, artifact }) => {
           const label = artifactDisplayLabel(artifact);
-          const owner = agent?.title ?? "Project";
+          const originAgentId = artifact.originAgentId ?? artifact.agentId;
+          const owner = agent?.title ?? `Deleted Agent · ${originAgentId.slice(0, 8)}`;
           const canOpen = Boolean(artifact.previewUrl || agent);
           return <Box key={`${artifact.projectId ?? projectId}:${artifact.id}`} sx={{ display: "flex", alignItems: "center", minWidth: 0, borderRadius: 1.5, bgcolor: "background.paper", boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}`, overflow: "hidden" }}>
             <ListItemButton
@@ -139,12 +174,13 @@ export function ProjectArtifactsView({
               <ListItemIcon sx={{ minWidth: 40 }}><Inventory2OutlinedIcon /></ListItemIcon>
               <ListItemText
                 primary={label}
-                secondary={`${owner} · ${artifact.path}`}
+                secondary={`${owner}${artifact.executionId ? ` · Run ${artifact.executionId.slice(0, 8)}` : ""} · ${artifact.visibility === "published" ? "Published" : "Project"} · ${artifact.path}`}
                 primaryTypographyProps={{ fontWeight: 750, noWrap: true }}
                 secondaryTypographyProps={{ noWrap: true }}
               />
               <Stack direction="row" spacing={1} sx={{ ml: 1, alignItems: "center", flexShrink: 0, display: { xs: "none", lg: "flex" } }}>
                 <Chip size="small" variant="outlined" label={artifact.kind.replaceAll("_", " ")} />
+                {artifact.pinned ? <Chip size="small" color="primary" variant="outlined" label="Pinned" /> : null}
                 <Typography variant="caption" color="text.secondary">{new Date(artifact.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Typography>
               </Stack>
             </ListItemButton>
@@ -157,6 +193,17 @@ export function ProjectArtifactsView({
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
       <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File preview"}</DialogTitle>
       <DialogContent sx={{ p: { xs: 1, sm: 2 }, bgcolor: "background.default" }}>
+        {previewArtifact ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25, alignItems: "center" }}>
+          <Chip size="small" label={`Created by ${agents.find((agent) => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`} />
+          {previewArtifact.executionId ? (() => {
+            const originAgentId = previewArtifact.originAgentId ?? previewArtifact.agentId;
+            const originAgent = agents.find((agent) => agent.id === originAgentId);
+            return originAgent
+              ? <Button size="small" aria-label={`Open originating Run ${previewArtifact.executionId}`} onClick={() => onOpenRun(originAgent.id, previewArtifact.executionId!)}>Generated from Run {previewArtifact.executionId.slice(0, 8)}</Button>
+              : <Chip size="small" variant="outlined" label={`Run ${previewArtifact.executionId.slice(0, 8)} · originating Agent deleted`} />;
+          })() : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
+          <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project scope"} />
+        </Stack> : null}
         {previewArtifact?.previewUrl ? previewArtifact.mediaType?.startsWith("image/") ? <Box
           component="img"
           data-testid="artifact-image-preview"
@@ -174,6 +221,8 @@ export function ProjectArtifactsView({
         /> : null}
       </DialogContent>
       <DialogActions>
+        {previewArtifact ? <Button disabled={updateArtifact.isPending} onClick={() => updateArtifact.mutate({ artifactId: previewArtifact.id, pinned: !previewArtifact.pinned })}>{previewArtifact.pinned ? "Unpin" : "Pin"}</Button> : null}
+        {previewArtifact ? <Button disabled={updateArtifact.isPending} onClick={() => updateArtifact.mutate({ artifactId: previewArtifact.id, visibility: previewArtifact.visibility === "published" ? "project" : "published" })}>{previewArtifact.visibility === "published" ? "Make Project-only" : "Publish"}</Button> : null}
         {previewArtifact?.downloadUrl ? <Button component="a" href={previewArtifact.downloadUrl} download startIcon={<DownloadOutlinedIcon />}>Download</Button> : null}
         <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
       </DialogActions>

@@ -444,6 +444,12 @@ export const realApi = {
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
+  updateProjectArtifact(projectId: string, artifactId: string, input: { pinned?: boolean; visibility?: "project" | "published" }): Promise<ArtifactDto> {
+    return requestJson<ArtifactDto>(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  },
   exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<AgentPortablePackageDto> {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },

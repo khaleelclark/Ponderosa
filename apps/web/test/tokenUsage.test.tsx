@@ -8,6 +8,7 @@ describe("token usage UI", () => {
       scope: "project", scopeId: "project-1",
       inputTokens: 12_000, cachedInputTokens: 4_000, cacheWriteInputTokens: 1_000, outputTokens: 3_000, reasoningOutputTokens: 800, totalTokens: 15_000,
       finalizedRuns: 4, reportedRuns: 3, unreportedRuns: 1, coverage: 0.75,
+      wakeCauses: [{ cause: "coordination_outcome", runs: 3, activations: 4 }, { cause: "trigger_occurrence", runs: 1, activations: 1 }],
       projectedApiCost: {
         currency: "USD", usd: 0.25, basis: "api_list_price_proxy", catalogVersion: "2026-07-13", pricedRuns: 3, unpricedRuns: 1, coverage: 0.75,
         components: { uncachedInput: { tokens: 7_000, usd: 0.01 }, cachedInput: { tokens: 4_000, usd: 0.002 }, cacheWriteInput: { tokens: 1_000, usd: 0.003 }, output: { tokens: 3_000, usd: 0.235 } },
@@ -29,6 +30,8 @@ describe("token usage UI", () => {
     expect(html).toContain("Partial estimate");
     expect(html).toContain("Long-context tiers are applied per provider request");
     expect(html).toContain("gpt-5.6-luna");
+    expect(html).toContain("Why Runs started");
+    expect(html).toContain("coordination outcome · 3 Runs · 4 wake-ups");
     expect(formatTokens(0)).toBe("0");
     expect(formatUsd(0.25)).toContain("0.25");
   });
@@ -38,6 +41,7 @@ describe("token usage UI", () => {
       scope: "agent", scopeId: "agent-1",
       inputTokens: 400_000, cachedInputTokens: 300_000, cacheWriteInputTokens: 0, outputTokens: 5_000, reasoningOutputTokens: 1_000, totalTokens: 405_000,
       finalizedRuns: 1, reportedRuns: 1, unreportedRuns: 0, coverage: 1,
+      wakeCauses: [],
       projectedApiCost: {
         currency: "USD", usd: 0, basis: "api_list_price_proxy", catalogVersion: "2026-07-13", pricedRuns: 0, unpricedRuns: 1, coverage: 0,
         components: { uncachedInput: { tokens: 0, usd: 0 }, cachedInput: { tokens: 0, usd: 0 }, cacheWriteInput: { tokens: 0, usd: 0 }, output: { tokens: 0, usd: 0 } },
@@ -58,6 +62,7 @@ describe("token usage UI", () => {
       scope: "overall",
       inputTokens: 100, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110,
       finalizedRuns: 2, reportedRuns: 2, unreportedRuns: 0, coverage: 1,
+      wakeCauses: [],
       projectedApiCost: {
         currency: "USD", usd: 1.25, basis: "api_list_price_proxy", catalogVersion: "test", pricedRuns: 1, unpricedRuns: 1, coverage: 0.5,
         components: { uncachedInput: { tokens: 100, usd: 0.25 }, cachedInput: { tokens: 0, usd: 0 }, cacheWriteInput: { tokens: 0, usd: 0 }, output: { tokens: 10, usd: 1 } },
