@@ -130,10 +130,8 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
         kind: event.kind,
         lastSeq: seq,
         lastChangedAt: ts,
-        executionIds: activeExecutionId && !previous?.executionIds.includes(activeExecutionId)
-          ? [...(previous?.executionIds ?? []), activeExecutionId]
-          : previous?.executionIds ?? [],
-        ...(event.diff ? { diff: event.diff } : {}),
+        executionCount: previous?.executionCount ?? (activeExecutionId ? 1 : 0),
+        diffAvailable: Boolean(event.diff),
       };
       detail = {
         ...detail,

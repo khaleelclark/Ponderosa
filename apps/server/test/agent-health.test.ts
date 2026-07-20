@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentDto } from "@ponderosa/core";
 import type { StoredLogEvent } from "@ponderosa/agents";
-import { projectAgentHealth } from "../src/agent-health.js";
+import { projectAgentHealth, type StatusObservation } from "../src/agent-health.js";
 
 const t0 = "2026-07-12T00:00:00.000Z";
 const t1 = "2026-07-12T00:01:00.000Z";
@@ -18,13 +18,23 @@ function project(options: {
   availability?: Record<string, "running" | "runnable" | "waiting" | "idle">;
   events?: Record<string, StoredLogEvent[]>;
 } = {}) {
+  const latestEvent = (id: string): StatusObservation | undefined => {
+    const item = options.events?.[id]?.at(-1);
+    if (!item) return undefined;
+    if (item.event.type === "error") return { status: "failed", statusTimestamp: item.ts, reason: "runtime_error" };
+    if (item.event.type === "agent_lifecycle") return { status: item.event.status === "completed" ? "idle" : item.event.status, statusTimestamp: item.ts, reason: item.event.reason };
+    if (item.event.type === "work_item_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "work_item_waiting_approval" };
+    if (item.event.type === "work_item_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "work_item_completed" };
+    if (item.event.type === "turn_done") return { status: "idle", statusTimestamp: item.ts, reason: "turn_completed" };
+    return undefined;
+  };
   return projectAgentHealth({
     scope: { type: "conversation", id: "master" },
     agents: options.agents ?? [agent("agent")],
     activeRuns: options.active ?? new Map(),
     compactingAgents: options.compacting ?? new Map(),
     availability: (id) => options.availability?.[id] ?? "idle",
-    events: (id) => options.events?.[id] ?? [],
+    latestEvent,
     now: t1,
   });
 }

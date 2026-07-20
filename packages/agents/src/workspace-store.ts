@@ -223,7 +223,16 @@ export class WorkspaceStore {
   }
 
   readSince(id: number): WorkspaceEventEnvelope[] {
-    return this.events.filter((item) => item.id > id).map(({ mutation: _mutation, ...event }) => event);
+    // Reconnects usually ask for a small tail of a long canonical log. Locate
+    // that tail without rescanning every prior event.
+    let low = 0;
+    let high = this.events.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      if (this.events[middle]!.id <= id) low = middle + 1;
+      else high = middle;
+    }
+    return this.events.slice(low).map(({ mutation: _mutation, ...event }) => event);
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }

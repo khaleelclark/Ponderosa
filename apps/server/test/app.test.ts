@@ -3892,6 +3892,28 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("serves 50-Agent health and Team Directory from bounded projections", async () => {
+    const project = store.createProject({ label: "Large directory", hostPath: repoDir });
+    const agents = Array.from({ length: 50 }, (_, index) =>
+      store.createAgent(project.id, { title: `Agent ${String(index).padStart(2, "0")}`, engine: "codex" }));
+    for (const [index, agent] of agents.entries()) store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: `run-${index}`,
+    });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const fullLogRead = vi.spyOn(store, "readEvents").mockImplementation(() => {
+      throw new Error("health and directory must not scan canonical Agent logs");
+    });
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    expect(health.statusCode, health.body).toBe(200);
+    expect(health.json<{ agents: unknown[] }>().agents).toHaveLength(50);
+    const directory = await app.inject({ method: "GET", url: `/api/projects/${project.id}/team-directory` });
+    expect(directory.statusCode, directory.body).toBe(200);
+    expect(directory.json<{ agents: unknown[] }>().agents).toHaveLength(50);
+    expect(fullLogRead).not.toHaveBeenCalled();
+    fullLogRead.mockRestore();
+    await app.close();
+  });
+
   it("reports observed compaction and preserves ordinary cancellation", async () => {
     const project = store.createProject({ label: "Health transitions", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
@@ -5162,10 +5184,10 @@ describe("server chunk F", () => {
     expect(responsibleDetail.json<{ runs: Array<{ id: string; communicationEventId?: string; status: string }> }>().runs)
       .toEqual([expect.objectContaining({ id: runId, status: "completed" })]);
     expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/runs` }))
-      .json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: runId })]);
+      .json<{ items: Array<{ id: string }> }>().items).toEqual([expect.objectContaining({ id: runId })]);
     store.appendEvent(responsible.id, { type: "work_item_update", workItemId: "follow-up", executionId: runId, title: "Verify onboarding", status: "done" });
     expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/work-items` }))
-      .json<Array<{ executionId?: string; title: string }>>())
+      .json<{ items: Array<{ executionId?: string; title: string }> }>().items)
       .toEqual([expect.objectContaining({ executionId: runId, title: "Verify onboarding" })]);
     expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
       expect.objectContaining({
@@ -9286,6 +9308,24 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keeps legacy Agent collection URLs on bounded cursor contracts", async () => {
+    const { app, agent } = await createProjectAndAgent();
+    store.appendEvent(agent.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "bounded-run" });
+    store.appendEvent(agent.id, { type: "work_item_update", workItemId: "bounded", status: "done", executionId: "bounded-run" });
+    store.appendEvent(agent.id, { type: "file_change", path: "src/bounded.ts", kind: "edit", diff: "+bounded" });
+    for (const route of ["runs", "work-items", "artifacts"]) {
+      const response = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/${route}?limit=1` });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(Array.isArray(response.json())).toBe(false);
+      expect(response.json()).toMatchObject({ items: expect.any(Array), history: { limit: 1, hasMore: expect.any(Boolean) } });
+    }
+    const files = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/history/changedFiles?limit=1` });
+    expect(files.json()).toMatchObject({ stream: "changedFiles", items: [{ path: "src/bounded.ts", diffAvailable: true }] });
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/changed-file?path=src%2Fbounded.ts` });
+    expect(detail.json()).toMatchObject({ path: "src/bounded.ts", executionIds: ["bounded-run"], diff: "+bounded" });
+    await app.close();
+  });
+
   it("streams live SSE and replays from last seen seq without duplicates", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     await app.listen({ port: 0, host: "127.0.0.1" });
@@ -9315,6 +9355,9 @@ describe("server chunk F", () => {
     expect(chunk).toContain('"text":"done"');
     expect(chunk).not.toContain('"replayed":true');
     await waitForRun(agent.id);
+    const fullLogRead = vi.spyOn(store, "readEvents").mockImplementation(() => {
+      throw new Error("SSE reconnect tails must not scan the canonical Agent log");
+    });
 
     const replayAbort = new AbortController();
     const replay = await fetch(`${base}/api/agents/${agent.id}/stream?lastEventId=1`, {
@@ -9327,6 +9370,8 @@ describe("server chunk F", () => {
     expect(replayChunk).toContain("id: 2");
     expect(replayChunk).not.toMatch(/(?:^|\n)id: 1\n/);
     expect(replayChunk).toContain('"replayed":true');
+    expect(fullLogRead).not.toHaveBeenCalled();
+    fullLogRead.mockRestore();
 
     expect(project.id).toBeTruthy();
     await app.close();

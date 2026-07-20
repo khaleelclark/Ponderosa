@@ -194,6 +194,7 @@ export const changedFileProjection = sqliteTable("changed_file_projection", {
   lastSeq: integer("last_seq").notNull(),
   lastChangedAt: text("last_changed_at").notNull(),
   executionIdsJson: text("execution_ids_json").notNull(),
+  executionCount: integer("execution_count").notNull().default(0),
   diff: text("diff"),
 }, (table) => [primaryKey({ columns: [table.agentId, table.path] })]);
 

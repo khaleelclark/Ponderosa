@@ -1515,7 +1515,7 @@ export function formatActivitySpan(firstAt: string, lastAt: string): string {
   return `${minutes}m ${seconds % 60}s activity span`;
 }
 
-export function WorkspaceReviewPane({ projectId, files, running, initialPath }: { projectId: string; files: ChangedFileDto[]; running: boolean; initialPath?: string }): JSX.Element {
+export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath }: { projectId: string; agentId?: string; files: ChangedFileDto[]; running: boolean; initialPath?: string }): JSX.Element {
   const workspace = useQuery({
     queryKey: ["workspace", projectId],
     queryFn: () => api.getWorkspaceStatus(projectId),
@@ -1541,7 +1541,13 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
     refetchInterval: running ? 1_500 : false,
   });
   const selectedChange = changes.find((change) => change.path === selectedPath);
-  const selectedProvenance = selectedPath ? provenance.get(selectedPath) : undefined;
+  const selectedProvenanceQuery = useQuery({
+    queryKey: ["changed-file", agentId, selectedPath],
+    queryFn: () => api.getChangedFileDetail(agentId!, selectedPath!),
+    enabled: Boolean(agentId && selectedPath),
+    staleTime: Infinity,
+  });
+  const selectedProvenance = selectedProvenanceQuery.data ?? (selectedPath ? provenance.get(selectedPath) : undefined);
 
   return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
@@ -1587,7 +1593,7 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
-                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionIds.length} agent run${selectedProvenance.executionIds.length === 1 ? "" : "s"}`} /> : null}
+                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
@@ -1608,30 +1614,47 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
 }
 
 /** Durable execution provenance, distinct from the live Git working-tree Review surface. */
-export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.Element {
+function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFileDto }): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const detail = useQuery({
+    queryKey: ["changed-file", agentId, file.path],
+    queryFn: () => api.getChangedFileDetail(agentId, file.path),
+    enabled: expanded,
+    staleTime: Infinity,
+  });
+  return <Paper variant="outlined" sx={{ p: 1.25 }}>
+    <Button
+      fullWidth
+      color="inherit"
+      onClick={() => setExpanded((value) => !value)}
+      aria-expanded={expanded}
+      sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
+    >
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
+        <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
+        <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere", textAlign: "left" }}>{file.path}</Typography>
+      </Stack>
+    </Button>
+    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+      Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"}
+    </Typography>
+    {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
+      : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
+        : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
+          : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>
+      : null}
+  </Paper>;
+}
+
+export function ChangedFilesPane({ agentId, files }: { agentId: string; files: ChangedFileDto[] }): JSX.Element {
   const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
-  const totals = ordered.reduce((sum, file) => {
-    const current = unifiedDiffLineTotals(file.diff) ?? { additions: 0, deletions: 0 };
-    return { additions: sum.additions + current.additions, deletions: sum.deletions + current.deletions };
-  }, { additions: 0, deletions: 0 });
   return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
     <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
       <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
-      <Typography variant="caption" color="success.main">+{totals.additions}</Typography>
-      <Typography variant="caption" color="error.main">−{totals.deletions}</Typography>
     </Stack>
     {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
-      <Paper component="details" key={file.path} variant="outlined" sx={{ p: 1.25, "& > summary": { cursor: "pointer" } }}>
-        <Stack component="summary" direction="row" spacing={1} sx={{ alignItems: "center" }}>
-          <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
-          <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
-        </Stack>
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-          Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} run{file.executionIds.length === 1 ? "" : "s"}
-        </Typography>
-        {file.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={file.diff} /></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
-      </Paper>)}
+      <ChangedFileEntry key={file.path} agentId={agentId} file={file} />)}
   </Stack>;
 }
 

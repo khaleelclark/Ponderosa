@@ -167,7 +167,7 @@ describe("updateAgentDetail", () => {
     const once = updateAgentDetail("agent-1", envelope, detail);
     const twice = updateAgentDetail("agent-1", { ...envelope, replayed: true }, once);
     expect(twice.activity).toEqual([expect.objectContaining({ seq: 9, event: envelope.event })]);
-    expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diff: "+export {}" })]);
+    expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diffAvailable: true })]);
   });
 
   it("keeps browser lifecycle in Activity and explicit screenshots in Files & results", () => {

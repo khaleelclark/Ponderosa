@@ -4327,7 +4327,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       activeRuns: ownership,
       compactingAgents: scheduledSessionRollovers,
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
-      events: (agentId) => store.readEvents(agentId),
+      latestEvent: (agentId) => store.latestHealthObservation(agentId),
     });
   }
 
@@ -4338,6 +4338,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         : fallbackAgentId ? agent.id === fallbackAgentId : true));
     const health = agentHealth({ type: "project", id: projectId }, agents);
     const healthById = new Map(health.agents.map((agent) => [agent.agentId, agent]));
+    const childIdsByParent = new Map<string, string[]>();
+    for (const agent of agents) if (agent.managerAgentId) {
+      const children = childIdsByParent.get(agent.managerAgentId) ?? [];
+      children.push(agent.id);
+      childIdsByParent.set(agent.managerAgentId, children);
+    }
     return {
       projectId, generatedAt: health.generatedAt,
       agents: agents.map((agent) => {
@@ -4348,7 +4354,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           description: profile.description,
           status: healthById.get(agent.id)?.status ?? "idle",
           ...(agent.managerAgentId ? { managerAgentId: agent.managerAgentId } : {}),
-          childAgentIds: agents.filter((candidate) => candidate.managerAgentId === agent.id).map((candidate) => candidate.id).sort(),
+          childAgentIds: (childIdsByParent.get(agent.id) ?? []).sort(),
           engine: agent.activeEngine,
           ...(agent.presetSnapshot ? { preset: { id: agent.presetSnapshot.id, name: agent.presetSnapshot.name } } : {}),
         };
@@ -9758,13 +9764,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }>("/api/agents/:id/history/:stream", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "runs", "workItems", "artifacts"]);
+    const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts"]);
     if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
     try {
       const input = { limit, cursor: request.query.cursor, focusId: request.query.focusId };
       switch (request.params.stream) {
         case "runOutput": return { stream: "runOutput" as const, ...store.getRunOutputPage(request.params.id, input) };
         case "activity": return { stream: "activity" as const, ...store.getActivityPage(request.params.id, input) };
+        case "changedFiles": return { stream: "changedFiles" as const, ...store.getChangedFilePage(request.params.id, input) };
         case "runs": return { stream: "runs" as const, ...store.getRunPage(request.params.id, input) };
         case "workItems": return { stream: "workItems" as const, ...store.getWorkItemPage(request.params.id, input) };
         case "artifacts": return { stream: "artifacts" as const, ...store.getArtifactPage(request.params.id, input) };
@@ -9773,6 +9780,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
     }
   });
+
+  app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
+    "/api/agents/:id/changed-file",
+    async (request, reply) => {
+      if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
+      const path = request.query.path;
+      if (!path || path.length > 4_096 || path.includes("\0")) return reply.code(400).send({ error: "valid path is required" });
+      return store.getChangedFileDetail(request.params.id, path)
+        ?? reply.code(404).send({ error: "changed file not found" });
+    },
+  );
 
   app.get<{
     Params: { id: string; seq: string };
@@ -12779,9 +12797,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id/runs", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string } }>("/api/agents/:id/runs", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return store.getRuns(request.params.id);
+    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    try { return store.getRunPage(request.params.id, { limit, cursor: request.query.cursor }); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" }); }
   });
 
   app.get<{ Params: { id: string }; Querystring: { exact?: string } }>("/api/runs/:id/provider-input", async (request, reply) => {
@@ -12789,20 +12809,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return input ?? reply.code(404).send({ error: "provider input not found" });
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id/work-items", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string } }>("/api/agents/:id/work-items", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return store.getWorkItems(request.params.id);
+    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    try { return store.getWorkItemPage(request.params.id, { limit, cursor: request.query.cursor }); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" }); }
   });
 
-  app.get<{ Params: { id: string } }>("/api/agents/:id/artifacts", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string } }>("/api/agents/:id/artifacts", async (request, reply) => {
     if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    return store.getArtifacts(request.params.id);
+    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
+    try { return store.getArtifactPage(request.params.id, { limit, cursor: request.query.cursor }); }
+    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" }); }
   });
 
   app.patch<{ Params: { id: string; aid: string }; Body: { pinned?: boolean; visibility?: "project" | "published" } }>(
     "/api/agents/:id/artifacts/:aid",
     async (request, reply) => {
-      const artifact = store.getArtifacts(request.params.id).find((candidate) => candidate.id === request.params.aid);
+      const artifact = store.getArtifact(request.params.id, request.params.aid);
       if (!artifact || artifact.kind !== "generated_file") return reply.code(404).send({ error: "generated artifact not found" });
       if (request.body.visibility !== undefined && !["project", "published"].includes(request.body.visibility)) return reply.code(400).send({ error: "invalid visibility" });
       if (request.body.pinned !== undefined && typeof request.body.pinned !== "boolean") return reply.code(400).send({ error: "pinned must be boolean" });
@@ -12820,7 +12844,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           request.body.pinned ?? artifact.pinned ?? false,
         );
       }
-      return store.getArtifacts(request.params.id).find((candidate) => candidate.id === artifact.id)!;
+      return store.getArtifact(request.params.id, artifact.id)!;
     },
   );
 

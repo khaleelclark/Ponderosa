@@ -1471,11 +1471,12 @@ export interface AgentActivityOutputDto {
   nextCursor?: string;
 }
 
-export type AgentTelemetryStream = "runOutput" | "activity" | "runs" | "workItems" | "artifacts";
+export type AgentTelemetryStream = "runOutput" | "activity" | "changedFiles" | "runs" | "workItems" | "artifacts";
 
 export type AgentTelemetryPageDto =
   | ({ stream: "runOutput" } & HistoryPageDto<RunOutputDto>)
   | ({ stream: "activity" } & HistoryPageDto<AgentActivityDto>)
+  | ({ stream: "changedFiles" } & HistoryPageDto<ChangedFileDto>)
   | ({ stream: "runs" } & HistoryPageDto<AgentRunDto>)
   | ({ stream: "workItems" } & HistoryPageDto<WorkItemDto>)
   | ({ stream: "artifacts" } & HistoryPageDto<ArtifactDto>);
@@ -1486,8 +1487,14 @@ export interface ChangedFileDto {
   kind: "create" | "edit" | "delete";
   lastSeq: number;
   lastChangedAt: string;
+  executionCount: number;
+  diffAvailable: boolean;
+}
+
+/** On-demand bounded provenance and diff preview for one changed path. */
+export interface ChangedFileDetailDto extends ChangedFileDto {
   executionIds: string[];
-  /** Most recent engine-provided unified diff, when available. */
+  provenanceTruncated: boolean;
   diff?: string;
 }
 

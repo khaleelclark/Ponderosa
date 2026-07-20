@@ -1,5 +1,4 @@
 import type { AgentHealthDto, AgentHealthProjectionDto, AgentLifecycleReason, AgentLifecycleStatus, AgentDto } from "@ponderosa/core";
-import type { StoredLogEvent } from "@ponderosa/agents";
 
 export interface ActiveRunObservation { startedAt: string; executionId?: string; leaseExpiresAt?: string; ownershipState?: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted" }
 export interface QueuedDeliveryObservation { createdAt: string }
@@ -9,27 +8,10 @@ export interface AgentHealthProjectionInput {
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
   compactingAgents?: ReadonlyMap<string, string>;
   availability?: (agentId: string) => "running" | "runnable" | "waiting" | "idle";
-  events: (agentId: string) => StoredLogEvent[];
+  latestEvent: (agentId: string) => StatusObservation | undefined;
   now?: string;
 }
-interface StatusObservation { status: AgentLifecycleStatus; statusTimestamp: string; reason: AgentLifecycleReason }
-
-function eventObservation(events: StoredLogEvent[], after?: string): StatusObservation | undefined {
-  const candidates = after ? events.filter((item) => item.ts >= after) : events;
-  for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const item = candidates[index]!;
-    if (item.event.type === "error") return { status: "failed", statusTimestamp: item.ts, reason: "runtime_error" };
-    if (item.event.type === "agent_lifecycle") return {
-      status: item.event.status === "completed" ? "idle" : item.event.status,
-      statusTimestamp: item.ts,
-      reason: item.event.reason,
-    };
-    if (item.event.type === "work_item_update" && item.event.status === "waiting_approval") return { status: "waiting", statusTimestamp: item.ts, reason: "work_item_waiting_approval" };
-    if (item.event.type === "turn_done") return { status: "idle", statusTimestamp: item.ts, reason: "turn_completed" };
-    if (item.event.type === "work_item_update" && item.event.status === "done") return { status: "idle", statusTimestamp: item.ts, reason: "work_item_completed" };
-  }
-  return undefined;
-}
+export interface StatusObservation { status: AgentLifecycleStatus; statusTimestamp: string; reason: AgentLifecycleReason; executionId?: string }
 
 export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHealthProjectionDto {
   const agentIds = new Set(input.agents.map((agent) => agent.id));
@@ -45,8 +27,10 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const active = input.activeRuns.get(agent.id);
     const compactingAt = input.compactingAgents?.get(agent.id);
     const availability = input.availability?.(agent.id);
-    const events = input.events(agent.id);
-    const activeEvent = active ? eventObservation(events, active.startedAt) : undefined;
+    const latestEvent = input.latestEvent(agent.id);
+    const activeEvent = active && latestEvent && latestEvent.statusTimestamp >= active.startedAt &&
+      (latestEvent.executionId === active.executionId || latestEvent.statusTimestamp > active.startedAt)
+      ? latestEvent : undefined;
     const managerAgentId = agent.managerAgentId && agentIds.has(agent.managerAgentId) ? agent.managerAgentId : undefined;
     let observation: StatusObservation;
     if (compactingAt) observation = { status: "compacting", statusTimestamp: compactingAt, reason: "session_rollover_scheduled" };
@@ -58,7 +42,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (active) observation = activeEvent && activeEvent.status !== "completed" && activeEvent.status !== "idle"
       ? activeEvent : { status: "running", statusTimestamp: active.startedAt, reason: "active_run" };
     else if (availability === "waiting" || availability === "runnable") observation = { status: "waiting", statusTimestamp: agent.updatedAt, reason: availability === "waiting" ? "awaiting_reports" : "queued_delivery" };
-    else observation = eventObservation(events) ?? { status: "idle", statusTimestamp: agent.updatedAt, reason: "no_active_work" };
+    else observation = latestEvent ?? { status: "idle", statusTimestamp: agent.updatedAt, reason: "no_active_work" };
     return {
       agentId: agent.id,
       ...(managerAgentId ? { managerAgentId } : {}),

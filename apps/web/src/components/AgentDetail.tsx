@@ -74,12 +74,14 @@ type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" |
 const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
   stream === "runOutput" ? "runOutput"
     : stream === "activity" ? "activity"
+      : stream === "changedFiles" ? "changed_files"
       : stream === "artifacts" ? "artifacts" : "runs";
 
 type TelemetryPageState = {
   [K in AgentTelemetryStream]?: {
     items: AgentDetailDto[K extends "runOutput" ? "runOutput"
       : K extends "activity" ? "activity"
+        : K extends "changedFiles" ? "changedFiles"
         : K extends "runs" ? "runs"
           : K extends "workItems" ? "workItems" : "artifacts"];
     history?: HistoryWindowDto;
@@ -95,6 +97,10 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
   };
   else if (page.stream === "activity") next.activity = {
     items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else if (page.stream === "changedFiles") next.changedFiles = {
+    items: [...new Map([...page.items, ...(current.changedFiles?.items ?? [])].map((item) => [item.path, item] as const)).values()],
     history,
   };
   else if (page.stream === "runs") next.runs = {
@@ -115,6 +121,7 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
   tab === "runOutput" ? ["runOutput"]
     : tab === "activity" ? ["activity"]
+      : tab === "changed_files" ? ["changedFiles"]
       : tab === "runs" ? ["runs", "workItems"]
         : tab === "artifacts" ? ["artifacts"] : [];
 
@@ -337,11 +344,12 @@ export function AgentDetail({
         .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
       runOutput: mergeBy(agentQuery.data.runOutput, olderTelemetry.runOutput?.items, (item) => item.id, (a, b) => a.seq - b.seq),
       activity: mergeBy(agentQuery.data.activity, olderTelemetry.activity?.items, (item) => item.id, (a, b) => a.seq - b.seq),
+      changedFiles: mergeBy(agentQuery.data.changedFiles, olderTelemetry.changedFiles?.items, (item) => item.path, (a, b) => a.lastSeq - b.lastSeq),
       runs: mergeBy(agentQuery.data.runs, olderTelemetry.runs?.items, (item) => item.id, (a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id)),
       workItems: mergeBy(agentQuery.data.workItems, olderTelemetry.workItems?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
       artifacts: mergeBy(agentQuery.data.artifacts, olderTelemetry.artifacts?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
       telemetryHistory: Object.fromEntries(([
-        "runOutput", "activity", "runs", "workItems", "artifacts",
+        "runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts",
       ] satisfies AgentTelemetryStream[]).map((stream) => [
         stream,
         olderTelemetry[stream]?.history ?? agentQuery.data.telemetryHistory?.[stream],
@@ -775,8 +783,8 @@ export function AgentDetail({
       onViewAll={() => setTab("review")}
     />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
-    changed_files: <ChangedFilesPane files={detail.changedFiles} />,
-    review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
+    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} />,
+    review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,

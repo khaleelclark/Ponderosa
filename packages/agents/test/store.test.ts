@@ -7,7 +7,7 @@ import { AgentDeletionConflictError, AgentStore } from "../src/store.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, importedAgentHistoryPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -40,6 +40,10 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "imported_history_messages",
     "activity_projection",
     "changed_file_projection",
+    "changed_file_execution_projection",
+    "agent_event_head_projection",
+    "agent_health_projection",
+    "all_chat_feed_projection",
     "managed_artifact_projection",
     "continuation_handoffs",
   ];
@@ -57,6 +61,12 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
           ? "agent_id, seq"
         : t === "changed_file_projection"
           ? "agent_id, path"
+        : t === "changed_file_execution_projection"
+          ? "agent_id, path, execution_id"
+        : t === "agent_event_head_projection" || t === "agent_health_projection"
+          ? "agent_id"
+        : t === "all_chat_feed_projection"
+          ? "project_id, communication_event_id"
         : t === "managed_artifact_projection"
           ? "project_id, artifact_id"
         : t === "continuation_handoffs"
@@ -963,8 +973,9 @@ describe("AgentStore — append + projection", () => {
     })]);
     expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
-      path: "auth.ts", kind: "edit", lastSeq: 7, diff: "diff --git a/auth.ts b/auth.ts\n",
+      path: "auth.ts", kind: "edit", lastSeq: 7, executionCount: 1, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "auth.ts")?.diff).toBe("diff --git a/auth.ts b/auth.ts\n");
     expect(detail.runs).toEqual([expect.objectContaining({
       id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication", wakeCause: "direct_message",
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
@@ -1064,9 +1075,12 @@ describe("AgentStore — append + projection", () => {
       event: { type: "tool_result", id: "large-tool", output: expect.not.stringContaining("exact") },
       outputPreview: { totalUtf8Bytes: 20_006, sha256: expect.any(String) },
     });
-    expect(store.getChangedFiles(agentId)).toEqual([expect.objectContaining({
-      path: "src/large.ts", executionIds: ["run-long"], diff: expect.not.stringContaining("+".repeat(5_000)),
+    expect(store.getChangedFilePage(agentId, { limit: 10 }).items).toEqual([expect.objectContaining({
+      path: "src/large.ts", executionCount: 1, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "src/large.ts")).toMatchObject({
+      executionIds: ["run-long"], diff: expect.not.stringContaining("+".repeat(5_000)),
+    });
 
     const artifact = {
       id: "managed-long-history", projectId, agentId, originAgentId: agentId, executionId: "run-long",
@@ -1083,6 +1097,75 @@ describe("AgentStore — append + projection", () => {
       expect.objectContaining({ id: artifact.id }),
     ]);
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
+  });
+
+  it("serves 50-Agent health heads and reconnect tails without reopening canonical JSONL", () => {
+    const project = store.createProject({ label: "Large team", hostPath: "/large-team" });
+    const team = Array.from({ length: 50 }, (_, index) =>
+      store.createAgent(project.id, { title: `Agent ${index}`, engine: "codex" }));
+    for (const [index, agent] of team.entries()) {
+      for (let seq = 0; seq < 20; seq += 1) {
+        store.appendEvent(agent.id, { type: "session", sessionId: `session-${index}-${seq}` });
+      }
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: `run-${index}`,
+      });
+      renameSync(eventsPath(dir, project.id, agent.id), `${eventsPath(dir, project.id, agent.id)}.offline`);
+    }
+
+    for (const [index, agent] of team.entries()) {
+      expect(store.lastSeqOf(agent.id)).toBe(21);
+      expect(store.latestHealthObservation(agent.id)).toMatchObject({ status: "idle", reason: "turn_completed" });
+      expect(store.readEventsSince(agent.id, 20)).toEqual([
+        expect.objectContaining({ seq: 21, event: expect.objectContaining({ executionId: `run-${index}` }) }),
+      ]);
+    }
+  }, 20_000);
+
+  it("keyset-pages page N of many files and bounds normalized execution provenance", () => {
+    const { agentId } = seedAgent();
+    for (let index = 0; index < 240; index += 1) {
+      store.appendEvent(agentId, { type: "file_change", path: `src/file-${String(index).padStart(3, "0")}.ts`, kind: "edit", diff: `+${index}` });
+    }
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = store.getChangedFilePage(agentId, { limit: 17, cursor });
+      seen.push(...page.items.map((file) => file.path));
+      cursor = page.history.cursor;
+    } while (cursor);
+    expect(seen).toHaveLength(240);
+    expect(new Set(seen).size).toBe(240);
+
+    for (let index = 0; index < 150; index += 1) {
+      store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: `provenance-${index}` });
+      store.appendEvent(agentId, { type: "file_change", path: "src/shared.ts", kind: "edit", diff: `+${index}` });
+    }
+    expect(store.getChangedFileDetail(agentId, "src/shared.ts")).toMatchObject({
+      executionCount: 150,
+      provenanceTruncated: true,
+      executionIds: expect.arrayContaining(["provenance-149"]),
+    });
+    expect(store.getChangedFileDetail(agentId, "src/shared.ts")?.executionIds).toHaveLength(100);
+  }, 20_000);
+
+  it("uses the deduplicated All Chat keyset index without window ranking or a temp sort", () => {
+    const project = store.createProject({ label: "Feed plan", hostPath: "/feed-plan" });
+    const room = store.createConversation(project.id, { title: "Feed" });
+    const plan = store.sqlite.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT search.row_key
+      FROM all_chat_feed_projection feed
+      JOIN chat_search_messages search ON search.row_key = feed.row_key
+      WHERE feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?)
+      ORDER BY feed.order_key DESC, feed.row_key DESC
+      LIMIT ?
+    `).all("z", "z", "z", 51) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("idx_all_chat_feed_keyset");
+    expect(details).not.toContain("TEMP B-TREE");
+    expect(details).not.toContain("CO-ROUTINE");
+    expect(room.id).toBeTruthy();
   });
 
   it("resolves stable focused items across every Agent telemetry stream", () => {
@@ -1204,8 +1287,11 @@ describe("AgentStore — append + projection", () => {
       ["run-a", "command"], ["run-a", "file_change"], ["run-b", "test_result"], ["run-b", "file_change"],
     ]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
-      path: "src/a.ts", kind: "edit", diff: "+second", executionIds: ["run-a", "run-b"],
+      path: "src/a.ts", kind: "edit", executionCount: 2, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "src/a.ts")).toMatchObject({
+      diff: "+second", executionIds: ["run-b", "run-a"], provenanceTruncated: false,
+    });
     expect(detail.runOutput.map((entry) => entry.fileActivity)).toEqual([
       [expect.objectContaining({ path: "src/a.ts", kind: "create", sourceSeq: 3, additions: 1 })],
       [expect.objectContaining({ path: "src/a.ts", kind: "edit", sourceSeq: 8, additions: 1 })],

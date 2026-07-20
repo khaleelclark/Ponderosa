@@ -25,6 +25,7 @@ import type {
   ArtifactDto,
   AgentActivityDto,
   ChangedFileDto,
+  ChangedFileDetailDto,
   AgentOrganizationEvent,
   CommunicationEvent,
   CommunicationRevisionEvent,
@@ -52,6 +53,7 @@ import type {
   WorkItemDto,
   WorkItemStatus,
   AgentLifecycleReason,
+  AgentLifecycleStatus,
   AgentRunStatus,
   AgentDetailDto,
   HistoryPageDto,
@@ -171,6 +173,30 @@ const ACTIVITY_EVENT_TYPES = new Set([
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
 ]);
+
+function healthObservation(event: LogEvent, timestamp: string): {
+  status: AgentLifecycleStatus;
+  statusTimestamp: string;
+  reason: AgentLifecycleReason;
+  executionId?: string;
+} | undefined {
+  const executionId = "executionId" in event && typeof event.executionId === "string" ? event.executionId : undefined;
+  if (event.type === "error") return { status: "failed", statusTimestamp: timestamp, reason: "runtime_error", ...(executionId ? { executionId } : {}) };
+  if (event.type === "agent_lifecycle") return {
+    status: event.status === "completed" ? "idle" : event.status,
+    statusTimestamp: timestamp,
+    reason: event.reason,
+    executionId: event.executionId,
+  };
+  if (event.type === "work_item_update" && event.status === "waiting_approval") {
+    return { status: "waiting", statusTimestamp: timestamp, reason: "work_item_waiting_approval", ...(executionId ? { executionId } : {}) };
+  }
+  if (event.type === "turn_done") return { status: "idle", statusTimestamp: timestamp, reason: "turn_completed", ...(executionId ? { executionId } : {}) };
+  if (event.type === "work_item_update" && event.status === "done") {
+    return { status: "idle", statusTimestamp: timestamp, reason: "work_item_completed", ...(executionId ? { executionId } : {}) };
+  }
+  return undefined;
+}
 
 function utf8Prefix(text: string, maximumBytes: number): string {
   const bytes = Buffer.from(text, "utf8");
@@ -626,6 +652,7 @@ export class AgentStore {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!chatKind || !message || !event || !this.communicationProjectionAllowed(projectId, projection)) {
       this.db.delete(chatSearchMessages).where(eq(chatSearchMessages.rowKey, rowKey)).run();
+      this.refreshAllChatFeedEvent(projectId, projection.eventId);
       return;
     }
     const canonicalRole = event.sender.kind === "agent"
@@ -672,11 +699,58 @@ export class AgentStore {
         contextPolicy: behavior.contextPolicy,
       },
     }).run();
+    this.refreshAllChatFeedEvent(projectId, projection.eventId);
+  }
+
+  /** Choose one active placement for a canonical communication. This work is
+   * paid when a placement/lifecycle event changes, never on each All Chat read. */
+  private refreshAllChatFeedEvent(projectId: string, eventId: string): void {
+    const row = this.client.prepare(`
+      SELECT search.row_key AS rowKey, search.order_key AS orderKey
+      FROM chat_search_messages search
+      LEFT JOIN conversations conversation
+        ON search.chat_kind IN ('conversation', 'collaboration')
+        AND conversation.id = search.chat_id AND conversation.archived = 0
+      LEFT JOIN agents chat_agent
+        ON search.chat_kind = 'agent'
+        AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+      WHERE search.project_id = ? AND search.communication_event_id = ?
+        AND (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+      ORDER BY CASE search.chat_kind
+        WHEN 'conversation' THEN 0
+        WHEN 'collaboration' THEN 1
+        ELSE CASE WHEN search.chat_id = search.author_agent_id THEN 2 ELSE 3 END
+      END, search.chat_id, search.row_key
+      LIMIT 1
+    `).get(projectId, eventId) as { rowKey: string; orderKey: string } | undefined;
+    if (!row) {
+      this.client.prepare(`
+        DELETE FROM all_chat_feed_projection
+        WHERE project_id = ? AND communication_event_id = ?
+      `).run(projectId, eventId);
+      return;
+    }
+    this.client.prepare(`
+      INSERT INTO all_chat_feed_projection(
+        project_id, communication_event_id, row_key, order_key
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(project_id, communication_event_id) DO UPDATE SET
+        row_key = excluded.row_key, order_key = excluded.order_key
+    `).run(projectId, eventId, row.rowKey, row.orderKey);
+  }
+
+  private refreshAllChatFeedProject(projectId: string): void {
+    const eventIds = this.client.prepare(`
+      SELECT DISTINCT communication_event_id AS eventId
+      FROM chat_search_messages WHERE project_id = ?
+    `).all(projectId) as Array<{ eventId: string }>;
+    for (const { eventId } of eventIds) this.refreshAllChatFeedEvent(projectId, eventId);
   }
 
   /** Rebuild the disposable global Chat search index from canonical ledgers. */
   private rebuildGlobalChatSearchProjection(): void {
     this.db.delete(chatSearchMessages).run();
+    this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     for (const project of this.listProjects()) {
       for (const projection of this.projectionIndex(project.id).projections) {
         this.upsertGlobalChatSearchProjection(project.id, projection);
@@ -1430,6 +1504,9 @@ export class AgentStore {
         this.client.prepare(`DELETE FROM project_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM all_chat_feed_projection WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM chat_search_messages WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM managed_artifact_projection WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
@@ -1644,6 +1721,7 @@ export class AgentStore {
       defaultEffort: next.defaultEffort ?? undefined,
       updatedAt: now,
     });
+    if (next.archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.getConversation(id);
   }
 
@@ -1665,6 +1743,7 @@ export class AgentStore {
       this.persistAgentMemberships(agent.id, remaining, primary);
     }
     rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+    this.refreshAllChatFeedProject(row.projectId);
     return true;
   }
 
@@ -2375,6 +2454,7 @@ export class AgentStore {
       })
       .where(eq(agents.id, id))
       .run();
+    if (archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.rowToAgentDto(id);
   }
 
@@ -2624,6 +2704,7 @@ export class AgentStore {
     catch (error) {
       this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Agent storage cleanup failed");
     }
+    this.refreshAllChatFeedProject(committedPreview!.projectId);
     return committedPreview!;
   }
 
@@ -2672,6 +2753,7 @@ export class AgentStore {
     const messages = includeMessages ? this.getMessages(id) : [];
     const runOutputPage = limit === undefined ? undefined : this.getRunOutputPage(id, { limit });
     const activityPage = limit === undefined ? undefined : this.getActivityPage(id, { limit });
+    const changedFilePage = this.getChangedFilePage(id, { limit: limit ?? 100 });
     const runPage = limit === undefined ? undefined : this.getRunPage(id, { limit });
     const workItemPage = limit === undefined ? undefined : this.getWorkItemPage(id, { limit });
     const artifactPage = limit === undefined ? undefined : this.getArtifactPage(id, { limit });
@@ -2680,7 +2762,7 @@ export class AgentStore {
       messages: limit === undefined ? messages : messages.slice(-limit),
       runOutput: runOutputPage?.items ?? this.getRunOutputs(id),
       activity: activityPage?.items ?? this.getActivity(id),
-      changedFiles: this.getChangedFiles(id),
+      changedFiles: changedFilePage.items,
       runs: runPage?.items ?? this.getRuns(id),
       workItems: workItemPage?.items ?? this.getWorkItems(id),
       artifacts: artifactPage?.items ?? this.getArtifacts(id),
@@ -2690,6 +2772,7 @@ export class AgentStore {
         telemetryHistory: {
           runOutput: runOutputPage!.history,
           activity: activityPage!.history,
+          changedFiles: changedFilePage.history,
           runs: runPage!.history,
           workItems: workItemPage!.history,
           artifacts: artifactPage!.history,
@@ -2970,23 +3053,74 @@ export class AgentStore {
     };
   }
 
-  /** One persistent row per touched path, retaining the latest canonical change and executions. */
-  getChangedFiles(agentId: string): ChangedFileDto[] {
+  /** Bounded newest-first keyset over one row per touched path. */
+  getChangedFilePage(
+    agentId: string,
+    input: { limit: number; cursor?: string },
+  ): HistoryPageDto<ChangedFileDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor
+      ? this.decodeHistoryCursor(input.cursor, "agent:changedFiles", agentId)
+      : undefined;
+    const boundarySeq = boundary ? Number(boundary.orderKey) : undefined;
+    if (boundary && (!Number.isSafeInteger(boundarySeq) || boundarySeq! < 1)) throw new Error("invalid history cursor");
     const rows = this.client.prepare(`
-      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, diff
-      FROM changed_file_projection WHERE agent_id = ? ORDER BY last_seq, path
-    `).all(agentId) as Array<{
+      SELECT path, kind, last_seq, last_changed_at, execution_count, diff IS NOT NULL AS diff_available
+      FROM changed_file_projection
+      WHERE agent_id = ?
+        ${boundary ? "AND (last_seq < ? OR (last_seq = ? AND path < ?))" : ""}
+      ORDER BY last_seq DESC, path DESC
+      LIMIT ?
+    `).all(...(boundary
+      ? [agentId, boundarySeq, boundarySeq, boundary.rowKey, limit + 1]
+      : [agentId, limit + 1])) as Array<{
       path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
-      execution_ids_json: string; diff: string | null;
+      execution_count: number; diff_available: number;
     }>;
-    return rows.map((row) => ({
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const oldest = selected.at(-1);
+    return {
+      items: selected.map((row) => ({
+        path: row.path,
+        kind: row.kind,
+        lastSeq: row.last_seq,
+        lastChangedAt: row.last_changed_at,
+        executionCount: row.execution_count,
+        diffAvailable: row.diff_available === 1,
+      })),
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "agent:changedFiles", scope: agentId,
+          orderKey: String(oldest.last_seq), rowKey: oldest.path,
+        }) } : {}),
+      },
+    };
+  }
+
+  getChangedFileDetail(agentId: string, path: string): ChangedFileDetailDto | undefined {
+    const row = this.client.prepare(`
+      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
+      FROM changed_file_projection WHERE agent_id = ? AND path = ?
+    `).get(agentId, path) as {
+      path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
+      execution_ids_json: string; execution_count: number; diff: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    const executionIds = JSON.parse(row.execution_ids_json) as string[];
+    return {
       path: row.path,
       kind: row.kind,
       lastSeq: row.last_seq,
       lastChangedAt: row.last_changed_at,
-      executionIds: JSON.parse(row.execution_ids_json) as string[],
+      executionCount: row.execution_count,
+      diffAvailable: row.diff !== null,
+      executionIds,
+      provenanceTruncated: executionIds.length < row.execution_count,
       ...(row.diff ? { diff: row.diff } : {}),
-    }));
+    };
   }
 
   /**
@@ -3363,54 +3497,39 @@ export class AgentStore {
       orderKey: string;
     };
     const rows = this.client.prepare(`
-      WITH eligible AS (
-        SELECT
-          search.row_key AS rowKey,
-          search.project_id AS projectId,
-          project.label AS projectLabel,
-          search.chat_kind AS chatKind,
-          search.chat_id AS chatId,
-          COALESCE(conversation.title, chat_agent.title) AS chatTitle,
-          search.message_id AS messageId,
-          search.communication_event_id AS eventId,
-          search.role AS role,
-          search.author_agent_id AS authorAgentId,
-          author_agent.title AS authorTitle,
-          search.order_key AS orderKey
-        FROM chat_search_messages search
-        JOIN projects project ON project.id = search.project_id
-        LEFT JOIN conversations conversation
-          ON search.chat_kind IN ('conversation', 'collaboration')
-          AND conversation.id = search.chat_id AND conversation.archived = 0
-        LEFT JOIN agents chat_agent
-          ON search.chat_kind = 'agent'
-          AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
-        LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
-        WHERE conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL
-      ), ranked AS (
-        SELECT eligible.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY projectId, eventId
-            ORDER BY CASE chatKind
-              WHEN 'conversation' THEN 0
-              WHEN 'collaboration' THEN 1
-              ELSE CASE WHEN chatId = authorAgentId THEN 2 ELSE 3 END
-            END, chatId ASC, rowKey ASC
-          ) AS sourceRank
-        FROM eligible
-      )
-      SELECT rowKey, projectId, projectLabel, chatKind, chatId, chatTitle,
-        messageId, eventId, role, authorAgentId, authorTitle, orderKey
-      FROM ranked
-      WHERE sourceRank = 1
-        ${boundary ? "AND (orderKey < ? OR (orderKey = ? AND rowKey < ?))" : ""}
-      ORDER BY orderKey DESC, rowKey DESC
+      SELECT
+        search.row_key AS rowKey,
+        search.project_id AS projectId,
+        project.label AS projectLabel,
+        search.chat_kind AS chatKind,
+        search.chat_id AS chatId,
+        COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+        search.message_id AS messageId,
+        search.communication_event_id AS eventId,
+        search.role AS role,
+        search.author_agent_id AS authorAgentId,
+        author_agent.title AS authorTitle,
+        feed.order_key AS orderKey
+      FROM all_chat_feed_projection feed
+      JOIN chat_search_messages search ON search.row_key = feed.row_key
+      JOIN projects project ON project.id = search.project_id
+      LEFT JOIN conversations conversation
+        ON search.chat_kind IN ('conversation', 'collaboration') AND conversation.id = search.chat_id
+      LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
+      LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
+      WHERE 1 = 1
+        ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
+      ORDER BY feed.order_key DESC, feed.row_key DESC
       LIMIT ?
     `).all(...(boundary
       ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
       : [limit + 1])) as AllChatRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
+    const activeAgentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
+      projectId,
+      new Map(this.listAgents(projectId).filter((agent) => !agent.archived).map((agent) => [agent.id, agent] as const)),
+    ]));
     const items = selected.flatMap((row): AllChatItemDto[] => {
       const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
         ? "conversation"
@@ -3425,7 +3544,6 @@ export class AgentStore {
         : undefined;
       const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
       if (!message || !event) return [];
-      const activeAgents = this.listAgents(row.projectId).filter((agent) => !agent.archived);
       const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
         ? event.audience.kind === "user_agent"
           ? event.audience.agentId
@@ -3435,7 +3553,7 @@ export class AgentStore {
         ? row.chatId
         : row.authorAgentId ?? exactAudienceAgentId;
       const directMessageAgent = targetAgentId
-        ? activeAgents.find((agent) => agent.id === targetAgentId)
+        ? activeAgentByProject.get(row.projectId)?.get(targetAgentId)
         : undefined;
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
@@ -4193,12 +4311,39 @@ export class AgentStore {
   }
 
   readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.logFor(agentId, this.projectIdOf(agentId)).readSince(sinceSeq);
+    return (this.client.prepare(`
+      SELECT seq, created_at, payload_json
+      FROM events
+      WHERE agent_id = ? AND seq > ?
+      ORDER BY seq
+    `).all(agentId, sinceSeq) as Array<{ seq: number; created_at: string; payload_json: string }>).map((row) => ({
+      seq: row.seq,
+      ts: row.created_at,
+      event: JSON.parse(row.payload_json) as LogEvent,
+    }));
   }
 
   lastSeqOf(agentId: string): number {
-    const evs = this.readEvents(agentId);
-    return evs.length === 0 ? 0 : (evs[evs.length - 1]?.seq ?? 0);
+    const row = this.client.prepare(`
+      SELECT last_seq FROM agent_event_head_projection WHERE agent_id = ?
+    `).get(agentId) as { last_seq: number } | undefined;
+    return row?.last_seq ?? 0;
+  }
+
+  latestHealthObservation(agentId: string): {
+    status: AgentLifecycleStatus;
+    statusTimestamp: string;
+    reason: AgentLifecycleReason;
+    executionId?: string;
+  } | undefined {
+    const row = this.client.prepare(`
+      SELECT status, status_timestamp, reason, execution_id
+      FROM agent_health_projection WHERE agent_id = ?
+    `).get(agentId) as { status: AgentLifecycleStatus; status_timestamp: string; reason: AgentLifecycleReason; execution_id: string | null } | undefined;
+    return row ? {
+      status: row.status, statusTimestamp: row.status_timestamp, reason: row.reason,
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
+    } : undefined;
   }
 
   // ─── Rebuild (SQLite is disposable; the log is truth) ──────────────────────
@@ -4300,9 +4445,13 @@ export class AgentStore {
   rebuildProjections(): void {
     this.recoverProjectDeletionDirectories();
     this.recoverAgentDeletionDirectories();
+    this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
+    this.client.prepare(`DELETE FROM agent_health_projection`).run();
+    this.client.prepare(`DELETE FROM agent_event_head_projection`).run();
     this.client.prepare(`DELETE FROM tool_output_projection`).run();
     this.db.delete(continuationHandoffs).run();
     this.db.delete(activityProjection).run();
+    this.client.prepare(`DELETE FROM changed_file_execution_projection`).run();
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
     this.db.delete(importedHistoryMessages).run();
@@ -4483,6 +4632,29 @@ export class AgentStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
+            this.client.prepare(`
+              INSERT INTO agent_event_head_projection(agent_id, last_seq) VALUES (?, ?)
+              ON CONFLICT(agent_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)
+            `).run(agentId, op.row.seq);
+            {
+              const event = JSON.parse(op.row.payloadJson) as LogEvent;
+              const observation = healthObservation(event, op.row.createdAt);
+              if (observation) this.client.prepare(`
+                INSERT INTO agent_health_projection(
+                  agent_id, source_seq, status, status_timestamp, reason, execution_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                  source_seq = excluded.source_seq,
+                  status = excluded.status,
+                  status_timestamp = excluded.status_timestamp,
+                  reason = excluded.reason,
+                  execution_id = excluded.execution_id
+                WHERE excluded.source_seq > agent_health_projection.source_seq
+              `).run(
+                agentId, op.row.seq, observation.status,
+                observation.statusTimestamp, observation.reason, observation.executionId ?? null,
+              );
+            }
             if (ACTIVITY_EVENT_TYPES.has(op.row.type)) {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
               let eventJson = op.row.payloadJson;
@@ -4512,25 +4684,36 @@ export class AgentStore {
                 previewUtf8Bytes, totalUtf8Bytes, outputSha256,
               );
               if (event.type === "file_change") {
-                const existing = this.client.prepare(`
-                  SELECT execution_ids_json FROM changed_file_projection WHERE agent_id = ? AND path = ?
-                `).get(agentId, event.path) as { execution_ids_json: string } | undefined;
-                const executionIds = existing ? JSON.parse(existing.execution_ids_json) as string[] : [];
-                if (op.executionId && !executionIds.includes(op.executionId)) executionIds.push(op.executionId);
+                if (op.executionId) this.client.prepare(`
+                  INSERT INTO changed_file_execution_projection(agent_id, path, execution_id, last_seq)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(agent_id, path, execution_id) DO UPDATE SET last_seq = excluded.last_seq
+                `).run(agentId, event.path, op.executionId, op.row.seq);
+                const executionIds = (this.client.prepare(`
+                  SELECT execution_id AS executionId
+                  FROM changed_file_execution_projection
+                  WHERE agent_id = ? AND path = ?
+                  ORDER BY last_seq DESC, execution_id DESC LIMIT 100
+                `).all(agentId, event.path) as Array<{ executionId: string }>).map((row) => row.executionId);
+                const executionCount = (this.client.prepare(`
+                  SELECT COUNT(*) AS count FROM changed_file_execution_projection
+                  WHERE agent_id = ? AND path = ?
+                `).get(agentId, event.path) as { count: number }).count;
                 const boundedDiff = event.diff ? utf8Prefix(event.diff, ACTIVITY_OUTPUT_PREVIEW_BYTES) : null;
                 this.client.prepare(`
                   INSERT INTO changed_file_projection(
-                    agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, diff
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT(agent_id, path) DO UPDATE SET
                     kind = excluded.kind,
                     last_seq = excluded.last_seq,
                     last_changed_at = excluded.last_changed_at,
                     execution_ids_json = excluded.execution_ids_json,
+                    execution_count = excluded.execution_count,
                     diff = excluded.diff
                 `).run(
                   agentId, event.path, event.kind, op.row.seq, op.row.createdAt,
-                  JSON.stringify(executionIds), boundedDiff,
+                  JSON.stringify(executionIds), executionCount, boundedDiff,
                 );
               }
             }

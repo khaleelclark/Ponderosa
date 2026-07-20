@@ -24,6 +24,7 @@ import type {
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
   CollaborationViewDto,
+  ChangedFileDetailDto,
   CommitAgentDeletionRequest,
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
@@ -437,6 +438,9 @@ export const realApi = {
   },
   getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = 100, cursor?: string, focusId?: string): Promise<AgentTelemetryPageDto> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor, focusId })}`);
+  },
+  getChangedFileDetail(agentId: string, path: string): Promise<ChangedFileDetailDto> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/changed-file${toQuery({ path })}`);
   },
   getActivityOutput(retrievalUrl: string, cursor?: string): Promise<AgentActivityOutputDto> {
     return requestJson(`${retrievalUrl}${toQuery({ cursor })}`);
