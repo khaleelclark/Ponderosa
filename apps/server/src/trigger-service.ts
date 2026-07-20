@@ -113,6 +113,7 @@ export class TriggerSourceService {
   private readonly bursts = new Map<string, FileBurst>();
   private scheduleTimer?: NodeJS.Timeout;
   private refreshChain: Promise<void> = Promise.resolve();
+  private started = false;
   private stopping = false;
 
   constructor(private readonly options: {
@@ -128,13 +129,16 @@ export class TriggerSourceService {
     onSourceRecovered?(triggerId: string, kind: "watcher" | "filesystem_persistence"): void;
     onBudgetReset?(): void;
     projectAvailable?(projectId: string): boolean;
+    sourceAvailable?(): boolean;
     now?: () => Date;
   }) {
     this.secrets = new TriggerSecretStore(options.dataDir);
   }
 
   async start(): Promise<void> {
+    this.started = true;
     await this.refresh();
+    if (!this.sourceAvailable()) return;
     this.restorePendingFileBursts();
     this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
     this.scheduleTimer.unref();
@@ -156,7 +160,7 @@ export class TriggerSourceService {
   }
 
   async refresh(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || !this.started) return;
     const operation = this.refreshChain.then(() => this.refreshNow());
     this.refreshChain = operation.catch(() => undefined);
     return operation;
@@ -164,6 +168,10 @@ export class TriggerSourceService {
 
   private async refreshNow(): Promise<void> {
     if (this.stopping) return;
+    if (!this.sourceAvailable()) {
+      await this.deactivateFilesystemSources();
+      return;
+    }
     const desired = this.options.coordination.listTriggerDefinitions()
       .filter((trigger) => {
         const agent = this.options.store.getAgent(trigger.agentId);
@@ -204,6 +212,10 @@ export class TriggerSourceService {
 
     const ignoredByDefault = picomatch(DEFAULT_EXCLUDES, { dot: true });
     for (const [projectId, routes] of routesByProject) {
+      if (!this.sourceAvailable()) {
+        await this.deactivateFilesystemSources();
+        return;
+      }
       if (this.watchers.has(projectId)) continue;
       const project = this.options.store.getProject(projectId);
       if (!project) continue;
@@ -222,6 +234,10 @@ export class TriggerSourceService {
         for (const route of active.routes.values()) this.options.onSourceRecovered?.(route.trigger.id, "watcher");
       });
       watcher.on("error", (error) => {
+        if (!this.sourceAvailable()) {
+          void this.refresh().catch(() => undefined);
+          return;
+        }
         // Fail closed and make the inert source visible as disabled instead of
         // silently presenting an enabled automation that cannot observe files.
         for (const route of active.routes.values()) {
@@ -266,6 +282,7 @@ export class TriggerSourceService {
     payload: unknown;
     remoteAddress?: string;
   }): { occurrenceId: string; state: "pending" | "activated" | "cancelled" | "dead_lettered"; replayed: boolean } {
+    if (!this.sourceAvailable()) throw new Error("Trigger sources are unavailable");
     const trigger = this.options.coordination.getTriggerDefinition(input.triggerId);
     if (!trigger || !trigger.enabled || trigger.sourceKind !== "webhook") throw new Error("webhook Trigger not found");
     if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) throw new Error("webhook Trigger owner is unavailable");
@@ -304,6 +321,7 @@ export class TriggerSourceService {
   }
 
   async processDueSchedules(): Promise<void> {
+    if (!this.sourceAvailable()) return;
     const now = this.now();
     if (this.options.coordination.resetExpiredTriggerBudgets(now.toISOString()) > 0) {
       this.options.onBudgetReset?.();
@@ -386,6 +404,7 @@ export class TriggerSourceService {
   }
 
   private addFileEvent(trigger: TriggerDefinitionDto, changedPath: string, type: string): void {
+    if (!this.sourceAvailable()) return;
     if (!(this.options.projectAvailable?.(trigger.projectId) ?? true)) return;
     const now = this.now().toISOString();
     try {
@@ -409,6 +428,7 @@ export class TriggerSourceService {
 
   private flushFileBurst(triggerId: string): void {
     this.clearBurst(triggerId);
+    if (!this.sourceAvailable()) return;
     const owner = this.options.coordination.getTriggerDefinition(triggerId);
     if (!owner || !owner.enabled || !(this.options.projectAvailable?.(owner.projectId) ?? true)) return;
     try {
@@ -430,6 +450,7 @@ export class TriggerSourceService {
   }
 
   private restorePendingFileBursts(): void {
+    if (!this.sourceAvailable()) return;
     for (const burst of this.options.coordination.listPendingFilesystemTriggerBursts()) {
       const trigger = this.options.coordination.getTriggerDefinition(burst.triggerId);
       if (trigger?.enabled && trigger.sourceKind === "filesystem") this.scheduleFileBurst(trigger, burst);
@@ -456,6 +477,16 @@ export class TriggerSourceService {
     clearTimeout(burst.quietTimer);
     clearTimeout(burst.maxTimer);
     this.bursts.delete(id);
+  }
+
+  private async deactivateFilesystemSources(): Promise<void> {
+    for (const id of [...this.bursts.keys()]) this.clearBurst(id);
+    await Promise.all([...this.watchers.values()].map(({ watcher }) => watcher.close()));
+    this.watchers.clear();
+  }
+
+  private sourceAvailable(): boolean {
+    return this.options.sourceAvailable?.() ?? true;
   }
 
   private now(): Date {

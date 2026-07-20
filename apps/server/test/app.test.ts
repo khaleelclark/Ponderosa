@@ -5318,6 +5318,35 @@ describe("server chunk F", () => {
     await restarted.close();
   });
 
+  it("persists legacy provider-evidence migration completion and skips historical scans on restart", async () => {
+    const project = store.createProject({ label: "Legacy provider evidence", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Legacy runtime", engine: "codex" });
+    store.appendEvent(agent.id, { type: "error", message: "subscription access denied" });
+    const firstScan = vi.spyOn(store, "readEvents");
+    const first = createServer({ dataDir, store, engines, logger: false });
+    // One read belongs to interrupted-execution recovery; the second is the
+    // one-time legacy provider-evidence migration under test.
+    expect(firstScan).toHaveBeenCalledTimes(2);
+    expect(firstScan).toHaveBeenCalledWith(agent.id);
+    expect(readFileSync(path.join(dataDir, "engine-availability.jsonl"), "utf8"))
+      .toContain('"migrationId":"provider-runtime-evidence-v1"');
+    firstScan.mockRestore();
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restartScan = vi.spyOn(store, "readEvents");
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect(restartScan).toHaveBeenCalledTimes(1);
+    expect((await restarted.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
+      id: "codex",
+      available: false,
+      availabilityDetail: expect.stringContaining("subscription access denied"),
+    }));
+    expect(restartScan).toHaveBeenCalledTimes(1);
+    restartScan.mockRestore();
+    await restarted.close();
+  });
+
   it("keeps denied work queued and releases it only after an explicit successful provider probe", async () => {
     let providerAvailable = false;
     engines = [{
@@ -5372,6 +5401,23 @@ describe("server chunk F", () => {
       canAcceptWork: true,
       checks: { communicationMigration: { ok: false, detail: expect.stringContaining("quarantined project") } },
     });
+    await app.close();
+  });
+
+  it("serves repeated readiness probes from cached communication reconciliation evidence", async () => {
+    store.createProject({ label: "Bounded readiness", hostPath: repoDir });
+    const reconciliation = vi.spyOn(store, "reconcileCommunicationEvents");
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    expect(reconciliation).toHaveBeenCalledTimes(1);
+    reconciliation.mockClear();
+
+    for (let probe = 0; probe < 25; probe += 1) {
+      const response = await app.inject({ method: "GET", url: "/api/ready" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ checks: { communicationMigration: { ok: true } } });
+    }
+    expect(reconciliation).not.toHaveBeenCalled();
     await app.close();
   });
 

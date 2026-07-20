@@ -11,6 +11,64 @@ const cleanup: string[] = [];
 afterEach(() => cleanup.splice(0).forEach((entry) => rmSync(entry, { recursive: true, force: true })));
 
 describe("V3.2 Trigger API", () => {
+  it("rejects every Trigger mutation without artifact readiness before durable state changes", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-readiness-data-"));
+    const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-readiness-repo-"));
+    cleanup.push(dataDir, repoDir);
+    const store = new AgentStore(dataDir);
+    const project = store.createProject({ label: "Unavailable Trigger readiness", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const trigger = coordination.createTriggerDefinition({
+      id: "readiness-trigger", projectId: project.id, conversationId: conversation.id,
+      agentId: agent.id, name: "Must remain unchanged", instructions: "Do not mutate",
+      sourceKind: "filesystem", sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 500 },
+      runBudget: { limit: 1, period: "lifetime" },
+    });
+    const beforeDefinitions = store.sqlite.prepare(`SELECT * FROM trigger_definitions ORDER BY id`).all();
+    const beforeOccurrences = store.sqlite.prepare(`SELECT * FROM trigger_occurrences ORDER BY id`).all();
+    const beforeBursts = store.sqlite.prepare(`SELECT * FROM trigger_filesystem_bursts ORDER BY trigger_id`).all();
+    const app = createServer({
+      dataDir,
+      store,
+      engines: [],
+      logger: false,
+      authToken: "operator",
+      communicationV3: { maxConcurrentRuns: 0 },
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    const authorization = { authorization: "Bearer operator" };
+    try {
+      await app.ready();
+      const requests = [
+        app.inject({
+          method: "POST", url: `/api/agents/${agent.id}/triggers`, headers: authorization,
+          payload: {
+            conversationId: conversation.id, name: "Blocked create", instructions: "Must not persist",
+            sourceKind: "filesystem", sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 500 },
+          },
+        }),
+        app.inject({ method: "PATCH", url: `/api/triggers/${trigger.id}`, headers: authorization, payload: { name: "Blocked update" } }),
+        app.inject({ method: "DELETE", url: `/api/triggers/${trigger.id}`, headers: authorization }),
+        app.inject({ method: "POST", url: `/api/triggers/${trigger.id}/rotate-secret`, headers: authorization }),
+        app.inject({ method: "POST", url: `/api/triggers/${trigger.id}/allow-runs`, headers: authorization, payload: { additionalRuns: 2 } }),
+      ];
+      for (const response of await Promise.all(requests)) {
+        expect(response.statusCode, response.body).toBe(503);
+        expect(response.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+      }
+      expect(store.sqlite.prepare(`SELECT * FROM trigger_definitions ORDER BY id`).all()).toEqual(beforeDefinitions);
+      expect(store.sqlite.prepare(`SELECT * FROM trigger_occurrences ORDER BY id`).all()).toEqual(beforeOccurrences);
+      expect(store.sqlite.prepare(`SELECT * FROM trigger_filesystem_bursts ORDER BY trigger_id`).all()).toEqual(beforeBursts);
+    } finally {
+      await app.close();
+    }
+  });
+
   it("rejects every Trigger mutation while its Project is deletion-quarantined", async () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-quarantine-data-"));
     const repoDir = mkdtempSync(path.join(tmpdir(), "ponderosa-trigger-quarantine-repo-"));

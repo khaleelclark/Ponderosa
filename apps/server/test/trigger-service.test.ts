@@ -12,7 +12,11 @@ afterEach(() => {
   for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function setup(now: Date, projectAvailable: (projectId: string) => boolean = () => true) {
+function setup(
+  now: Date,
+  projectAvailable: (projectId: string) => boolean = () => true,
+  sourceAvailable: () => boolean = () => true,
+) {
   const directory = mkdtempSync(join(tmpdir(), "ponderosa-triggers-"));
   directories.push(directory);
   const workspace = join(directory, "workspace");
@@ -26,6 +30,7 @@ function setup(now: Date, projectAvailable: (projectId: string) => boolean = () 
   const service = new TriggerSourceService({
     store: agents, coordination, dataDir: join(directory, "secrets"), now: () => now,
     projectAvailable,
+    sourceAvailable,
     notify: () => { notifications += 1; },
   });
   return { directory, agents, project, conversation, agent, coordination, service, notifications: () => notifications };
@@ -152,6 +157,37 @@ describe("V3.2 Trigger sources", () => {
       expect(context.coordination.getTriggerDefinition(schedule.id)?.nextFireAt).toBe("2026-07-16T12:01:00.000Z");
       expect(context.notifications()).toBe(0);
     } finally {
+      context.agents.close();
+    }
+  });
+
+  it("does not open or retain filesystem sources while source readiness is unavailable", async () => {
+    const now = new Date("2026-07-16T12:03:30.000Z");
+    let sourceReady = false;
+    const context = setup(now, () => true, () => sourceReady);
+    try {
+      context.coordination.createTriggerDefinition({
+        id: "readiness-filesystem", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Readiness files", instructions: "Observe only while ready",
+        sourceKind: "filesystem",
+        sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 500 },
+      });
+      await context.service.start();
+      await context.service.refresh();
+      expect((context.service as unknown as { watchers: Map<string, unknown> }).watchers.size).toBe(0);
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toEqual([]);
+
+      sourceReady = true;
+      await context.service.refresh();
+      await context.service.waitForFilesystemWatchers();
+      expect((context.service as unknown as { watchers: Map<string, unknown> }).watchers.size).toBe(1);
+
+      sourceReady = false;
+      await context.service.refresh();
+      expect((context.service as unknown as { watchers: Map<string, unknown> }).watchers.size).toBe(0);
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toEqual([]);
+    } finally {
+      await context.service.stop();
       context.agents.close();
     }
   });

@@ -121,6 +121,7 @@ import type {
   CommitAgentDeletionRequest,
   CommitAgentDeletionResponse,
   ProviderInputSourceManifest,
+  CommunicationReconciliationReport,
 } from "@ponderosa/core";
 import {
   agentRoleProfile,
@@ -2169,8 +2170,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   const managementPlans = new Map<string, ManagementPlan>();
   const isArtifactDependentWorkIntake = (method: string, url: string, body?: unknown): boolean => {
-    if (method !== "POST" && method !== "PUT" && method !== "PATCH") return false;
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH" && method !== "DELETE") return false;
     const pathname = url.split("?", 1)[0]!;
+    if (method === "DELETE") return /^\/api\/triggers\/[^/]+$/u.test(pathname);
     if (pathname === "/api/agent-management") {
       if (method !== "POST" || !body || typeof body !== "object" || Array.isArray(body)) return false;
       const input = body as { action?: unknown; operations?: unknown; planId?: unknown };
@@ -2196,6 +2198,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/retry$/u.test(pathname) ||
+      /^\/api\/agents\/[^/]+\/triggers$/u.test(pathname) ||
+      /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
       /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
       /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
   };
@@ -2546,31 +2550,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       cleanupPending: !(receipt.storageCleanupCompleted && receipt.serverCleanupCompleted),
     };
   };
-  // Migrate pre-V3.1.3 provider evidence once. A credential file proves only
-  // that login existed; a later entitlement rejection remains authoritative
-  // until an explicit provider-backed probe or successful Run proves recovery.
-  const latestRuntimeEvidence = new Map<string, { failure?: { detail: string; at: number }; successAt?: number }>();
-  for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
-    const evidence = latestRuntimeEvidence.get(agent.activeEngine) ?? {};
-    for (const stored of store.readEvents(agent.id)) {
-      const at = Date.parse(stored.ts);
-      if (stored.event.type === "error" && classifyProviderFailure(stored.event.message) === "authentication" &&
-          (!evidence.failure || at >= evidence.failure.at)) evidence.failure = { detail: stored.event.message, at };
-      if (stored.event.type === "agent_lifecycle" && stored.event.status === "completed" && at >= (evidence.successAt ?? 0)) {
-        evidence.successAt = at;
+  // Migrate pre-V3.1.3 provider evidence exactly once. A durable completion
+  // marker prevents every daemon construction from rescanning all Agent logs.
+  const legacyProviderEvidenceMigration = "provider-runtime-evidence-v1";
+  if (!engineAvailability.migrationCompleted(legacyProviderEvidenceMigration)) {
+    const latestRuntimeEvidence = new Map<string, { failure?: { detail: string; at: number }; successAt?: number }>();
+    for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
+      if (engineAvailability.get(agent.activeEngine)) continue;
+      const evidence = latestRuntimeEvidence.get(agent.activeEngine) ?? {};
+      for (const stored of store.readEvents(agent.id)) {
+        const at = Date.parse(stored.ts);
+        if (stored.event.type === "error" && classifyProviderFailure(stored.event.message) === "authentication" &&
+            (!evidence.failure || at >= evidence.failure.at)) evidence.failure = { detail: stored.event.message, at };
+        if (stored.event.type === "agent_lifecycle" && stored.event.status === "completed" && at >= (evidence.successAt ?? 0)) {
+          evidence.successAt = at;
+        }
       }
+      latestRuntimeEvidence.set(agent.activeEngine, evidence);
     }
-    latestRuntimeEvidence.set(agent.activeEngine, evidence);
-  }
-  for (const [engineId, evidence] of latestRuntimeEvidence) if (!engineAvailability.get(engineId) && evidence.failure &&
-      evidence.failure.at > (evidence.successAt ?? 0)) {
-    engineAvailability.record({
-      engineId,
-      available: false,
-      detail: evidence.failure.detail,
-      source: "legacy_recovery",
-      observedAt: new Date(evidence.failure.at).toISOString(),
-    });
+    for (const [engineId, evidence] of latestRuntimeEvidence) if (!engineAvailability.get(engineId) && evidence.failure &&
+        evidence.failure.at > (evidence.successAt ?? 0)) {
+      engineAvailability.record({
+        engineId,
+        available: false,
+        detail: evidence.failure.detail,
+        source: "legacy_recovery",
+        observedAt: new Date(evidence.failure.at).toISOString(),
+      });
+    }
+    engineAvailability.completeMigration(legacyProviderEvidenceMigration);
   }
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
@@ -2917,8 +2925,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   let assetSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
+  let communicationReconciliationTimer: NodeJS.Timeout | undefined;
+  const communicationReconciliation = new Map<string,
+    { state: "pending" } | { state: "verified"; report: CommunicationReconciliationReport }>();
+  const dirtyCommunicationProjects = new Set<string>();
+  const refreshCommunicationReconciliation = (projectId: string): void => {
+    dirtyCommunicationProjects.delete(projectId);
+    if (!store.getProject(projectId)) {
+      communicationReconciliation.delete(projectId);
+      return;
+    }
+    communicationReconciliation.set(projectId, {
+      state: "verified",
+      report: store.reconcileCommunicationEvents(projectId),
+    });
+  };
+  const scheduleCommunicationReconciliation = (projectId: string): void => {
+    communicationReconciliation.set(projectId, { state: "pending" });
+    dirtyCommunicationProjects.add(projectId);
+    if (communicationReconciliationTimer) return;
+    communicationReconciliationTimer = setTimeout(() => {
+      communicationReconciliationTimer = undefined;
+      if (closed) return;
+      for (const dirtyProjectId of [...dirtyCommunicationProjects]) refreshCommunicationReconciliation(dirtyProjectId);
+    }, 250);
+    communicationReconciliationTimer.unref();
+  };
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent => {
     const stored = store.appendCommunicationEvent(event);
+    if (!stored.replayed) scheduleCommunicationReconciliation(stored.event.projectId);
     if (!stored.replayed && stored.event.document?.artifactId) {
       opts.messageLifecycleFaults?.afterCanonicalCommunicationAppend?.({
         communicationEventId: stored.event.eventId,
@@ -4739,6 +4774,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordination: coordinationV3,
     dataDir: opts.dataDir,
     projectAvailable: (projectId) => !deletingProjectIds.has(projectId),
+    sourceAvailable: () => artifactFilesystem.ok,
     notify: (triggerId) => {
       coordinationV3Scheduler.notify();
       if (!triggerId) return;
@@ -5186,6 +5222,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     };
     await reconcileAssets();
+    for (const project of store.listProjects()) refreshCommunicationReconciliation(project.id);
     assetSweep = setInterval(() => { if (!closed) void reconcileAssets(); }, 60 * 60 * 1000);
     assetSweep.unref();
     linkPreviewSweep = setInterval(() => {
@@ -5270,6 +5307,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     closed = true;
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
+    if (communicationReconciliationTimer) clearTimeout(communicationReconciliationTimer);
     const runBrowserClosures: Promise<void>[] = [];
     for (const [agentId, run] of activeRuns) {
       runBrowserClosures.push(closeRunBrowser(agentId, run, "server_shutdown"));
@@ -7594,16 +7632,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ? "no runtimes are configured"
         : `${available} of ${engines.size} configured runtimes available`,
     };
-    const communicationReports = store.listProjects().map((project) => ({
+    const communicationStates = store.listProjects().map((project) => ({
       projectId: project.id,
-      report: store.reconcileCommunicationEvents(project.id),
+      evidence: communicationReconciliation.get(project.id),
     }));
-    const driftedProjects = communicationReports.filter(({ report }) => !report.ok).map(({ projectId }) => projectId);
-    const communicationParity = driftedProjects.length === 0;
+    const driftedProjects = communicationStates.filter(({ evidence }) =>
+      evidence?.state === "verified" && !evidence.report.ok).map(({ projectId }) => projectId);
+    const pendingProjects = communicationStates.filter(({ evidence }) => !evidence || evidence.state === "pending")
+      .map(({ projectId }) => projectId);
+    const communicationParity = driftedProjects.length === 0 && pendingProjects.length === 0;
     const communicationMigration = {
       ok: communicationParity,
       detail: communicationParity
         ? "canonical communication projections=ok"
+        : pendingProjects.length > 0
+          ? `canonical communication projection verification pending for ${pendingProjects.length} project(s); new work remains available`
         : `canonical communication projections=drift in ${driftedProjects.length} quarantined project(s); new work remains available`,
     };
     // Projection drift is project-scoped diagnostic state. It must not make
@@ -7927,6 +7970,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       throw error;
     }
     appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
+    refreshCommunicationReconciliation(project.id);
     if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
     return project;
   });
@@ -8099,6 +8143,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       contextCursors.deleteAgents(agentIds);
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
+      communicationReconciliation.delete(project.id);
+      dirtyCommunicationProjects.delete(project.id);
       deleted = true;
       try {
         store.finishProjectDeletionStorageCleanup(
@@ -8172,6 +8218,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     const report = store.reconcileCommunicationEvents(request.params.id);
+    communicationReconciliation.set(request.params.id, { state: "verified", report });
+    dirtyCommunicationProjects.delete(request.params.id);
     if (!report.ok) reply.code(409);
     return report;
   });
