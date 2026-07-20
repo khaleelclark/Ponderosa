@@ -1058,6 +1058,13 @@ export class CoordinationV3Store {
     } : undefined;
   }
 
+  requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT request_id FROM coordination_request_updates WHERE id = ?
+    `).get(updateId) as { request_id: string } | undefined;
+    return row ? this.getRequest(row.request_id) : undefined;
+  }
+
   /** Project immutable authored messages onto mutable, per-recipient delivery
    * evidence without rewriting the Communication or its chat projection. */
   deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {

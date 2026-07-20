@@ -207,6 +207,10 @@ export const managedArtifactProjection = sqliteTable("managed_artifact_projectio
   visibility: text("visibility").notNull(),
   pinned: integer("pinned").notNull(),
   artifactJson: text("artifact_json").notNull(),
+  ownerKind: text("owner_kind").notNull(),
+  ownerId: text("owner_id").notNull(),
+  audienceJson: text("audience_json").notNull(),
+  senderAgentId: text("sender_agent_id"),
 }, (table) => [primaryKey({ columns: [table.projectId, table.artifactId] })]);
 
 export const runs = sqliteTable("runs", {

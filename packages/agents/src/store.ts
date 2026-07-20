@@ -28,6 +28,7 @@ import type {
   ChangedFileDetailDto,
   AgentOrganizationEvent,
   CommunicationEvent,
+  CommunicationAudience,
   CommunicationRevisionEvent,
   CommunicationDocumentRecord,
   CommunicationDocumentReference,
@@ -248,8 +249,15 @@ interface ProjectJson {
   instructions?: string;
 }
 
+export interface ManagedArtifactAccess {
+  ownerKind: "project" | "communication" | "request_update";
+  ownerId: string;
+  audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
+  senderAgentId?: string;
+}
+
 type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string } }
+  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 
@@ -4116,16 +4124,39 @@ export class AgentStore {
 
   private projectManagedArtifactEvent(projectId: string, event: ManagedArtifactEvent): void {
     if (event.type === "created") {
+      const access = event.access ?? {
+        ownerKind: "project" as const,
+        ownerId: event.artifact.id,
+        audience: { kind: "organization" as const, organizationId: projectId },
+      };
+      const prior = this.client.prepare(`
+        SELECT artifact_json, owner_kind, owner_id, audience_json, sender_agent_id
+        FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+      `).get(projectId, event.artifact.id) as {
+        artifact_json: string;
+        owner_kind: string;
+        owner_id: string;
+        audience_json: string;
+        sender_agent_id: string | null;
+      } | undefined;
+      if (prior) {
+        if (prior.artifact_json === JSON.stringify(event.artifact) &&
+            prior.owner_kind === access.ownerKind && prior.owner_id === access.ownerId &&
+            prior.audience_json === JSON.stringify(access.audience) &&
+            prior.sender_agent_id === (access.senderAgentId ?? null)) return;
+        throw new Error("managed artifact identity, provenance, and audience are immutable");
+      }
       this.client.prepare(`
-        INSERT INTO managed_artifact_projection(project_id, artifact_id, created_at, visibility, pinned, artifact_json)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(project_id, artifact_id) DO UPDATE SET
-          created_at = excluded.created_at, visibility = excluded.visibility,
-          pinned = excluded.pinned, artifact_json = excluded.artifact_json
+        INSERT INTO managed_artifact_projection(
+          project_id, artifact_id, created_at, visibility, pinned, artifact_json,
+          owner_kind, owner_id, audience_json, sender_agent_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         projectId, event.artifact.id, event.artifact.createdAt,
         event.artifact.visibility ?? "project", event.artifact.pinned ? 1 : 0,
         JSON.stringify(event.artifact),
+        access.ownerKind, access.ownerId, JSON.stringify(access.audience), access.senderAgentId ?? null,
       );
       return;
     }
@@ -4180,7 +4211,7 @@ export class AgentStore {
     });
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ?
+      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(boundary
@@ -4220,11 +4251,55 @@ export class AgentStore {
     return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
   }
 
+  getProjectArtifactAccess(projectId: string, artifactIdValue: string): ManagedArtifactAccess | undefined {
+    const row = this.client.prepare(`
+      SELECT owner_kind, owner_id, audience_json, sender_agent_id
+      FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+    `).get(projectId, artifactIdValue) as {
+      owner_kind: ManagedArtifactAccess["ownerKind"];
+      owner_id: string;
+      audience_json: string;
+      sender_agent_id: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    try {
+      return {
+        ownerKind: row.owner_kind,
+        ownerId: row.owner_id,
+        audience: JSON.parse(row.audience_json) as ManagedArtifactAccess["audience"],
+        ...(row.sender_agent_id ? { senderAgentId: row.sender_agent_id } : {}),
+      };
+    } catch { return undefined; }
+  }
+
+  projectArtifactIsOrganizationVisible(projectId: string, artifactIdValue: string): boolean {
+    return this.getProjectArtifactAccess(projectId, artifactIdValue)?.audience.kind === "organization";
+  }
+
+  operatorCanReadProjectArtifact(projectId: string, artifactIdValue: string): boolean {
+    // The single local operator owns the Project audit surfaces (including
+    // Team Chat), but private artifacts still stay out of the organizational
+    // catalog and future-agent context.
+    return Boolean(this.getProject(projectId) && this.getProjectArtifactAccess(projectId, artifactIdValue));
+  }
+
+  agentCanReadProjectArtifact(projectId: string, artifactIdValue: string, agentId: string): boolean {
+    const agent = this.getAgent(agentId);
+    const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
+    if (!agent || agent.projectId !== projectId || agent.archived || !access) return false;
+    if (access.audience.kind === "organization") return true;
+    if (access.senderAgentId === agentId) return true;
+    if (access.audience.kind === "agents" || access.audience.kind === "user_agents" ||
+        access.audience.kind === "request_agents") return access.audience.agentIds.includes(agentId);
+    return access.audience.kind === "user_agent" && access.audience.agentId === agentId;
+  }
+
   getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND (pinned = 1 OR visibility = 'published')
+      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        AND (pinned = 1 OR visibility = 'published')
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(projectId, boundedLimit) as Array<{ artifact_json: string }>;
     return rows.map((row) => {
@@ -4234,7 +4309,14 @@ export class AgentStore {
     });
   }
 
-  recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
+  recordProjectArtifact(
+    artifact: ArtifactDto & { projectId: string; originAgentId: string },
+    access: ManagedArtifactAccess = {
+      ownerKind: "project",
+      ownerId: artifact.id,
+      audience: { kind: "organization", organizationId: artifact.projectId },
+    },
+  ): void {
     if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
     if (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
         !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "") ||
@@ -4247,10 +4329,12 @@ export class AgentStore {
         "id", "projectId", "agentId", "originAgentId", "executionId", "kind", "path",
         "summary", "createdAt", "mediaType", "sourcePath", "size", "sha256",
       ] as const;
-      if (immutableFields.every((field) => existing[field] === artifact[field])) return;
+      const existingAccess = this.getProjectArtifactAccess(artifact.projectId, artifact.id);
+      if (immutableFields.every((field) => existing[field] === artifact[field]) &&
+          JSON.stringify(existingAccess) === JSON.stringify(access)) return;
       throw new Error("managed artifact identity and provenance are immutable");
     }
-    const event = { type: "created", artifact } satisfies ManagedArtifactEvent;
+    const event = { type: "created", artifact, access } satisfies ManagedArtifactEvent;
     appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [event]);
     this.projectManagedArtifactEvent(artifact.projectId, event);
   }

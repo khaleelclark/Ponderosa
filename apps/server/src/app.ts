@@ -149,7 +149,7 @@ import {
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, publishManagedArtifactContent, readManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, publishManagedArtifactContent, readManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -448,6 +448,32 @@ function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number
   return end > start ? end : Math.min(content.length, maximumEnd);
 }
 
+/** Return one bounded, code-point-aligned UTF-8 prefix. Validation decodes the
+ * prefix exactly once; malformed content fails into the caller's binary path. */
+function boundedUtf8Preview(content: Buffer, maximumBytes: number): Buffer | undefined {
+  let end = Math.min(content.length, maximumBytes);
+  if (end < content.length && end > 0) {
+    let lead = end - 1;
+    while (lead >= Math.max(0, end - 4) && (content[lead]! & 0xc0) === 0x80) lead -= 1;
+    if (lead < 0) end = 0;
+    else {
+      const byte = content[lead]!;
+      const expectedBytes = byte < 0x80 ? 1
+        : (byte & 0xe0) === 0xc0 ? 2
+          : (byte & 0xf0) === 0xe0 ? 3
+            : (byte & 0xf8) === 0xf0 ? 4
+              : 1;
+      if (lead + expectedBytes > end) end = lead;
+    }
+  }
+  const candidate = content.subarray(0, end);
+  try {
+    return Buffer.from(new TextDecoder("utf-8", { fatal: true }).decode(candidate), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function sendInspectorJson(reply: FastifyReply, acceptEncoding: string | string[] | undefined, value: unknown): FastifyReply {
   const body = JSON.stringify(value);
   reply.type("application/json").header("vary", "Accept-Encoding");
@@ -566,6 +592,12 @@ export interface CreateServerOptions {
       ownerId: string;
       artifactIds: string[];
     }) => void | Promise<void>;
+    /** Deterministic crash seam immediately after the canonical append and
+     * before any catalog association can expose artifact bytes. */
+    afterCanonicalCommunicationAppend?: (context: {
+      communicationEventId: string;
+      artifactIds: string[];
+    }) => void;
     /** Crash seams around queued-edit outbox reconciliation. SQLite has
      * already committed before either hook can run. */
     afterQueuedEditSqliteCommit?: (context: { activationId: string; revisionId: string }) => void | Promise<void>;
@@ -1843,6 +1875,27 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     ...(artifact.originAgentId ? { originAgentId: artifact.originAgentId } : {}),
     ...(artifact.executionId ? { executionId: artifact.executionId } : {}),
   });
+  const communicationArtifactAccess = (communication: CommunicationEvent): ManagedArtifactAccess => ({
+    ownerKind: "communication",
+    ownerId: communication.eventId,
+    audience: communication.audience,
+    ...(communication.sender.kind === "agent" ? { senderAgentId: communication.sender.agentId } : {}),
+  });
+  const requestArtifactAccess = (
+    ownerId: string,
+    request: NonNullable<ReturnType<CoordinationV3Store["getRequest"]>>,
+  ): ManagedArtifactAccess => ({
+    ownerKind: "request_update",
+    ownerId,
+    audience: {
+      kind: "request_agents",
+      agentIds: [...new Set([
+        ...(request.requesterAgentId ? [request.requesterAgentId] : []),
+        request.recipientAgentId,
+      ])].sort(),
+      ...(!request.requesterAgentId ? { userId: "local-operator" } : {}),
+    },
+  });
   const stageCommunicationArtifact = async (input: {
     projectId: string;
     communicationId: string;
@@ -1867,7 +1920,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const registered = assets.registerRuntimeArtifact({ ...artifact, projectId: input.projectId });
     return { ...artifact, createdAt: registered.createdAt };
   };
-  const projectCommunicationArtifact = (projectId: string, fallbackAgentId: string, artifact: PreparedCommunicationArtifact): void => {
+  const projectCommunicationArtifact = (
+    projectId: string,
+    fallbackAgentId: string,
+    artifact: PreparedCommunicationArtifact,
+    access: ManagedArtifactAccess,
+  ): void => {
     const authoritative = assets.authoritativeRuntimeArtifact(projectId, runtimeArtifactMetadata(artifact));
     if (!authoritative || authoritative.contentHash !== artifact.blobHash ||
         authoritative.byteLength !== artifact.byteLength) {
@@ -1881,7 +1939,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       kind: "document", path: `communication/${artifact.id}.md`, summary: artifact.title,
       createdAt: artifact.createdAt, mediaType: artifact.mediaType,
       visibility: "project", pinned: false, size: artifact.byteLength, sha256: artifact.blobHash,
-    });
+    }, access);
   };
   const prepareUserCommunicationText = async (input: {
     projectId: string;
@@ -2811,6 +2869,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   let agentDeletionCleanupDraining = false;
   const recordCommunication = (event: CommunicationEvent): CommunicationEvent => {
     const stored = store.appendCommunicationEvent(event);
+    if (!stored.replayed && stored.event.document?.artifactId) {
+      opts.messageLifecycleFaults?.afterCanonicalCommunicationAppend?.({
+        communicationEventId: stored.event.eventId,
+        artifactIds: [stored.event.document.artifactId],
+      });
+    }
     if (!stored.replayed && stored.event.sender.kind === "agent") {
       const preference = workspace.getPreferences().notifications;
       const kind = notificationKindForCommunication(stored.event);
@@ -4527,11 +4591,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           activationId: payload.activationId,
           revisionId: payload.revision.eventId,
         });
-        if (payload.artifact) projectCommunicationArtifact(
-          payload.revision.projectId,
-          "local-operator",
-          payload.artifact,
-        );
+        if (payload.artifact) {
+          const target = store.getCommunicationEvent(payload.revision.projectId, payload.revision.targetEventId);
+          if (!target) throw new Error("queued-edit artifact target Communication is unavailable");
+          projectCommunicationArtifact(
+            payload.revision.projectId,
+            "local-operator",
+            payload.artifact,
+            communicationArtifactAccess(target),
+          );
+        }
         appendWorkspace({
           type: "queued_message_changed",
           conversationId: payload.conversationId,
@@ -4702,19 +4771,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const runtimeArtifacts = coordinationV3.runtimeArtifacts("communication", row.id);
       let artifactsAvailable = true;
       for (const artifact of runtimeArtifacts) {
-        const file = managedArtifactContentPath(opts.dataDir, row.projectId, artifact.blobPath);
-        try {
-          const content = await fs.readFile(file);
-          if (content.length !== artifact.byteLength || createHash("sha256").update(content).digest("hex") !== artifact.blobHash) {
-            artifactsAvailable = false;
-            break;
-          }
-          projectCommunicationArtifact(
-            row.projectId,
-            artifact.originAgentId ?? (event.sender?.kind === "agent" ? event.sender.agentId : "local-operator"),
-            { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
-          );
-        } catch {
+        if (!assets.authoritativeRuntimeArtifact(row.projectId, artifact)) {
           artifactsAvailable = false;
           break;
         }
@@ -4868,6 +4925,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
         const canonical = store.getCommunicationEvent(row.projectId, communicationEventId);
         if (!canonical) continue;
+        for (const artifact of runtimeArtifacts) {
+          projectCommunicationArtifact(
+            row.projectId,
+            artifact.originAgentId ?? (canonical.sender.kind === "agent" ? canonical.sender.agentId : "local-operator"),
+            { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
+            communicationArtifactAccess(canonical),
+          );
+        }
 
         if (canonical.intent === "collaboration" && canonical.conversationId && dispatch) {
           const renderedText = typeof dispatch.text === "string" ? dispatch.text : canonical.text;
@@ -4985,47 +5050,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.addHook("onReady", async () => {
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
-    const ownedRuntimeArtifactIds = new Set(coordinationV3.runtimeArtifacts().map((artifact) => artifact.id));
+    const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
       coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
     if (recoveredAssociations.unavailable) {
       app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
     }
     for (const project of store.listProjects()) {
-      const contentDirectory = path.join(managedArtifactsDir(opts.dataDir, project.id), "content");
-      let names: string[] = [];
-      try { names = await fs.readdir(contentDirectory); }
-      catch { /* no managed artifact content yet */ }
-      for (const name of names.filter((candidate) =>
-        candidate.includes(".staged-") || (candidate.startsWith(".") && candidate.endsWith(".tmp")))) {
-        const candidate = path.join(contentDirectory, name);
-        try {
-          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) await fs.rm(candidate, { force: true });
-        } catch { /* a concurrent exact retry may have already resolved it */ }
+      const referenced = new Set([
+        ...store.getProjectArtifacts(project.id).map((artifact) => artifact.id),
+        ...runtimeArtifacts.filter((artifact) => artifact.projectId === project.id).map((artifact) => artifact.id),
+      ]);
+      for (const removed of repairManagedArtifactContent(
+        opts.dataDir,
+        project.id,
+        referenced,
+        orphanGraceBoundary,
+      )) {
+        assets.removeRuntimeArtifactReservation(project.id, removed);
       }
-      for (const name of names.filter((candidate) => candidate.startsWith("text-") && !candidate.includes(".staged-") && !ownedRuntimeArtifactIds.has(candidate))) {
-        const candidate = path.join(contentDirectory, name);
-        try {
-          if ((await fs.stat(candidate)).mtimeMs < orphanGraceBoundary) {
-            await fs.rm(candidate, { force: true });
-            assets.removeRuntimeArtifactReservation(project.id, name);
-          }
-        } catch { /* a concurrent exact retry may have committed its metadata */ }
-      }
-    }
-    for (const artifact of coordinationV3.runtimeArtifacts()) {
-      const file = managedArtifactContentPath(opts.dataDir, artifact.projectId, artifact.blobPath);
-      try {
-        const content = await fs.readFile(file);
-        if (content.length !== artifact.byteLength || createHash("sha256").update(content).digest("hex") !== artifact.blobHash) continue;
-        projectCommunicationArtifact(
-          artifact.projectId,
-          artifact.originAgentId ?? "local-operator",
-          { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
-        );
-      } catch { /* unavailable blobs remain unprojected and auditable in SQLite */ }
     }
     await reconcileRuntimeCommunicationProjections();
+    for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
+      const request = coordinationV3.requestForUpdate(artifact.ownerId);
+      if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
+      projectCommunicationArtifact(
+        artifact.projectId,
+        artifact.originAgentId ?? "local-operator",
+        { ...artifact, createdAt: artifact.createdAt, mediaType: "text/markdown" },
+        requestArtifactAccess(artifact.ownerId, request),
+      );
+    }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
@@ -5998,6 +6053,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!artifact && runtimeArtifact?.projectId !== author.projectId) {
         return reply.code(404).send({ error: `artifact is unavailable: ${ref}` });
       }
+      if ((artifact && !store.agentCanReadProjectArtifact(author.projectId, parsed.id, author.id)) ||
+          (runtimeArtifact && !agentCanReadRuntimeArtifact(runtimeArtifact, author.id))) {
+        return reply.code(404).send({ error: `artifact reference is not reachable from this Run: ${ref}` });
+      }
       let content: Buffer;
       if (runtimeArtifact?.projectId === author.projectId) {
         const authoritative = assets.authoritativeRuntimeArtifact(author.projectId, runtimeArtifact);
@@ -6683,8 +6742,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
         kind: "request_update", ownerId: updateId, artifactIds: [artifact.id],
       });
-      if (artifact) projectCommunicationArtifact(store.getAgent(capability.agentId)!.projectId, capability.agentId, artifact);
       const changedRequest = coordinationV3.getRequest(requestId);
+      if (artifact && changedRequest) projectCommunicationArtifact(
+        store.getAgent(capability.agentId)!.projectId,
+        capability.agentId,
+        artifact,
+        requestArtifactAccess(updateId, changedRequest),
+      );
       if (changedRequest?.requesterAgentId) publishCoordinationV3Changed(changedRequest.requesterAgentId);
       if (changedRequest) publishCoordinationV3Changed(changedRequest.recipientAgentId);
       coordinationV3Scheduler?.notify();
@@ -6914,7 +6978,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         kind: "communication", ownerId: proposedCommunication.eventId,
         artifactIds: preparedArtifacts.map((artifact) => artifact.id),
       });
-      for (const artifact of preparedArtifacts) projectCommunicationArtifact(currentAuthor.projectId, capability.agentId, artifact);
       if (intake.replayed) {
         await reconcileRuntimeCommunicationProjections();
         const existing = store.readEvents(capability.agentId).find((item) =>
@@ -6927,6 +6990,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         };
       }
       const communication = recordCommunication(proposedCommunication);
+      for (const artifact of preparedArtifacts) projectCommunicationArtifact(
+        currentAuthor.projectId,
+        capability.agentId,
+        artifact,
+        communicationArtifactAccess(communication),
+      );
       store.appendCommunicationProjection(currentAuthor.projectId, {
         eventId: communication.eventId,
         surface: "user_inbox",
@@ -7052,7 +7121,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       kind: "communication", ownerId: proposedCommunication.eventId,
       artifactIds: preparedArtifacts.map((artifact) => artifact.id),
     });
-    for (const artifact of preparedArtifacts) projectCommunicationArtifact(currentAuthor.projectId, capability.agentId, artifact);
     if (intake.replayed) {
       await reconcileRuntimeCommunicationProjections();
       const existing = store.getConversationMessages(capability.conversationId, channel)
@@ -7066,6 +7134,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       };
     }
     const communication = recordCommunication(proposedCommunication);
+    for (const artifact of preparedArtifacts) projectCommunicationArtifact(
+      currentAuthor.projectId,
+      capability.agentId,
+      artifact,
+      communicationArtifactAccess(communication),
+    );
     const message = store.appendConversationMessage(
       capability.conversationId,
       { role: "assistant", text: renderedText },
@@ -7181,12 +7255,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!agent || agent.projectId !== event.projectId || agent.archived) return false;
     if (event.intent === "broadcast") return !event.conversationId || agent.conversationIds.includes(event.conversationId);
     if (event.schemaVersion === 2 && event.intent === "user_dm") {
-      return event.sender.kind === "agent" && event.sender.agentId === agentId;
+      return (event.audience.kind === "user_agent"
+        ? event.audience.agentId === agentId
+        : event.audience.agentIds.includes(agentId)) ||
+        (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
     if (event.intent === "collaboration") {
       return event.audience.agentIds.includes(agentId) || (event.sender.kind === "agent" && event.sender.agentId === agentId);
     }
     return event.sender.kind === "agent" && event.sender.agentId === agentId;
+  }
+
+  function agentCanReadRuntimeArtifact(
+    artifact: import("@ponderosa/agents").RuntimeArtifactV3,
+    agentId: string,
+  ): boolean {
+    if (store.agentCanReadProjectArtifact(artifact.projectId, artifact.id, agentId)) return true;
+    if (artifact.ownerKind === "request_update") {
+      const request = coordinationV3.requestForUpdate(artifact.ownerId);
+      return Boolean(request && request.projectId === artifact.projectId &&
+        (request.requesterAgentId === agentId || request.recipientAgentId === agentId));
+    }
+    const runtime = coordinationV3.runtimeCommunication(artifact.ownerId);
+    const payload = runtime?.payload && typeof runtime.payload === "object"
+      ? runtime.payload as { communication?: unknown }
+      : undefined;
+    const candidate = payload?.communication ?? runtime?.payload;
+    if (!candidate || typeof candidate !== "object") return false;
+    const event = candidate as CommunicationEvent;
+    return event.projectId === artifact.projectId && agentCanReadDocument(event, agentId);
   }
 
   function managedProjectArtifactAgreesWithRuntime(
@@ -7229,7 +7326,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         authoritative.artifact.originAgentId !== document.authorAgentId ||
         authoritative.artifact.executionId !== document.executionId) return undefined;
     const managed = store.getProjectArtifact(projectId, document.artifactId);
-    if (!managed || !managedProjectArtifactAgreesWithRuntime(managed, authoritative.artifact)) return undefined;
+    const access = store.getProjectArtifactAccess(projectId, document.artifactId);
+    if (!managed || !managedProjectArtifactAgreesWithRuntime(managed, authoritative.artifact) ||
+        JSON.stringify(access) !== JSON.stringify(communicationArtifactAccess(event))) return undefined;
     return { event, document: { ...document, content: authoritative.body.toString("utf8") } };
   }
 
@@ -8178,8 +8277,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
       kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
     });
-    if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
     const communication = recordCommunication(communicationInput);
+    if (prepared.artifact) projectCommunicationArtifact(
+      master.projectId,
+      "local-operator",
+      prepared.artifact,
+      communicationArtifactAccess(communication),
+    );
     const replayedMessage = communication && idempotencyKey
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
@@ -8311,8 +8415,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
           kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
         });
-        if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
-        recordCommunication(communication);
+        const canonicalCommunication = recordCommunication(communication);
+        if (prepared.artifact) projectCommunicationArtifact(
+          master.projectId,
+          "local-operator",
+          prepared.artifact,
+          communicationArtifactAccess(canonicalCommunication),
+        );
         store.appendCommunicationProjection(master.projectId, {
           eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
         });
@@ -8538,12 +8647,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
           kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
         });
-        if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
       } catch (error) {
         const status = error instanceof AssetError ? error.statusCode : 409;
         return reply.code(status).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
       }
-      recordCommunication(communication);
+      const canonicalCommunication = recordCommunication(communication);
+      if (prepared.artifact) projectCommunicationArtifact(
+        master.projectId,
+        "local-operator",
+        prepared.artifact,
+        communicationArtifactAccess(canonicalCommunication),
+      );
       store.appendCommunicationProjection(master.projectId, {
         eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
       });
@@ -9152,12 +9266,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
         kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
       });
-      if (prepared.artifact) projectCommunicationArtifact(master.projectId, "local-operator", prepared.artifact);
     } catch (error) {
       const status = error instanceof AssetError ? error.statusCode : 409;
       return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
     }
-    recordCommunication(communication);
+    const canonicalCommunication = recordCommunication(communication);
+    if (prepared.artifact) projectCommunicationArtifact(
+      master.projectId,
+      "local-operator",
+      prepared.artifact,
+      communicationArtifactAccess(canonicalCommunication),
+    );
     const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
     if (replayedMessage && intake.replayed) {
       return {
@@ -9439,8 +9558,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (openingPrepared!.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
           kind: "communication", ownerId: eventId, artifactIds: [openingPrepared!.artifact.id],
         });
-        if (openingPrepared!.artifact) projectCommunicationArtifact(agent.projectId, "local-operator", openingPrepared!.artifact);
-        recordCommunication(communication);
+        const canonicalCommunication = recordCommunication(communication);
+        if (openingPrepared!.artifact) projectCommunicationArtifact(
+          agent.projectId,
+          "local-operator",
+          openingPrepared!.artifact,
+          communicationArtifactAccess(canonicalCommunication),
+        );
         if (managedOpening) coordinationV3.attachRequestCommunication(managedOpening.requestIds[0]!, eventId, agent.projectId);
         if (communication.intent === "user_dm") {
           store.appendCommunicationProjection(agent.projectId, {
@@ -10724,7 +10848,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           kind: "communication", ownerId: `dispatch:${intendedCommunicationEventId}:${agent.id}`,
           artifactIds: [userTextArtifact.id],
         });
-        if (userTextArtifact) projectCommunicationArtifact(project.id, agent.id, userTextArtifact);
       }
       const communicationEventId = internalV3Dispatch
         ? v3CommunicationEventId
@@ -10732,6 +10855,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const communication = communicationEventId
         ? store.getCommunicationEvent(project.id, communicationEventId)
         : undefined;
+      if (userTextArtifact && communication) projectCommunicationArtifact(
+        project.id,
+        agent.id,
+        userTextArtifact,
+        communicationArtifactAccess(communication),
+      );
       const sharedCommunication = communication?.intent === "broadcast" ? communication : undefined;
       const sharedTaskTurn = Boolean(sharedCommunication && shareWithOrganization);
       const directUserTaskTurn = Boolean(
@@ -10929,7 +11058,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
         return [...ids].slice(0, 200).flatMap((id) => {
           const artifact = store.getProjectArtifact(project.id, id);
-          if (!artifact || (artifact.kind === "generated_file" &&
+          if (!artifact || !store.agentCanReadProjectArtifact(project.id, id, agent.id) ||
+              (artifact.kind === "generated_file" &&
               !assets.authoritativeGeneratedArtifact(project.id, artifact))) return [];
           return [artifact];
         });
@@ -11255,8 +11385,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }),
         ];
       const artifactExistsInProject = (id: string): boolean => {
-        if (store.getProjectArtifact(project.id, id)) return true;
-        return coordinationV3.runtimeArtifact(id)?.projectId === project.id;
+        if (store.getProjectArtifact(project.id, id)) {
+          return store.agentCanReadProjectArtifact(project.id, id, agent.id);
+        }
+        const runtime = coordinationV3.runtimeArtifact(id);
+        return Boolean(runtime?.projectId === project.id && agentCanReadRuntimeArtifact(runtime, agent.id));
       };
       const policyDelivery = sessionEnvelope ? "submitted" as const : "retained_session" as const;
       const buildProviderInputManifest = (input: {
@@ -12833,7 +12966,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     "/api/projects/:projectId/artifacts/:aid",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
-      if (!artifact) return reply.code(404).send({ error: "generated artifact not found" });
+      if (!artifact || !store.projectArtifactIsOrganizationVisible(request.params.projectId, request.params.aid)) {
+        return reply.code(404).send({ error: "generated artifact not found" });
+      }
       if (request.body.visibility !== undefined && !["project", "published"].includes(request.body.visibility)) return reply.code(400).send({ error: "invalid visibility" });
       if (request.body.pinned !== undefined && typeof request.body.pinned !== "boolean") return reply.code(400).send({ error: "pinned must be boolean" });
       return store.updateProjectArtifactVisibility(
@@ -12938,16 +13073,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   ) {
     const activeDocument = file.mediaType === "text/html" || file.mediaType === "image/svg+xml";
     const textual = file.mediaType.startsWith("text/") || file.mediaType === "application/json";
-    let body = file.body;
-    if (textual && file.body.length > MAX_FILE_BYTES) {
-      let end = MAX_FILE_BYTES;
-      while (end >= 0) {
-        try {
-          body = Buffer.from(new TextDecoder("utf-8", { fatal: true }).decode(file.body.subarray(0, end)), "utf8");
-          break;
-        } catch { end -= 1; }
-      }
-    }
+    const utf8Body = textual ? boundedUtf8Preview(file.body, MAX_FILE_BYTES) : undefined;
+    const binaryFallback = textual && utf8Body === undefined;
+    const body = textual
+      ? utf8Body ?? file.body.subarray(0, Math.min(file.body.length, MAX_FILE_BYTES))
+      : file.body;
     if (body.length < file.body.length) {
       reply.header("X-Ponderosa-Preview-Truncated", "true")
         .header("X-Ponderosa-Artifact-Bytes", String(file.body.length));
@@ -12965,7 +13095,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         .header("Referrer-Policy", "no-referrer")
         .header("X-Content-Type-Options", "nosniff");
     }
-    return reply.type(file.mediaType)
+    return reply.type(binaryFallback ? "application/octet-stream" : file.mediaType)
       .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
       .send(body);
   }
@@ -12974,7 +13104,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     "/api/projects/:projectId/artifacts/:aid/preview",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
-      const file = artifact ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id) : undefined;
+      const file = artifact && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)
+        ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id)
+        : undefined;
       if (!file) return reply.code(404).send({ error: "generated artifact not found" });
       return sendGeneratedPreview(reply, file);
     },
@@ -12984,7 +13116,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     "/api/projects/:projectId/artifacts/:aid/download",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
-      const file = artifact ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id) : undefined;
+      const file = artifact && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)
+        ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id)
+        : undefined;
       if (!file) return reply.code(404).send({ error: "generated artifact not found" });
       return reply.type(file.mediaType).header("Content-Disposition", contentDisposition(file.name)).send(file.body);
     },
@@ -13034,18 +13168,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!managed?.size || !managed.sha256) return reply.code(404).send({ error: "artifact content not found" });
       const file = readManagedArtifactContent(opts.dataDir, agent.projectId, managed.id, managed.size, managed.sha256);
       if (!file) return reply.code(404).send({ error: "artifact content not found" });
-      let previewEnd = Math.min(file.body.length, MAX_FILE_BYTES);
-      let content = "";
-      while (previewEnd >= 0) {
-        try {
-          content = new TextDecoder("utf-8", { fatal: true }).decode(file.body.subarray(0, previewEnd));
-          break;
-        } catch { previewEnd -= 1; }
-      }
+      const preview = boundedUtf8Preview(file.body, MAX_FILE_BYTES);
+      const previewEnd = preview?.length ?? 0;
+      const content = preview?.toString("utf8") ?? "";
       return {
         ...managed,
         content,
-        contentType: contentTypeForArtifact(managed.path),
+        contentType: preview ? contentTypeForArtifact(managed.path) : "application/octet-stream",
         truncated: previewEnd < file.body.length,
         totalBytes: file.body.length,
       };

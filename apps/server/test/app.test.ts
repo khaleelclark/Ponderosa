@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
@@ -12,7 +12,7 @@ import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
-import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
 import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
@@ -1747,6 +1747,7 @@ describe("generated artifact endpoints", () => {
     const second = store.createAgent(project.id, {
       title: "Second", engine: "codex", conversationId: conversation.id, managerAgentId: first.id,
     });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
     const fullText = `Shared body\n${"z".repeat(10_100)}`;
     const eventIds: string[] = [];
 
@@ -1811,7 +1812,21 @@ describe("generated artifact endpoints", () => {
     }
     expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts()
       .filter((artifact) => artifact.projectId === project.id)).toHaveLength(5);
+    const broadcastArtifactId = store.getCommunicationEvent(project.id, eventIds[0]!)!.document!.artifactId!;
     const directArtifactId = store.getCommunicationEvent(project.id, eventIds[1]!)!.document!.artifactId!;
+    const collaborationArtifactId = store.getCommunicationEvent(project.id, eventIds[2]!)!.document!.artifactId!;
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .toContain(broadcastArtifactId);
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .not.toEqual(expect.arrayContaining([directArtifactId, collaborationArtifactId]));
+    expect(store.agentCanReadProjectArtifact(project.id, directArtifactId, first.id)).toBe(true);
+    expect(store.agentCanReadProjectArtifact(project.id, directArtifactId, outsider.id)).toBe(false);
+    expect(store.agentCanReadProjectArtifact(project.id, collaborationArtifactId, first.id)).toBe(true);
+    expect(store.agentCanReadProjectArtifact(project.id, collaborationArtifactId, second.id)).toBe(false);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${broadcastArtifactId}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${directArtifactId}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${collaborationArtifactId}/download` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/communication-documents/${directArtifactId}` })).statusCode).toBe(200);
     const exported = (await app.inject({
       method: "GET", url: `/api/agents/${first.id}/export?mode=full&organization=true`,
     })).json<import("@ponderosa/core").AgentPortablePackageDto>();
@@ -1848,6 +1863,8 @@ describe("generated artifact endpoints", () => {
     const artifact = new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication")[0]!;
     expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifact.id), "utf8")).toBe("u".repeat(10_100));
     expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    expect(store.getProjectArtifact(project.id, artifact.id)).toBeUndefined();
+    expect((await first.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifact.id}/preview` })).statusCode).toBe(404);
     await first.close();
 
     store = new AgentStore(dataDir);
@@ -1860,6 +1877,136 @@ describe("generated artifact endpoints", () => {
       document: expect.objectContaining({ artifactId: artifact.id, authorUserId: "local-operator" }),
     }));
     await restarted.close();
+  });
+
+  it("repairs catalog association after a crash immediately after the canonical Communication append", async () => {
+    const project = store.createProject({ label: "Append crash artifact", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let crash = true;
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (!crash) return;
+          crash = false;
+          throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await first.ready();
+    await first.inject({ method: "POST", url: "/api/deployment/drain" });
+    const response = await first.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "a".repeat(10_100), sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(response.statusCode).toBe(500);
+    const event = store.readCommunicationEvents(project.id)[0]!;
+    const artifactId = event.document!.artifactId!;
+    expect(store.getProjectArtifact(project.id, artifactId)).toBeUndefined();
+    expect((await first.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview` })).statusCode).toBe(404);
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    expect(store.getProjectArtifact(project.id, artifactId)).toMatchObject({ id: artifactId });
+    expect(store.getProjectArtifactAccess(project.id, artifactId)).toMatchObject({
+      ownerKind: "communication",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+    });
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .not.toContain(artifactId);
+    await restarted.close();
+  });
+
+  it("repairs every aged unreferenced managed blob while retaining generated and screenshot event references", async () => {
+    const project = store.createProject({ label: "Artifact orphan repair", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
+    const generatedId = randomUUID();
+    const screenshotId = randomUUID();
+    const rejectedGeneratedId = randomUUID();
+    const lateScreenshotId = randomUUID();
+    const generated = publishManagedArtifactContent(dataDir, project.id, generatedId, Buffer.from("generated"));
+    const screenshot = publishManagedArtifactContent(dataDir, project.id, screenshotId, Buffer.from("screenshot"));
+    publishManagedArtifactContent(dataDir, project.id, rejectedGeneratedId, Buffer.from("rejected generated"));
+    publishManagedArtifactContent(dataDir, project.id, lateScreenshotId, Buffer.from("late screenshot"));
+    store.appendEvent(agent.id, {
+      type: "generated_artifact", artifactId: generatedId, executionId: randomUUID(),
+      path: `generated/${generatedId}.txt`, sourcePath: "generated.txt", name: "generated.txt",
+      mediaType: "text/plain", size: generated.size, sha256: generated.sha256, visibility: "project",
+    });
+    store.appendEvent(agent.id, {
+      type: "browser_screenshot", artifactId: screenshotId, sessionId: randomUUID(), executionId: randomUUID(),
+      path: `browser/${screenshotId}.png`, width: 1280, height: 720,
+      size: screenshot.size, sha256: screenshot.sha256,
+    });
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1_000);
+    for (const id of [generatedId, screenshotId, rejectedGeneratedId, lateScreenshotId]) {
+      utimesSync(managedArtifactContentPath(dataDir, project.id, id), old, old);
+    }
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, generatedId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, generatedId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    await restarted.close();
+  });
+
+  it("bounds UTF-8 preview work at 2 MiB and falls back once for malformed text", async () => {
+    const project = store.createProject({ label: "Preview boundary", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
+    const limit = 2 * 1024 * 1024;
+    const boundaryId = randomUUID();
+    const boundaryBody = Buffer.concat([
+      Buffer.alloc(limit - 1, 0x61),
+      Buffer.from([0xe2, 0x82, 0xac]),
+      Buffer.from("tail"),
+    ]);
+    const malformedId = randomUUID();
+    const malformedBody = Buffer.concat([
+      Buffer.alloc(limit - 8, 0x62),
+      Buffer.from([0xff]),
+      Buffer.alloc(64, 0x63),
+    ]);
+    for (const [id, body, name] of [
+      [boundaryId, boundaryBody, "boundary.txt"],
+      [malformedId, malformedBody, "malformed.txt"],
+    ] as const) {
+      const published = publishManagedArtifactContent(dataDir, project.id, id, body);
+      const stored = store.appendEvent(agent.id, {
+        type: "generated_artifact", artifactId: id, executionId: randomUUID(),
+        path: `generated/${id}.txt`, sourcePath: name, name,
+        mediaType: "text/plain", size: published.size, sha256: published.sha256, visibility: "project",
+      });
+      const artifact = store.getProjectArtifact(project.id, id)!;
+      registerTestGeneratedArtifact(dataDir, { ...artifact, projectId: project.id, originAgentId: agent.id, kind: "generated_file", mediaType: "text/plain", summary: name, size: body.length, sha256: published.sha256, createdAt: stored.ts });
+    }
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const boundary = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${boundaryId}/preview` });
+    expect(boundary.statusCode, boundary.body).toBe(200);
+    expect(boundary.headers["x-ponderosa-preview-truncated"]).toBe("true");
+    expect(boundary.rawPayload.length).toBe(limit - 1);
+    expect(boundary.headers["content-type"]).toContain("text/plain");
+    const malformed = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${malformedId}/preview` });
+    expect(malformed.statusCode, malformed.body).toBe(200);
+    expect(malformed.rawPayload.length).toBe(limit);
+    expect(malformed.headers["content-type"]).toContain("application/octet-stream");
+    await app.close();
   });
 
   it("previews and downloads a canonical PDF only inside its owning project", async () => {
@@ -6858,6 +7005,51 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("denies a guessed private Communication artifact to an Agent outside its audience", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Private result scope", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
+    const direct = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/direct-messages`,
+      payload: {
+        text: "private\n" + "p".repeat(10_100),
+        recipients: [{ agentId: recipient.id }],
+        idempotencyKey: "private-result-scope",
+      },
+    });
+    expect(direct.statusCode, direct.body).toBe(200);
+    const event = store.getCommunicationEvent(project.id, direct.json<{ messageId: string }>().messageId)!;
+    const ref = `ponderosa://artifact/${event.document!.artifactId!}`;
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${outsider.id}/messages`,
+      payload: { text: `Try to retrieve ${ref}`, sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions.filter((options) =>
+      options.agentId === recipient.id || options.agentId === outsider.id)).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions.find((options) => options.agentId === recipient.id)!;
+    const outsiderRuntime = persistent.openedOptions.find((options) => options.agentId === outsider.id)!;
+    const allowed = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 262_144 },
+    });
+    expect(allowed.success, allowed.text).toBe(true);
+    expect(JSON.parse(allowed.text)).toMatchObject({ items: [{ ref, complete: true }] });
+    const denied = await outsiderRuntime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 262_144 },
+    });
+    expect(denied.success).toBe(false);
+    expect(JSON.parse(denied.text)).toMatchObject({ error: expect.stringContaining("not reachable") });
+    persistent.completeTurn(persistent.openedOptions.indexOf(recipientRuntime));
+    persistent.completeTurn(persistent.openedOptions.indexOf(outsiderRuntime));
+    await app.close();
+  });
+
   it("retrieves reachable durable results through signed bounded pagination without scheduler mutation", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -7061,7 +7253,8 @@ describe("server chunk F", () => {
     expect(rejected.text).toContain("runtime artifact changed after scheduler admission");
     const runtimeRow = store.sqlite.prepare(`SELECT owner_id AS id FROM runtime_artifacts WHERE project_id = ?`)
       .get(project.id) as { id: string };
-    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toBeUndefined();
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toMatchObject({ eventId: runtimeRow.id });
+    expect(store.getProjectArtifact(project.id, artifactId)).toBeUndefined();
 
     writeFileSync(managedArtifactContentPath(dataDir, project.id, artifactId), original);
     const repaired = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);

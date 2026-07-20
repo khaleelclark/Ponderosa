@@ -41,7 +41,7 @@ export type {
   TriggerOccurrenceState,
   TriggerFilesystemBurst,
 } from "./coordination-v3-store.js";
-export type { ConversationDeliveryIntent } from "./store.js";
+export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
 export type { AgentDeletionReceipt, AgentManagementAuthorization } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { openDb } from "./db.js";
@@ -54,6 +54,7 @@ export {
   MANAGED_ARTIFACT_MAX_BYTES,
   publishManagedArtifactContent,
   readManagedArtifactContent,
+  repairManagedArtifactContent,
   type ManagedArtifactFile,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";

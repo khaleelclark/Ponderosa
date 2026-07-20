@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   publishManagedArtifactContent,
   readManagedArtifactContent,
+  repairManagedArtifactContent,
 } from "../src/managed-artifact-files.js";
 import { managedArtifactContentPath } from "../src/paths.js";
 
@@ -69,5 +70,51 @@ describe("Project-owned managed artifact files", () => {
     });
     expect(read?.body).toEqual(body);
     expect(readFileSync(outside, "utf8")).toBe("replacement");
+  });
+
+  it.each(["afterTemporaryOpen", "beforeRename", "afterRename"] as const)(
+    "fails closed when an ancestor is swapped at %s",
+    (fault) => {
+      const contentDirectory = path.dirname(managedArtifactContentPath(dataDir, projectId, artifactId));
+      const retained = `${contentDirectory}.retained`;
+      const replacement = `${contentDirectory}.replacement`;
+      let swapped = false;
+      const swap = () => {
+        if (swapped) return;
+        swapped = true;
+        renameSync(contentDirectory, retained);
+        mkdirSync(replacement);
+        symlinkSync(replacement, contentDirectory);
+      };
+      expect(() => publishManagedArtifactContent(dataDir, projectId, artifactId, body, { [fault]: swap }))
+        .toThrow(/directory changed/);
+      expect(() => readFileSync(path.join(replacement, artifactId))).toThrow();
+    },
+  );
+
+  it("fails closed when an ancestor is swapped after the read opens", () => {
+    const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
+    const contentDirectory = path.dirname(published.path);
+    const retained = `${contentDirectory}.retained`;
+    const replacement = `${contentDirectory}.replacement`;
+    const read = readManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
+      afterOpen: () => {
+        renameSync(contentDirectory, retained);
+        mkdirSync(replacement);
+        symlinkSync(replacement, contentDirectory);
+      },
+    });
+    expect(read).toBeUndefined();
+  });
+
+  it("reserves an in-flight publication from orphan repair", () => {
+    const repairedDuringPublication: string[][] = [];
+    const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body, {
+      afterTemporaryOpen: () => repairedDuringPublication.push(
+        repairManagedArtifactContent(dataDir, projectId, new Set(), Date.now() + 60_000),
+      ),
+    });
+    expect(repairedDuringPublication).toEqual([[]]);
+    expect(readFileSync(published.path)).toEqual(body);
   });
 });
