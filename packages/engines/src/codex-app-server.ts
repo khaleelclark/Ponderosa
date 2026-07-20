@@ -85,6 +85,16 @@ function isCollaborationMode(value: unknown): boolean {
     isNullableString(settings.developer_instructions);
 }
 
+function isMultiAgentMode(value: unknown): boolean {
+  if (value === "explicitRequestOnly" || value === "proactive") return true;
+  const mode = object(value);
+  return !!mode &&
+    Object.keys(mode).length === 1 &&
+    Object.hasOwn(mode, "custom") &&
+    typeof mode.custom === "string" &&
+    !!mode.custom.trim();
+}
+
 function isThreadSettings(value: unknown): value is Record<string, unknown> & { model: string } {
   const settings = object(value);
   return typeof settings?.cwd === "string" &&
@@ -100,6 +110,7 @@ function isThreadSettings(value: unknown): value is Record<string, unknown> & { 
     (settings.summary === null || settings.summary === "auto" || settings.summary === "concise" ||
       settings.summary === "detailed" || settings.summary === "none") &&
     isCollaborationMode(settings.collaborationMode) &&
+    isMultiAgentMode(settings.multiAgentMode) &&
     (settings.personality === null || settings.personality === "none" ||
       settings.personality === "friendly" || settings.personality === "pragmatic");
 }

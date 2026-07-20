@@ -28,6 +28,7 @@ const codexThreadSettings = (model: string) => ({
     mode: "default",
     settings: { model, reasoning_effort: null, developer_instructions: null },
   },
+  multiAgentMode: "explicitRequestOnly",
   personality: null,
 });
 
@@ -447,6 +448,37 @@ describe("Codex app-server persistent runtime", () => {
       params: {
         threadId: "codex-thread-v1",
         threadSettings: { ...codexThreadSettings("model-a"), approvalPolicy: "sometimes" },
+      },
+    }],
+    ["omitted multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: undefined },
+      },
+    }],
+    ["an unknown multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: "automatic" },
+      },
+    }],
+    ["a blank custom multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: { custom: "  " } },
+      },
+    }],
+    ["a non-exact custom multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: {
+          ...codexThreadSettings("model-a"),
+          multiAgentMode: { custom: "delegate narrowly", unexpected: true },
+        },
       },
     }],
   ])("ignores same-thread provider state with %s", async (_label, notification) => {
