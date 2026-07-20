@@ -12,6 +12,9 @@ import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import {
   Alert,
   Box,
@@ -136,6 +139,25 @@ export function formatExecutionElapsed(startedAt: string, now = Date.now()): str
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
+export function finalizedWorkDurationMs(runs: ReadonlyArray<Pick<AgentDetailDto["runs"][number], "startedAt" | "completedAt">>): number {
+  return runs.reduce((total, run) => {
+    if (!run.completedAt) return total;
+    const startedAt = Date.parse(run.startedAt);
+    const completedAt = Date.parse(run.completedAt);
+    return Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt
+      ? total + completedAt - startedAt
+      : total;
+  }, 0);
+}
+
+export function formatFinalizedWorkDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", `${seconds}s`].filter(Boolean).join(" ");
+}
+
 export function directAgentDeliveryNotice(
   response: SendMessageResponse,
   activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]> = "steer",
@@ -169,10 +191,12 @@ function AgentRunState({
   status,
   connected,
   startedAt,
+  finalizedDurationMs,
 }: {
   status: AgentStatus;
   connected: boolean;
   startedAt?: string;
+  finalizedDurationMs: number;
 }): JSX.Element {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -185,13 +209,16 @@ function AgentRunState({
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
   const connectionState = connected ? "Live" : "Reconnecting";
-  return <Chip
-    size="small"
-    label={`${runState} · ${connectionState}`}
-    color={connected ? agentStatusColor(status) : "warning"}
-    variant={connected ? "filled" : "outlined"}
-    aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
-  />;
+  return <Stack spacing={0.25} sx={{ alignItems: { xs: "flex-start", sm: "flex-end" } }}>
+    <Chip
+      size="small"
+      label={`${runState} · ${connectionState}`}
+      color={connected ? agentStatusColor(status) : "warning"}
+      variant={connected ? "filled" : "outlined"}
+      aria-label={`Agent status: ${runState}; ${connectionState.toLocaleLowerCase()}`}
+    />
+    <Typography variant="caption" color="text.secondary">Worked for {formatFinalizedWorkDuration(finalizedDurationMs)}</Typography>
+  </Stack>;
 }
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
@@ -832,7 +859,7 @@ export function AgentDetail({
               </Link> : lineageAgentId}
             </Typography> : null}
           </Box>
-          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
+          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} finalizedDurationMs={detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs)} />
           {running ? (
             <Button
               size="small"
@@ -858,7 +885,7 @@ export function AgentDetail({
             label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            detailsLabel="Run Setup"
+            detailsLabel="Run Settings"
             copyActions={[
               { label: "Agent Template", onSelect: () => void copyAgentPackage("template") },
               { label: "Full Agent", onSelect: () => void copyAgentPackage("full") },
@@ -871,7 +898,7 @@ export function AgentDetail({
               { label: "Organization Template", onSelect: () => void downloadAgentPackage("template", true) },
               { label: "Full Organization", onSelect: () => void downloadAgentPackage("full", true) },
             ]}
-            details={<Stack spacing={1.25} aria-label="Agent setup">
+            details={<Stack spacing={1.5} aria-label="Run settings" sx={{ px: 0.5, py: 0.25 }}>
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
                 <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run setup</Typography>
                 <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
@@ -982,6 +1009,7 @@ export function AgentDetail({
             actions={[
               {
                 label: "Start Fresh Provider Session",
+                icon: <RestartAltIcon fontSize="small" />,
                 onSelect: () => {
                   setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
                   void api.compactSession(agentId)
@@ -1004,6 +1032,7 @@ export function AgentDetail({
               },
               {
                 label: "Assign Chats",
+                icon: <ForumOutlinedIcon fontSize="small" />,
                 onSelect: () => {
                   setMembershipIds(detail.agent.conversationIds);
                   setPrimaryConversationId(detail.agent.conversationId ?? "");
@@ -1011,7 +1040,7 @@ export function AgentDetail({
                 },
               },
               { label: "Import Agent or Organization…", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
-              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", onSelect: () => void quickCopyIntoProjectChat() }] : []),
+              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon fontSize="small" />, onSelect: () => void quickCopyIntoProjectChat() }] : []),
               {
                 label: "Reports To",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,
@@ -1048,7 +1077,7 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
         {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}

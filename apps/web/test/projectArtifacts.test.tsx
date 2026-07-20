@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
-import { isTextArtifactPreview, ProjectArtifactsView } from "../src/components/ProjectArtifactsView";
+import { isTextArtifactPreview, projectArtifactGroup, ProjectArtifactsView } from "../src/components/ProjectArtifactsView";
 
 vi.mock("@mui/material", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mui/material")>();
@@ -52,6 +52,8 @@ describe("project artifacts view", () => {
       instructions: "Ship a durable Agent organization.",
     } satisfies ProjectDto;
     const command = { ...artifact, id: "command-1", kind: "log", path: "events/command.md", summary: "pnpm test" } satisfies ArtifactDto;
+    const changedFile = { ...artifact, id: "diff-1", kind: "diff", path: "diffs/src-app-ts.diff", summary: "edit src/app.ts" } satisfies ArtifactDto;
+    const testResult = { ...artifact, id: "test-1", kind: "test_report", path: "results/web-tests.md", summary: "Web tests passed" } satisfies ArtifactDto;
     const download = {
       ...artifact,
       id: "download-1",
@@ -63,7 +65,7 @@ describe("project artifacts view", () => {
       executionId: "run-download-1",
     } satisfies ArtifactDto;
     vi.spyOn(api, "listProjectArtifacts").mockResolvedValue({
-      items: [artifact, command, download],
+      items: [artifact, command, changedFile, testResult, download],
       history: { limit: 100, hasMore: false },
     });
     vi.spyOn(api, "getAgentWork").mockResolvedValue({
@@ -87,10 +89,17 @@ describe("project artifacts view", () => {
 
     expect(JSON.stringify(view.toJSON())).toContain("reports/accessibility-audit.md");
     expect(JSON.stringify(view.toJSON())).toContain("Final report.pdf");
+    expect(JSON.stringify(view.toJSON())).toContain("Edit · app.ts");
+    expect(JSON.stringify(view.toJSON())).toContain("Web tests passed");
+    expect(JSON.stringify(view.toJSON())).toContain("Modified & Created Files");
+    expect(JSON.stringify(view.toJSON())).toContain("Results");
     expect(JSON.stringify(view.toJSON())).toContain("Project overview");
     expect(JSON.stringify(view.toJSON())).toContain("Ship a durable Agent organization.");
     expect(JSON.stringify(view.toJSON())).toContain("Download");
     expect(JSON.stringify(view.toJSON())).not.toContain("pnpm test");
+    expect(projectArtifactGroup("diff")).toBe("Modified & Created Files");
+    expect(projectArtifactGroup("test_report")).toBe("Results");
+    expect(projectArtifactGroup("log")).toBeUndefined();
     act(() => view.root.findByProps({ "aria-label": "Open Accessibility audit from Cabrillo" }).props.onClick());
     expect(onOpenArtifact).toHaveBeenCalledWith(agent.id, artifact.id);
     const previewButton = view.root.findByProps({ "aria-label": "Preview Final report.pdf" });

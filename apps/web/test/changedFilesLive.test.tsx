@@ -165,6 +165,28 @@ function dispose(view: ReturnType<typeof create>, client: QueryClient): void {
 }
 
 describe("live Changed Files detail", () => {
+  it("opens the identical current Review diff from the file path and Open Current Diff action", async () => {
+    const onOpenReview = vi.fn();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><ChangedFilesPane
+        agentId="agent-review"
+        files={[{
+          path: "src/live.ts", kind: "edit", lastSeq: 2, lastChangedAt: secondChangedAt,
+          executionCount: 2, diffAvailable: true,
+        }]}
+        onOpenReview={onOpenReview}
+      /></QueryClientProvider>);
+    });
+
+    act(() => view.root.findByProps({ "aria-label": "Open current diff for src/live.ts" }).props.onClick());
+    const openAction = view.root.findAll((node) => node.type === "button" && renderedText(node.props.children) === "Open Current Diff")[0];
+    act(() => openAction!.props.onClick());
+    expect(onOpenReview.mock.calls).toEqual([["src/live.ts"], ["src/live.ts"]]);
+    dispose(view, client);
+  });
+
   it("immediately advances expanded Changed Files and Review while Run B detail is deferred", async () => {
     const pending = deferred<ChangedFileDetailDto>();
     const mounted = await mountLiveViews("agent-live-deferred", pending.promise);

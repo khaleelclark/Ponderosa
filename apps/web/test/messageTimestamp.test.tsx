@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createTheme, getContrastRatio } from "@mui/material/styles";
 import { describe, expect, it } from "vitest";
 import { formatMessageTimestamp, MessageActionsAndTimestamp, MessageTimestamp } from "../src/components/MessageTimestamp";
+import { UserMessageLabel } from "../src/components/panes";
 
 describe("message timestamps", () => {
   it("shows an absolute local date and time while preserving the exact instant", () => {
@@ -51,6 +52,16 @@ describe("message timestamps", () => {
     expect(markup).toContain('data-compact="true"');
     expect(markup).toMatch(/>[^<]*2026[^<]*</);
     expect(markup).not.toMatch(/>\s*2:05 PM\s*</);
+  });
+
+  it("places the user's dated timestamp beside the identity just like an Agent message", () => {
+    const markup = renderToStaticMarkup(<UserMessageLabel
+      profile={{ displayName: "User", handle: "operator", avatarId: "default-user" }}
+      createdAt="2026-07-11T14:05:06.789Z"
+    />);
+
+    expect(markup.indexOf("User")).toBeLessThan(markup.indexOf("<time"));
+    expect(markup).toMatch(/<time[^>]*>[^<]*2026[^<]*<\/time>/);
   });
 
   it.each(["light", "dark"] as const)(

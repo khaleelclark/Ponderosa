@@ -88,11 +88,13 @@ describe("scrollbar activity", () => {
 describe("long message presentation", () => {
   it("waits for the doubled display-only boundaries before progressive disclosure", () => {
     expect(isLongChatMessage("short answer")).toBe(false);
-    expect(isLongChatMessage("x".repeat(3_200))).toBe(false);
-    expect(isLongChatMessage("x".repeat(3_201))).toBe(true);
-    expect(isLongChatMessage(Array.from({ length: 36 }, (_, index) => `line ${index}`).join("\n"))).toBe(false);
-    expect(isLongChatMessage(Array.from({ length: 37 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
-    expect(renderToStaticMarkup(createElement(ChatMessageBody, { text: "x".repeat(3_201) }))).toContain("Show Full Message");
+    expect(isLongChatMessage("x".repeat(6_400))).toBe(false);
+    expect(isLongChatMessage("x".repeat(6_401))).toBe(true);
+    expect(isLongChatMessage("🌲".repeat(6_400))).toBe(false);
+    expect(isLongChatMessage("🌲".repeat(6_401))).toBe(true);
+    expect(isLongChatMessage(Array.from({ length: 72 }, (_, index) => `line ${index}`).join("\n"))).toBe(false);
+    expect(isLongChatMessage(Array.from({ length: 73 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
+    expect(renderToStaticMarkup(createElement(ChatMessageBody, { text: "x".repeat(6_401) }))).toContain("Show Full Message");
   });
 });
 

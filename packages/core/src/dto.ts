@@ -1614,6 +1614,8 @@ export interface AgentDetailDto {
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
   runs: AgentRunDto[];
+  /** Sum of authoritative finalized Run intervals. Active Runs and idle wall time are excluded. */
+  finalizedWorkDurationMs?: number;
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];

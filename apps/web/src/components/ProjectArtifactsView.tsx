@@ -85,12 +85,19 @@ function ArtifactTextPreview({ artifact }: { artifact: ArtifactDto }): JSX.Eleme
 }
 
 const projectOutputKinds = new Set<ArtifactDto["kind"]>([
+  "diff",
   "test_report",
   "pr_summary",
   "document",
   "screenshot",
   "generated_file",
 ]);
+
+export function projectArtifactGroup(kind: ArtifactDto["kind"]): "Modified & Created Files" | "Results" | undefined {
+  if (["diff", "document", "screenshot", "generated_file"].includes(kind)) return "Modified & Created Files";
+  if (["test_report", "pr_summary"].includes(kind)) return "Results";
+  return undefined;
+}
 
 export function ProjectArtifactsView({
   projectId,
@@ -153,6 +160,10 @@ export function ProjectArtifactsView({
     artifact.summary,
     artifact.kind,
   ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter)), [records, normalizedFilter]);
+  const grouped = (["Modified & Created Files", "Results"] as const).map((label) => ({
+    label,
+    records: filtered.filter(({ artifact }) => projectArtifactGroup(artifact.kind) === label),
+  })).filter((group) => group.records.length > 0);
   const loading = projectArtifacts.isLoading;
 
   return <Box sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
@@ -174,8 +185,8 @@ export function ProjectArtifactsView({
         }}
       />
       <Box>
-        <Typography id="project-files-and-results" variant="h5" component="h2" fontWeight={800} sx={{ scrollMarginTop: 16 }}>Files & results</Typography>
-        <Typography variant="body2" color="text.secondary">Documents, images, downloads, test results, and generated artifacts created across this project.</Typography>
+        <Typography id="project-files-and-results" variant="h5" component="h2" fontWeight={800} sx={{ scrollMarginTop: 16 }}>Files &amp; Results</Typography>
+        <Typography variant="body2" color="text.secondary">Modified and created files, documents, images, downloads, and results across this Project.</Typography>
       </Box>
       <TextField
         size="small"
@@ -209,8 +220,11 @@ export function ProjectArtifactsView({
       {projectArtifacts.isError ? <Alert severity="error">Project files could not be loaded. Try again.</Alert> : null}
       {!loading && records.length === 0 ? <Alert severity="info">No project files yet. Agent-created documents, images, downloads, and generated results will appear here.</Alert> : null}
       {records.length > 0 && filtered.length === 0 ? <Alert severity="info">No project files match “{filter.trim()}”.</Alert> : null}
-      <List aria-label="Project files" disablePadding sx={{ display: "grid", gap: 0.75 }}>
-        {filtered.map(({ agent, artifact }) => {
+      <Box aria-label="Project files and results" sx={{ display: "grid", gap: 1.25 }}>
+        {grouped.map((group) => <Box key={group.label} component="section" aria-label={group.label}>
+          <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 0.5 }}>{group.label}</Typography>
+          <List aria-label={`${group.label} items`} disablePadding sx={{ display: "grid", gap: 0.75 }}>
+        {group.records.map(({ agent, artifact }) => {
           const label = artifactDisplayLabel(artifact);
           const originAgentId = artifact.originAgentId ?? artifact.agentId;
           const owner = agent?.title ?? `Deleted Agent · ${originAgentId.slice(0, 8)}`;
@@ -247,7 +261,9 @@ export function ProjectArtifactsView({
             {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" aria-label={`Download ${label}`} startIcon={<DownloadOutlinedIcon />} sx={{ minWidth: 44, minHeight: 44, mr: { xs: .5, sm: 1 }, px: { xs: .75, sm: 1 }, flexShrink: 0 }}><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Download</Box></Button> : null}
           </Box>;
         })}
-      </List>
+          </List>
+        </Box>)}
+      </Box>
     </Stack>
     {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.agentId, artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">

@@ -517,7 +517,7 @@ export function replyFallbackText(text: string): string {
 export function isLongChatMessage(text: string): boolean {
   // Display-only progressive disclosure. Provider input and artifact limits
   // remain governed by the canonical constants imported above.
-  return text.length > 3_200 || text.split("\n").length > 36;
+  return unicodeCodePointLength(text) > 6_400 || text.split("\n").length > 72;
 }
 
 export function individualChatSenderLabel(
@@ -821,13 +821,16 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   );
 }
 
-export function UserMessageLabel({ profile }: { profile?: OperatorProfileDto }): JSX.Element {
+export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorProfileDto; createdAt?: string }): JSX.Element {
   const glyph = ({ "default-user": "🌲", sunset: "🌅", river: "🌊", mountain: "⛰️", fox: "🦊", owl: "🦉" } as Record<string, string>)[profile?.avatarId ?? "default-user"] ?? "●";
   const name = profile?.displayName ?? "User";
   return (
     <Stack direction="row" spacing={0.75} sx={{ minHeight: 36, mb: 0.25, alignItems: "center" }}>
       <Avatar aria-label={`${name} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{glyph}</Avatar>
-      <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={name} /></Box>
+      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
+        <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={name} /></Box>
+        {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="start" /></Box> : null}
+      </Stack>
     </Stack>
   );
 }
@@ -941,7 +944,7 @@ export function ChatPane({
                 <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
                 <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
               </Stack> : null}
-              {fromUser ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
+              {fromUser ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
               <Box
                 data-message-bubble="true"
                 sx={{
@@ -996,7 +999,7 @@ export function ChatPane({
             <MessageReactions reactions={message.reactions} />
               </Box>
               <MessageActionsAndTimestamp
-                showTimestamp={fromUser}
+                showTimestamp={false}
                 value={message.createdAt}
                 status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
                   projectId={projectId ?? previewScope?.projectId}
@@ -1032,6 +1035,7 @@ export function ChatPane({
 
 export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   const { event } = item;
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   let title: string = event.type;
   let body = "";
 
@@ -1070,11 +1074,39 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
     body = `${event.path} · ${event.width}×${event.height}`;
   }
 
+  const copyCommand = event.type === "command" ? async () => {
+    try {
+      await copyText(event.command);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+    window.setTimeout(() => setCopyState("idle"), 2_000);
+  } : undefined;
+  const copyLabel = copyState === "copied"
+    ? "Command copied"
+    : copyState === "failed" ? "Copy command failed" : "Copy command";
+
   return (
     <Box sx={{ borderLeft: 2, borderColor: "divider", pl: 1.25, py: 0.75 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Chip size="small" label={`#${item.seq}`} variant="outlined" />
-        <Typography variant="subtitle2">{title}</Typography>
+        <Typography variant="subtitle2" sx={{ flex: 1 }}>{title}</Typography>
+        {copyCommand ? <>
+          <Tooltip title={copyLabel}>
+            <IconButton
+              size="small"
+              color={copyState === "failed" ? "error" : "inherit"}
+              aria-label="Copy command"
+              onClick={(clickEvent) => {
+                clickEvent.preventDefault();
+                clickEvent.stopPropagation();
+                void copyCommand();
+              }}
+            >{copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}</IconButton>
+          </Tooltip>
+          <Box component="span" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{copyState === "idle" ? "" : copyLabel}</Box>
+        </> : null}
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, overflowWrap: "anywhere" }}>
         {body}
@@ -1427,7 +1459,14 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
   focusId?: string;
 }): JSX.Element {
   const groups = groupActivityByExecution(activity);
-  return <Stack spacing={1} className="ponderosa-scroll" sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overflowX: "hidden" }} aria-label="Agent activity">
+  return <Stack
+    spacing={1}
+    className="ponderosa-scroll"
+    data-testid="activity-scroll-region"
+    tabIndex={0}
+    sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
+    aria-label="Agent activity"
+  >
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
       <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
@@ -1690,8 +1729,9 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
     <Button
       fullWidth
       color="inherit"
-      onClick={() => setExpanded((value) => !value)}
-      aria-expanded={expanded}
+      onClick={() => onOpenReview ? onOpenReview(file.path) : setExpanded((value) => !value)}
+      aria-label={onOpenReview ? `Open current diff for ${file.path}` : `Show recorded change for ${file.path}`}
+      aria-expanded={onOpenReview ? undefined : expanded}
       sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
@@ -1703,6 +1743,7 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
       Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
     {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open Current Diff</Button> : null}
+    {onOpenReview && file.diffAvailable ? <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5, ml: 0.5 }}>{expanded ? "Hide Recorded Change" : "Show Recorded Change"}</Button> : null}
     {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
       : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
         : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>

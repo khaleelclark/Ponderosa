@@ -167,7 +167,7 @@ export function ConversationMessage({
             <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
             <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
           </Stack> : null}
-          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
+          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
           <Box
             data-message-bubble="true"
             sx={{
@@ -229,7 +229,7 @@ export function ConversationMessage({
         <MessageReactions reactions={message.reactions} />
           </Box>
           <MessageActionsAndTimestamp
-            showTimestamp={fromManager}
+            showTimestamp={false}
             value={message.createdAt}
             status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
               projectId={projectId}
@@ -1265,9 +1265,7 @@ export function ConversationView({
           onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
-          placeholder={engineReady
-              ? "Describe a request — starts a new agent"
-              : "#tag an agent or use #broadcast for shared context"}
+          placeholder={engineReady ? "Message Project Chat" : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
           preferQueue={Boolean(directReplyTargetId && (queuedMessagesQuery.data ?? []).some((message) => message.targetAgentId === directReplyTargetId))}

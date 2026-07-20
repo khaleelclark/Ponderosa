@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { diffLineKind, formatActivitySpan, groupActivityByExecution, resolveWorkspaceReviewPath, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
+import { ActivityPane, diffLineKind, formatActivitySpan, groupActivityByExecution, resolveWorkspaceReviewPath, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
 
 describe("activity summaries", () => {
   it("collapses multiline output and bounds large payloads", () => {
@@ -19,6 +22,29 @@ describe("activity summaries", () => {
       ["run-a", ["one", "two"]], ["run-b", ["three"]],
     ]);
     expect(formatActivitySpan(groups[0]!.firstAt, groups[0]!.lastAt)).toBe("2s activity span");
+  });
+
+  it("owns a keyboard-focusable bounded scroll region for long canonical logs", () => {
+    const activity = Array.from({ length: 80 }, (_, index) => ({
+      id: `event-${index}`,
+      agentId: "agent",
+      executionId: "run-a",
+      seq: index + 1,
+      createdAt: new Date(Date.UTC(2026, 6, 12, 0, 0, index)).toISOString(),
+      event: { type: "command" as const, command: `printf ${index}`, cwd: "/repo" },
+    }));
+    const markup = renderToStaticMarkup(createElement(ActivityPane, {
+      activity, connected: true, running: false,
+    }));
+
+    expect(markup).toContain('data-testid="activity-scroll-region"');
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain("overflow-y:auto");
+    expect(markup).toContain("max-height:100%");
+    expect(markup).toContain("overscroll-behavior:contain");
+    expect(markup).toContain("printf 79");
+    const detailSource = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(detailSource).toContain('tab === "chat" || tab === "activity" ? "hidden" : "auto"');
   });
 
   it("counts content lines without treating unified-diff headers as changes", () => {

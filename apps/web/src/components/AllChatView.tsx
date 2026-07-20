@@ -43,6 +43,12 @@ export function allChatSourceAccessibleName(item: AllChatItemDto): string {
   return `Select message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
+export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | undefined {
+  if (item.author.kind === "user") return "You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.";
+  if (!item.directMessageAgent) return "This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.";
+  return undefined;
+}
+
 export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }): JSX.Element {
   const queryClient = useQueryClient();
   const query = useAllChat();
@@ -60,6 +66,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     [older?.items, query.data?.items],
   );
   const selected = items.find((item) => item.communicationEventId === selectedId);
+  const replyUnavailable = selected ? allChatReplyUnavailableMessage(selected) : undefined;
   const selectItem = (item: AllChatItemDto) => {
     setSelectedId(item.communicationEventId);
     setNotice(undefined);
@@ -197,7 +204,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1.5, md: 2 } }}>
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
-          : !selected.directMessageAgent ? <Alert severity="info">This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.</Alert>
+          : replyUnavailable ? <Alert severity="info">{replyUnavailable}</Alert>
             : <Stack spacing={1}>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
               {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}

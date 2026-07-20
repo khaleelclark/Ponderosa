@@ -1086,6 +1086,24 @@ describe("AgentStore — append + projection", () => {
     expect(store.resumeSessionId(agentId)).toBe("sess-abc");
   });
 
+  it("aggregates finalized Run time without counting active or inter-Run idle wall time", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-finalized-a" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-finalized-a" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-finalized-b" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-finalized-b" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-active" });
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = ? WHERE id = ?")
+      .run("2026-07-20T10:00:00.000Z", "2026-07-20T10:20:10.000Z", "run-finalized-a");
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = ? WHERE id = ?")
+      .run("2026-07-20T12:00:00.000Z", "2026-07-20T12:03:05.000Z", "run-finalized-b");
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = NULL WHERE id = ?")
+      .run("2026-07-20T13:00:00.000Z", "run-active");
+
+    expect(store.getFinalizedWorkDurationMs(agentId)).toBe(23 * 60_000 + 15_000);
+    expect(store.getAgentDetail(agentId, 1)?.finalizedWorkDurationMs).toBe(23 * 60_000 + 15_000);
+  });
+
   it("returns a bounded Agent history window while retaining full canonical tool output", () => {
     const { agentId } = seedAgent();
     const largeOutput = `${"x".repeat(20_000)}-end-marker`;

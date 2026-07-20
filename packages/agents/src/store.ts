@@ -2902,6 +2902,7 @@ export class AgentStore {
       activity: activityPage?.items ?? this.getActivity(id),
       changedFiles: changedFilePage.items,
       runs: runPage?.items ?? this.getRuns(id),
+      finalizedWorkDurationMs: this.getFinalizedWorkDurationMs(id),
       workItems: workItemPage?.items ?? this.getWorkItems(id),
       artifacts: artifactPage?.items ?? this.getArtifacts(id),
       state: agent.state,
@@ -2917,6 +2918,21 @@ export class AgentStore {
         },
       } : {}),
     };
+  }
+
+  getFinalizedWorkDurationMs(agentId: string): number {
+    const row = this.client.prepare(`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN completed_at IS NOT NULL AND completed_at >= started_at
+            THEN CAST(ROUND((julianday(completed_at) - julianday(started_at)) * 86400000) AS INTEGER)
+          ELSE 0
+        END
+      ), 0) AS durationMs
+      FROM runs
+      WHERE agent_id = ?
+    `).get(agentId) as { durationMs: number };
+    return Math.max(0, Number(row.durationMs) || 0);
   }
 
   getMessages(agentId: string): MessageDto[] {

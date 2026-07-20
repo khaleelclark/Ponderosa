@@ -109,8 +109,12 @@ describe("chat transcript export", () => {
     const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(agentDetail).toContain('label="Agent Chat Actions"');
-    expect(agentDetail).toContain('detailsLabel="Run Setup"');
+    expect(agentDetail).toContain('detailsLabel="Run Settings"');
+    expect(agentDetail).toContain('aria-label="Run settings" sx={{ px: 0.5, py: 0.25 }}');
+    expect(agentDetail).toContain('label: "Start Fresh Provider Session",\n                icon: <RestartAltIcon');
     expect(agentDetail).toContain('label: "Assign Chats"');
+    expect(agentDetail).toContain('icon: <ForumOutlinedIcon fontSize="small" />');
+    expect(agentDetail).toContain('label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon');
     expect(agentDetail).toContain('label: "Create Agent"');
     expect(agentDetail).toContain('label: "Full Agent"');
     expect(agentDetail).toContain('label: "Full Organization"');
@@ -123,5 +127,6 @@ describe("chat transcript export", () => {
     expect(conversation).toContain('label: "Import Agent or Organization…"');
     expect(conversation).toContain('icon: <FileUploadOutlinedIcon fontSize="small" />');
     expect(conversation).toContain("ChatOverflowMenu");
+    expect(conversation).not.toContain("Describe a request — starts a new agent");
   });
 });

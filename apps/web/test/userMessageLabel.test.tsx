@@ -56,7 +56,7 @@ describe("user message labels on chat surfaces", () => {
     expect(html).not.toContain("aria-hidden");
   });
 
-  it("places the ChatPane user label outside the bubble before content, attachment, reply, and timestamp", () => {
+  it("places the ChatPane user timestamp beside the identity before bubble content and actions", () => {
     const html = renderToStaticMarkup(<ChatPane messages={[agentMessage({
       attachments: [{ id: "attachment-1", agentId: "agent-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
     })]} onReply={vi.fn()} />);
@@ -68,11 +68,11 @@ describe("user message labels on chat surfaces", () => {
     const reply = html.indexOf('aria-label="Reply to message"');
     const timestamp = html.indexOf("<time");
     expect(label).toBeGreaterThanOrEqual(0);
-    expect(label).toBeLessThan(bubble);
+    expect(label).toBeLessThan(timestamp);
+    expect(timestamp).toBeLessThan(bubble);
     expect(bubble).toBeLessThan(content);
     expect(content).toBeLessThan(attachment);
     expect(attachment).toBeLessThan(reply);
-    expect(reply).toBeLessThan(timestamp);
   });
 
   it("does not label agent messages and filters unsupported system messages from ChatPane", () => {
@@ -100,16 +100,16 @@ describe("user message labels on chat surfaces", () => {
     expect(system).not.toContain(">User</div>");
   });
 
-  it("keeps master label outside the bubble and preserves attachment, reply actions, and timestamp ordering", () => {
+  it("keeps the master timestamp with its identity while preserving attachment and reply actions", () => {
     const manager = renderMaster(masterMessage({
       attachments: [{ id: "attachment-1", agentId: "agent-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
     }));
     const agent = renderMaster(masterMessage({ role: "assistant", authorAgentId: "agent-1", text: "#everyone result" }));
 
-    expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
+    expect(manager.indexOf(">User</div>")).toBeLessThan(manager.indexOf("<time"));
+    expect(manager.indexOf("<time")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
     expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
-    expect(manager.indexOf('aria-label="Reply to message"')).toBeLessThan(manager.indexOf("<time"));
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
     expect(agent.indexOf('class="chat-message-actions')).toBeLessThan(agent.indexOf('aria-label="Open agent Pinnacles"'));

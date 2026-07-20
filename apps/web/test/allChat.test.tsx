@@ -4,7 +4,7 @@ import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { api } from "../src/api";
-import { AllChatView, allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
+import { AllChatView, allChatReplyUnavailableMessage, allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
 
 const item = (overrides: Partial<AllChatItemDto> = {}): AllChatItemDto => ({
   communicationEventId: "event-1",
@@ -36,6 +36,14 @@ describe("All Chat view contract", () => {
     expect(mergeAllChatItems([newer, item()], [revised])).toEqual([revised, newer]);
   });
 
+  it("explains that the user cannot reply privately to their own message", () => {
+    expect(allChatReplyUnavailableMessage(item())).toBe("You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.");
+    expect(allChatReplyUnavailableMessage(item({
+      author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
+      directMessageAgent: { id: "agent-1", title: "Reviewer" },
+    }))).toBeUndefined();
+  });
+
   it("contains only a selected-source direct-message mutation, never a broadcast composer", () => {
     const source = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
     expect(source).toContain("selected.directMessageAgent.id");
@@ -46,12 +54,14 @@ describe("All Chat view contract", () => {
 
   it("mounts a single-tab-stop radio group with unique names, wrapped arrow selection, and fixed direct-message routing", async () => {
     const first = item({
+      author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
       text: "First release note",
     });
     const second = item({
       communicationEventId: "event-2",
       messageId: "message-2",
+      author: { kind: "agent", agentId: "agent-2", label: "Verifier" },
       directMessageAgent: { id: "agent-2", title: "Verifier" },
       text: "Second release note with distinct context",
       createdAt: "2026-07-19T12:01:00.000Z",
