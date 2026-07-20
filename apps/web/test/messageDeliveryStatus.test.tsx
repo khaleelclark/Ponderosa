@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { MessageDeliveryStatus } from "../src/components/MessageDeliveryStatus";
+import { compactDeliveryLabel, MessageDeliveryStatus } from "../src/components/MessageDeliveryStatus";
 
 function render(receipts: Parameters<typeof MessageDeliveryStatus>[0]["receipts"], link = false): string {
   const client = new QueryClient();
@@ -25,7 +25,7 @@ describe("message delivery status", () => {
       canLetCurrentRunFinish: true,
     }]);
     expect(html).toContain("Delivery to Manager is unconfirmed");
-    expect(html).toContain("Let current Run finish");
+    expect(html).toContain("Let Current Run Finish");
   });
 
   it("offers a guarded retry for historical uncertainty", () => {
@@ -40,7 +40,7 @@ describe("message delivery status", () => {
       retryMayDuplicate: true,
     }]);
     expect(html).toContain("Undelivered to Manager");
-    expect(html).not.toContain("Let current Run finish");
+    expect(html).not.toContain("Let Current Run Finish");
     expect(html).toContain("Retry");
   });
 
@@ -55,5 +55,7 @@ describe("message delivery status", () => {
     expect(html).toContain("Processed by Manager");
     expect(html).toContain("Open direct chat with Manager");
     expect(html).not.toContain("MuiAlert-root");
+    expect(compactDeliveryLabel({ state: "processed" })).toBe("Processed");
+    expect(html).toContain("display:none");
   });
 });

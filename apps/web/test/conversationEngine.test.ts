@@ -1,6 +1,6 @@
 import type { EngineDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineAvailabilityPresentation, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
+import { effortOptionsForModel, effortSelectionIsCompatible, engineAvailabilityPresentation, engineCanTestAccess, engineIsAvailable, engineStatusPresentation, modelSelectionIsCompatible, resolveConversationEngine, selectedRunConfig } from "../src/conversationEngine";
 
 const engine = (id: string, authenticated: boolean): EngineDto => ({
   id,
@@ -41,15 +41,21 @@ describe("Project chat engine initialization", () => {
     expect(presentation.detail).toContain("Claude is unavailable: Subscription access is inactive.");
   });
 
-  it("needs attention only when no enabled provider can run work", () => {
+  it("keeps all operator-disabled providers neutral while enabled provider failures need attention", () => {
     const presentation = engineAvailabilityPresentation([
-      { ...engine("claude", true), displayName: "Claude", available: false },
+      { ...engine("claude", true), displayName: "Claude", available: false, enabled: false },
       { ...engine("codex", true), displayName: "Codex", enabled: false },
     ]);
-    expect(presentation.label).toBe("Needs attention");
-    expect(presentation.severity).toBe("warning");
-    expect(presentation.detail).toContain("No enabled engine can currently run work");
-    expect(presentation.detail).toContain("Codex is disabled");
+    expect(presentation.label).toBe("Inactive");
+    expect(presentation.severity).toBe("default");
+    expect(presentation.detail).toContain("Claude, Codex are disabled");
+    expect(engineStatusPresentation({ enabled: false, available: false })).toEqual({ label: "Inactive", color: "default" });
+    expect(engineCanTestAccess({ enabled: false, authenticated: true, available: false })).toBe(false);
+    expect(engineCanTestAccess({ enabled: true, authenticated: true, available: false })).toBe(true);
+
+    const enabledFailure = engineAvailabilityPresentation([{ ...engine("claude", true), available: false }]);
+    expect(enabledFailure.label).toBe("Needs attention");
+    expect(enabledFailure.severity).toBe("warning");
   });
 
   it("forwards the selected model and effort to the first Project-chat run", () => {

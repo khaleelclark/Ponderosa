@@ -50,6 +50,7 @@ export function ProjectShell({
   engines,
   navigate,
   browserRequest,
+  onBrowserRequestHandled,
   openInNewTab,
   onResourceDeleted,
 }: {
@@ -59,6 +60,7 @@ export function ProjectShell({
   engines: EngineDto[];
   navigate(route: Route, options?: { replace?: boolean }): void;
   browserRequest?: ProjectBrowserRequest;
+  onBrowserRequestHandled?(requestId: number): void;
   openInNewTab?(route: Route): void;
   onResourceDeleted?(route: Route): void;
 }): JSX.Element {
@@ -258,6 +260,8 @@ export function ProjectShell({
         agentId={route.agentId}
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
+        initialView={route.view}
+        onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
@@ -276,6 +280,7 @@ export function ProjectShell({
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
         onOpenArtifactInNewTab={(artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId: route.agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
+        onOpenReviewInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
         onOpenBrowser={(runId) => navigate({ kind: "browser", projectId, agentId: route.agentId, runId })}
         onNewSubagent={openNewSubagent}
         onDeleted={() => {
@@ -287,7 +292,7 @@ export function ProjectShell({
   } else if (route.kind === "browser") {
     main = route.agentId && route.runId
       ? <BrowserPanel projectId={projectId} agentId={route.agentId} runId={route.runId} standalone />
-      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onClose={() => navigate({ kind: "project", projectId })} />;
+      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "agents") {
     main = (
       <AgentsTab
@@ -307,7 +312,13 @@ export function ProjectShell({
   } else if (route.kind === "review") {
     const detail = reviewAgentQuery.data;
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
-    main = <WorkspaceReviewPane projectId={projectId} files={detail?.changedFiles ?? []} running={running} initialPath={route.path} />;
+    main = <WorkspaceReviewPane
+      projectId={projectId}
+      files={detail?.changedFiles ?? []}
+      running={running}
+      initialPath={route.path}
+      onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
+    />;
   } else if (route.kind === "project") {
     main = <>
       <ProjectArtifactsView

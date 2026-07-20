@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createPonderosaTheme } from "../src/theme";
+import { createPonderosaTheme, ponderosaFocusIndicator } from "../src/theme";
 
 function luminance(color: string): number {
   const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color);
@@ -49,5 +49,15 @@ describe("dark theme contrast", () => {
 
   it("uses the stricter threshold for automatic foreground selection", () => {
     expect(theme.palette.contrastThreshold).toBe(4.5);
+  });
+});
+
+describe.each(["light", "dark"] as const)("%s focus contrast", (mode) => {
+  const theme = createPonderosaTheme(mode);
+
+  it("keeps the keyboard focus indicator distinguishable on application surfaces", () => {
+    for (const background of [theme.palette.background.default, theme.palette.background.paper]) {
+      expect(contrastRatio(ponderosaFocusIndicator[mode], background)).toBeGreaterThanOrEqual(3);
+    }
   });
 });

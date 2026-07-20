@@ -10,6 +10,13 @@ export interface ProjectBrowserContextValue {
   open(url?: string): void;
 }
 
+export function consumeProjectBrowserRequest(
+  current: ProjectBrowserRequest | undefined,
+  requestId: number,
+): ProjectBrowserRequest | undefined {
+  return current?.requestId === requestId ? undefined : current;
+}
+
 export const ProjectBrowserContext = createContext<ProjectBrowserContextValue>({ open() {} });
 
 export function useProjectBrowser(): ProjectBrowserContextValue {

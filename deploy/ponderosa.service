@@ -10,8 +10,12 @@
 #   sudo systemctl enable --now ponderosa
 #   systemctl status ponderosa
 #
-# Reachability (how a phone reaches this) is a separate deployment choice — see
-# deploy/README.md. Nothing here depends on Tailscale.
+# The default listener is loopback-only. Remote reachability is an explicit
+# security choice — see deploy/README.md.
+#
+# Artifact safety requires Linux with visible /proc/self/fd. Do not add
+# InaccessiblePaths=/proc, mask /proc/self/fd, or run this unit in a container
+# without a procfs mount. The daemon reports the capability through /api/ready.
 
 [Unit]
 Description=Ponderosa coding-agent workbench
@@ -34,8 +38,13 @@ EnvironmentFile=-%h/.config/ponderosa/push.env
 # Codex agents need full access on the single-operator host so their shell commands
 # can use outbound network operations such as git push / gh pr create.
 Environment=PONDEROSA_CODEX_SANDBOX=danger-full-access
-# Optional: bind host/port (defaults 0.0.0.0:8787).
+# Optional: bind host/port (defaults 127.0.0.1:8787).
 # Environment=PONDEROSA_PORT=8787
+# A non-loopback listener fails startup unless PONDEROSA_AUTH_TOKEN is set, or
+# trusted-tailnet mode is explicitly enabled on one literal Tailscale address.
+# Never place PONDEROSA_AUTH_TOKEN in browser code or localStorage.
+# Environment=PONDEROSA_HOST=100.100.101.102
+# Environment=PONDEROSA_TRUSTED_TAILNET=true
 # Optional runtime callback origin (defaults to http://127.0.0.1:PONDEROSA_PORT).
 # Environment=PONDEROSA_AGENT_BASE_URL=http://127.0.0.1:8787
 # Optional warm-runtime pool size. Active runs are never evicted; idle agents

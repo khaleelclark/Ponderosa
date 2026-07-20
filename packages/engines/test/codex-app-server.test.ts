@@ -13,6 +13,24 @@ const processAlive = (pid: number): boolean => {
   try { process.kill(pid, 0); return true; }
   catch { return false; }
 };
+const codexThreadSettings = (model: string) => ({
+  cwd: here,
+  approvalPolicy: "never",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "dangerFullAccess" },
+  activePermissionProfile: null,
+  model,
+  modelProvider: "openai",
+  serviceTier: null,
+  effort: null,
+  summary: null,
+  collaborationMode: {
+    mode: "default",
+    settings: { model, reasoning_effort: null, developer_instructions: null },
+  },
+  multiAgentMode: "explicitRequestOnly",
+  personality: null,
+});
 
 describe("Codex app-server persistent runtime", () => {
   it("bounds sessionless capability discovery and terminates an unresponsive app-server", async () => {
@@ -29,6 +47,8 @@ describe("Codex app-server persistent runtime", () => {
       sandboxMode: "workspace-write",
       killGraceMs: 25,
       timeoutMs: 25,
+      signal: new AbortController().signal,
+      onRuntimeSpawned: retainOpeningHandleForTest,
       configuredMcps: [{
         name: "configured",
         configured: true,
@@ -65,15 +85,20 @@ describe("Codex app-server persistent runtime", () => {
     expect(text.join("")).toContain("Conversation so far:\nAssistant: History marker\n\nCurrent request:\nCurrent work");
     await session.close();
   });
-  it("normalizes the per-turn usage breakdown without double-counting cached tokens", () => {
-    expect(mapCodexTokenUsage({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 }))
-      .toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+  it("maps the complete current Codex usage breakdown without inventing cache writes", () => {
+    const usage = mapCodexTokenUsage({
+      totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2,
+    });
+    expect(usage).toEqual({ totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 });
+    // Codex 0.144.1's generated app-server TokenUsageBreakdown has no
+    // cache-write field. Ponderosa must not derive one from the other totals.
+    expect(usage).not.toHaveProperty("cacheWriteInputTokens");
   });
   it("derives one execution from compatible absolute thread checkpoints and rejects resets", () => {
     expect(subtractUsage(
-      { totalTokens: 999, inputTokens: 800, cachedInputTokens: 400, outputTokens: 199, reasoningOutputTokens: 100 },
-      { totalTokens: 981, inputTokens: 785, cachedInputTokens: 396, outputTokens: 196, reasoningOutputTokens: 98 },
-    )).toEqual({ totalTokens: 18, inputTokens: 15, cachedInputTokens: 4, outputTokens: 3, reasoningOutputTokens: 2 });
+      { totalTokens: 999, inputTokens: 800, cachedInputTokens: 400, cacheWriteInputTokens: 50, outputTokens: 199, reasoningOutputTokens: 100 },
+      { totalTokens: 981, inputTokens: 785, cachedInputTokens: 396, cacheWriteInputTokens: 48, outputTokens: 196, reasoningOutputTokens: 98 },
+    )).toEqual({ totalTokens: 18, inputTokens: 15, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 3, reasoningOutputTokens: 2 });
     expect(subtractUsage(
       { totalTokens: 10, inputTokens: 8, outputTokens: 2 },
       { totalTokens: 20, inputTokens: 16, outputTokens: 4 },
@@ -81,23 +106,23 @@ describe("Codex app-server persistent runtime", () => {
   });
   it("keeps request detail only when it reconciles to the turn aggregate", () => {
     const requests = [
-      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2 },
-      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6 },
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, cacheWriteInputTokens: 1, outputTokens: 2 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 6 },
     ];
     expect(reconcileProviderRequestUsage(
-      { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8 },
+      { totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8 },
       requests,
     )).toEqual(requests);
     expect(reconcileProviderRequestUsage(
-      { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, outputTokens: 8 },
+      { totalTokens: 26, inputTokens: 18, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8 },
       requests,
     )).toBeUndefined();
   });
   it("derives an exact aggregate from complete per-request checkpoints", () => {
     expect(sumProviderRequestUsage([
-      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, outputTokens: 2, reasoningOutputTokens: 0 },
-      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, outputTokens: 6, reasoningOutputTokens: 2 },
-    ])).toEqual({ totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, outputTokens: 8, reasoningOutputTokens: 2 });
+      { totalTokens: 7, inputTokens: 5, cachedInputTokens: 0, cacheWriteInputTokens: 1, outputTokens: 2, reasoningOutputTokens: 0 },
+      { totalTokens: 18, inputTokens: 12, cachedInputTokens: 4, cacheWriteInputTokens: 2, outputTokens: 6, reasoningOutputTokens: 2 },
+    ])).toEqual({ totalTokens: 25, inputTokens: 17, cachedInputTokens: 4, cacheWriteInputTokens: 3, outputTokens: 8, reasoningOutputTokens: 2 });
     expect(sumProviderRequestUsage([{ totalTokens: 7, inputTokens: 5 }])).toBeUndefined();
   });
   it("separates completed response blocks in Work log output", () => {
@@ -179,6 +204,7 @@ describe("Codex app-server persistent runtime", () => {
         }],
       }) },
     });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
     const first = await session.capabilities();
     expect(first.mcpServers[0]).toMatchObject({ initialization: "not_initialized", usable: false });
     for (let attempt = 0; attempt < 20 && changes.length === 0; attempt += 1) await sleep(10);
@@ -189,6 +215,332 @@ describe("Codex app-server persistent runtime", () => {
       initialization: "failed", usable: false, health: "unknown", detail: "provider handshake failed",
     });
     await session.close();
+    await draining;
+  });
+
+  it("single-flights discovery and retries an invalidated in-flight generation", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "single-flight", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-b",
+        skillsDelayMs: 40,
+        modelResponses: [
+          { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+          { data: [
+            { id: "model-a", hidden: false, isDefault: true },
+            { id: "model-b", hidden: false, isDefault: false },
+          ], nextCursor: null },
+        ],
+        notificationsAfterMcpDiscoveryOnce: true,
+        notificationsAfterMcpDiscovery: [{ method: "skills/changed", params: {} }],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    const [first, concurrent] = await Promise.all([session.capabilities(), session.capabilities()]);
+    expect(concurrent).toBe(first);
+    expect(first).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(first.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(1);
+    expect(await session.capabilities()).toBe(first);
+    await session.close();
+    await draining;
+  });
+
+  it("uses the provider-accepted model when resuming a thread", async () => {
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "resume-model", cwd: here, history: [], resumeSessionId: "codex-thread-v1",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-b",
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+          { id: "model-b", hidden: false, isDefault: false },
+        ], nextCursor: null },
+      }) },
+    });
+    const capabilities = await session.capabilities();
+    expect(capabilities.model).toBe("model-b");
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.close();
+  });
+
+  it.each([
+    ["fresh", undefined],
+    ["resumed", "codex-thread-v1"],
+  ])("keeps the accepted/default model when a %s session turn has no override", async (_label, resumeSessionId) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "default-model", cwd: here, history: [], resumeSessionId,
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        threadModel: "model-a",
+        rejectTurnStartModel: "model-b",
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+          { id: "model-b", hidden: false, isDefault: false },
+        ], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    expect(before.model).toBe("model-a");
+    await expect(session.startTurn({ prompt: "keep the session model", kind: "user_message" }))
+      .resolves.toEqual({ turnId: "turn-1" });
+    expect(await session.capabilities()).toBe(before);
+    expect(changes).toHaveLength(0);
+    await session.close();
+  });
+
+  it("updates the live catalog only after an A-to-B turn override is accepted", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "override-model", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [
+          { id: "model-a", hidden: false, isDefault: true },
+        ], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    expect(before.model).toBe("model-a");
+    await session.startTurn({ prompt: "use model B", kind: "user_message", model: "model-b" });
+    const after = await session.capabilities();
+    expect(after).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(after.commands.find((command) => command.name === "compact")).toMatchObject({
+      status: "unavailable", unavailableReason: "The selected model (model-b) is not currently available.",
+    });
+    expect(changes).toHaveLength(1);
+    await session.close();
+  });
+
+  it("retains the active model when a turn override is rejected", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "rejected-model", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        rejectTurnStartModel: "model-b",
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+      }) },
+    });
+    const before = await session.capabilities();
+    await expect(session.startTurn({ prompt: "reject model B", kind: "user_message", model: "model-b" }))
+      .rejects.toThrow("model model-b was rejected");
+    expect(await session.capabilities()).toBe(before);
+    expect(before.model).toBe("model-a");
+    expect(changes).toHaveLength(0);
+    await session.close();
+  });
+
+  it.each([
+    ["model/rerouted", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "highRiskCyberActivity",
+      },
+    }],
+    ["thread/settings/updated", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: codexThreadSettings("model-a") },
+    }],
+  ])("keeps authoritative %s state when it arrives before turn/start completes", async (_method, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "model-notification-before-response", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    const capabilities = await session.capabilities();
+    expect(capabilities).toMatchObject({ model: "model-a", catalogVersion: "codex-thread-v1:1" });
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(1);
+    await session.close();
+    await draining;
+  });
+
+  it.each([
+    ["model/rerouted", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "highRiskCyberActivity",
+      },
+    }],
+    ["thread/settings/updated", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: codexThreadSettings("model-a") },
+    }],
+  ])("applies authoritative %s state once when it arrives after turn/start", async (_method, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "model-notification-after-response", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsAfterTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    expect(changes).toHaveLength(1);
+    await vi.waitFor(() => expect(changes).toHaveLength(2));
+    const capabilities = await session.capabilities();
+    expect(capabilities).toMatchObject({ model: "model-a", catalogVersion: "codex-thread-v1:2" });
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.close();
+    await draining;
+  });
+
+  it.each([
+    ["an unknown reroute reason", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "loadBalancing",
+      },
+    }],
+    ["partial thread settings", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+    }],
+    ["invalid complete thread settings", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), approvalPolicy: "sometimes" },
+      },
+    }],
+    ["omitted multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: undefined },
+      },
+    }],
+    ["an unknown multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: "automatic" },
+      },
+    }],
+    ["a blank custom multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: { ...codexThreadSettings("model-a"), multiAgentMode: { custom: "  " } },
+      },
+    }],
+    ["a non-exact custom multi-agent mode", {
+      method: "thread/settings/updated",
+      params: {
+        threadId: "codex-thread-v1",
+        threadSettings: {
+          ...codexThreadSettings("model-a"),
+          multiAgentMode: { custom: "delegate narrowly", unexpected: true },
+        },
+      },
+    }],
+  ])("ignores same-thread provider state with %s", async (_label, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "schema-invalid-model-notification", cwd: here, history: [], model: "model-b",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-b", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    const before = await session.capabilities();
+    expect(before).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:0" });
+    expect(before.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.startTurn({ prompt: "keep the active model", kind: "user_message" });
+    const after = await session.capabilities();
+    expect(after).toBe(before);
+    expect(after).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:0" });
+    expect(after.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(0);
+    await session.close();
+    await draining;
+  });
+
+  it("ignores foreign-thread and malformed provider model notifications", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "invalid-model-notification", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [
+          {
+            method: "model/rerouted",
+            params: { threadId: "foreign-thread", turnId: "turn-1", fromModel: "model-b", toModel: "foreign", reason: "highRiskCyberActivity" },
+          },
+          { method: "model/rerouted", params: { threadId: "codex-thread-v1", toModel: "malformed" } },
+          { method: "thread/settings/updated", params: { threadId: "foreign-thread", threadSettings: { model: "foreign" } } },
+          { method: "thread/settings/updated", params: { threadId: "codex-thread-v1", threadSettings: { model: "  " } } },
+        ],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    expect(await session.capabilities()).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(changes).toHaveLength(1);
+    await session.close();
+    await draining;
   });
 
   it("reads installed remote plugin skills by the provider-owned plugin id", async () => {
@@ -243,7 +595,7 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
-  it("shares shutdown close and waits for observed SIGKILL exit when SIGTERM is ignored", async () => {
+  it("treats a planned rollover/replacement close as expected and waits for observed SIGKILL exit", async () => {
     const controller = new AbortController();
     let child: ChildProcess | undefined;
     let rootExitCount = 0;
@@ -259,16 +611,37 @@ describe("Codex app-server persistent runtime", () => {
       environment: { PONDEROSA_TEST_IGNORE_SIGTERM: "1" },
     });
     const pid = child!.pid!;
-    controller.abort();
-    const shutdownClose = session.close();
-    expect(session.close()).toBe(shutdownClose);
+    const plannedClose = session.close();
+    expect(session.close()).toBe(plannedClose);
     let settled = false;
-    void shutdownClose.then(() => { settled = true; }, () => { settled = true; });
+    void plannedClose.then(() => { settled = true; }, () => { settled = true; });
     await sleep(20);
     expect(settled).toBe(false);
     expect(processAlive(pid)).toBe(true);
-    await shutdownClose;
+    await plannedClose;
     expect(processAlive(pid)).toBe(false);
+    expect(rootExitCount).toBe(0);
+  });
+
+  it("reports an independently exiting persistent root exactly once", async () => {
+    const controller = new AbortController();
+    let child: ChildProcess | undefined;
+    let rootExitCount = 0;
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) => {
+      child = spawn(process.execPath, [fake], opts);
+      return child;
+    }) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "crashing-codex", cwd: here, history: [], signal: controller.signal,
+      bin: "codex", spawnFn, sandboxMode: "danger-full-access", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onRuntimeRootExit: () => { rootExitCount += 1; },
+    });
+
+    child!.kill("SIGKILL");
+    await vi.waitFor(() => expect(rootExitCount).toBe(1));
+    expect(session.isAlive()).toBe(false);
+    await session.close();
     expect(rootExitCount).toBe(1);
   });
 

@@ -16,6 +16,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1", channel: "collaboration" },
     { kind: "agents", projectId: "project / one" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
+    { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "triggers" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", focusTelemetry: { stream: "activity", id: "agent #1:activity:7" } },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {
     expect(parseRoute(routeToPath(route))).toEqual(route);
@@ -23,12 +24,14 @@ describe("mobile-critical durable navigation", () => {
 
   it("falls back safely for partial or unrelated paths", () => {
     expect(parseRoute("/projects/")).toEqual({ kind: "projects" });
-    expect(parseRoute("/unrelated/path")).toEqual({ kind: "home" });
+    expect(parseRoute("/")).toEqual({ kind: "allChat" });
+    expect(parseRoute("/unrelated/path")).toEqual({ kind: "allChat" });
   });
 
   it("keeps global list routes distinct from project-scoped detail routes", () => {
     expect(routeToPath({ kind: "projects" })).toBe("/projects");
-    expect(routeToPath({ kind: "allChat" })).toBe("/chats");
+    expect(routeToPath({ kind: "allChat" })).toBe("/");
+    expect(parseRoute("/chats")).toEqual({ kind: "allChat" });
     expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
     expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
     expect(routeToPath({ kind: "wiki", articleId: "project chat" })).toBe("/wiki/project%20chat");

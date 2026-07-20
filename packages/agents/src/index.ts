@@ -39,16 +39,28 @@ export type {
   RecordTriggerOccurrenceInput,
   TriggerOccurrenceResult,
   TriggerOccurrenceState,
+  TriggerFilesystemBurst,
 } from "./coordination-v3-store.js";
-export type { ConversationDeliveryIntent } from "./store.js";
-export type { AgentDeletionReceipt, AgentManagementAuthorization } from "./store.js";
+export type { ConversationDeliveryIntent, ManagedArtifactAccess } from "./store.js";
+export type { AgentDeletionReceipt, ProjectDeletionReceipt, AgentManagementAuthorization } from "./store.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
+export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
 export { openDb } from "./db.js";
 export {
   artifactContentPath, artifactsDir, managedArtifactsDir, managedArtifactsLogPath, managedArtifactContentPath, attachmentPath, attachmentsDir,
   communicationEventsPath,
   communicationProjectionsPath, communicationRevisionsPath,
 } from "./paths.js";
+export {
+  MANAGED_ARTIFACT_MAX_BYTES,
+  publishManagedArtifactContent,
+  openManagedArtifactContent,
+  readManagedArtifactContent,
+  repairManagedArtifactContent,
+  type ManagedArtifactFile,
+  type ManagedArtifactContentHandle,
+  type ManagedArtifactAsyncReadFaults,
+} from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
 
 export {

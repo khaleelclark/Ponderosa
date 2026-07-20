@@ -1,8 +1,10 @@
-import { execFile as nodeExecFile } from "node:child_process";
+import { execFile as nodeExecFile, spawn as nodeSpawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import path from "node:path";
-import type { EngineCapabilities, EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
+import type { EngineCapabilities, EngineCapabilityDiscoveryOptions, EngineCommand, EngineComposerCapability, EngineMcpServer } from "@ponderosa/core";
+import { runtimeProcessHandle } from "./process-termination.js";
 
 const execFile = promisify(nodeExecFile);
 
@@ -491,7 +493,79 @@ export async function discoverCliMcps(
   args: string[],
   cwd: string,
   parse: (output: string) => EngineMcpServer[],
+  lifecycle?: EngineCapabilityDiscoveryOptions,
+  killGraceMs = 3_000,
+  spawnFn: typeof nodeSpawn = nodeSpawn,
 ): Promise<EngineMcpServer[]> {
+  if (lifecycle) {
+    if (lifecycle.signal.aborted) return parse("");
+    const child = spawnFn(bin, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+    const handle = runtimeProcessHandle(child, { label: `${bin} capability discovery`, termGraceMs: killGraceMs });
+    lifecycle.onRuntimeSpawned(handle);
+    let output = "";
+    const append = (chunk: Buffer | string): void => {
+      output = (output + String(chunk)).slice(-(1024 * 1024));
+    };
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
+    const rootExit = waitForDiscoveryRoot(child);
+    const transportClosed = new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      child.once("close", finish);
+      child.once("error", finish);
+    });
+    let stopOperation: Promise<void> | undefined;
+    let settleStop!: () => void;
+    let rejectStop!: (error: unknown) => void;
+    const stopped = new Promise<void>((resolve, reject) => {
+      settleStop = resolve;
+      rejectStop = reject;
+    });
+    // This observer is deliberately installed immediately. A timeout whose
+    // termination attempt fails must reject discovery instead of waiting
+    // forever for a still-live root to emit exit.
+    void stopped.catch(() => undefined);
+    const stop = (): Promise<void> => {
+      if (stopOperation) return stopOperation;
+      stopOperation = handle.close().then(settleStop, (error) => {
+        rejectStop(error);
+        throw error;
+      });
+      void stopOperation.catch(() => undefined);
+      return stopOperation;
+    };
+    const abort = (): void => { void stop().catch(() => undefined); };
+    lifecycle.signal.addEventListener("abort", abort);
+    const timeout = setTimeout(abort, 15_000);
+    timeout.unref();
+    try {
+      await Promise.race([rootExit, stopped]);
+      await stop();
+      // Root exit can precede delivery of already-buffered stdout/stderr, while
+      // an out-of-group descendant can retain those descriptors indefinitely.
+      // Give terminal output one bounded drain window before parsing it.
+      await Promise.race([
+        transportClosed,
+        new Promise<void>((resolve) => setTimeout(resolve, 250)),
+      ]);
+      return parse(output);
+    } finally {
+      clearTimeout(timeout);
+      lifecycle.signal.removeEventListener("abort", abort);
+      await handle.close();
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    }
+  }
   try {
     const result = await execFile(bin, args, { cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
     return parse(`${result.stdout}\n${result.stderr}`);
@@ -501,4 +575,18 @@ export async function discoverCliMcps(
       : "";
     return parse(output);
   }
+}
+
+function waitForDiscoveryRoot(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    child.once("exit", finish);
+    child.once("error", finish);
+  });
 }

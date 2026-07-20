@@ -266,6 +266,23 @@ describe("CodexAdapter.continue transport", () => {
 });
 
 describe("CodexAdapter surface", () => {
+  it("registers both sessionless capability-discovery helper processes", async () => {
+    const handles: import("@ponderosa/core").RuntimeProcessHandle[] = [];
+    const controller = new AbortController();
+    const spawnFn = ((_bin: string, args: readonly string[], opts: object) => args[0] === "mcp"
+      ? spawn(process.execPath, ["-e", "process.stdout.write('[]')"], opts)
+      : spawn(process.execPath, [fakeCodexAppServer], opts)) as unknown as typeof spawn;
+    const adapter = new CodexAdapter({ bin: "codex-test", spawnFn, killGraceMs: 50 });
+
+    await adapter.capabilities(cwd, {
+      signal: controller.signal,
+      onRuntimeSpawned: (handle) => handles.push(handle),
+    });
+
+    expect(handles).toHaveLength(2);
+    expect(handles.every((handle) => !handle.isAlive())).toBe(true);
+  });
+
   it("opens one registered app-server without an untracked CLI inventory subprocess", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "ponderosa-codex-open-"));
     const inventoryMarker = join(tempDir, "inventory-helper-ran");

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -27,5 +27,28 @@ describe("UserReactionStore", () => {
     expect(restarted.forCommunication(input.communicationEventId)).toEqual([{
       emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }],
     }]);
+  });
+
+  it("repairs only a crash-torn final append on restart", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ponderosa-user-reaction-tail-"));
+    cleanup.push(dir);
+    const input = {
+      idempotencyKey: "reaction-tail",
+      projectId: "project-1",
+      communicationEventId: "communication-1",
+      targetAuthorAgentId: "agent-1",
+      emoji: "✅",
+      replyTo: { messageId: "message-1", text: "Done", role: "assistant" as const, authorAgentId: "agent-1" },
+    };
+    const first = new UserReactionStore(dir).set(input);
+    appendFileSync(path.join(dir, "user-reactions.jsonl"), '{"id":"torn', "utf8");
+    expect(new UserReactionStore(dir).set(input)).toMatchObject({ replayed: true, event: { id: first.event.id } });
+  });
+
+  it("fails closed on non-tail reaction corruption", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ponderosa-user-reaction-corrupt-"));
+    cleanup.push(dir);
+    writeFileSync(path.join(dir, "user-reactions.jsonl"), "not-json\n{}\n", "utf8");
+    expect(() => new UserReactionStore(dir)).toThrow("user reaction journal contains non-tail corruption");
   });
 });

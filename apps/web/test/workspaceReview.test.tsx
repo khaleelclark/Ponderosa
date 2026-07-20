@@ -27,7 +27,7 @@ describe("workspace review", () => {
       view = create(<QueryClientProvider client={client}><WorkspaceReviewPane
         projectId="project"
         running={false}
-        files={[{ path: "src/app.ts", kind: "edit", lastSeq: 3, lastChangedAt: new Date().toISOString(), executionIds: ["execution"] }]}
+        files={[{ path: "src/app.ts", kind: "edit", lastSeq: 3, lastChangedAt: new Date().toISOString(), executionCount: 1, diffAvailable: false }]}
       /></QueryClientProvider>);
       await new Promise((resolve) => setTimeout(resolve, 20));
     });

@@ -6,8 +6,8 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
-import { parseJsonlChunks } from "./jsonl.js";
-import { terminateProcessGroup } from "./process-termination.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
+import { runtimeProcessHandle } from "./process-termination.js";
 
 /** A minimal spawn signature so tests can inject a fake CLI. */
 export type SpawnFn = typeof nodeSpawn;
@@ -50,6 +50,19 @@ export interface StreamProcessOptions {
 }
 
 const POST_EXIT_STDOUT_DRAIN_MS = 250;
+const LIVE_STDOUT_BUFFER_RECORDS = 64;
+const LIVE_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
+const TERMINAL_STDOUT_BUFFER_RECORDS = 512;
+const TERMINAL_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
+
+function bufferedRecordBytes(raw: unknown): number {
+  try { return Buffer.byteLength(JSON.stringify(raw), "utf8"); }
+  catch { return TERMINAL_STDOUT_BUFFER_BYTES + 1; }
+}
+
+function jsonlRecordLimitMessage(label: string): string {
+  return `${label} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`;
+}
 
 /**
  * Spawn a CLI, parse its stdout as JSONL, and yield mapped AgentEvents. On abort,
@@ -105,27 +118,12 @@ export async function* streamProcess(
     stderrTail = (stderrTail + d).slice(-8192);
   });
 
-  let termination: Promise<void> | undefined;
-  const terminate = (): Promise<void> => {
-    if (termination) return termination;
-    const attempt = terminateProcessGroup(child, {
-      label: `${label} run`,
-      termGraceMs: killGraceMs,
-    });
-    const shared = attempt.catch((error) => {
-      if (termination === shared) termination = undefined;
-      throw error;
-    });
-    termination = shared;
-    // The generator awaits this barrier below. Observe an early rejection now
-    // so an AbortSignal callback cannot create an unhandled promise first.
-    void termination.catch(() => undefined);
-    return termination;
-  };
-  onRuntimeSpawned?.({
-    isAlive: () => child.exitCode === null && child.signalCode === null,
-    close: terminate,
+  const handle = runtimeProcessHandle(child, {
+    label: `${label} run`,
+    termGraceMs: killGraceMs,
   });
+  const terminate = (): Promise<void> => handle.close();
+  onRuntimeSpawned?.(handle);
   const onAbort = (): void => {
     void terminate();
   };
@@ -157,31 +155,97 @@ export async function* streamProcess(
   try {
     const stdout = child.stdout;
     if (stdout) {
-      stdout.setEncoding("utf8");
-      const parsed = parseJsonlChunks(stdout as AsyncIterable<string>)[Symbol.asyncIterator]();
-      while (true) {
-        const next = parsed.next().then(
-          (value) => ({ kind: "stdout" as const, value }),
-          (error: unknown) => ({ kind: "stdout_error" as const, error }),
-        );
-        const outcome = await Promise.race([
-          next,
-          stdoutDrainExpired.then(() => ({ kind: "stdout_deadline" as const })),
-        ]);
-        if (outcome.kind === "stdout_deadline") {
-          // The provider group is already gone (or termination has produced a
-          // bounded failure). Do not let an inherited/out-of-group descriptor
-          // retain the Run forever.
-          stdout.destroy();
-          break;
+      // Consume provider stdout independently of downstream persistence. A
+      // successful short-lived CLI can exit while its final JSONL records are
+      // already buffered; a slow consumer must not lose those records merely
+      // because the bounded post-root drain deadline expires between yields.
+      const buffered: Array<{ raw: unknown; bytes: number }> = [];
+      let bufferedBytes = 0;
+      let wake: (() => void) | undefined;
+      let releaseProducer: (() => void) | undefined;
+      let rootHasExited = false;
+      let parsingDone = false;
+      let parsingError: unknown;
+      let stdoutDrainDeadlineReached = false;
+      let terminalBufferExceeded = false;
+      void rootExit.then(() => {
+        rootHasExited = true;
+        releaseProducer?.();
+        releaseProducer = undefined;
+      });
+      const parsing = (async () => {
+        try {
+          for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+            const bytes = bufferedRecordBytes(raw);
+            if (rootHasExited && (bytes > TERMINAL_STDOUT_BUFFER_BYTES ||
+                buffered.length >= TERMINAL_STDOUT_BUFFER_RECORDS ||
+                bufferedBytes + bytes > TERMINAL_STDOUT_BUFFER_BYTES)) {
+              terminalBufferExceeded = true;
+              stdout.destroy();
+              break;
+            }
+            buffered.push({ raw, bytes });
+            bufferedBytes += bytes;
+            wake?.();
+            wake = undefined;
+            // Preserve ordinary stream backpressure during a live Run. Once
+            // the root exits, drain the finite terminal pipe contents eagerly
+            // so downstream persistence latency cannot lose successful output.
+            if (!rootHasExited && (buffered.length >= LIVE_STDOUT_BUFFER_RECORDS ||
+                bufferedBytes >= LIVE_STDOUT_BUFFER_BYTES)) {
+              await new Promise<void>((resolve) => {
+                if (rootHasExited || (buffered.length < LIVE_STDOUT_BUFFER_RECORDS &&
+                    bufferedBytes < LIVE_STDOUT_BUFFER_BYTES)) resolve();
+                else releaseProducer = resolve;
+              });
+            }
+          }
+        } catch (error) {
+          parsingError = error;
+          if (error instanceof JsonlRecordLimitError) {
+            stdout.destroy();
+            void terminate().catch(() => undefined);
+          }
+        } finally {
+          parsingDone = true;
+          wake?.();
+          wake = undefined;
         }
-        if (outcome.kind === "stdout_error") throw outcome.error;
-        if (outcome.value.done) break;
-        const raw = outcome.value.value;
-        await faults?.afterDecodeBeforeYield?.(raw, processSnapshot(child));
-        for (const ev of map(raw, { cwd })) {
-          yield ev;
+      })();
+      void stdoutDrainExpired.then(() => {
+        stdoutDrainDeadlineReached = true;
+        stdout.destroy();
+      });
+      while (!parsingDone || buffered.length > 0) {
+        if (buffered.length === 0) {
+          await new Promise<void>((resolve) => {
+            // Recheck inside the synchronous Promise executor so parsing
+            // cannot finish between the outer condition and waiter install.
+            if (parsingDone || buffered.length > 0) resolve();
+            else wake = resolve;
+          });
+          continue;
         }
+        const record = buffered.shift()!;
+        bufferedBytes -= record.bytes;
+        releaseProducer?.();
+        releaseProducer = undefined;
+        await faults?.afterDecodeBeforeYield?.(record.raw, processSnapshot(child));
+        for (const ev of map(record.raw, { cwd })) yield ev;
+      }
+      await parsing;
+      // A local deadline close is expected when an out-of-group process holds
+      // an inherited descriptor. Preserve actual parser failures otherwise.
+      const recordLimitExceeded = parsingError instanceof JsonlRecordLimitError;
+      if (parsingError && !stdoutDrainDeadlineReached && !terminalBufferExceeded && !recordLimitExceeded) throw parsingError;
+      if (recordLimitExceeded) {
+        yield { type: "error", message: jsonlRecordLimitMessage(label) };
+      }
+      if (terminalBufferExceeded) {
+        yield {
+          type: "error",
+          message: `${label} terminal output exceeded the 512-record / 4 MiB buffer limit after root exit`,
+        };
       }
     }
 

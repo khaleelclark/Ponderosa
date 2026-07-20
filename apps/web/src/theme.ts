@@ -4,6 +4,11 @@ export type ColorMode = "light" | "dark";
 
 export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
 
+export const ponderosaFocusIndicator = {
+  light: "#123126",
+  dark: "#9ED4AA",
+} as const;
+
 export const ponderosaColorTokens = {
   light: {
     background: "#F8F6EF",
@@ -59,6 +64,7 @@ export function loadColorMode(): ColorMode {
 export function createPonderosaTheme(mode: ColorMode) {
   const colors = ponderosaColorTokens[mode];
   const dark = mode === "dark";
+  const focusIndicator = ponderosaFocusIndicator[mode];
 
   return createTheme({
     palette: {
@@ -122,6 +128,7 @@ export function createPonderosaTheme(mode: ColorMode) {
           body: {
             backgroundColor: colors.background,
             color: colors.textPrimary,
+            "--ponderosa-focus-ring": focusIndicator,
           },
           "::selection": {
             backgroundColor: dark ? "rgba(124,191,138,.28)" : "rgba(92,138,101,.22)",
@@ -133,7 +140,7 @@ export function createPonderosaTheme(mode: ColorMode) {
         styleOverrides: {
           root: {
             "&.Mui-focusVisible": {
-              outline: `2px solid ${colors.highlight}`,
+              outline: `2px solid ${focusIndicator}`,
               outlineOffset: 2,
             },
           },

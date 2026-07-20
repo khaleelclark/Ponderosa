@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import type { RuntimeProcessHandle } from "@ponderosa/core";
 
 export interface ObservedProcessTerminationOptions {
   label: string;
@@ -43,6 +44,33 @@ export async function terminateProcessGroup(
     `${opts.label} process group remained alive after SIGKILL and ${killConfirmationMs}ms confirmation` +
     `${signalErrors.length ? ` (${signalErrors.join("; ")})` : ""}`,
   );
+}
+
+/** Report ownership for the complete detached process group, not only its root. */
+export function processGroupAlive(child: ChildProcess, observedTerminal = false): boolean {
+  return processTreeAlive(child, child.pid, observedTerminal);
+}
+
+/** Build the retryable host authority published synchronously at spawn time. */
+export function runtimeProcessHandle(
+  child: ChildProcess,
+  opts: ObservedProcessTerminationOptions,
+): RuntimeProcessHandle {
+  let termination: Promise<void> | undefined;
+  return {
+    isAlive: () => processGroupAlive(child),
+    close: () => {
+      if (termination) return termination;
+      const attempt = terminateProcessGroup(child, opts);
+      const shared = attempt.catch((error) => {
+        if (termination === shared) termination = undefined;
+        throw error;
+      });
+      termination = shared;
+      void shared.catch(() => undefined);
+      return shared;
+    },
+  };
 }
 
 function processTreeAlive(child: ChildProcess, pid: number | undefined, observedTerminal = false): boolean {

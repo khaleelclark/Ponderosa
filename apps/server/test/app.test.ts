@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { connect as connectTcp } from "node:net";
@@ -11,12 +11,13 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
-import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
-import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions, type UploadedOperatorAvatarDto } from "@ponderosa/core";
+import { AgentStore, CoordinationV3Store, EventLog, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
+import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
+import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
+import { ContextCursorStore } from "../src/context-cursors.js";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const processAlive = (pid: number): boolean => {
@@ -35,11 +36,19 @@ function durableMutationState(store: AgentStore, dataDir: string, projectId: str
     `SELECT COUNT(*) AS count FROM ${table}${predicate ? ` WHERE ${predicate}` : ""}`,
   ).get() as { count: number }).count;
   const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  const projectCount = (table: string) => (store.sqlite.prepare(
+    `SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`,
+  ).get(projectId) as { count: number }).count;
   try {
     const authorityCount = (table: string) => (authority.prepare(
       `SELECT COUNT(*) AS count FROM ${table}`,
     ).get() as { count: number }).count;
     return {
+      agents: projectCount("agents"),
+      deletionReceipts: projectCount("agent_deletion_receipts"),
+      deletionTombstones: projectCount("agent_deletion_tombstones"),
+      importedHistory: count("imported_history_messages"),
+      triggerDefinitions: projectCount("trigger_definitions"),
       communications: count("runtime_communications"),
       projectArtifacts: store.getProjectArtifacts(projectId).length,
       runtimeArtifacts: count("runtime_artifacts"),
@@ -55,6 +64,24 @@ function durableMutationState(store: AgentStore, dataDir: string, projectId: str
       generatedAuthorities: authorityCount("generated_artifact_authority"),
     };
   } finally { authority.close(); }
+}
+
+function importMutationState(store: AgentStore, dataDir: string, projectId: string) {
+  const projectEntries = (directory: string, relative = ""): string[] => {
+    if (!existsSync(directory)) return [];
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const entryRelative = path.posix.join(relative, entry.name);
+      return entry.isDirectory()
+        ? [`directory:${entryRelative}`, ...projectEntries(path.join(directory, entry.name), entryRelative)]
+        : entry.isSymbolicLink()
+          ? [`symlink:${entryRelative}`]
+          : [`file:${entryRelative}:${createHash("sha256").update(readFileSync(path.join(directory, entry.name))).digest("hex")}`];
+    }).sort();
+  };
+  return {
+    durable: durableMutationState(store, dataDir, projectId),
+    projectEntries: projectEntries(path.join(dataDir, "projects", projectId)),
+  };
 }
 
 function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
@@ -667,6 +694,9 @@ class MockAdapter implements Adapter {
   failuresRemaining = 0;
   failNextTurn = false;
   failureAfterBeforeResponse?: string;
+  fileChange: Extract<AgentEvent, { type: "file_change" }> = {
+    type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n",
+  };
   turnUsage?: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; outputTokens?: number; reasoningOutputTokens?: number; totalTokens?: number };
 
   listModels(): ModelOption[] {
@@ -722,7 +752,7 @@ class MockAdapter implements Adapter {
     }
     await sleep(5);
     yield { type: "command", command: "pnpm test", cwd: opts.cwd };
-    yield { type: "file_change", path: "a.ts", kind: "edit", diff: "diff --git a/a.ts b/a.ts\n" };
+    yield this.fileChange;
     yield { type: "text", delta: this.responseText };
     yield { type: "turn_done", ...(this.turnUsage ? { usage: this.turnUsage } : {}) };
   }
@@ -756,6 +786,59 @@ class MockAdapter implements Adapter {
     }
     yield { type: "text", delta: `continued ${opts.resumeSessionId}` };
     yield { type: "turn_done" };
+  }
+}
+
+function retryFenceSqliteState(store: AgentStore) {
+  const rows = (table: string) => store.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+  return {
+    databaseBytes: store.sqlite.serialize().toString("base64"),
+    requests: rows("coordination_requests"),
+    requestUpdates: rows("coordination_request_updates"),
+    joins: rows("coordination_joins"),
+    activations: rows("agent_activations"),
+    outbox: rows("activation_outbox"),
+    retryLineage: rows("activation_delivery_retry_lineage"),
+    idempotency: rows("coordination_idempotency"),
+    runs: rows("scheduler_runs"),
+    runActivations: rows("scheduler_run_activations"),
+  };
+}
+
+function readinessFenceDurableState(store: AgentStore, dataDir: string, projectId: string) {
+  const directoryState = (root: string) => {
+    if (!existsSync(root)) return [];
+    const files: Array<{ path: string; size: number; sha256: string }> = [];
+    const visit = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          visit(absolute);
+          continue;
+        }
+        const body = readFileSync(absolute);
+        files.push({
+          path: path.relative(root, absolute),
+          size: body.length,
+          sha256: createHash("sha256").update(body).digest("hex"),
+        });
+      }
+    };
+    visit(root);
+    return files;
+  };
+  const optionalFile = (file: string) => existsSync(file) ? readFileSync(file).toString("base64") : undefined;
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  try {
+    return {
+      sqlite: retryFenceSqliteState(store),
+      projectFiles: directoryState(path.join(dataDir, "projects", projectId)),
+      assetAuthorityBytes: authority.serialize().toString("base64"),
+      reactions: optionalFile(path.join(dataDir, "user-reactions.jsonl")),
+      workspace: optionalFile(path.join(dataDir, "workspace-events.jsonl")),
+    };
+  } finally {
+    authority.close();
   }
 }
 
@@ -1038,6 +1121,184 @@ describe("notification panel actions", () => {
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
     await app.close();
   });
+
+  it("clears one Project group without removing notifications from another Project", async () => {
+    const alpha = store.createProject({ label: "Alpha", hostPath: repoDir, defaultEngine: "codex" });
+    const betaPath = mkdtempSync(path.join(tmpdir(), "pond-server-notifications-"));
+    writeFileSync(path.join(betaPath, "README.md"), "# beta\n", "utf8");
+    process.env.PONDEROSA_BROWSE_ROOTS = `${repoDir},${betaPath}`;
+    const beta = store.createProject({ label: "Beta", hostPath: betaPath, defaultEngine: "codex" });
+    const workspace = new WorkspaceStore(dataDir);
+    workspace.createNotification({ projectId: alpha.id, kind: "mentions", title: "Alpha", body: "One" });
+    workspace.createNotification({ projectId: beta.id, kind: "mentions", title: "Beta", body: "Two" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    try {
+      expect((await app.inject({ method: "DELETE", url: `/api/projects/${alpha.id}/notifications` })).json()).toEqual({ cleared: 1 });
+      expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([
+        expect.objectContaining({ projectId: beta.id, title: "Beta" }),
+      ]);
+    } finally {
+      await app.close();
+      rmSync(betaPath, { recursive: true, force: true });
+    }
+  });
+
+  it("stores validated Operator pictures in managed files before profile authority references them", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const uploaded = await app.inject({ method: "POST", url: "/api/workspace/profile-images", headers: { "content-type": "image/png" }, payload: png });
+    expect(uploaded.statusCode).toBe(201);
+    const avatar = uploaded.json<UploadedOperatorAvatarDto>();
+    expect(avatar.avatarId).toMatch(/^uploaded:png:[a-f0-9]{64}$/u);
+    expect((await app.inject({ method: "GET", url: avatar.url })).rawPayload).toEqual(png);
+    const saved = await app.inject({
+      method: "PATCH", url: "/api/workspace/preferences",
+      payload: { profile: { displayName: "Operator", handle: "operator", avatarId: avatar.avatarId } },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(new WorkspaceStore(dataDir).getPreferences().profile.avatarId).toBe(avatar.avatarId);
+    const gif = Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64");
+    const gifUpload = await app.inject({ method: "POST", url: "/api/workspace/profile-images", headers: { "content-type": "image/gif" }, payload: gif });
+    expect(gifUpload.statusCode).toBe(201);
+    const gifAvatar = gifUpload.json<{ avatarId: string; mediaType: string; url: string }>();
+    expect(gifAvatar).toMatchObject({ avatarId: expect.stringMatching(/^uploaded:gif:[a-f0-9]{64}$/u), mediaType: "image/gif" });
+    expect((await app.inject({ method: "GET", url: gifAvatar.url })).headers["content-type"]).toContain("image/gif");
+    expect((await app.inject({
+      method: "PATCH", url: "/api/workspace/preferences",
+      payload: { profile: { displayName: "Operator", handle: "operator", avatarId: `uploaded:png:${"0".repeat(64)}` } },
+    })).statusCode).toBe(400);
+    await app.close();
+  });
+});
+
+describe("Trigger webhook admission", () => {
+  it("returns accurate bounded-JSON errors and exposes durable acceptance state", async () => {
+    const project = store.createProject({ label: "Webhook", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Receiver", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/triggers`,
+      payload: {
+        conversationId: conversation.id,
+        name: "Signed input",
+        instructions: "Process the event safely",
+        sourceKind: "webhook",
+        sourceConfig: { replayWindowSeconds: 300 },
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const webhook = created.json<{ trigger: { id: string }; webhookSecret: string }>();
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const deliver = (eventId: string, payload: unknown) => {
+      const raw = JSON.stringify(payload);
+      const signature = `v1=${createHmac("sha256", webhook.webhookSecret).update(`${timestamp}.${eventId}.`).update(raw).digest("hex")}`;
+      return app.inject({
+        method: "POST",
+        url: `/api/trigger-webhooks/${webhook.trigger.id}`,
+        headers: {
+          "content-type": "application/json",
+          "x-ponderosa-event-id": eventId,
+          "x-ponderosa-timestamp": timestamp,
+          "x-ponderosa-signature": signature,
+        },
+        payload: raw,
+      });
+    };
+
+    let deep: unknown = "leaf";
+    for (let depth = 0; depth < 100; depth += 1) deep = { nested: deep };
+    const rejected = await deliver("too-deep", deep);
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ error: "canonical JSON exceeds maximum depth 64" });
+
+    const accepted = await deliver("accepted", { action: "sync" });
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({ state: "activated", replayed: false });
+    const replay = await deliver("accepted", { action: "sync" });
+    expect(replay.statusCode).toBe(200);
+    expect(replay.json()).toMatchObject({ state: "activated", replayed: true });
+    await app.close();
+  });
+});
+
+describe("Trigger operational notification reconciliation", () => {
+  it("deduplicates restart state and resolves budget, disable, and deleted-Trigger notices", async () => {
+    const project = store.createProject({ label: "Trigger notices", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Automation" });
+    const agent = store.createAgent(project.id, { title: "Receiver", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const budgeted = coordination.createTriggerDefinition({
+      id: "budget-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Budgeted", instructions: "Process events", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, runBudget: { limit: 1, period: "lifetime" },
+    });
+    store.sqlite.prepare(`UPDATE trigger_definitions SET run_budget_used = 1 WHERE id = ?`).run(budgeted.id);
+    const filesystem = coordination.createTriggerDefinition({
+      id: "watcher-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Files", instructions: "Process file events", sourceKind: "filesystem",
+      sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 1_000 }, enabled: false,
+    });
+    const expired = coordination.createTriggerDefinition({
+      id: "expired-budget-notice", projectId: project.id, conversationId: conversation.id, agentId: agent.id,
+      name: "Expired budget", instructions: "Process events", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, runBudget: { limit: 1, period: "day" },
+    });
+    store.sqlite.prepare(`
+      UPDATE trigger_definitions
+      SET run_budget_used = 1, run_budget_period_started_at = '2020-01-01T00:00:00.000Z'
+      WHERE id = ?
+    `).run(expired.id);
+    const workspace = new WorkspaceStore(dataDir);
+    for (const dedupeKey of [
+      `trigger:${budgeted.id}:budget-held`,
+      `trigger:${filesystem.id}:watcher-failed`,
+      `trigger:${filesystem.id}:filesystem-persistence`,
+      `trigger:${expired.id}:budget-held`,
+      "trigger:deleted-trigger:watcher-failed",
+    ]) {
+      workspace.createNotification({
+        kind: "operational", category: "trigger", severity: "attention", status: "open",
+        dedupeKey, title: "Existing Trigger notice", body: "Persisted before restart",
+      });
+    }
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    const notifications = () => app.inject({ method: "GET", url: "/api/notifications" })
+      .then((response) => response.json<Array<{ dedupeKey?: string; status?: string }>>());
+    const initial = await notifications();
+    expect(initial.filter((item) => item.dedupeKey === `trigger:${budgeted.id}:budget-held`)).toEqual([
+      expect.objectContaining({ status: "open" }),
+    ]);
+    expect(initial.find((item) => item.dedupeKey === "trigger:deleted-trigger:watcher-failed")).toMatchObject({ status: "resolved" });
+    expect(initial.find((item) => item.dedupeKey === `trigger:${expired.id}:budget-held`)).toMatchObject({ status: "resolved" });
+
+    expect((await app.inject({
+      method: "PATCH", url: `/api/triggers/${budgeted.id}`, payload: { runBudget: null },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "PATCH", url: `/api/triggers/${filesystem.id}`, payload: { enabled: false },
+    })).statusCode).toBe(200);
+    const resolved = await notifications();
+    for (const key of [
+      `trigger:${budgeted.id}:budget-held`,
+      `trigger:${filesystem.id}:watcher-failed`,
+      `trigger:${filesystem.id}:filesystem-persistence`,
+    ]) expect(resolved.find((item) => item.dedupeKey === key)).toMatchObject({ status: "resolved" });
+    await app.close();
+  });
 });
 
 describe("Agent work inspector", () => {
@@ -1159,6 +1420,139 @@ async function waitForSeedCount(expected: number): Promise<void> {
 }
 
 describe("generated artifact endpoints", () => {
+  it("bounds oversized text previews while retaining authenticated full download", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Large artifact", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Auditor", engine: "codex" });
+    const diff = `+${"x".repeat(2 * 1024 * 1024 + 64_000)}\n`;
+    const stored = store.appendEvent(agent.id, { type: "file_change", path: "large.txt", kind: "edit", diff });
+    const artifactId = `${agent.id}:a:${stored.seq}:0`;
+
+    const preview = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/artifacts/${artifactId}` });
+    expect(preview.statusCode, preview.body).toBe(200);
+    expect(preview.json()).toMatchObject({ id: artifactId, truncated: true, totalBytes: Buffer.byteLength(diff) });
+    expect(Buffer.byteLength(preview.json<{ content: string }>().content)).toBeLessThanOrEqual(2 * 1024 * 1024);
+
+    const projectPreview = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+    });
+    expect(projectPreview.statusCode, projectPreview.body).toBe(200);
+    expect(projectPreview.headers["x-ponderosa-preview-truncated"]).toBe("true");
+    expect(projectPreview.rawPayload).toHaveLength(2 * 1024 * 1024);
+    const download = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    });
+    expect(download.statusCode, download.body).toBe(200);
+    expect(download.rawPayload).toEqual(Buffer.from(diff));
+    await app.close();
+  });
+
+  it("bounds managed artifact verification and streaming per Project and globally", async () => {
+    const artifacts = Array.from({ length: 4 }, (_, index) => {
+      const project = store.createProject({ label: `Managed transfer ${index}`, hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: `Transfer ${index}`, engine: "codex" });
+      const stored = store.appendEvent(agent.id, {
+        type: "file_change",
+        path: `transfer-${index}.txt`,
+        kind: "edit",
+        diff: `+managed-${index}\n`,
+      });
+      return { project, agent, artifactId: `${agent.id}:a:${stored.seq}:0` };
+    });
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      managedArtifactReadFaults: { afterOpen: async () => { entered += 1; await barrier; } },
+    });
+    const download = ({ project, artifactId }: typeof artifacts[number]) => app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    });
+
+    const active = [download(artifacts[0]!), download(artifacts[0]!)];
+    await vi.waitFor(() => expect(entered).toBe(2));
+    const projectSaturated = await download(artifacts[0]!);
+    expect(projectSaturated.statusCode).toBe(429);
+    expect(projectSaturated.headers["retry-after"]).toBe("1");
+
+    active.push(
+      download(artifacts[1]!), download(artifacts[1]!),
+      download(artifacts[2]!), download(artifacts[2]!),
+    );
+    await vi.waitFor(() => expect(entered).toBe(6));
+    const globalSaturated = await download(artifacts[3]!);
+    expect(globalSaturated.statusCode).toBe(429);
+    release();
+    expect((await Promise.all(active)).map((response) => response.statusCode))
+      .toEqual([200, 200, 200, 200, 200, 200]);
+    await app.close();
+  });
+
+  it("captures an exact in-Project generated file through retained descriptors", async () => {
+    const outputDirectory = path.join(repoDir, "output");
+    const output = path.join(outputDirectory, "report.png");
+    const body = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("generated")]);
+    mkdirSync(outputDirectory);
+    writeFileSync(output, body);
+    adapter.fileChange = { type: "file_change", path: "output/report.png", kind: "create" };
+    const project = store.createProject({ label: "Generated capture", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Generator", engine: "codex" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Generate the report" },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    const artifact = store.getProjectArtifacts(project.id).find((item) => item.kind === "generated_file");
+    expect(artifact).toMatchObject({ sourcePath: "output/report.png", summary: "report.png", size: body.length });
+    const downloaded = await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifact!.id}/download`,
+    });
+    expect(downloaded.statusCode, downloaded.body).toBe(200);
+    expect(downloaded.rawPayload).toEqual(body);
+    await app.close();
+  });
+
+  it.each(["afterPathValidation", "afterFileOpen"] as const)(
+    "fails generated capture closed on an inside-to-outside ancestor replacement at %s",
+    async (phase) => {
+      const outputDirectory = path.join(repoDir, "output");
+      const retainedDirectory = path.join(repoDir, "output-retained");
+      const outsideDirectory = path.join(dataDir, "outside-output");
+      const original = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("inside")]);
+      const outside = Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), Buffer.from("outside-private")]);
+      mkdirSync(outputDirectory);
+      mkdirSync(outsideDirectory);
+      writeFileSync(path.join(outputDirectory, "report.png"), original);
+      writeFileSync(path.join(outsideDirectory, "report.png"), outside);
+      adapter.fileChange = { type: "file_change", path: "output/report.png", kind: "create" };
+      const project = store.createProject({ label: "Generated capture race", hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: "Generator", engine: "codex" });
+      let swapped = false;
+      const swap = (context: { purpose: string }) => {
+        if (swapped || context.purpose !== "generated_capture") return;
+        swapped = true;
+        renameSync(outputDirectory, retainedDirectory);
+        symlinkSync(outsideDirectory, outputDirectory);
+      };
+      const app = createServer({
+        dataDir, store, engines, logger: false,
+        workspaceArtifactReadFaults: { [phase]: swap },
+      });
+
+      expect((await app.inject({
+        method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Generate the report" },
+      })).statusCode).toBe(202);
+      await waitForRun(agent.id);
+      expect(swapped).toBe(true);
+      expect(store.getProjectArtifacts(project.id).filter((item) => item.kind === "generated_file")).toEqual([]);
+      expect(readFileSync(path.join(outsideDirectory, "report.png"))).toEqual(outside);
+      await app.close();
+    },
+  );
+
   it("previews and downloads bounded project files without escaping the registered workspace", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Project file browser", hostPath: repoDir });
@@ -1563,6 +1957,7 @@ describe("generated artifact endpoints", () => {
     const second = store.createAgent(project.id, {
       title: "Second", engine: "codex", conversationId: conversation.id, managerAgentId: first.id,
     });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
     const fullText = `Shared body\n${"z".repeat(10_100)}`;
     const eventIds: string[] = [];
 
@@ -1627,7 +2022,21 @@ describe("generated artifact endpoints", () => {
     }
     expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts()
       .filter((artifact) => artifact.projectId === project.id)).toHaveLength(5);
+    const broadcastArtifactId = store.getCommunicationEvent(project.id, eventIds[0]!)!.document!.artifactId!;
     const directArtifactId = store.getCommunicationEvent(project.id, eventIds[1]!)!.document!.artifactId!;
+    const collaborationArtifactId = store.getCommunicationEvent(project.id, eventIds[2]!)!.document!.artifactId!;
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .toContain(broadcastArtifactId);
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .not.toEqual(expect.arrayContaining([directArtifactId, collaborationArtifactId]));
+    expect(store.agentCanReadProjectArtifact(project.id, directArtifactId, first.id)).toBe(true);
+    expect(store.agentCanReadProjectArtifact(project.id, directArtifactId, outsider.id)).toBe(false);
+    expect(store.agentCanReadProjectArtifact(project.id, collaborationArtifactId, first.id)).toBe(true);
+    expect(store.agentCanReadProjectArtifact(project.id, collaborationArtifactId, second.id)).toBe(false);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${broadcastArtifactId}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${directArtifactId}/preview` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${collaborationArtifactId}/download` })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/communication-documents/${directArtifactId}` })).statusCode).toBe(200);
     const exported = (await app.inject({
       method: "GET", url: `/api/agents/${first.id}/export?mode=full&organization=true`,
     })).json<import("@ponderosa/core").AgentPortablePackageDto>();
@@ -1664,6 +2073,8 @@ describe("generated artifact endpoints", () => {
     const artifact = new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication")[0]!;
     expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifact.id), "utf8")).toBe("u".repeat(10_100));
     expect(store.readCommunicationEvents(project.id)).toHaveLength(0);
+    expect(store.getProjectArtifact(project.id, artifact.id)).toBeUndefined();
+    expect((await first.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifact.id}/preview` })).statusCode).toBe(404);
     await first.close();
 
     store = new AgentStore(dataDir);
@@ -1676,6 +2087,286 @@ describe("generated artifact endpoints", () => {
       document: expect.objectContaining({ artifactId: artifact.id, authorUserId: "local-operator" }),
     }));
     await restarted.close();
+  });
+
+  it("repairs catalog association after a crash immediately after the canonical Communication append", async () => {
+    const project = store.createProject({ label: "Append crash artifact", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let crash = true;
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (!crash) return;
+          crash = false;
+          throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await first.ready();
+    await first.inject({ method: "POST", url: "/api/deployment/drain" });
+    const response = await first.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "a".repeat(10_100), sourceChannel: "main", sourceConversationId: conversation.id },
+    });
+    expect(response.statusCode).toBe(500);
+    const event = store.readCommunicationEvents(project.id)[0]!;
+    const artifactId = event.document!.artifactId!;
+    expect(store.getProjectArtifact(project.id, artifactId)).toBeUndefined();
+    expect((await first.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview` })).statusCode).toBe(404);
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    expect(store.getProjectArtifact(project.id, artifactId)).toMatchObject({ id: artifactId });
+    expect(store.getProjectArtifactAccess(project.id, artifactId)).toMatchObject({
+      ownerKind: "communication",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+    });
+    expect(store.getProjectArtifactPage(project.id, { limit: 100 }).items.map((artifact) => artifact.id))
+      .not.toContain(artifactId);
+    await restarted.close();
+  });
+
+  it("repairs long direct and Broadcast projections before an exact same-process retry succeeds", async () => {
+    const project = store.createProject({ label: "Exact append recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let remainingCrashes = 2;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (remainingCrashes-- > 0) throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await app.ready();
+    const directText = `Private recovery\n${"d".repeat(10_100)}`;
+    const directPayload = {
+      text: directText,
+      idempotencyKey: "exact-long-direct",
+      sourceChannel: "main" as const,
+      sourceConversationId: conversation.id,
+    };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: directPayload,
+    })).statusCode).toBe(500);
+    const directEvent = store.readCommunicationEvents(project.id)[0]!;
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)).toHaveLength(0);
+    expect(store.getConversationMessages(conversation.id, "main")).toHaveLength(0);
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { detail?: string } };
+    }>().checks.communicationMigration.detail)).toContain("drift");
+
+    const directRetry = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: directPayload,
+    });
+    expect(directRetry.statusCode, directRetry.body).toBe(202);
+    expect(directRetry.json<{ communicationEventId: string }>().communicationEventId).toBe(directEvent.eventId);
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { ok: boolean } };
+    }>().checks.communicationMigration.ok)).toBe(true);
+
+    const broadcastText = `Shared recovery\n${"b".repeat(10_100)}`;
+    const broadcastPayload = { text: broadcastText, idempotencyKey: "exact-long-broadcast" };
+    expect((await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: broadcastPayload,
+    })).statusCode).toBe(500);
+    const broadcastEvent = store.readCommunicationEvents(project.id).find((event) => event.intent === "broadcast")!;
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { detail?: string } };
+    }>().checks.communicationMigration.detail)).toContain("drift");
+    const broadcastRetry = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/messages`, payload: broadcastPayload,
+    });
+    expect(broadcastRetry.statusCode, broadcastRetry.body).toBe(200);
+    expect(broadcastRetry.json<{ communicationEventId: string }>().communicationEventId).toBe(broadcastEvent.eventId);
+
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(2);
+    for (const event of [directEvent, broadcastEvent]) {
+      const projections = store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === event.eventId);
+      const tuples = projections.map((projection) => `${projection.surface}:${projection.projectionKey}`);
+      expect(new Set(tuples).size).toBe(tuples.length);
+      expect(projections.filter((projection) =>
+        projection.surface === "conversation" || projection.surface === "direct_agent_audit")
+        .every((projection) => Boolean(projection.message))).toBe(true);
+    }
+    const timelineIds = store.getConversationMessages(conversation.id, "main").map((message) => message.communicationEventId);
+    expect(timelineIds.filter((eventId) => eventId === directEvent.eventId)).toHaveLength(1);
+    expect(timelineIds.filter((eventId) => eventId === broadcastEvent.eventId)).toHaveLength(1);
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)
+      .filter((message) => message.eventId === directEvent.eventId)).toHaveLength(1);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    await expect.poll(async () => ((await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      checks: { communicationMigration: { ok: boolean } };
+    }>().checks.communicationMigration.ok)).toBe(true);
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true });
+    await app.close();
+  });
+
+  it("repairs long direct and Broadcast timelines and audits on daemon restart", async () => {
+    const project = store.createProject({ label: "Restart append recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    let remainingCrashes = 2;
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+      messageLifecycleFaults: {
+        afterCanonicalCommunicationAppend: () => {
+          if (remainingCrashes-- > 0) throw new Error("simulated crash after canonical append");
+        },
+      },
+    });
+    await first.ready();
+    expect((await first.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: `Private restart recovery\n${"d".repeat(10_100)}`,
+        idempotencyKey: "restart-long-direct",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+      },
+    })).statusCode).toBe(500);
+    expect((await first.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/messages`,
+      payload: { text: `Shared restart recovery\n${"b".repeat(10_100)}`, idempotencyKey: "restart-long-broadcast" },
+    })).statusCode).toBe(500);
+    const eventIds = store.readCommunicationEvents(project.id).map((event) => event.eventId);
+    expect(eventIds).toHaveLength(2);
+    expect(store.getConversationMessages(conversation.id, "main")).toHaveLength(0);
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 60_000, maxConcurrentRuns: 0 },
+    });
+    await restarted.ready();
+    expect(store.readCommunicationEvents(project.id).map((event) => event.eventId)).toEqual(eventIds);
+    const timelineIds = store.getConversationMessages(conversation.id, "main").map((message) => message.communicationEventId);
+    for (const eventId of eventIds) expect(timelineIds.filter((candidate) => candidate === eventId)).toHaveLength(1);
+    const directEvent = store.readCommunicationEvents(project.id).find((event) => event.intent === "user_dm")!;
+    expect(store.readProjectedCommunicationMessages(project.id, "direct_agent_audit", agent.id)
+      .filter((message) => message.eventId === directEvent.eventId)).toHaveLength(1);
+    for (const eventId of eventIds) {
+      const projections = store.readCommunicationProjections(project.id).filter((projection) => projection.eventId === eventId);
+      const tuples = projections.map((projection) => `${projection.surface}:${projection.projectionKey}`);
+      expect(new Set(tuples).size).toBe(tuples.length);
+      expect(projections.filter((projection) =>
+        projection.surface === "conversation" || projection.surface === "direct_agent_audit")
+        .every((projection) => Boolean(projection.message))).toBe(true);
+    }
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    expect((await restarted.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      checks: { communicationMigration: { ok: true } },
+    });
+    expect(store.reconcileCommunicationEvents(project.id)).toMatchObject({ ok: true });
+    await restarted.close();
+  });
+
+  it("repairs every aged unreferenced managed blob while retaining generated and screenshot event references", async () => {
+    const project = store.createProject({ label: "Artifact orphan repair", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
+    const generatedId = randomUUID();
+    const screenshotId = randomUUID();
+    const rejectedGeneratedId = randomUUID();
+    const lateScreenshotId = randomUUID();
+    const generated = publishManagedArtifactContent(dataDir, project.id, generatedId, Buffer.from("generated"));
+    const screenshot = publishManagedArtifactContent(dataDir, project.id, screenshotId, Buffer.from("screenshot"));
+    publishManagedArtifactContent(dataDir, project.id, rejectedGeneratedId, Buffer.from("rejected generated"));
+    publishManagedArtifactContent(dataDir, project.id, lateScreenshotId, Buffer.from("late screenshot"));
+    const abandonedSnapshot = path.join(
+      path.dirname(managedArtifactContentPath(dataDir, project.id, generatedId)),
+      `.${generatedId}.abandoned.snapshot`,
+    );
+    writeFileSync(abandonedSnapshot, "abandoned transfer snapshot");
+    store.appendEvent(agent.id, {
+      type: "generated_artifact", artifactId: generatedId, executionId: randomUUID(),
+      path: `generated/${generatedId}.txt`, sourcePath: "generated.txt", name: "generated.txt",
+      mediaType: "text/plain", size: generated.size, sha256: generated.sha256, visibility: "project",
+    });
+    store.appendEvent(agent.id, {
+      type: "browser_screenshot", artifactId: screenshotId, sessionId: randomUUID(), executionId: randomUUID(),
+      path: `browser/${screenshotId}.png`, width: 1280, height: 720,
+      size: screenshot.size, sha256: screenshot.sha256,
+    });
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1_000);
+    for (const id of [generatedId, screenshotId, rejectedGeneratedId, lateScreenshotId]) {
+      utimesSync(managedArtifactContentPath(dataDir, project.id, id), old, old);
+    }
+    utimesSync(abandonedSnapshot, old, old);
+
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, generatedId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    expect(existsSync(abandonedSnapshot)).toBe(false);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    await restarted.ready();
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, generatedId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, screenshotId))).toBe(true);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, rejectedGeneratedId))).toBe(false);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, lateScreenshotId))).toBe(false);
+    expect(existsSync(abandonedSnapshot)).toBe(false);
+    await restarted.close();
+  });
+
+  it("bounds UTF-8 preview work at 2 MiB and falls back once for malformed text", async () => {
+    const project = store.createProject({ label: "Preview boundary", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, { title: "Owner", engine: "codex", conversationId: conversation.id });
+    const limit = 2 * 1024 * 1024;
+    const boundaryId = randomUUID();
+    const boundaryBody = Buffer.concat([
+      Buffer.alloc(limit - 1, 0x61),
+      Buffer.from([0xe2, 0x82, 0xac]),
+      Buffer.from("tail"),
+    ]);
+    const malformedId = randomUUID();
+    const malformedBody = Buffer.concat([
+      Buffer.alloc(limit - 8, 0x62),
+      Buffer.from([0xff]),
+      Buffer.alloc(64, 0x63),
+    ]);
+    for (const [id, body, name] of [
+      [boundaryId, boundaryBody, "boundary.txt"],
+      [malformedId, malformedBody, "malformed.txt"],
+    ] as const) {
+      const published = publishManagedArtifactContent(dataDir, project.id, id, body);
+      const stored = store.appendEvent(agent.id, {
+        type: "generated_artifact", artifactId: id, executionId: randomUUID(),
+        path: `generated/${id}.txt`, sourcePath: name, name,
+        mediaType: "text/plain", size: published.size, sha256: published.sha256, visibility: "project",
+      });
+      const artifact = store.getProjectArtifact(project.id, id)!;
+      registerTestGeneratedArtifact(dataDir, { ...artifact, projectId: project.id, originAgentId: agent.id, kind: "generated_file", mediaType: "text/plain", summary: name, size: body.length, sha256: published.sha256, createdAt: stored.ts });
+    }
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const boundary = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${boundaryId}/preview` });
+    expect(boundary.statusCode, boundary.body).toBe(200);
+    expect(boundary.headers["x-ponderosa-preview-truncated"]).toBe("true");
+    expect(boundary.rawPayload.length).toBe(limit - 1);
+    expect(boundary.headers["content-type"]).toContain("text/plain");
+    const malformed = await app.inject({ method: "GET", url: `/api/projects/${project.id}/artifacts/${malformedId}/preview` });
+    expect(malformed.statusCode, malformed.body).toBe(200);
+    expect(malformed.rawPayload.length).toBe(limit);
+    expect(malformed.headers["content-type"]).toContain("application/octet-stream");
+    await app.close();
   });
 
   it("previews and downloads a canonical PDF only inside its owning project", async () => {
@@ -1700,6 +2391,46 @@ describe("generated artifact endpoints", () => {
     expect((await app.inject({ method: "GET", url: foreign })).statusCode).toBe(404);
     await app.close();
   });
+
+  it.each(["afterPathValidation", "afterFileOpen"] as const)(
+    "fails the legacy PDF fallback closed on an inside-to-outside ancestor replacement at %s",
+    async (phase) => {
+      const project = store.createProject({ label: "Legacy PDF race", hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: "PDF owner", engine: "codex" });
+      const pdfDirectory = path.join(repoDir, "reports");
+      const retainedDirectory = path.join(repoDir, "reports-retained");
+      const outsideDirectory = path.join(dataDir, "outside-reports");
+      const inside = Buffer.from("%PDF-1.4\ninside\n");
+      const outside = Buffer.from("%PDF-1.4\noutside-private\n");
+      mkdirSync(pdfDirectory);
+      mkdirSync(outsideDirectory);
+      const pdfPath = path.join(pdfDirectory, "report.pdf");
+      writeFileSync(pdfPath, inside);
+      writeFileSync(path.join(outsideDirectory, "report.pdf"), outside);
+      const stored = store.appendEvent(agent.id, { type: "file_change", path: pdfPath, kind: "create" });
+      const artifactId = `${agent.id}:a:${stored.seq}:0`;
+      let swapped = false;
+      const swap = (context: { purpose: string }) => {
+        if (swapped || context.purpose !== "legacy_pdf") return;
+        swapped = true;
+        renameSync(pdfDirectory, retainedDirectory);
+        symlinkSync(outsideDirectory, pdfDirectory);
+      };
+      const app = createServer({
+        dataDir, store, engines, logger: false,
+        workspaceArtifactReadFaults: { [phase]: swap },
+      });
+
+      const preview = await app.inject({
+        method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/preview`,
+      });
+      expect(swapped).toBe(true);
+      expect(preview.statusCode).toBe(404);
+      expect(preview.rawPayload).not.toContain(outside);
+      expect(readFileSync(path.join(outsideDirectory, "report.pdf"))).toEqual(outside);
+      await app.close();
+    },
+  );
 });
 
 describe("human-facing chat projection boundary", () => {
@@ -2085,6 +2816,161 @@ describe("interactive browser API", () => {
     expect(store.getProject(project.id)).toBeUndefined();
     expect(driver.close).toHaveBeenCalledTimes(1);
     await app.close();
+  });
+
+  it("keeps a committed Project deletion authoritative when tombstone cleanup fails and completes it on retry", async () => {
+    let failCleanup = true;
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      projectDeletionCleanupFaults: {
+        afterTombstoneRemoval: () => {
+          if (failCleanup) throw new Error("injected tombstone cleanup failure");
+        },
+      },
+    });
+    const project = store.createProject({ label: "Committed cleanup retry", hostPath: repoDir });
+
+    const committed = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(committed.statusCode, committed.body).toBe(200);
+    expect(committed.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: true,
+    });
+    expect(store.getProject(project.id)).toBeUndefined();
+    const pending = store.getProjectDeletionReceipt(project.id)!;
+    expect(pending).toMatchObject({
+      projectId: project.id,
+      storageCleanupCompleted: false,
+      lastError: "injected tombstone cleanup failure",
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "open" }),
+      ]));
+    // The injected failure is in the exact remove-before-fsync/receipt-update
+    // window. Retry must accept the already-absent tombstone idempotently.
+    expect(existsSync(path.join(dataDir, "projects", pending.tombstoneName))).toBe(false);
+
+    failCleanup = false;
+    const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(retried.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+      replayed: true,
+    });
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      storageCleanupCompleted: true,
+      completedAt: expect.any(String),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "resolved" }),
+      ]));
+    expect(existsSync(path.join(dataDir, "projects", pending.tombstoneName))).toBe(false);
+    await app.close();
+  });
+
+  it("resolves a stale Project deletion notification from completed receipt truth on startup", async () => {
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      projectDeletionCleanupFaults: {
+        afterTombstoneRemoval: () => { throw new Error("simulated cleanup receipt interruption"); },
+      },
+    });
+    const project = store.createProject({ label: "Recovered deletion notice", hostPath: repoDir });
+    const deleted = await first.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(deleted.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect((await first.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "open" }),
+      ]));
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({ storageCleanupCompleted: true });
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect((await restarted.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "resolved" }),
+      ]));
+    await restarted.close();
+  });
+
+  it("replays a durable Project deletion receipt after the successful response is lost", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Lost deletion response", hostPath: repoDir });
+
+    // The caller loses this successful response and retries the same request.
+    const lost = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(lost.statusCode, lost.body).toBe(200);
+    expect(lost.json()).toMatchObject({ deleted: true, cleanupPending: false });
+
+    const replay = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(replay.statusCode, replay.body).toBe(200);
+    expect(replay.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+      replayed: true,
+    });
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("restores a failed Project deletion quarantine after restart and rejects all new intake until retry", async () => {
+    let releaseClose!: () => void;
+    const closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const driver = trackedBrowserDriver();
+    driver.close = vi.fn(() => closeBarrier);
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      browserDriverFactory: async () => driver,
+      projectDeletionCleanupTimeoutMs: 30,
+    });
+    const project = store.createProject({ label: "Restart quarantine", hostPath: repoDir });
+    const conversationId = project.lastConversationId!;
+    const agent = store.createAgent(project.id, { title: "Quarantined", engine: "codex", conversationId });
+    expect((await first.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(200);
+
+    const blocked = await first.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(store.listPendingProjectDeletions()).toEqual([
+      expect.objectContaining({ projectId: project.id, lastError: expect.any(String) }),
+    ]);
+    releaseClose();
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect((await restarted.inject({
+      method: "POST", url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Must remain blocked", engine: "codex" },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/messages`, payload: { text: "Must not enqueue" },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/conversations/${conversationId}/direct-messages`,
+      payload: { text: "Must remain private and blocked", idempotencyKey: "blocked-dm", recipients: [{ agentId: agent.id }] },
+    })).statusCode).toBe(409);
+    expect((await restarted.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Must not open a provider" },
+    })).statusCode).toBe(404);
+    expect(adapter.seeds).toHaveLength(0);
+    expect((await restarted.inject({ method: "POST", url: `/api/projects/${project.id}/browser` })).statusCode).toBe(409);
+    expect((await restarted.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      deploymentDrain: { pendingCleanupOperations: 1, retainedTeardownFailures: 1 },
+    });
+
+    const retried = await restarted.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+    await restarted.close();
   });
 
   it("tears down the browser before deleting its owning agent", async () => {
@@ -3683,6 +4569,28 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("serves 50-Agent health and Team Directory from bounded projections", async () => {
+    const project = store.createProject({ label: "Large directory", hostPath: repoDir });
+    const agents = Array.from({ length: 50 }, (_, index) =>
+      store.createAgent(project.id, { title: `Agent ${String(index).padStart(2, "0")}`, engine: "codex" }));
+    for (const [index, agent] of agents.entries()) store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: `run-${index}`,
+    });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const fullLogRead = vi.spyOn(store, "readEvents").mockImplementation(() => {
+      throw new Error("health and directory must not scan canonical Agent logs");
+    });
+    const health = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` });
+    expect(health.statusCode, health.body).toBe(200);
+    expect(health.json<{ agents: unknown[] }>().agents).toHaveLength(50);
+    const directory = await app.inject({ method: "GET", url: `/api/projects/${project.id}/team-directory` });
+    expect(directory.statusCode, directory.body).toBe(200);
+    expect(directory.json<{ agents: unknown[] }>().agents).toHaveLength(50);
+    expect(fullLogRead).not.toHaveBeenCalled();
+    fullLogRead.mockRestore();
+    await app.close();
+  });
+
   it("reports observed compaction and preserves ordinary cancellation", async () => {
     const project = store.createProject({ label: "Health transitions", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
@@ -3712,6 +4620,12 @@ describe("server chunk F", () => {
     expect(bounded).toHaveLength(4);
     expect(bounded.reduce((total, message) => total + message.text.length, 0)).toBeLessThanOrEqual(5_000);
     expect(bounded.at(-1)?.text.startsWith("79:")).toBe(true);
+  });
+
+  it("clips seed and continuation history at Unicode code-point boundaries", () => {
+    const history = [{ role: "user" as const, text: "A😀B" }];
+    expect(boundedSeedHistory(history, 2, 1)).toEqual([{ role: "user", text: "😀B" }]);
+    expect(boundedContinuationHistory(history, 2, 1)).toEqual([{ role: "user", text: "A😀" }]);
   });
 
   it("binds every runtime turn to one stable agent and execution identity", () => {
@@ -3957,6 +4871,7 @@ describe("server chunk F", () => {
         daemon: { ok: true },
         dataDirectory: { ok: true },
         projections: { ok: true },
+        artifactFilesystem: { ok: true, detail: expect.stringContaining("/proc/self/fd") },
         runtimes: { ok: true },
       },
       runtimes: [{ id: "codex", authenticated: true }],
@@ -4003,6 +4918,650 @@ describe("server chunk F", () => {
     await unavailable.close();
   });
 
+  it("keeps cancellation cleanup running during deployment drain and never reports a false zero", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseClose!: () => void;
+    persistent.closeBarrier = new Promise<void>((resolve) => { releaseClose = resolve; });
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Drain cancellation", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Draining", engine: "codex" });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Keep running" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.opened).toBe(1));
+
+    const target = activeRunCancellationPayload(store, agent.id, "cancel-during-deployment-drain");
+    const drain = await app.inject({ method: "POST", url: "/api/deployment/drain" });
+    expect(drain.statusCode, drain.body).toBe(200);
+    expect(drain.json()).toMatchObject({
+      state: "draining", leasingRuns: false, schedulerRuns: 1, localRuns: 1,
+      readyForRestart: false,
+    });
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/cancel`, payload: target,
+    })).statusCode).toBe(200);
+
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/ready" }))
+      .json<{ deploymentDrain: { schedulerRuns: number } }>().deploymentDrain.schedulerRuns).toBe(0);
+    const falseZero = (await app.inject({ method: "GET", url: "/api/ready" })).json<{
+      deploymentDrain: {
+        activeRuns: number; localRuns: number; providerAuthorities: number;
+        pendingCleanupOperations: number; readyForRestart: boolean;
+      };
+    }>().deploymentDrain;
+    expect(falseZero).toMatchObject({ activeRuns: 1, localRuns: 1, readyForRestart: false });
+    expect(falseZero.providerAuthorities).toBeGreaterThan(0);
+    expect(falseZero.pendingCleanupOperations).toBeGreaterThan(0);
+
+    releaseClose();
+    await expect.poll(async () => (await app.inject({ method: "GET", url: "/api/ready" }))
+      .json<{ deploymentDrain: { readyForRestart: boolean } }>().deploymentDrain.readyForRestart).toBe(true);
+    expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).json()).toMatchObject({
+      state: "accepting", leasingRuns: true,
+    });
+    await app.close();
+  });
+
+  it("fails startup readiness and work intake closed when procfs descriptor access is unavailable", async () => {
+    const project = store.createProject({ label: "Missing procfs", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Queued", engine: "codex" });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+
+    const readiness = await app.inject({ method: "GET", url: "/api/ready" });
+    expect(readiness.statusCode).toBe(503);
+    expect(readiness.json()).toMatchObject({
+      status: "not_ready",
+      canAcceptWork: false,
+      acceptingDurableIntake: false,
+      leasingRuns: false,
+      checks: {
+        artifactFilesystem: {
+          ok: false,
+          detail: expect.stringContaining("masked procfs"),
+        },
+      },
+    });
+    const intake = await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Do not accept this work" },
+    });
+    expect(intake.statusCode).toBe(503);
+    expect(intake.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    for (const blockedUrl of [
+      "/api/user-reactions",
+      `/api/conversations/${randomUUID()}/direct-replies`,
+    ]) {
+      const blocked = await app.inject({ method: "POST", url: blockedUrl, payload: {} });
+      expect(blocked.statusCode, blockedUrl).toBe(503);
+      expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    }
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
+    expect(store.getRuns(agent.id)).toEqual([]);
+    expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).statusCode).toBe(409);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        dedupeKey: "startup:artifact-filesystem-capability",
+        severity: "urgent",
+        title: "Artifact filesystem is incompatible",
+      }),
+    ]));
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const restored = createServer({ dataDir, store, engines, logger: false });
+    expect((await restored.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(200);
+    expect((await restored.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ dedupeKey: "startup:artifact-filesystem-capability", status: "resolved" }),
+    ]));
+    await restored.close();
+  });
+
+  it("retries a failed Request through the public API when artifact readiness is healthy", async () => {
+    const project = store.createProject({ label: "Healthy Request retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect((await app.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "healthy-request-original",
+      requests: [{
+        requestId: "healthy-request-original",
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "Original work" },
+      }],
+    });
+    coordination.updateRequest({
+      requestId: "healthy-request-original",
+      updateId: "healthy-request-failed",
+      kind: "failed",
+      actor: { kind: "agent", id: recipient.id },
+      payload: { text: "Failed before completion" },
+    });
+    const before = durableMutationState(store, dataDir, project.id);
+    const requestCountBefore = (store.sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM coordination_requests",
+    ).get() as { count: number }).count;
+    const joinCountBefore = (store.sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM coordination_joins",
+    ).get() as { count: number }).count;
+
+    const retried = await app.inject({
+      method: "POST",
+      url: "/api/requests/healthy-request-original/retry",
+      payload: { idempotencyKey: "healthy-request-retry" },
+    });
+    expect(retried.statusCode, retried.body).toBe(200);
+    const result = retried.json<{ requestIds: string[]; joinId?: string; replayed: boolean; retryOfRequestId: string }>();
+    expect(result).toMatchObject({
+      requestIds: [expect.stringMatching(/^healthy-request-original:retry:/)],
+      joinId: expect.stringMatching(/^healthy-request-original:retry:.*:join$/),
+      replayed: false,
+      retryOfRequestId: "healthy-request-original",
+    });
+    expect(coordination.getRequest("healthy-request-original")?.state).toBe("failed");
+    expect(coordination.getRequest(result.requestIds[0]!)?.payload).toMatchObject({
+      text: "Original work",
+      retryOfRequestId: "healthy-request-original",
+      recoveryInstruction: expect.stringContaining("Audit current state"),
+    });
+    const after = durableMutationState(store, dataDir, project.id);
+    expect(after.activations).toBe(before.activations + 1);
+    expect(after.outbox).toBe(before.outbox + 1);
+    expect(after.runs).toBe(before.runs);
+    expect(after.activeLeases).toBe(0);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_requests").get() as { count: number }).count)
+      .toBe(requestCountBefore + 1);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get() as { count: number }).count)
+      .toBe(joinCountBefore + 1);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects Agent creation without procfs before opening work or metadata can persist", async () => {
+    const project = store.createProject({ label: "Blocked Agent creation", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Opening room" });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const agentsBefore = structuredClone(store.listAgents(project.id));
+    const messagesBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const opening = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: {
+        title: "Must not exist",
+        engine: "codex",
+        conversationId: conversation.id,
+        initialMessage: "Must not create opening work",
+      },
+    });
+    expect(opening.statusCode).toBe(503);
+    expect(opening.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(agentsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+
+    const metadataOnly = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Also blocked", engine: "codex", conversationId: conversation.id },
+    });
+    expect(metadataOnly.statusCode).toBe(503);
+    expect(metadataOnly.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(agentsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects a valid Agent package import without procfs before roster or managed artifact mutation", async () => {
+    const project = store.createProject({ label: "Blocked Agent import", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Import destination" });
+    const artifactRef = randomUUID();
+    const artifactBody = Buffer.from("portable generated artifact");
+    const portablePackage: AgentPortablePackageDto = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "agent",
+      exportedAt: "2026-07-20T01:00:00.000Z",
+      sourceLabel: "Valid portable Agent",
+      rootRef: "portable-root",
+      agents: [{
+        ref: "portable-root",
+        title: "Must not import",
+        engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+        history: [{ role: "user", text: `Inspect artifact ${artifactRef}`, createdAt: "2026-07-20T01:00:01.000Z" }],
+        artifacts: [{
+          ref: artifactRef,
+          kind: "generated_file",
+          path: "generated/result.txt",
+          summary: "result.txt",
+          createdAt: "2026-07-20T01:00:02.000Z",
+          mediaType: "text/plain",
+          visibility: "project",
+          pinned: false,
+          dataBase64: artifactBody.toString("base64"),
+        }],
+      }],
+    };
+    const payload = {
+      package: portablePackage,
+      conversationId: conversation.id,
+      engineMapping: { codex: "codex" },
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const rosterBefore = structuredClone(store.listAgents(project.id));
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const historyBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const artifactsBefore = structuredClone(store.getProjectArtifacts(project.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload,
+    });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(rosterBefore);
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(historyBefore);
+    expect(store.getProjectArtifacts(project.id)).toEqual(artifactsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, artifactRef))).toBe(false);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    expect((await healthy.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(200);
+    const imported = await healthy.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload,
+    });
+    expect(imported.statusCode, imported.body).toBe(201);
+    const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
+    expect(store.getAgent(importedAgentId)).toMatchObject({ title: "Must not import", conversationId: conversation.id });
+    expect(store.getProjectArtifacts(project.id)).toEqual([
+      expect.objectContaining({ id: artifactRef, originAgentId: importedAgentId, kind: "generated_file" }),
+    ]);
+    expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifactRef))).toEqual(artifactBody);
+    expect(adapter.seeds).toEqual([]);
+    await healthy.close();
+  });
+
+  it("rejects valid Agent attachment staging without procfs while preserving ephemeral draft uploads", async () => {
+    const project = store.createProject({ label: "Blocked Agent attachment", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Attachment draft" });
+    const agent = store.createAgent(project.id, { title: "Attachment owner", engine: "codex", conversationId: conversation.id });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const rosterBefore = structuredClone(store.listAgents(project.id));
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "valid.png" },
+      payload: png,
+    });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(rosterBefore);
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    const attachmentDirectory = path.join(dataDir, "projects", project.id, "agents", agent.id, "attachments");
+    expect(existsSync(attachmentDirectory) ? readdirSync(attachmentDirectory) : []).toEqual([]);
+    expect(adapter.seeds).toEqual([]);
+
+    const draft = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/draft-attachments`,
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "image/png", "x-ponderosa-filename": "draft.png" },
+      payload: png,
+    });
+    expect(draft.statusCode, draft.body).toBe(201);
+    const draftDownload = await app.inject({ method: "GET", url: draft.json<{ downloadUrl: string }>().downloadUrl });
+    expect(draftDownload.statusCode).toBe(200);
+    expect(draftDownload.rawPayload).toEqual(png);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    const healthyBefore = readinessFenceDurableState(store, dataDir, project.id);
+    const uploaded = await healthy.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/attachments`,
+      headers: { "content-type": "image/png", "x-ponderosa-filename": "valid.png" },
+      payload: png,
+    });
+    expect(uploaded.statusCode, uploaded.body).toBe(201);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).not.toEqual(healthyBefore);
+    const authority = new AssetStore(dataDir);
+    try {
+      expect(await authority.read(project.id, agent.id, uploaded.json<{ id: string }>().id)).toMatchObject({
+        name: "valid.png",
+        mediaType: "image/png",
+        state: "staged",
+      });
+    } finally {
+      authority.close();
+    }
+    await healthy.close();
+  });
+
+  it("rejects valid reaction and direct-reply intake without procfs before any canonical or notification mutation", async () => {
+    const project = store.createProject({ label: "Blocked private reply intake", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Valid reply target" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: conversation.id });
+    const communicationEventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: communicationEventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "completed-author-run" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Agent-authored target",
+      createdAt: "2026-07-20T02:00:00.000Z",
+    });
+    const targetMessage = store.appendConversationMessage(
+      conversation.id,
+      { role: "assistant", text: "#broadcast Agent-authored target" },
+      author.id,
+      "main",
+      undefined,
+      undefined,
+      communicationEventId,
+    )!;
+    store.appendEvent(author.id, {
+      type: "communication_projection",
+      communicationEventId,
+      text: "Agent-authored target",
+      role: "assistant",
+    });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const messagesBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const authorEventsBefore = structuredClone(store.getMessages(author.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const reaction = await app.inject({
+      method: "POST",
+      url: "/api/user-reactions",
+      payload: {
+        projectId: project.id,
+        communicationEventId,
+        emoji: "✅",
+        idempotencyKey: "blocked-valid-reaction",
+      },
+    });
+    expect(reaction.statusCode, reaction.body).toBe(503);
+    expect(reaction.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+
+    const directReply = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/direct-replies`,
+      payload: {
+        text: "Valid private follow-up",
+        replyToMessageId: targetMessage.id,
+        targetAuthorAgentId: author.id,
+        idempotencyKey: "blocked-valid-direct-reply",
+        activeRunDelivery: "queue",
+      },
+    });
+    expect(directReply.statusCode, directReply.body).toBe(503);
+    expect(directReply.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(store.getMessages(author.id)).toEqual(authorEventsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    expect((await healthy.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    const healthyReaction = await healthy.inject({
+      method: "POST",
+      url: "/api/user-reactions",
+      payload: {
+        projectId: project.id,
+        communicationEventId,
+        emoji: "✅",
+        idempotencyKey: "blocked-valid-reaction",
+      },
+    });
+    expect(healthyReaction.statusCode, healthyReaction.body).toBe(200);
+    const healthyReply = await healthy.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/direct-replies`,
+      payload: {
+        text: "Valid private follow-up",
+        replyToMessageId: targetMessage.id,
+        targetAuthorAgentId: author.id,
+        idempotencyKey: "blocked-valid-direct-reply",
+        activeRunDelivery: "queue",
+      },
+    });
+    expect(healthyReply.statusCode, healthyReply.body).toBe(200);
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(communicationsBefore.length + 2);
+    expect(store.getConversationMessages(conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        replyTo: expect.objectContaining({ messageId: targetMessage.id, authorAgentId: author.id }),
+      }),
+    ]));
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(2);
+    expect(adapter.seeds).toEqual([]);
+    await healthy.close();
+  });
+
+  it("rejects Request retry without procfs and leaves Request, Activation, outbox, and scheduler bytes unchanged", async () => {
+    const project = store.createProject({ label: "Blocked Request retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "blocked-request-original",
+      requests: [{
+        requestId: "blocked-request-original",
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "Original work" },
+      }],
+    });
+    coordination.updateRequest({
+      requestId: "blocked-request-original",
+      updateId: "blocked-request-failed",
+      kind: "failed",
+      actor: { kind: "agent", id: recipient.id },
+      payload: { text: "Failed before completion" },
+    });
+    const requestBefore = structuredClone(coordination.getRequest("blocked-request-original"));
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/requests/blocked-request-original/retry",
+      payload: { idempotencyKey: "must-not-persist" },
+    });
+    expect(blocked.statusCode).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(coordination.getRequest("blocked-request-original")).toEqual(requestBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects delivery retry without procfs and leaves delivery, Activation, outbox, and scheduler bytes unchanged", async () => {
+    const project = store.createProject({ label: "Blocked delivery retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const eventId = "blocked-delivery-communication";
+    const communication: CommunicationEvent = {
+      eventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id },
+      text: "Original operator delivery",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    };
+    const original = coordination.recordRuntimeCommunication({
+      id: eventId,
+      projectId: project.id,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      scopeKey: `conversation:${conversation.id}`,
+      payload: { communication, dispatch: { conversationId: conversation.id, text: communication.text } },
+      activation: {
+        agentId: recipient.id,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "steer_or_run",
+        promptClass: "human",
+      },
+      now: communication.createdAt,
+    });
+    expect(original.activationId).toBeTruthy();
+    store.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'failed', terminal_outcome = 'permanent_failure',
+        terminal_at = '2026-07-20T00:00:01.000Z', updated_at = '2026-07-20T00:00:01.000Z'
+      WHERE id = ?
+    `).run(original.activationId);
+    store.sqlite.prepare("DELETE FROM activation_outbox WHERE activation_id = ?").run(original.activationId);
+    const receiptBefore = structuredClone(coordination.deliveryReceiptsForCommunication(project.id, eventId));
+    expect(receiptBefore).toEqual([expect.objectContaining({
+      activationId: original.activationId,
+      state: "failed",
+      canRetry: true,
+    })]);
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/message-deliveries/${original.activationId}/retry`,
+      payload: { idempotencyKey: "must-not-persist" },
+    });
+    expect(blocked.statusCode).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(coordination.deliveryReceiptsForCommunication(project.id, eventId)).toEqual(receiptBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
   it("lets provider-confirmed entitlement failure override a stale login-positive probe", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Entitlement", hostPath: repoDir });
@@ -4025,6 +5584,27 @@ describe("server chunk F", () => {
       availabilityDetail: expect.stringContaining("organization has disabled"),
     }));
     await restarted.close();
+  });
+
+  it("does not reconstruct provider evidence by scanning historical Agent events at startup", async () => {
+    const project = store.createProject({ label: "Historical provider events", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historical runtime", engine: "codex" });
+    store.appendEvent(agent.id, { type: "error", message: "subscription access denied" });
+    // Isolate compatibility reconstruction from the separate execution-crash
+    // recovery pass, which owns its own Agent event-log scan.
+    const executionRecovery = vi.spyOn(store, "recoverInterruptedExecutions").mockReturnValue([]);
+    const historicalScan = vi.spyOn(EventLog.prototype, "readAll");
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect(executionRecovery).toHaveBeenCalledOnce();
+    expect(historicalScan).not.toHaveBeenCalled();
+    expect((await app.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
+      id: "codex",
+      available: true,
+    }));
+    expect(existsSync(path.join(dataDir, "engine-availability.jsonl"))).toBe(false);
+    historicalScan.mockRestore();
+    executionRecovery.mockRestore();
+    await app.close();
   });
 
   it("keeps denied work queued and releases it only after an explicit successful provider probe", async () => {
@@ -4081,6 +5661,23 @@ describe("server chunk F", () => {
       canAcceptWork: true,
       checks: { communicationMigration: { ok: false, detail: expect.stringContaining("quarantined project") } },
     });
+    await app.close();
+  });
+
+  it("serves repeated readiness probes from cached communication reconciliation evidence", async () => {
+    store.createProject({ label: "Bounded readiness", hostPath: repoDir });
+    const reconciliation = vi.spyOn(store, "reconcileCommunicationEvents");
+    const app = createServer({ dataDir, store, engines, logger: false });
+    await app.ready();
+    expect(reconciliation).toHaveBeenCalledTimes(1);
+    reconciliation.mockClear();
+
+    for (let probe = 0; probe < 25; probe += 1) {
+      const response = await app.inject({ method: "GET", url: "/api/ready" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ checks: { communicationMigration: { ok: true } } });
+    }
+    expect(reconciliation).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -4398,7 +5995,11 @@ describe("server chunk F", () => {
 
     const retried = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
     expect(retried.statusCode, retried.body).toBe(200);
-    expect(retried.json()).toEqual({ deleted: true });
+    expect(retried.json()).toMatchObject({
+      deleted: true,
+      deletionReceiptId: project.id,
+      cleanupPending: false,
+    });
     expect(persistent.closed).toBe(2);
     expect(store.getProject(project.id)).toBeUndefined();
     await app.close();
@@ -4695,6 +6296,44 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keeps deleted-Agent Work log, Activity, Runs, and provider-input audit inspectable", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Deleted audit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Former worker", engine: "codex" });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "deleted-audit-run",
+    });
+    store.appendEvent(agent.id, { type: "tool_result", id: "deleted-tool", output: "audit output" });
+    store.appendEvent(agent.id, {
+      type: "agent_output", executionId: "deleted-audit-run", text: "durable response", sourceSeqStart: 2, sourceSeqEnd: 2,
+    });
+    store.appendEvent(agent.id, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "deleted-audit-run",
+    });
+    const now = new Date().toISOString();
+    store.sqlite.prepare(`
+      INSERT INTO provider_inputs (
+        execution_id, scheduler_run_id, agent_id, project_id, provider_prompt,
+        prompt_hash, source_manifest_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("deleted-audit-run", "scheduler-deleted-audit", agent.id, project.id, "exact audit prompt", "b".repeat(64), "[]", now, now);
+
+    expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      agent: { id: agent.id, archived: true, deletedAt: expect.any(String) },
+      runOutput: [expect.objectContaining({ text: "durable response" })],
+      activity: [expect.objectContaining({ event: expect.objectContaining({ id: "deleted-tool" }) })],
+      runs: [expect.objectContaining({ id: "deleted-audit-run", status: "completed" })],
+    });
+    expect((await app.inject({ method: "GET", url: `/api/agents/${agent.id}/history/activity` })).statusCode).toBe(200);
+    const providerInput = await app.inject({ method: "GET", url: "/api/runs/deleted-audit-run/provider-input?exact=1" });
+    expect(providerInput.statusCode, providerInput.body).toBe(200);
+    expect(providerInput.json()).toMatchObject({ exactPrompt: "exact audit prompt" });
+    await app.close();
+  });
+
   it("serves active generated documents only inside an opaque restricted sandbox", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Sandboxed artifacts", hostPath: repoDir });
@@ -4811,12 +6450,9 @@ describe("server chunk F", () => {
     expect(JSON.parse((await retrieve()).text)).toMatchObject({
       items: [{ content: bytes.toString("utf8"), complete: true }],
     });
-    store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" });
-    expect((await retrieve()).success).toBe(false);
-    expect((await app.inject({
-      method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
-    })).statusCode).toBe(404);
-    store.recordProjectArtifact(artifact);
+    expect(() => store.recordProjectArtifact({ ...artifact, summary: "contradictory.txt" }))
+      .toThrow(/immutable/);
+    expect((await retrieve()).success).toBe(true);
     expect((await app.inject({
       method: "GET", url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
     })).rawPayload).toEqual(bytes);
@@ -4902,10 +6538,10 @@ describe("server chunk F", () => {
     expect(responsibleDetail.json<{ runs: Array<{ id: string; communicationEventId?: string; status: string }> }>().runs)
       .toEqual([expect.objectContaining({ id: runId, status: "completed" })]);
     expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/runs` }))
-      .json<Array<{ id: string }>>()).toEqual([expect.objectContaining({ id: runId })]);
+      .json<{ items: Array<{ id: string }> }>().items).toEqual([expect.objectContaining({ id: runId })]);
     store.appendEvent(responsible.id, { type: "work_item_update", workItemId: "follow-up", executionId: runId, title: "Verify onboarding", status: "done" });
     expect((await app.inject({ method: "GET", url: `/api/agents/${responsible.id}/work-items` }))
-      .json<Array<{ executionId?: string; title: string }>>())
+      .json<{ items: Array<{ executionId?: string; title: string }> }>().items)
       .toEqual([expect.objectContaining({ executionId: runId, title: "Verify onboarding" })]);
     expect(store.getConversationMessages(master.id).filter((message) => message.communicationEventId === eventId)).toEqual([
       expect.objectContaining({
@@ -5364,6 +7000,86 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("persists the exact canonical fresh seed after a pre-sampling resume failure", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Truthful reseed", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Continuity" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    const privateMarker = `PRIVATE-SEED-MARKER ${"😀".repeat(10_050)}`;
+    let selfBroadcastEventId = "";
+    adapter.beforeResponse = async (opts) => {
+      const published = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "broadcast", text: "SELF-BROADCAST-MARKER", idempotencyKey: "self-broadcast" },
+      });
+      expect(published.statusCode, published.body).toBe(200);
+      selfBroadcastEventId = published.json<{ eventId: string }>().eventId;
+    };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: privateMarker, idempotencyKey: "private-seed" },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+
+    const firstRun = store.getRuns(agent.id)[0]!;
+    const retainedArtifactId = store.getProviderInput(firstRun.id)?.sourceManifest.artifactIds.find((id) =>
+      id.startsWith("text-"));
+    expect(retainedArtifactId).toMatch(/^text-/);
+    expect(store.resumeSessionState(agent.id)?.artifactIds).toContain(retainedArtifactId);
+    store.setImportedHistory(agent.id, "continuity-import", [{
+      role: "assistant", text: "IMPORTED-SEED-MARKER", createdAt: new Date().toISOString(),
+    }]);
+    const shared = appendBroadcast(store, project.id, conversation.id, "CURRENT-SHARED-MARKER");
+
+    adapter.mode = "resume_compaction_fail";
+    const secondPayload = { text: "SECOND-CURRENT-REQUEST", idempotencyKey: "resume-reseed" };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: secondPayload,
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    const freshAttempt = adapter.seeds[1]!;
+    const actualFreshInput = renderSeedPrompt(freshAttempt.history, freshAttempt.prompt);
+    expect(actualFreshInput.match(/SELF-BROADCAST-MARKER/g)).toHaveLength(1);
+    expect(actualFreshInput).toContain(`Full message: ponderosa://artifact/${retainedArtifactId}`);
+    expect(actualFreshInput).toContain("IMPORTED-SEED-MARKER");
+    expect(actualFreshInput).toContain("CURRENT-SHARED-MARKER");
+    expect(actualFreshInput).toContain("SECOND-CURRENT-REQUEST");
+    expect(actualFreshInput).toContain(`ponderosa://artifact/${retainedArtifactId}`);
+    expect(actualFreshInput).toContain("[POLICY · SESSION SNAPSHOT | AUTHORITATIVE]");
+
+    const secondRun = store.getRuns(agent.id)[1]!;
+    const providerInput = store.getProviderInput(secondRun.id, true)!;
+    expect(providerInput.exactPrompt).toBe(actualFreshInput);
+    expect(providerInput.promptHash).toBe(createHash("sha256").update(actualFreshInput).digest("hex"));
+    expect(providerInput.sourceManifest.providerSessionDisposition).toBe("reseeded");
+    expect(providerInput.sourceManifest.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "policy", delivery: "submitted" }),
+      expect.objectContaining({ kind: "communication", ref: selfBroadcastEventId, delivery: "submitted" }),
+      expect.objectContaining({ kind: "communication", ref: shared.communicationEventId, delivery: "submitted" }),
+      expect.objectContaining({ kind: "artifact", ref: retainedArtifactId, delivery: "submitted" }),
+    ]));
+    expect(providerInput.sourceManifest.sources.filter((source) => source.ref === selfBroadcastEventId)).toHaveLength(1);
+    expect(providerInput.sourceManifest.sources.some((source) => source.delivery === "retained_session")).toBe(false);
+    expect((store.sqlite.prepare(`
+      SELECT context_disposition AS disposition FROM scheduler_runs WHERE id = ?
+    `).get(secondRun.id) as { disposition: string })).toEqual({ disposition: "reseeded" });
+    expect(store.getMessages(agent.id).filter((message) => message.communicationEventId === selfBroadcastEventId)).toHaveLength(1);
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: secondPayload,
+    })).statusCode).toBe(202);
+    expect(store.getRuns(agent.id)).toHaveLength(2);
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(0);
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    await app.close();
+  });
+
   it("does not replay a failed resume after material side effects", async () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
@@ -5530,6 +7246,33 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("counts and clips astral room and reply context by Unicode code point", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Unicode context", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Astral room" });
+    const agent = store.createAgent(project.id, { title: "Counter", engine: "codex", conversationId: conversation.id });
+    const replyTarget = appendBroadcast(store, project.id, conversation.id, "😀".repeat(1_201));
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: "Count safely",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+        replyToMessageId: replyTarget.id,
+      },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+
+    const prompt = adapter.seeds[0]!.prompt;
+    expect(prompt).toContain("Context injection accounting: room_messages=1; room_characters=1201");
+    const quote = prompt.match(/Replying specifically to this earlier message:\n> ([^\n]*)/)?.[1];
+    expect(quote).toBeTruthy();
+    expect([...(quote ?? "")]).toHaveLength(1_200);
+    expect([...(quote ?? "")].every((character) => character === "😀")).toBe(true);
+    await app.close();
+  });
+
   it("delivers only accepted-session room deltas and does not replay unchanged history", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Demo", hostPath: repoDir });
@@ -5596,6 +7339,125 @@ describe("server chunk F", () => {
     expect(adapter.continues[3]?.prompt).not.toContain("canonical delta 79");
     expect(adapter.continues[3]?.prompt).toContain("canonical delta 80");
     expect(adapter.continues[3]?.prompt).toContain("canonical delta 100");
+    await app.close();
+  });
+
+  it("commits the main-room canonical tip after an oversized resume delta falls back to a fresh seed", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Main-room fallback", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Reseeded room" });
+    const initialTipId = appendBroadcast(store, project.id, master.id, "main-room accepted cursor").id;
+    const agent = store.createAgent(project.id, { title: "Main Reader", engine: "codex", conversationId: master.id });
+
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "seed main room", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id);
+    await vi.waitFor(() => {
+      const sessionId = store.resumeSessionId(agent.id);
+      expect(sessionId).toBeTruthy();
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, sessionId!)).toMatchObject({
+        channel: "main",
+        lastMessageId: initialTipId,
+      });
+    });
+
+    const unseen = Array.from({ length: 45 }, (_, index) => `MAIN-RESEED-${String(index).padStart(3, "0")}`);
+    let canonicalTipId = "";
+    for (const marker of unseen) canonicalTipId = appendBroadcast(store, project.id, master.id, marker).id;
+
+    adapter.mode = "resume_compaction_fail";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "resume then reseed main room", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]!.prompt).toContain(unseen[0]);
+    expect(adapter.continues[0]!.prompt).not.toContain(unseen.at(-1)!);
+    const freshSeedPrompt = adapter.seeds[1]!.prompt;
+    expect(freshSeedPrompt).toContain(unseen.at(-1)!);
+    const seededMarkers = unseen.filter((marker) => freshSeedPrompt.includes(marker));
+    expect(seededMarkers.length).toBeGreaterThan(0);
+    expect(seededMarkers.length).toBeLessThan(unseen.length);
+    const acceptedSessionId = store.resumeSessionId(agent.id);
+    expect(acceptedSessionId).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, acceptedSessionId!)).toMatchObject({
+        channel: "main",
+        lastMessageId: canonicalTipId,
+      });
+    });
+
+    adapter.mode = "normal";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "continue after main reseed", sourceChannel: "main" },
+    });
+    await waitForRun(agent.id, 3);
+    const continuedPrompt = adapter.continues[1]!.prompt;
+    for (const marker of seededMarkers) expect(continuedPrompt).not.toContain(marker);
+    await app.close();
+  });
+
+  it("commits the inherited-Broadcast canonical tip after an oversized resume delta falls back to a fresh seed", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Broadcast fallback", hostPath: repoDir });
+    const master = store.createConversation(project.id, { title: "Inherited context" });
+    const initialTipId = appendBroadcast(store, project.id, master.id, "inherited accepted cursor").id;
+    const agent = store.createAgent(project.id, { title: "Private Reader", engine: "codex", conversationId: master.id });
+
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "seed private chat" },
+    });
+    await waitForRun(agent.id);
+    await vi.waitFor(() => {
+      const sessionId = store.resumeSessionId(agent.id);
+      expect(sessionId).toBeTruthy();
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, sessionId!)).toMatchObject({
+        channel: "broadcast",
+        lastMessageId: initialTipId,
+      });
+    });
+
+    const unseen = Array.from({ length: 45 }, (_, index) => `BROADCAST-RESEED-${String(index).padStart(3, "0")}`);
+    let canonicalTipId = "";
+    for (const marker of unseen) canonicalTipId = appendBroadcast(store, project.id, master.id, marker).id;
+
+    adapter.mode = "resume_compaction_fail";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "resume then reseed inherited context" },
+    });
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    expect(adapter.continues[0]!.prompt).toContain(unseen[0]);
+    expect(adapter.continues[0]!.prompt).not.toContain(unseen.at(-1)!);
+    const freshSeedPrompt = adapter.seeds[1]!.prompt;
+    expect(freshSeedPrompt).toContain(unseen.at(-1)!);
+    const seededMarkers = unseen.filter((marker) => freshSeedPrompt.includes(marker));
+    expect(seededMarkers.length).toBeGreaterThan(0);
+    expect(seededMarkers.length).toBeLessThan(unseen.length);
+    const acceptedSessionId = store.resumeSessionId(agent.id);
+    expect(acceptedSessionId).toBeTruthy();
+    await vi.waitFor(() => {
+      expect(new ContextCursorStore(dataDir).latestForSession(agent.id, acceptedSessionId!)).toMatchObject({
+        channel: "broadcast",
+        lastMessageId: canonicalTipId,
+      });
+    });
+
+    adapter.mode = "normal";
+    await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue after inherited reseed" },
+    });
+    await waitForRun(agent.id, 3);
+    const continuedPrompt = adapter.continues[1]!.prompt;
+    for (const marker of seededMarkers) expect(continuedPrompt).not.toContain(marker);
     await app.close();
   });
 
@@ -6160,15 +8022,6 @@ describe("server chunk F", () => {
     persistent.completeTurn(persistent.openedOptions.lastIndexOf(requesterQuestionRuntime));
     await vi.waitFor(() => expect(persistent.starts.length).toBeGreaterThanOrEqual(4));
     const resumedRecipientRuntime = persistent.openedOptions.filter((options) => options.agentId === recipient.id).at(-1)!;
-    const report = await resumedRecipientRuntime.handleDynamicToolCall!({
-      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
-    });
-    expect(report.success, report.text).toBe(true);
-    expect(JSON.parse(report.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
-    const reportReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
-      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
-    });
-    expect(JSON.parse(reportReplay.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
     const asked = await resumedRecipientRuntime.handleDynamicToolCall!({
       name: "ponderosa_decision", arguments: { question: "What should happen next?" },
     });
@@ -6178,6 +8031,15 @@ describe("server chunk F", () => {
       name: "ponderosa_decision", arguments: { question: "What should happen next?" },
     });
     expect(JSON.parse(askedReplay.text)).toMatchObject({ id: JSON.parse(asked.text).id });
+    const report = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(report.success, report.text).toBe(true);
+    expect(JSON.parse(report.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
+    const reportReplay = await resumedRecipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "Facade result complete." },
+    });
+    expect(JSON.parse(reportReplay.text)).toMatchObject({ requestId: delegation.requestIds[0], state: "completed" });
     await app.close();
   });
 
@@ -6285,6 +8147,51 @@ describe("server chunk F", () => {
       (SELECT COUNT(*) FROM scheduler_runs) AS runs,
       (SELECT COUNT(*) FROM agent_activations) AS activations`).get()).toEqual(countsBefore);
     persistent.completeTurn(2);
+    await app.close();
+  });
+
+  it("denies a guessed private Communication artifact to an Agent outside its audience", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Private result scope", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const outsider = store.createAgent(project.id, { title: "Outsider", engine: "codex", conversationId: conversation.id });
+    const direct = await app.inject({
+      method: "POST", url: `/api/conversations/${conversation.id}/direct-messages`,
+      payload: {
+        text: "private\n" + "p".repeat(10_100),
+        recipients: [{ agentId: recipient.id }],
+        idempotencyKey: "private-result-scope",
+      },
+    });
+    expect(direct.statusCode, direct.body).toBe(200);
+    const event = store.getCommunicationEvent(project.id, direct.json<{ messageId: string }>().messageId)!;
+    const ref = `ponderosa://artifact/${event.document!.artifactId!}`;
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${outsider.id}/messages`,
+      payload: { text: `Try to retrieve ${ref}`, sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions.filter((options) =>
+      options.agentId === recipient.id || options.agentId === outsider.id)).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions.find((options) => options.agentId === recipient.id)!;
+    const outsiderRuntime = persistent.openedOptions.find((options) => options.agentId === outsider.id)!;
+    const allowed = await recipientRuntime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 262_144 },
+    });
+    expect(allowed.success, allowed.text).toBe(true);
+    expect(JSON.parse(allowed.text)).toMatchObject({ items: [{ ref, complete: true }] });
+    const denied = await outsiderRuntime.handleDynamicToolCall!({
+      name: "ponderosa_result", arguments: { refs: [ref], maxBytes: 262_144 },
+    });
+    expect(denied.success).toBe(false);
+    expect(JSON.parse(denied.text)).toMatchObject({ error: expect.stringContaining("not reachable") });
+    persistent.completeTurn(persistent.openedOptions.indexOf(recipientRuntime));
+    persistent.completeTurn(persistent.openedOptions.indexOf(outsiderRuntime));
     await app.close();
   });
 
@@ -6491,7 +8398,8 @@ describe("server chunk F", () => {
     expect(rejected.text).toContain("runtime artifact changed after scheduler admission");
     const runtimeRow = store.sqlite.prepare(`SELECT owner_id AS id FROM runtime_artifacts WHERE project_id = ?`)
       .get(project.id) as { id: string };
-    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toBeUndefined();
+    expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toMatchObject({ eventId: runtimeRow.id });
+    expect(store.getProjectArtifact(project.id, artifactId)).toBeUndefined();
 
     writeFileSync(managedArtifactContentPath(dataDir, project.id, artifactId), original);
     const repaired = await persistent.openedOptions[0]!.handleDynamicToolCall!(call);
@@ -6737,14 +8645,14 @@ describe("server chunk F", () => {
         idempotencyKey: "duplicate-review-outcome",
       },
     });
-    expect(duplicateOutcomeMessage.success, duplicateOutcomeMessage.text).toBe(true);
+    expect(duplicateOutcomeMessage.success).toBe(false);
     expect(JSON.parse(duplicateOutcomeMessage.text)).toMatchObject({
-      passiveRecipientAgentIds: [requester.id],
+      error: "invalid or expired agent messaging capability",
     });
     expect(store.sqlite.prepare(`
-      SELECT actionable FROM runtime_communications
+      SELECT COUNT(*) AS count FROM runtime_communications
       WHERE json_extract(payload_json, '$.idempotencyKey') = 'duplicate-review-outcome'
-    `).get()).toEqual({ actionable: 0 });
+    `).get()).toEqual({ count: 0 });
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM agent_activations
       WHERE kind = 'ordinary_message' AND agent_id = ?
@@ -6811,6 +8719,77 @@ describe("server chunk F", () => {
     await vi.waitFor(() => expect(store.sqlite.prepare(
       "SELECT state FROM coordination_requests WHERE id = 'second-review-request'",
     ).get()).toEqual({ state: "completed" }));
+    await app.close();
+  });
+
+  it("drains provider text and terminal audit lifecycle after a terminal Request tool fences mutations", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Terminal audit drain", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Audit drain" });
+    const requester = store.createAgent(project.id, {
+      title: "Requester", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    new CoordinationV3Store(store.sqlite).coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "terminal-audit-drain",
+      requests: [{
+        requestId: "terminal-audit-drain-request",
+        recipientAgentId: recipient.id,
+        payload: { text: "Complete the request, then finish the provider turn." },
+        lifetime: { kind: "indefinite" },
+      }],
+    });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    await app.ready();
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const completed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { text: "Canonical Request handoff." },
+    });
+    expect(completed.success, completed.text).toBe(true);
+    const schedulerRun = new CoordinationV3Store(store.sqlite).agentSnapshot(recipient.id).activeRun!;
+    expect(new CoordinationV3Store(store.sqlite).ownsRun(
+      schedulerRun.id,
+      schedulerRun.fencingToken,
+    )).toBe(false);
+    expect(new CoordinationV3Store(store.sqlite).ownsRunForCleanup(
+      schedulerRun.id,
+      schedulerRun.fencingToken,
+    )).toBe(true);
+
+    persistent.queues[0]!.push({ type: "text", delta: "Provider text emitted after the terminal tool." });
+    persistent.completeTurn(0);
+
+    await expect.poll(() => store.getRuns(recipient.id)[0]?.status).toBe("completed");
+    await expect.poll(() => (store.sqlite.prepare(
+      "SELECT status FROM scheduler_runs WHERE id = ?",
+    ).get(schedulerRun.id) as { status: string } | undefined)?.status).toBe("completed");
+    expect(store.getAgentDetail(recipient.id)?.runOutput).toContainEqual(expect.objectContaining({
+      executionId: schedulerRun.id,
+      text: "Provider text emitted after the terminal tool.",
+      completed: true,
+    }));
+    expect(store.readEvents(recipient.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "turn_done", executionId: schedulerRun.id,
+      }) }),
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "agent_lifecycle", executionId: schedulerRun.id, status: "completed",
+      }) }),
+    ]));
     await app.close();
   });
 
@@ -8478,6 +10457,85 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("drains a spawned capability-discovery helper before deleting its Project", async () => {
+    let registered = false;
+    let closeAttempts = 0;
+    Object.assign(adapter, { capabilities: async (_cwd: string, context: EngineCapabilityDiscoveryOptions) => {
+      const handle: RuntimeProcessHandle = {
+        isAlive: () => closeAttempts === 0,
+        close: async () => { closeAttempts += 1; },
+      };
+      context.onRuntimeSpawned(handle);
+      registered = true;
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener("abort", () => reject(new Error("discovery aborted for Project deletion")), { once: true });
+      });
+      throw new Error("unreachable");
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Discovery deletion", hostPath: repoDir });
+    const discovery = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    await vi.waitFor(() => expect(registered).toBe(true));
+
+    const [deleted, discoveryResponse] = await Promise.all([
+      app.inject({ method: "DELETE", url: `/api/projects/${project.id}` }),
+      discovery,
+    ]);
+
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(discoveryResponse.statusCode).toBe(500);
+    expect(closeAttempts).toBe(1);
+    expect(store.getProject(project.id)).toBeUndefined();
+    await app.close();
+  });
+
+  it("retains failed capability-discovery cleanup until a later deletion retry observes exit", async () => {
+    let registered = false;
+    let closeAttempts = 0;
+    let closeOperation: Promise<void> | undefined;
+    Object.assign(adapter, { capabilities: async (_cwd: string, context: EngineCapabilityDiscoveryOptions) => {
+      const handle: RuntimeProcessHandle = {
+        isAlive: () => closeAttempts < 3,
+        close: () => {
+          if (closeOperation) return closeOperation;
+          closeAttempts += 1;
+          const attempt = closeAttempts < 3
+            ? Promise.reject(new Error(`simulated discovery group close failure ${closeAttempts}`))
+            : Promise.resolve();
+          const shared = attempt.catch((error) => {
+            if (closeOperation === shared) closeOperation = undefined;
+            throw error;
+          });
+          closeOperation = shared;
+          return shared;
+        },
+      };
+      context.onRuntimeSpawned(handle);
+      registered = true;
+      await new Promise<void>((_resolve, reject) => {
+        context.signal.addEventListener("abort", () => reject(new Error("discovery aborted for Project deletion")), { once: true });
+      });
+      throw new Error("unreachable");
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Retry discovery deletion", hostPath: repoDir });
+    const discovery = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    await vi.waitFor(() => expect(registered).toBe(true));
+
+    const firstDeletion = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(firstDeletion.statusCode, firstDeletion.body).toBe(503);
+    expect(firstDeletion.json()).toMatchObject({ cleanupPending: true, quarantined: true, retryable: true });
+    expect(store.getProject(project.id)).toBeDefined();
+    expect(closeAttempts).toBe(2);
+
+    const retriedDeletion = await app.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(retriedDeletion.statusCode, retriedDeletion.body).toBe(200);
+    expect(closeAttempts).toBe(3);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect((await discovery).statusCode).toBe(500);
+    await app.close();
+  });
+
   it("keeps switch-engine stubbed while global and legacy agent search use projected chat messages", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     const conversationId = project.lastConversationId!;
@@ -8518,7 +10576,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("deletes an agent: removes projections + on-disk log, cancels active run", async () => {
+  it("deletes an agent: removes live authority while retaining immutable audit", async () => {
     const { app, project, agent } = await createProjectAndAgent();
 
     // Give the agent some history so there's a log + projections to remove.
@@ -8534,11 +10592,18 @@ describe("server chunk F", () => {
     expect(del.statusCode).toBe(200);
     expect(del.json<{ deleted: boolean }>().deleted).toBe(true);
 
-    // Gone from the projection list and by id.
+    // Gone from the live organization, while the stable audit identity remains.
     const list = await app.inject({ method: "GET", url: `/api/projects/${project.id}/agents` });
     expect(list.json<unknown[]>()).toHaveLength(0);
     const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
-    expect(detail.statusCode).toBe(404);
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json()).toMatchObject({
+      agent: { id: agent.id, archived: true, deletedAt: expect.any(String) },
+      runs: expect.any(Array), activity: expect.any(Array), runOutput: expect.any(Array),
+    });
+    expect((await app.inject({
+      method: "PATCH", url: `/api/agents/${agent.id}`, payload: { title: "Must remain immutable" },
+    })).statusCode).toBe(404);
 
     // Deleting again is a 404.
     const again = await app.inject({
@@ -8548,10 +10613,11 @@ describe("server chunk F", () => {
     });
     expect(again.statusCode).toBe(404);
 
-    // On-disk agent directory is gone (rebuild won't resurrect it).
+    // Rebuild retains audit without restoring live authority.
     store.rebuildProjections();
     const afterRebuild = await app.inject({ method: "GET", url: `/api/agents/${agent.id}` });
-    expect(afterRebuild.statusCode).toBe(404);
+    expect(afterRebuild.statusCode).toBe(200);
+    expect(store.getAgent(agent.id)).toBeUndefined();
     await app.close();
   });
 
@@ -8717,7 +10783,26 @@ describe("server chunk F", () => {
     expect((await app.inject({ method: "GET", url: `/api/agents/${second.id}/assets/${randomUUID()}/download` })).json()).toEqual({ error: "asset not found" });
     expect((await deleteAgentsWithServerPreview(app, project.id, [agent.id])).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: asset.downloadUrl })).statusCode).toBe(404);
-    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(false);
+    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id))).toBe(true);
+    expect(existsSync(path.join(dataDir, "projects", project.id, "agents", agent.id, "attachments"))).toBe(false);
+    await app.close();
+  });
+
+  it("keeps legacy Agent collection URLs on bounded cursor contracts", async () => {
+    const { app, agent } = await createProjectAndAgent();
+    store.appendEvent(agent.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "bounded-run" });
+    store.appendEvent(agent.id, { type: "work_item_update", workItemId: "bounded", status: "done", executionId: "bounded-run" });
+    store.appendEvent(agent.id, { type: "file_change", path: "src/bounded.ts", kind: "edit", diff: "+bounded" });
+    for (const route of ["runs", "work-items", "artifacts"]) {
+      const response = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/${route}?limit=1` });
+      expect(response.statusCode, response.body).toBe(200);
+      expect(Array.isArray(response.json())).toBe(false);
+      expect(response.json()).toMatchObject({ items: expect.any(Array), history: { limit: 1, hasMore: expect.any(Boolean) } });
+    }
+    const files = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/history/changedFiles?limit=1` });
+    expect(files.json()).toMatchObject({ stream: "changedFiles", items: [{ path: "src/bounded.ts", diffAvailable: true }] });
+    const detail = await app.inject({ method: "GET", url: `/api/agents/${agent.id}/changed-file?path=src%2Fbounded.ts` });
+    expect(detail.json()).toMatchObject({ path: "src/bounded.ts", executionIds: ["bounded-run"], diff: "+bounded" });
     await app.close();
   });
 
@@ -8750,6 +10835,9 @@ describe("server chunk F", () => {
     expect(chunk).toContain('"text":"done"');
     expect(chunk).not.toContain('"replayed":true');
     await waitForRun(agent.id);
+    const fullLogRead = vi.spyOn(store, "readEvents").mockImplementation(() => {
+      throw new Error("SSE reconnect tails must not scan the canonical Agent log");
+    });
 
     const replayAbort = new AbortController();
     const replay = await fetch(`${base}/api/agents/${agent.id}/stream?lastEventId=1`, {
@@ -8762,6 +10850,8 @@ describe("server chunk F", () => {
     expect(replayChunk).toContain("id: 2");
     expect(replayChunk).not.toMatch(/(?:^|\n)id: 1\n/);
     expect(replayChunk).toContain('"replayed":true');
+    expect(fullLogRead).not.toHaveBeenCalled();
+    fullLogRead.mockRestore();
 
     expect(project.id).toBeTruthy();
     await app.close();
@@ -9394,6 +11484,176 @@ describe("V3.3 Decisions, management, and portability", () => {
     await app.close();
   });
 
+  it("fences only create-Agent management while preserving recovery and organization operations without procfs", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const artifactCapability: { ok: boolean; detail: string } = {
+      ok: true,
+      detail: "artifact filesystem descriptor access is available",
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 30 * 60 * 1000 },
+      executionLeaseScheduling: { leaseMs: 30 * 60 * 1000, heartbeatMs: 10 * 60 * 1000 },
+      artifactFilesystemCapabilityProbe: () => artifactCapability,
+    });
+    const project = store.createProject({ label: "Scoped management readiness", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team" });
+    const owner = store.createAgent(project.id, {
+      title: "Manager",
+      engine: "codex",
+      conversationId: conversation.id,
+      managementPermissions: {
+        allowAutomaticDescendantDeletion: true,
+        allowAutomaticDescendantReorganization: true,
+      },
+    });
+    const branch = store.createAgent(project.id, { title: "Branch", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const leaf = store.createAgent(project.id, { title: "Leaf", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const stopTarget = store.createAgent(project.id, { title: "Stop target", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    const deleteTarget = store.createAgent(project.id, { title: "Delete target", engine: "codex", conversationId: conversation.id, managerAgentId: owner.id });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${owner.id}/messages`,
+      payload: { text: "Prepare a managed Agent", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${stopTarget.id}/messages`,
+      payload: { text: "Remain active until stopped", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const runtime = persistent.openedOptions.find((opened) => opened.agentId === owner.id)!;
+    const createPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
+        action: "plan",
+        idempotencyKey: "blocked-create-agent-plan",
+        operations: [{
+          kind: "create_agent",
+          ref: "new-report",
+          title: "New report",
+          engine: "codex",
+          instructions: "Perform the opening assignment.",
+        }],
+      },
+    });
+    expect(createPlan.success, createPlan.text).toBe(true);
+    const createPlanId = JSON.parse(createPlan.text).planId as string;
+    expect((await app.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    artifactCapability.ok = false;
+    artifactCapability.detail = "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs";
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).json()).toMatchObject({
+      status: "not_ready",
+      acceptingDurableIntake: false,
+      leasingRuns: false,
+      checks: { artifactFilesystem: { ok: false, detail: expect.stringContaining("masked procfs") } },
+    });
+
+    const describe = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "describe" } });
+    expect(describe.success, describe.text).toBe(true);
+    expect(JSON.parse(describe.text)).toMatchObject({ owner: { agentId: owner.id } });
+    const activationIdsBeforeSafeManagement = (store.sqlite.prepare(
+      "SELECT id FROM agent_activations ORDER BY id",
+    ).all() as Array<{ id: string }>).map((row) => row.id);
+    const intakeBeforeSafeManagement = durableMutationState(store, dataDir, project.id);
+    const authorityBeforeSafeManagement = readinessFenceDurableState(store, dataDir, project.id).assetAuthorityBytes;
+
+    const planAndApply = async (idempotencyKey: string, operations: Array<Record<string, unknown>>) => {
+      const planned = await runtime.handleDynamicToolCall!({
+        name: "ponderosa_manage",
+        arguments: { action: "plan", idempotencyKey, operations },
+      });
+      expect(planned.success, planned.text).toBe(true);
+      const applied = await runtime.handleDynamicToolCall!({
+        name: "ponderosa_manage",
+        arguments: { action: "apply", planId: JSON.parse(planned.text).planId },
+      });
+      expect(applied.success, applied.text).toBe(true);
+      return JSON.parse(applied.text) as { replayed: boolean };
+    };
+
+    expect(await planAndApply("missing-procfs-rename", [
+      { kind: "rename_agent", targetAgentId: leaf.id, title: "Renamed leaf" },
+    ])).toMatchObject({ replayed: false });
+    expect(store.getAgent(leaf.id)?.title).toBe("Renamed leaf");
+
+    await planAndApply("missing-procfs-reorganize", [
+      { kind: "set_manager", targetAgentId: leaf.id, managerAgentId: branch.id },
+    ]);
+    expect(store.getAgent(leaf.id)?.managerAgentId).toBe(branch.id);
+
+    await planAndApply("missing-procfs-stop", [
+      { kind: "stop_agent", targetAgentId: stopTarget.id },
+    ]);
+    expect(new CoordinationV3Store(store.sqlite).agentSnapshot(stopTarget.id).activeRun).toBeUndefined();
+    await planAndApply("missing-procfs-delete", [
+      { kind: "delete_agent", targetAgentId: deleteTarget.id },
+    ]);
+    expect(store.getAgent(deleteTarget.id)).toBeUndefined();
+    const intakeAfterSafeManagement = durableMutationState(store, dataDir, project.id);
+    expect((store.sqlite.prepare("SELECT id FROM agent_activations ORDER BY id").all() as Array<{ id: string }>).map((row) => row.id))
+      .toEqual(activationIdsBeforeSafeManagement);
+    expect(intakeAfterSafeManagement).toMatchObject({
+      communications: intakeBeforeSafeManagement.communications,
+      projectArtifacts: intakeBeforeSafeManagement.projectArtifacts,
+      runtimeArtifacts: intakeBeforeSafeManagement.runtimeArtifacts,
+      activations: intakeBeforeSafeManagement.activations,
+      outbox: intakeBeforeSafeManagement.outbox,
+      assetReservations: intakeBeforeSafeManagement.assetReservations,
+      attachmentAssociations: intakeBeforeSafeManagement.attachmentAssociations,
+      generatedAuthorities: intakeBeforeSafeManagement.generatedAuthorities,
+    });
+    expect(readinessFenceDurableState(store, dataDir, project.id).assetAuthorityBytes).toBe(authorityBeforeSafeManagement);
+
+    const blockedState = readinessFenceDurableState(store, dataDir, project.id);
+    const runtimeBefore = {
+      opened: persistent.opened,
+      starts: persistent.starts.length,
+      steers: persistent.steers.length,
+    };
+
+    const blockedPlan = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
+        action: "plan",
+        idempotencyKey: "must-not-persist-plan",
+        operations: [{ kind: "create_agent", ref: "blocked-report", title: "Blocked report", engine: "codex" }],
+      },
+    });
+    expect(blockedPlan.success).toBe(false);
+    expect(blockedPlan.text).toContain("artifact-dependent work is unavailable");
+    const blockedApply = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: { action: "apply", planId: createPlanId },
+    });
+    expect(blockedApply.success).toBe(false);
+    expect(blockedApply.text).toContain("artifact-dependent work is unavailable");
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(blockedState);
+    expect(store.listAgents(project.id).some((agent) => agent.title === "New report" || agent.title === "Blocked report")).toBe(false);
+    expect({
+      opened: persistent.opened,
+      starts: persistent.starts.length,
+      steers: persistent.steers.length,
+    }).toEqual(runtimeBefore);
+
+    artifactCapability.ok = true;
+    artifactCapability.detail = "artifact filesystem descriptor access is available";
+    const applied = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: createPlanId } });
+    expect(applied.success, applied.text).toBe(true);
+    expect(JSON.parse(applied.text)).toMatchObject({ replayed: false });
+    const created = store.listAgents(project.id).find((agent) => agent.title === "New report");
+    expect(created).toMatchObject({ managerAgentId: owner.id, spawnedByAgentId: owner.id });
+    expect(store.getImportedHistory(created!.id)?.messages[0]?.text).toBe("Perform the opening assignment.");
+    const replay = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId: createPlanId } });
+    expect(replay.success, replay.text).toBe(true);
+    expect(JSON.parse(replay.text)).toMatchObject({ replayed: true });
+    await app.close();
+  });
+
   it("reauthorizes destructive plans at apply and rejects stale topology or unrelated approvals", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -9539,6 +11799,285 @@ describe("V3.3 Decisions, management, and portability", () => {
     await app.close();
   });
 
+  it("rejects malformed imported organization topology before mutation and retries idempotently", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Topology validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const permissions = {
+      allowAutomaticDescendantDeletion: false,
+      allowAutomaticDescendantReorganization: false,
+    };
+    const node = (ref: string, managerRef?: string) => ({
+      ref,
+      title: ref,
+      engine: "codex",
+      managementPermissions: permissions,
+      ...(managerRef ? { managerRef } : {}),
+    });
+    const portablePackage = (agents: ReturnType<typeof node>[], rootRef = "root", kind: "agent" | "organization" = "organization") => ({
+      schema: "ponderosa.agent-package.v1" as const,
+      mode: "template" as const,
+      kind,
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "malformed topology",
+      rootRef,
+      agents,
+    });
+    const malformedPackages: AgentPortablePackageDto[] = [
+      portablePackage([node("root"), node("root", "root")]),
+      portablePackage([node("root"), node("child", "outside")]),
+      portablePackage([node("root"), node("disconnected")]),
+      portablePackage([node("root"), node("cycle-a", "cycle-b"), node("cycle-b", "cycle-a")]),
+      portablePackage([node("root"), node("self", "self")]),
+      portablePackage([node("root"), node("child", "root")], "child"),
+      portablePackage([node("root")], "root", "organization"),
+    ];
+    const initialAgents = store.listAgents(project.id);
+    const initialMutationState = importMutationState(store, dataDir, project.id);
+    for (const candidate of malformedPackages) {
+      const payload = {
+        package: candidate,
+        conversationId: destinationChat.id,
+        engineMapping: { codex: "codex" },
+      };
+      const first = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+      const retry = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+      expect(first.statusCode, first.body).toBe(400);
+      expect(retry.statusCode, retry.body).toBe(400);
+      expect(retry.body).toBe(first.body);
+      expect(store.listAgents(project.id)).toEqual(initialAgents);
+      expect(importMutationState(store, dataDir, project.id)).toEqual(initialMutationState);
+    }
+    await app.close();
+  });
+
+  it("rejects unsupported and mixed import modes before any durable mutation", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Mode validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const base = {
+      schema: "ponderosa.agent-package.v1",
+      kind: "agent",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "mode validation",
+      rootRef: "root",
+      agents: [{
+        ref: "root", title: "Imported", engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      }],
+    };
+    const candidates = [
+      { ...base, mode: "context" },
+      { ...base, mode: "future" },
+      { ...base, mode: "template", sourceProjectInstructions: "must not mix" },
+      { ...base, mode: "template", agents: [{ ...base.agents[0], history: [{ role: "user", text: "must not mix" }] }] },
+    ];
+    const initialState = importMutationState(store, dataDir, project.id);
+    for (const portablePackage of candidates) {
+      const response = await app.inject({
+        method: "POST", url: `/api/projects/${project.id}/import-agents`,
+        payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+      });
+      expect(response.statusCode, response.body).toBe(400);
+      expect(importMutationState(store, dataDir, project.id)).toEqual(initialState);
+    }
+    await app.close();
+  });
+
+  it("preflights every node and leaves identical retries residue-free", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Atomic import validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const permissions = {
+      allowAutomaticDescendantDeletion: true,
+      allowAutomaticDescendantReorganization: false,
+    };
+    const portablePackage = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "organization",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "late invalid model",
+      rootRef: "root",
+      agents: [{
+        ref: "root", title: "Would mutate first", engine: "codex", managementPermissions: permissions,
+        history: [{ role: "user", text: "Retrieve ponderosa://artifact/import-file" }],
+        artifacts: [{
+          ref: "import-file", kind: "document", path: "portable/import.md",
+          createdAt: "2026-07-20T00:00:00.000Z", dataBase64: Buffer.from("must never persist").toString("base64"),
+        }],
+        triggers: [{
+          name: "Would import", instructions: "Must never persist.", sourceKind: "webhook",
+          sourceConfig: { replayWindowSeconds: 300 }, enabled: false,
+        }],
+      }, {
+        ref: "invalid", managerRef: "root", title: "Invalid late node", engine: "codex",
+        model: "not-a-configured-model", managementPermissions: permissions,
+      }],
+    };
+    const initialState = importMutationState(store, dataDir, project.id);
+    const payload = {
+      package: portablePackage,
+      conversationId: destinationChat.id,
+      engineMapping: { codex: "codex" },
+      acknowledgeElevatedManagementPermissions: true,
+    };
+    const first = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+    const retry = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+    expect(first.statusCode, first.body).toBe(400);
+    expect(first.json()).toEqual({ error: "Invalid late node: model is not available for engine" });
+    expect(retry.body).toBe(first.body);
+    expect(importMutationState(store, dataDir, project.id)).toEqual(initialState);
+    await app.close();
+  });
+
+  it("rewrites canonical artifact references in one pass with the shared ID grammar", () => {
+    const remaps = new Map([["a", "b"], ["b", "c"]]);
+    expect(rewritePortableArtifactReferences(
+      "ponderosa://artifact/a ponderosa://artifact/b ponderosa://artifact/a.b ponderosa://artifact/a:b ponderosa://artifact/a-b ponderosa://artifact/a_b ponderosa://artifact/a文 文a🙂",
+      remaps,
+    )).toBe(
+      "ponderosa://artifact/b ponderosa://artifact/c ponderosa://artifact/a.b ponderosa://artifact/a:b ponderosa://artifact/a-b ponderosa://artifact/a_b ponderosa://artifact/b文 文a🙂",
+    );
+  });
+
+  it("collects a 256-character artifact ID but rejects every 257-character ASCII continuation", () => {
+    const maximumId = "a".repeat(256);
+    const overlongIds = ["Z", ".", ":", "_", "-"]
+      .map((continuation) => `${maximumId}${continuation}`);
+    const text = [
+      `ponderosa://artifact/${maximumId}`,
+      ...overlongIds.map((id) => `ponderosa://artifact/${id}`),
+      "ponderosa://artifact/short.",
+      "ponderosa://artifact/short:",
+      "ponderosa://artifact/short\u6587",
+    ].join(" ");
+
+    expect([...collectReachableArtifactIds(text)]).toEqual([maximumId, "short"]);
+  });
+
+  it("rewrites a 256-character artifact ID but leaves every 257-character ASCII continuation untouched", () => {
+    const maximumId = "a".repeat(256);
+    const overlongReferences = ["Z", ".", ":", "_", "-"]
+      .map((continuation) => `ponderosa://artifact/${maximumId}${continuation}`);
+    const input = [
+      `ponderosa://artifact/${maximumId}`,
+      ...overlongReferences,
+      "ponderosa://artifact/short.",
+      "ponderosa://artifact/short:",
+      "ponderosa://artifact/short\u6587",
+    ].join(" ");
+
+    expect(rewritePortableArtifactReferences(input, new Map([
+      [maximumId, "maximum-remapped"],
+      ["short", "short-remapped"],
+    ]))).toBe([
+      "ponderosa://artifact/maximum-remapped",
+      ...overlongReferences,
+      "ponderosa://artifact/short-remapped.",
+      "ponderosa://artifact/short-remapped:",
+      "ponderosa://artifact/short-remapped\u6587",
+    ].join(" "));
+  });
+
+  it("does not collect an embedded artifact scheme from inside an overlong canonical-character run", () => {
+    const maximumId = "a".repeat(256);
+    for (const continuation of ["Z", ".", ":", "_", "-"]) {
+      const overlongReference = `ponderosa://artifact/${maximumId}${continuation}ponderosa://artifact/x`;
+      expect([...collectReachableArtifactIds(overlongReference)], continuation).toEqual([]);
+    }
+
+    expect([...collectReachableArtifactIds(
+      `ponderosa://artifact/${maximumId}Z ponderosa://artifact/x`,
+    )]).toEqual(["x"]);
+  });
+
+  it("does not rewrite an embedded artifact scheme from inside an overlong canonical-character run", () => {
+    const maximumId = "a".repeat(256);
+    const remaps = new Map([["x", "x-remapped"]]);
+    for (const continuation of ["Z", ".", ":", "_", "-"]) {
+      const overlongReference = `ponderosa://artifact/${maximumId}${continuation}ponderosa://artifact/x`;
+      expect(rewritePortableArtifactReferences(overlongReference, remaps), continuation).toBe(overlongReference);
+    }
+
+    expect(rewritePortableArtifactReferences(
+      `ponderosa://artifact/${maximumId}Z ponderosa://artifact/x`,
+      remaps,
+    )).toBe(`ponderosa://artifact/${maximumId}Z ponderosa://artifact/x-remapped`);
+  });
+
+  it("rewrites only canonical artifact tokens after a one-character import collision", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Artifact token collision", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const existing = store.createAgent(project.id, { title: "Existing", engine: "codex", conversationId: destinationChat.id });
+    store.recordProjectArtifact({
+      id: "a",
+      projectId: project.id,
+      agentId: existing.id,
+      originAgentId: existing.id,
+      kind: "document",
+      path: "communication/a.md",
+      summary: "existing.md",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      visibility: "project",
+      pinned: false,
+      mediaType: "application/octet-stream",
+      size: 1,
+      sha256: createHash("sha256").update("x").digest("hex"),
+    });
+    const originalText = "Use ponderosa://artifact/a; prose a, data-a, ponderosa://artifact/ab, ponderosa://artifact/a.b, ponderosa://artifact/a:b, ponderosa://artifact/a-b, ponderosa://artifact/a_b, and 文档a🙂 stay unchanged.";
+    const portablePackage: AgentPortablePackageDto = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "agent",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "one-character collision",
+      rootRef: "root",
+      agents: [{
+        ref: "root",
+        title: "Imported",
+        engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+        history: [{ role: "user", text: originalText }],
+        artifacts: [{
+          ref: "a",
+          kind: "document",
+          path: "portable/a.md",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          dataBase64: Buffer.from("portable").toString("base64"),
+        }, ...["a.b", "a:b", "a-b", "a_b"].map((ref) => ({
+          ref,
+          kind: "document" as const,
+          path: `portable/${ref}.md`,
+          createdAt: "2026-07-20T00:00:00.000Z",
+          dataBase64: Buffer.from(ref).toString("base64"),
+        }))],
+      }],
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    const importedAgentId = response.json<{ rootAgentId: string }>().rootAgentId;
+    const importedArtifacts = store.getProjectArtifacts(project.id).filter((artifact) => artifact.originAgentId === importedAgentId);
+    expect(importedArtifacts.map((artifact) => artifact.id)).toEqual(expect.arrayContaining(["a.b", "a:b", "a-b", "a_b"]));
+    const importedArtifact = importedArtifacts.find((artifact) => !["a.b", "a:b", "a-b", "a_b"].includes(artifact.id))!;
+    expect(importedArtifact.id).not.toBe("a");
+    expect(store.getImportedHistory(importedAgentId)?.messages[0]?.text).toBe(
+      `Use ponderosa://artifact/${importedArtifact.id}; prose a, data-a, ponderosa://artifact/ab, ponderosa://artifact/a.b, ponderosa://artifact/a:b, ponderosa://artifact/a-b, ponderosa://artifact/a_b, and 文档a🙂 stay unchanged.`,
+    );
+    await app.close();
+  });
+
   it("exports and imports private context, source rules, and generated artifacts with collision-safe references", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Portable", hostPath: repoDir });
@@ -9572,7 +12111,7 @@ describe("V3.3 Decisions, management, and portability", () => {
     } as const;
     registerTestGeneratedArtifact(dataDir, catalogArtifact);
     store.recordProjectArtifact(catalogArtifact);
-    store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
+    store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ponderosa://artifact/${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
     const exported = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=full` });
     expect(exported.statusCode, exported.body).toBe(200);
     expect(exported.json()).toMatchObject({

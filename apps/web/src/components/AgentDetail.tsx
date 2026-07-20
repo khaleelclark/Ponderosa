@@ -10,7 +10,13 @@ import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Box,
@@ -18,10 +24,12 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
+  Divider,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -61,25 +69,28 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
-import type { AgentTelemetryFocus } from "../routing";
+import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 import { telemetryElementId } from "../telemetryFocus";
 import { TriggersPane } from "./TriggersPane";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { useMobileComposerAutoHide } from "../mobileChat";
 
-type AgentTab = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
+type AgentTab = AgentDetailView;
 
 const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
   stream === "runOutput" ? "runOutput"
     : stream === "activity" ? "activity"
+      : stream === "changedFiles" ? "changed_files"
       : stream === "artifacts" ? "artifacts" : "runs";
 
 type TelemetryPageState = {
   [K in AgentTelemetryStream]?: {
     items: AgentDetailDto[K extends "runOutput" ? "runOutput"
       : K extends "activity" ? "activity"
+        : K extends "changedFiles" ? "changedFiles"
         : K extends "runs" ? "runs"
           : K extends "workItems" ? "workItems" : "artifacts"];
     history?: HistoryWindowDto;
@@ -95,6 +106,10 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
   };
   else if (page.stream === "activity") next.activity = {
     items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    history,
+  };
+  else if (page.stream === "changedFiles") next.changedFiles = {
+    items: [...new Map([...page.items, ...(current.changedFiles?.items ?? [])].map((item) => [item.path, item] as const)).values()],
     history,
   };
   else if (page.stream === "runs") next.runs = {
@@ -115,6 +130,7 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
   tab === "runOutput" ? ["runOutput"]
     : tab === "activity" ? ["activity"]
+      : tab === "changed_files" ? ["changedFiles"]
       : tab === "runs" ? ["runs", "workItems"]
         : tab === "artifacts" ? ["artifacts"] : [];
 
@@ -126,6 +142,25 @@ export function formatExecutionElapsed(startedAt: string, now = Date.now()): str
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
     : `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+export function finalizedWorkDurationMs(runs: ReadonlyArray<Pick<AgentDetailDto["runs"][number], "startedAt" | "completedAt">>): number {
+  return runs.reduce((total, run) => {
+    if (!run.completedAt) return total;
+    const startedAt = Date.parse(run.startedAt);
+    const completedAt = Date.parse(run.completedAt);
+    return Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt
+      ? total + completedAt - startedAt
+      : total;
+  }, 0);
+}
+
+export function formatFinalizedWorkDuration(durationMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", `${seconds}s`].filter(Boolean).join(" ");
 }
 
 export function directAgentDeliveryNotice(
@@ -188,12 +223,12 @@ function AgentRunState({
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "runOutput", label: "Work log", icon: <PsychologyOutlinedIcon /> },
+  { value: "runOutput", label: "Work Log", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
   { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
   { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
-  { value: "artifacts", label: "Files & results", icon: <Inventory2OutlinedIcon /> },
+  { value: "artifacts", label: "Files & Results", icon: <Inventory2OutlinedIcon /> },
   { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
 ];
 
@@ -220,6 +255,8 @@ export function AgentDetail({
   agentId,
   focusMessageId,
   focusTelemetry,
+  initialView,
+  onViewChange,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -234,6 +271,7 @@ export function AgentDetail({
   onOpenArtifact,
   onOpenArtifactInNewTab,
   onOpenReview,
+  onOpenReviewInNewTab,
   onOpenBrowser,
   onNewSubagent,
   onDeleted,
@@ -241,6 +279,8 @@ export function AgentDetail({
   agentId: string;
   focusMessageId?: string;
   focusTelemetry?: AgentTelemetryFocus;
+  initialView?: AgentDetailView;
+  onViewChange?(view: AgentDetailView): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
@@ -255,6 +295,7 @@ export function AgentDetail({
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;
   onOpenReview(path?: string): void;
+  onOpenReviewInNewTab(path?: string): void;
   onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
@@ -272,6 +313,7 @@ export function AgentDetail({
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
   const [tab, setTab] = useState<AgentTab>(() => {
+    if (initialView) return initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     return AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat";
   });
@@ -293,7 +335,10 @@ export function AgentDetail({
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
+  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
+  const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) => api.cancelQueuedAgentMessage(agentId, deliveryId, {
       idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
@@ -315,13 +360,19 @@ export function AgentDetail({
   });
 
   useEffect(() => {
+    setMobileHeaderCollapsed(false);
+    mobileComposer.reset();
+    if (initialView) {
+      setTab(initialView);
+      return;
+    }
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     setTab(AGENT_DETAIL_TABS.some((item) => item.value === saved) ? saved as AgentTab : "chat");
     setOlderMessages(undefined);
     setOlderTelemetry({});
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
-  }, [agentId]);
+  }, [agentId, initialView]);
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
@@ -337,11 +388,12 @@ export function AgentDetail({
         .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
       runOutput: mergeBy(agentQuery.data.runOutput, olderTelemetry.runOutput?.items, (item) => item.id, (a, b) => a.seq - b.seq),
       activity: mergeBy(agentQuery.data.activity, olderTelemetry.activity?.items, (item) => item.id, (a, b) => a.seq - b.seq),
+      changedFiles: mergeBy(agentQuery.data.changedFiles, olderTelemetry.changedFiles?.items, (item) => item.path, (a, b) => a.lastSeq - b.lastSeq),
       runs: mergeBy(agentQuery.data.runs, olderTelemetry.runs?.items, (item) => item.id, (a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id)),
       workItems: mergeBy(agentQuery.data.workItems, olderTelemetry.workItems?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
       artifacts: mergeBy(agentQuery.data.artifacts, olderTelemetry.artifacts?.items, (item) => item.id, (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
       telemetryHistory: Object.fromEntries(([
-        "runOutput", "activity", "runs", "workItems", "artifacts",
+        "runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts",
       ] satisfies AgentTelemetryStream[]).map((stream) => [
         stream,
         olderTelemetry[stream]?.history ?? agentQuery.data.telemetryHistory?.[stream],
@@ -517,7 +569,7 @@ export function AgentDetail({
     downloadJson(portable, portablePackageFileName(detail?.agent.title ?? "agent", organization, mode));
     setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`);
   };
-  const quickCopyIntoHomeChat = async () => {
+  const quickCopyIntoProjectChat = async () => {
     if (!detail?.agent.conversationId) return;
     const portable = await api.exportAgent(agentId, "full", false);
     const elevated = portable.agents.some((node) =>
@@ -752,8 +804,13 @@ export function AgentDetail({
       return sent;
     };
 
+  const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);
+  const completedWorkDurationLabel = detail.finalizedWorkDurationMs !== undefined || detail.runs.some((run) => Boolean(run.completedAt))
+    ? `Worked for ${formatFinalizedWorkDuration(finalizedDuration)}`
+    : undefined;
+
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -772,19 +829,23 @@ export function AgentDetail({
           onOpenReview(file.path);
         }
       }}
+      onOpenFileInNewTab={(file: ResponseFileActivityDto) => {
+        if (file.artifactId) onOpenArtifactInNewTab(file.artifactId);
+        else onOpenReviewInNewTab(file.path);
+      }}
       onViewAll={() => setTab("review")}
     />,
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
-    changed_files: <ChangedFilesPane files={detail.changedFiles} />,
-    review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
+    changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} onOpenReviewInNewTab={onOpenReviewInNewTab} />,
+    review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} onOpenInNewTab={onOpenReviewInNewTab} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
+      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={1}
@@ -792,12 +853,12 @@ export function AgentDetail({
           flexWrap="wrap"
           sx={{ width: "100%", maxWidth: "100%", alignItems: "center", minWidth: 0, overflow: "hidden" }}
         >
-          <Tooltip title="Back to agents">
+          <Tooltip title="Back to Agents">
             <IconButton aria-label="Back to agents" onClick={onBack} edge="start" sx={{ minWidth: 44, minHeight: 44 }}>
               <ArrowBackIcon />
             </IconButton>
           </Tooltip>
-          <Box sx={{ minWidth: 0, maxWidth: "100%", width: { xs: "calc(100% - 52px)", sm: "auto" }, flex: { xs: "0 0 calc(100% - 52px)", sm: 1 }, overflow: "hidden" }}>
+          <Box sx={{ minWidth: 0, maxWidth: "100%", flex: 1, overflow: "hidden" }}>
             <Typography variant="h6" noWrap>
               {detail.agent.title}
             </Typography>
@@ -808,6 +869,18 @@ export function AgentDetail({
               </Link> : lineageAgentId}
             </Typography> : null}
           </Box>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Agent Header" : "Minimize Agent Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
+          <Collapse
+            in={!mobileHeaderCollapsed || !mobileViewport}
+            timeout={180}
+            sx={{ flexBasis: { xs: "100%", sm: "auto" }, minWidth: 0 }}
+          >
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: { sm: "flex-end" } }}>
           <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
           {running ? (
             <Button
@@ -828,28 +901,28 @@ export function AgentDetail({
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             sx={{ minHeight: 36 }}
           >
-            Agent work
+            Agent Work
           </Button>
           <ChatOverflowMenu
-            label="Agent chat actions"
+            label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            detailsLabel="Run setup"
+            detailsLabel="Run Settings"
             copyActions={[
-              { label: "Agent template", onSelect: () => void copyAgentPackage("template") },
+              { label: "Agent Template", onSelect: () => void copyAgentPackage("template") },
               { label: "Full Agent", onSelect: () => void copyAgentPackage("full") },
-              { label: "Organization template", onSelect: () => void copyAgentPackage("template", true) },
-              { label: "Full organization", onSelect: () => void copyAgentPackage("full", true) },
+              { label: "Organization Template", onSelect: () => void copyAgentPackage("template", true) },
+              { label: "Full Organization", onSelect: () => void copyAgentPackage("full", true) },
             ]}
             downloadActions={[
-              { label: "Agent template", onSelect: () => void downloadAgentPackage("template") },
+              { label: "Agent Template", onSelect: () => void downloadAgentPackage("template") },
               { label: "Full Agent", onSelect: () => void downloadAgentPackage("full") },
-              { label: "Organization template", onSelect: () => void downloadAgentPackage("template", true) },
-              { label: "Full organization", onSelect: () => void downloadAgentPackage("full", true) },
+              { label: "Organization Template", onSelect: () => void downloadAgentPackage("template", true) },
+              { label: "Full Organization", onSelect: () => void downloadAgentPackage("full", true) },
             ]}
-            details={<Stack spacing={1.25} aria-label="Agent setup">
+            details={<Stack spacing={2} aria-label="Run settings" sx={{ px: 2, py: 1.5 }}>
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run setup</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run Settings</Typography>
                 <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
               </Stack>
               <Chip
@@ -871,7 +944,7 @@ export function AgentDetail({
                     recheckEngine.mutate(engine.id);
                   }}
                 >
-                  {recheckEngine.isPending ? "Testing access…" : "Test access"}
+                  {recheckEngine.isPending ? "Testing Access…" : "Test Access"}
                 </Button>
                 {recheckEngine.isError ? <Alert severity="error">{recheckEngine.error.message}</Alert> : null}
               </> : null}
@@ -887,7 +960,7 @@ export function AgentDetail({
                     if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
                   }}
                 >
-                  <MenuItem value="">Engine default</MenuItem>
+                  <MenuItem value="">Engine Default</MenuItem>
                   {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select>
               </FormControl>
@@ -899,15 +972,16 @@ export function AgentDetail({
                   label="Effort"
                   onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
                 >
-                  <MenuItem value="">Engine default</MenuItem>
+                  <MenuItem value="">Engine Default</MenuItem>
                   {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select>
               </FormControl>
               <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
                 {detail.state.branch ?? "No branch"}{detail.state.commit ? ` · ${detail.state.commit}` : ""}
               </Typography>
-              <Box sx={{ pt: 0.5 }}>
-                <Typography variant="caption" color="text.secondary">Organization permissions</Typography>
+              <Divider flexItem />
+              <Stack spacing={1.25} sx={{ py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">Organization Permissions</Typography>
                 <FormControlLabel
                   control={<Switch
                     size="small"
@@ -920,7 +994,7 @@ export function AgentDetail({
                   />}
                   label={<Typography variant="body2">Allow automatic descendant deletion</Typography>}
                 />
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75, pb: 0.5, lineHeight: 1.45 }}>
                   This Agent may cancel active work and permanently delete branches beneath it without another Decision.
                 </Typography>
                 <FormControlLabel
@@ -935,11 +1009,12 @@ export function AgentDetail({
                   />}
                   label={<Typography variant="body2">Allow automatic descendant reorganization</Typography>}
                 />
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75, pb: 0.5, lineHeight: 1.45 }}>
                   This Agent may rearrange reporting lines inside its subtree, but cannot detach or promote descendants.
                 </Typography>
                 {updateManagementPermissions.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateManagementPermissions.error)}</Alert> : null}
-              </Box>
+              </Stack>
+              <Divider flexItem />
               <Typography variant="caption" color="text.secondary">
                 {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
                 {" · "}{organizationalParent
@@ -957,7 +1032,8 @@ export function AgentDetail({
             </Stack>}
             actions={[
               {
-                label: "Start fresh provider session",
+                label: "Start Fresh Provider Session",
+                icon: <RestartAltIcon fontSize="small" />,
                 onSelect: () => {
                   setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
                   void api.compactSession(agentId)
@@ -974,22 +1050,23 @@ export function AgentDetail({
                 },
               },
               {
-                label: "Create agent",
+                label: "Create Agent",
                 icon: <PersonAddAlt1Icon fontSize="small" />,
                 onSelect: () => onNewSubagent(agentId),
               },
               {
-                label: "Assign chats",
+                label: "Assign Chats",
+                icon: <ForumOutlinedIcon fontSize="small" />,
                 onSelect: () => {
                   setMembershipIds(detail.agent.conversationIds);
                   setPrimaryConversationId(detail.agent.conversationId ?? "");
                   setMembershipOpen(true);
                 },
               },
-              { label: "Import Agent or organization…", onSelect: () => setImportOpen(true) },
-              ...(detail.agent.conversationId ? [{ label: "Quick copy into home chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
+              { label: "Import Agent or Organization", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
+              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon fontSize="small" />, onSelect: () => void quickCopyIntoProjectChat() }] : []),
               {
-                label: "Reports to",
+                label: "Reports To",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,
                 onSelect: () => {
                   setOrganizationParentId(detail.agent.managerAgentId ?? "");
@@ -1004,8 +1081,10 @@ export function AgentDetail({
               },
             ]}
           />
+          </Stack>
+          </Collapse>
         </Stack>
-        {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
+        {running ? <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}><LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /></Collapse> : null}
       </Box>
 
       <Box sx={{ minWidth: 0 }}>
@@ -1015,7 +1094,7 @@ export function AgentDetail({
       <Tabs
         aria-label="Agent details"
         value={tab}
-        onChange={(_event, value: AgentTab) => setTab(value)}
+        onChange={(_event, value: AgentTab) => { setTab(value); onViewChange?.(value); }}
         variant="scrollable"
         scrollButtons="auto"
         allowScrollButtonsMobile
@@ -1024,13 +1103,23 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older history"}</Button> : null}
-        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older records"}</Button> : null}
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
+        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}
       </Box>
 
-      {tab === "chat" ? <Box sx={{ minWidth: 0 }}>
+      {tab === "chat" ? <Box
+        className="mobile-chat-chrome mobile-chat-composer"
+        data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
+        onTransitionEnd={(event) => {
+          if (
+            event.currentTarget === event.target
+            && event.propertyName === "max-height"
+          ) mobileComposer.finishTransition();
+        }}
+        sx={{ minWidth: 0 }}
+      >
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
@@ -1178,7 +1267,7 @@ export function AgentDetail({
         <DialogActions>
           <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryConversationId)} onClick={() => updateMemberships.mutate()}>
-            Save membership
+            Save Membership
           </Button>
         </DialogActions>
       </Dialog>
@@ -1194,7 +1283,7 @@ export function AgentDetail({
               label="Reports to"
               onChange={(event) => setOrganizationParentId(event.target.value)}
             >
-              <MenuItem value="">Top level</MenuItem>
+              <MenuItem value="">Top Level</MenuItem>
               {eligibleOrganizationParents(detail.agent, agents)
                 .map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.title}</MenuItem>)}
             </Select>
@@ -1207,7 +1296,7 @@ export function AgentDetail({
         <DialogActions>
           <Button onClick={() => setOrganizationOpen(false)} disabled={updateOrganization.isPending}>Cancel</Button>
           <Button variant="contained" disabled={updateOrganization.isPending} onClick={() => updateOrganization.mutate()}>
-            Save organization
+            Save Organization
           </Button>
         </DialogActions>
       </Dialog>

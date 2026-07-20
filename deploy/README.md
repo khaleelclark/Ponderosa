@@ -11,8 +11,62 @@ sudo systemctl enable --now ponderosa
 ```
 
 Before installing the unit, update its `User`, `WorkingDirectory`, data directory,
-and `PATH` for the host. Reachability is a separate choice; the service does not
-depend on Tailscale.
+and `PATH` for the host.
+
+## Choose the network boundary explicitly
+
+Ponderosa defaults to `127.0.0.1:8787`. This is the recommended direct-host and
+authenticated-reverse-proxy boundary. A non-loopback listener fails startup
+unless one of these protections is configured:
+
+- Set `PONDEROSA_AUTH_TOKEN` to require `Authorization: Bearer …` on operator API
+  and application requests. Browser clients cannot safely store this shared
+  secret; use an authenticated reverse proxy that injects it, or use the token
+  only with a non-browser client. Never put it in SPA code or `localStorage`.
+- For an intentionally passwordless tailnet deployment, set
+  `PONDEROSA_TRUSTED_TAILNET=true` and bind `PONDEROSA_HOST` to one literal
+  Tailscale IPv4 address in `100.64.0.0/10` or IPv6 address in
+  `fd7a:115c:a1e0::/48`:
+
+  ```ini
+  Environment=PONDEROSA_HOST=100.100.101.102
+  Environment=PONDEROSA_TRUSTED_TAILNET=true
+  ```
+
+  Wildcard, DNS, ordinary LAN, and public addresses are rejected in this mode.
+  Every tailnet peer allowed to reach that address has full operator access,
+  including the ability to start host-authority Agents. Enforce Tailscale ACLs
+  accordingly.
+
+`GET /api/ready` reports the active `networkSecurity` posture without exposing
+credentials. The provider-status dialog shows the same posture and highlights
+the trusted-tailnet operator-access warning.
+
+## Required Linux procfs capability
+
+Ponderosa's managed artifacts and workspace-derived generated files require
+Linux with a visible, functional `/proc/self/fd`. The daemon uses retained file
+descriptors and component-by-component `O_DIRECTORY`/`O_NOFOLLOW` opens to keep
+artifact publication and reads inside their owning Project when paths are
+renamed or replaced concurrently. There is intentionally no pathname-only or
+cross-platform fallback.
+
+On a host, keep procfs mounted normally. In a container, mount procfs and do not
+mask or make `/proc/self/fd` inaccessible with the container runtime, a seccomp
+profile, or systemd path restrictions. Validate the service user in the same
+mount namespace used by Ponderosa:
+
+```sh
+exec 9</dev/null
+test "$(readlink -f /proc/self/fd/9)" = "/dev/null" || exit 1
+```
+
+Ponderosa preflights this capability at startup. When it is absent, liveness
+remains available at `/api/health`, but `/api/ready` returns HTTP 503 with
+`checks.artifactFilesystem.ok=false`, durable work intake and Run leasing remain
+disabled, Trigger sources do not start, and an urgent operational notification
+is recorded. Restore procfs visibility and restart the daemon; do not bypass the
+check or add an unsafe filesystem fallback.
 
 ## Drain provider Runs before an upgrade
 
@@ -28,8 +82,11 @@ curl -sS http://127.0.0.1:8787/api/ready
 ```
 
 The readiness response distinguishes `acceptingDurableIntake` from
-`leasingRuns`. Wait until `deploymentDrain.activeRuns` is zero, then replace and
-restart the service. If the deployment is aborted, explicitly restore leasing:
+`leasingRuns`. Wait until `deploymentDrain.readyForRestart` is true; the
+response separately exposes scheduler/local Runs, provider/browser authorities,
+pending cleanup, and retained teardown failures so a false zero is visible.
+Then replace and restart the service. If the deployment is aborted, explicitly
+restore leasing:
 
 ```sh
 curl -sS -X POST -H "Authorization: Bearer $PONDEROSA_TOKEN" \

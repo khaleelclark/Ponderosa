@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createTheme, getContrastRatio } from "@mui/material/styles";
 import { describe, expect, it } from "vitest";
 import { formatMessageTimestamp, MessageActionsAndTimestamp, MessageTimestamp } from "../src/components/MessageTimestamp";
+import { UserMessageLabel } from "../src/components/panes";
 
 describe("message timestamps", () => {
   it("shows an absolute local date and time while preserving the exact instant", () => {
@@ -45,6 +46,26 @@ describe("message timestamps", () => {
     expect(markup).not.toContain("opacity:");
   });
 
+  it("keeps the calendar date visible in compact Agent identity timestamps", () => {
+    const markup = renderToStaticMarkup(<MessageTimestamp value="2026-07-11T14:05:06.789Z" compact />);
+
+    expect(markup).toContain('data-compact="true"');
+    expect(markup).toMatch(/>[^<]*2026[^<]*</);
+    expect(markup).not.toMatch(/>\s*2:05 PM\s*</);
+  });
+
+  it("orders the desktop user identity as timestamp, name, then profile circle", () => {
+    const markup = renderToStaticMarkup(<UserMessageLabel
+      profile={{ displayName: "User", handle: "operator", avatarId: "default-user" }}
+      createdAt="2026-07-11T14:05:06.789Z"
+    />);
+
+    expect(markup.indexOf("data-user-message-timestamp")).toBeLessThan(markup.indexOf("data-user-message-name"));
+    expect(markup.indexOf("data-user-message-name")).toBeLessThan(markup.indexOf("data-user-message-avatar"));
+    expect(markup).toMatch(/<time[^>]*>[^<]*2026[^<]*<\/time>/);
+    expect(markup).toContain('aria-label="User avatar"');
+  });
+
   it.each(["light", "dark"] as const)(
     "inherits timestamp colors with WCAG AA contrast in %s manager and agent bubbles",
     (mode) => {
@@ -77,5 +98,15 @@ describe("message timestamps", () => {
     );
     expect(markup.indexOf("Copy")).toBeLessThan(markup.indexOf("Processed by Cabrillo"));
     expect(markup.indexOf("Processed by Cabrillo")).toBeLessThan(markup.indexOf("<time"));
+  });
+
+  it("keeps desktop timestamps in place and adds a compact mobile timestamp only after reveal", () => {
+    const hidden = renderToStaticMarkup(<MessageActionsAndTimestamp value="2026-07-11T14:05:06.789Z" />);
+    const revealed = renderToStaticMarkup(<MessageActionsAndTimestamp value="2026-07-11T14:05:06.789Z" mobileTimestampRevealed />);
+
+    expect(hidden).not.toContain("data-mobile-message-timestamp");
+    expect(revealed).toContain("data-mobile-message-timestamp");
+    expect(revealed).toContain("display:none");
+    expect(revealed.indexOf("data-mobile-message-timestamp")).toBeLessThan(revealed.indexOf("chat-message-action-buttons"));
   });
 });

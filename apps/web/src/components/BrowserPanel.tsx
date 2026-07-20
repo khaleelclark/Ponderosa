@@ -20,6 +20,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
+import { browserTouchScrollDelta, createBrowserFrameScheduler, decodeBrowserFrame, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
 
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
@@ -50,7 +51,11 @@ export function BrowserPanel({
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
   const [typeText, setTypeText] = useState("");
-  const wheelAt = useRef(0);
+  const inputBusy = useRef(false);
+  const queuedScroll = useRef<BrowserScrollInput>();
+  const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
+  const suppressClick = useRef(false);
+  const refreshFrame = useRef<() => void>(() => undefined);
 
   const sessionQuery = useQuery({
     queryKey,
@@ -87,7 +92,10 @@ export function BrowserPanel({
       runId!,
       { ...request, expectedControlEpoch: session!.controlEpoch } as BrowserOperatorInputRequest,
     ),
-    onSuccess: update,
+    onSuccess: (next) => {
+      update(next);
+      refreshFrame.current();
+    },
   });
 
   useEffect(() => {
@@ -96,30 +104,29 @@ export function BrowserPanel({
       return undefined;
     }
     let cancelled = false;
-    let timer: number | undefined;
-    const load = async (): Promise<void> => {
-      try {
-        const frame = await api.getBrowserFrame(projectId, agentId, runId);
-        if (cancelled) return;
-        const next = URL.createObjectURL(frame.blob);
-        const preload = new Image();
-        preload.onload = () => {
-          if (cancelled) { URL.revokeObjectURL(next); return; }
+    const scheduler = createBrowserFrameScheduler({
+      capture: async () => {
+        try {
+          const frame = await api.getBrowserFrame(projectId, agentId, runId);
+          if (cancelled || document.visibilityState !== "visible") return;
+          const next = await decodeBrowserFrame(frame.blob);
+          if (cancelled || document.visibilityState !== "visible") { URL.revokeObjectURL(next); return; }
           setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return next; });
           setFrameError(undefined);
-        };
-        preload.onerror = () => { URL.revokeObjectURL(next); if (!cancelled) setFrameError("Browser frame could not be decoded."); };
-        preload.src = next;
-      } catch (error) {
-        if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void load(), 700);
-      }
-    };
-    void load();
+        } catch (error) {
+          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+    const updateVisibility = () => scheduler.setVisible(document.visibilityState === "visible");
+    refreshFrame.current = () => scheduler.requestInteractionRefresh();
+    document.addEventListener("visibilitychange", updateVisibility);
+    updateVisibility();
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", updateVisibility);
+      scheduler.dispose();
+      refreshFrame.current = () => undefined;
       setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return undefined; });
     };
   }, [agentId, expanded, projectId, runId, session?.id, session?.status]);
@@ -134,7 +141,20 @@ export function BrowserPanel({
   const operatorControl = ready && session.controlOwner === "operator";
 
   const sendInput = (request: UnfencedBrowserInput): void => {
-    if (operatorControl && !input.isPending) input.mutate(request);
+    if (!operatorControl) return;
+    if (inputBusy.current) {
+      if (request.kind === "scroll") queuedScroll.current = mergeBrowserScrollInputs(queuedScroll.current, request);
+      return;
+    }
+    inputBusy.current = true;
+    input.mutate(request, {
+      onSettled: (_data, error) => {
+        inputBusy.current = false;
+        const next = queuedScroll.current;
+        queuedScroll.current = undefined;
+        if (!error && next) sendInput(next);
+      },
+    });
   };
 
   if (!standalone) return <Paper component="section" aria-label="Interactive browser in use" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
@@ -142,12 +162,12 @@ export function BrowserPanel({
       <LanguageIcon color={ready ? "primary" : "disabled"} fontSize="small" />
       <Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="subtitle2" noWrap>Interactive browser in use</Typography><Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>{session.url ?? session.status}</Typography></Box>
       <Chip size="small" color={operatorControl ? "warning" : ready ? "info" : "default"} variant="outlined" label={ready ? browserControlLabel(session) : session.status} />
-      <Button size="small" variant="outlined" onClick={onOpenInTab}>Open tab</Button>
+      <Button size="small" variant="outlined" onClick={onOpenInTab}>Open Tab</Button>
     </Stack>
   </Paper>;
 
   return (
-    <Paper component="section" aria-label="Interactive browser" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
+    <Paper component="section" aria-label="Interactive browser" className="ponderosa-scroll" square variant="outlined" sx={{ height: "100%", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", borderInline: 0, borderTop: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1, sm: 1.5 }, py: .75, minWidth: 0 }}>
         <LanguageIcon color={ready ? "primary" : "disabled"} fontSize="small" />
         <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -169,7 +189,7 @@ export function BrowserPanel({
             <Tooltip title="Reconnect the browser process to this run">
               <span><IconButton size="small" aria-label="Reconnect browser" disabled={reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon fontSize="small" /></IconButton></span>
             </Tooltip>
-            <Tooltip title="Close browser session">
+            <Tooltip title="Close Browser Session">
               <span><IconButton size="small" aria-label="Close browser" disabled={close.isPending} onClick={() => close.mutate()}><CloseIcon fontSize="small" /></IconButton></span>
             </Tooltip>
         </>
@@ -189,12 +209,12 @@ export function BrowserPanel({
                   disabled={control.isPending}
                   onClick={() => control.mutate(operatorControl ? "agent" : "operator")}
                 >
-                  {operatorControl ? "Return control to agent" : "Take control"}
+                  {operatorControl ? "Return Control to Agent" : "Take Control"}
                 </Button>
                 <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
                   Input is fenced to one owner. Other tabs must refresh after control changes.
                 </Typography>
-                <Tooltip title="Collapse browser"><IconButton size="small" aria-label="Collapse browser" onClick={() => setExpanded(false)}><ExpandLessIcon /></IconButton></Tooltip>
+                <Tooltip title="Collapse Browser"><IconButton size="small" aria-label="Collapse browser" onClick={() => setExpanded(false)}><ExpandLessIcon /></IconButton></Tooltip>
               </Stack>
               <Box
                 sx={{ position: "relative", width: "100%", aspectRatio: `${VIEWPORT_WIDTH} / ${VIEWPORT_HEIGHT}`, bgcolor: "grey.950", borderRadius: 1, overflow: "hidden", border: 1, borderColor: operatorControl ? "warning.main" : "divider" }}
@@ -206,6 +226,7 @@ export function BrowserPanel({
                   tabIndex={operatorControl ? 0 : -1}
                   onClick={(event) => {
                     if (!operatorControl) return;
+                    if (suppressClick.current) { suppressClick.current = false; return; }
                     const rect = event.currentTarget.getBoundingClientRect();
                     sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT_WIDTH / rect.width, y: (event.clientY - rect.top) * VIEWPORT_HEIGHT / rect.height });
                   }}
@@ -215,11 +236,39 @@ export function BrowserPanel({
                     sendInput({ kind: "key", key: event.key });
                   }}
                   onWheel={(event) => {
-                    if (!operatorControl || Date.now() - wheelAt.current < 120) return;
-                    wheelAt.current = Date.now();
-                    sendInput({ kind: "scroll", deltaX: event.deltaX, deltaY: event.deltaY });
+                    if (!operatorControl) return;
+                    event.preventDefault();
+                    sendInput({
+                      kind: "scroll",
+                      deltaX: normalizeBrowserWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth),
+                      deltaY: normalizeBrowserWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight),
+                    });
                   }}
-                  sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", cursor: operatorControl ? "crosshair" : "default", outlineOffset: -3 }}
+                  onPointerDown={(event) => {
+                    if (!operatorControl || event.pointerType !== "touch") return;
+                    touchGesture.current = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    const gesture = touchGesture.current;
+                    if (!operatorControl || !gesture || gesture.pointerId !== event.pointerId) return;
+                    const deltaX = browserTouchScrollDelta(gesture.lastX, event.clientX);
+                    const deltaY = browserTouchScrollDelta(gesture.lastY, event.clientY);
+                    gesture.lastX = event.clientX;
+                    gesture.lastY = event.clientY;
+                    if (Math.abs(deltaX) + Math.abs(deltaY) < 2) return;
+                    suppressClick.current = true;
+                    event.preventDefault();
+                    sendInput({ kind: "scroll", deltaX, deltaY });
+                  }}
+                  onPointerUp={(event) => {
+                    if (touchGesture.current?.pointerId === event.pointerId) touchGesture.current = undefined;
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+                    if (suppressClick.current) window.setTimeout(() => { suppressClick.current = false; }, 0);
+                  }}
+                  onPointerCancel={() => { touchGesture.current = undefined; }}
+                  draggable={false}
+                  sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", touchAction: operatorControl ? "none" : "auto", cursor: operatorControl ? "crosshair" : "default", outlineOffset: -3 }}
                 /> : <Stack sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}><CircularProgress size={24} /></Stack>}
               </Box>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>

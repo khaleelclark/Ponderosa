@@ -39,7 +39,7 @@ export type CoordinationRequestUpdateKind =
   | "outcome_unknown"
   | "expired";
 
-export type CoordinationActorClass = "recipient" | "requester_or_user" | "system" | "supervisor_or_user";
+export type CoordinationActorClass = "recipient" | "recipient_or_supervisor" | "requester_or_user" | "system" | "supervisor_or_user";
 
 export const REQUEST_UPDATE_AUTHORIZATION: Readonly<Record<CoordinationRequestUpdateKind, CoordinationActorClass>> = {
   progress: "recipient",
@@ -48,7 +48,7 @@ export const REQUEST_UPDATE_AUTHORIZATION: Readonly<Record<CoordinationRequestUp
   question: "recipient",
   completed: "recipient",
   blocked: "recipient",
-  failed: "recipient",
+  failed: "recipient_or_supervisor",
   answer: "requester_or_user",
   cancelled: "requester_or_user",
   superseded: "requester_or_user",

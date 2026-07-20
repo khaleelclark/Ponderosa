@@ -1,7 +1,7 @@
 import type { SseEventEnvelope, AgentDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { reconcileAgentCursor, runningAfterAgentEvent, updateAgentDetail } from "../src/hooks/useAgentStream";
-import { formatExecutionElapsed } from "../src/components/AgentDetail";
+import { finalizedWorkDurationMs, formatExecutionElapsed, formatFinalizedWorkDuration } from "../src/components/AgentDetail";
 
 describe("updateAgentDetail", () => {
   it("detects gaps and duplicates with a constant-memory ordered cursor", () => {
@@ -12,6 +12,24 @@ describe("updateAgentDetail", () => {
   it("formats a stable stopwatch from the canonical execution start", () => {
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T00:02:03.000Z"))).toBe("2:03");
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T01:02:03.000Z"))).toBe("1:02:03");
+  });
+  it("sums only authoritative finalized Run intervals as natural worked time", () => {
+    expect(finalizedWorkDurationMs([
+      { startedAt: "2026-07-12T00:00:00.000Z", completedAt: "2026-07-12T00:20:10.000Z" },
+      { startedAt: "2026-07-12T01:00:00.000Z", completedAt: "2026-07-12T01:03:05.000Z" },
+      { startedAt: "2026-07-12T02:00:00.000Z" },
+      { startedAt: "invalid", completedAt: "2026-07-12T03:00:00.000Z" },
+    ])).toBe(23 * 60_000 + 15_000);
+    expect(formatFinalizedWorkDuration(23 * 60_000 + 15_000)).toBe("23m 15s");
+    expect(formatFinalizedWorkDuration(3_723_000)).toBe("1h 2m 3s");
+  });
+  it("attaches finalized worked time to the completed Agent message while leaving the live stopwatch separate", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const detail = await readFile(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(detail).toContain("const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);");
+    expect(detail).toContain("completedWorkDurationLabel={completedWorkDurationLabel}");
+    expect(detail).toContain("startedAt={runtimeActivity?.startedAt}");
+    expect(detail).not.toContain("finalizedDurationMs={");
   });
   it("does not resurrect a finished run when its terminal lifecycle record arrives", () => {
     expect(runningAfterAgentEvent(true, { type: "turn_done" })).toBe(false);
@@ -167,7 +185,7 @@ describe("updateAgentDetail", () => {
     const once = updateAgentDetail("agent-1", envelope, detail);
     const twice = updateAgentDetail("agent-1", { ...envelope, replayed: true }, once);
     expect(twice.activity).toEqual([expect.objectContaining({ seq: 9, event: envelope.event })]);
-    expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diff: "+export {}" })]);
+    expect(twice.changedFiles).toEqual([expect.objectContaining({ path: "src/index.ts", diffAvailable: true })]);
   });
 
   it("keeps browser lifecycle in Activity and explicit screenshots in Files & results", () => {

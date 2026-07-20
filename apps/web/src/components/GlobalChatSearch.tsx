@@ -40,6 +40,20 @@ export function isGlobalSearchShortcut(event: Pick<KeyboardEvent, "key" | "metaK
   return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === "k";
 }
 
+export function globalSearchKeyboardAction(
+  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey">,
+  activeIndex: number,
+  resultCount: number,
+): { activeIndex: number; openInNewTab?: boolean } | undefined {
+  if (resultCount <= 0) return undefined;
+  if (event.key === "ArrowDown") return { activeIndex: (activeIndex + 1 + resultCount) % resultCount };
+  if (event.key === "ArrowUp") return { activeIndex: activeIndex <= 0 ? resultCount - 1 : activeIndex - 1 };
+  if (event.key === "Enter" && activeIndex >= 0 && activeIndex < resultCount) {
+    return { activeIndex, openInNewTab: event.metaKey || event.ctrlKey };
+  }
+  return undefined;
+}
+
 export function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRangeDto[]): Array<{ text: string; highlighted: boolean }> {
   const ordered = [...ranges]
     .filter((range) => range.length > 0 && range.start >= 0 && range.start < snippet.length)
@@ -65,11 +79,26 @@ function SearchSnippet({ snippet, ranges }: { snippet: string; ranges: SearchHig
   </Typography>;
 }
 
-export function GlobalSearchResultItem({ result, onSelect }: {
+export function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
   result: GlobalChatSearchResultDto;
-  onSelect(): void;
+  onSelect(openInNewTab?: boolean): void;
+  active?: boolean;
+  id?: string;
+  onActive?(): void;
 }): JSX.Element {
-  return <ListItemButton onClick={onSelect} alignItems="flex-start" aria-label={`Open ${result.chat.title} at message by ${result.author.label}`} sx={{ borderRadius: 1.5, mb: .5 }}>
+  return <ListItemButton
+    id={id}
+    role="option"
+    selected={active}
+    aria-selected={active}
+    tabIndex={-1}
+    onMouseMove={onActive}
+    onMouseDown={(event) => event.preventDefault()}
+    onClick={(event) => onSelect(event.metaKey || event.ctrlKey)}
+    alignItems="flex-start"
+    aria-label={`Open ${result.chat.title} at message by ${result.author.label}`}
+    sx={{ borderRadius: 1.5, mb: .5 }}
+  >
     <ListItemText
       primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
@@ -84,8 +113,26 @@ export function GlobalSearchResultItem({ result, onSelect }: {
   </ListItemButton>;
 }
 
-function RecentChatItem({ recent, onSelect }: { recent: RecentGlobalChatDto; onSelect(): void }): JSX.Element {
-  return <ListItemButton onClick={onSelect} alignItems="flex-start" sx={{ borderRadius: 1.5, mb: .5 }}>
+function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
+  recent: RecentGlobalChatDto;
+  onSelect(openInNewTab?: boolean): void;
+  active?: boolean;
+  id?: string;
+  onActive?(): void;
+}): JSX.Element {
+  return <ListItemButton
+    id={id}
+    role="option"
+    selected={active}
+    aria-selected={active}
+    tabIndex={-1}
+    onMouseMove={onActive}
+    onMouseDown={(event) => event.preventDefault()}
+    onClick={(event) => onSelect(event.metaKey || event.ctrlKey)}
+    alignItems="flex-start"
+    aria-label={`Open recent chat ${recent.chat.title}`}
+    sx={{ borderRadius: 1.5, mb: .5 }}
+  >
     <ListItemText
       primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Typography fontWeight={700} noWrap>{recent.chat.title}</Typography>
@@ -99,19 +146,21 @@ function RecentChatItem({ recent, onSelect }: { recent: RecentGlobalChatDto; onS
   </ListItemButton>;
 }
 
-export function GlobalChatSearch({ open, onClose, onSelect }: {
+export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   open: boolean;
   onClose(): void;
   onSelect(selection: GlobalSearchSelection): void;
+  onOpenInNewTab?(selection: GlobalSearchSelection): void;
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"all" | "projects" | "threads" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(-1);
   useEffect(() => {
-    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 250);
-    return () => window.clearTimeout(timer);
+    const timer = globalThis.setTimeout(() => setDebouncedQuery(query.trim()), 250);
+    return () => globalThis.clearTimeout(timer);
   }, [query]);
   useEffect(() => {
     if (open) setDebouncedQuery(query.trim());
@@ -130,13 +179,44 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
     if (scope === "agents") return result.chat.kind === "agent";
     return false;
   }), [scope, search.data]);
-  const chooseResult = (result: GlobalChatSearchResultDto) => {
-    onSelect({ projectId: result.project.id, chat: result.chat, messageId: result.messageId });
+  const entries = useMemo(() => debouncedQuery
+    ? visibleResults.map((result) => ({
+      key: `result:${result.chat.kind}:${result.chat.id}:${result.messageId}`,
+      selection: { projectId: result.project.id, chat: result.chat, messageId: result.messageId } satisfies GlobalSearchSelection,
+    }))
+    : [
+      ...unread.map((result) => ({
+        key: `unread:${result.chat.kind}:${result.chat.id}:${result.messageId}`,
+        selection: { projectId: result.project.id, chat: result.chat, messageId: result.messageId } satisfies GlobalSearchSelection,
+      })),
+      ...(search.data?.recentChats ?? []).map((recent) => ({
+        key: `recent:${recent.chat.kind}:${recent.chat.id}`,
+        selection: { projectId: recent.project.id, chat: recent.chat } satisfies GlobalSearchSelection,
+      })),
+    ], [debouncedQuery, search.data?.recentChats, unread, visibleResults]);
+  const entryIdentity = entries.map((entry) => entry.key).join("\u0000");
+  useEffect(() => { setActiveIndex(-1); }, [open, query, scope]);
+  useEffect(() => { setActiveIndex(-1); }, [entryIdentity]);
+  const chooseSelection = (selection: GlobalSearchSelection, openInNewTab = false) => {
+    if (openInNewTab) (onOpenInNewTab ?? onSelect)(selection);
+    else onSelect(selection);
     onClose();
   };
-  const chooseRecent = (recent: RecentGlobalChatDto) => {
-    onSelect({ projectId: recent.project.id, chat: recent.chat });
-    onClose();
+  const chooseResult = (result: GlobalChatSearchResultDto, openInNewTab = false) => {
+    chooseSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }, openInNewTab);
+  };
+  const chooseRecent = (recent: RecentGlobalChatDto, openInNewTab = false) => {
+    chooseSelection({ projectId: recent.project.id, chat: recent.chat }, openInNewTab);
+  };
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const action = globalSearchKeyboardAction(event, activeIndex, entries.length);
+    if (!action) return;
+    event.preventDefault();
+    setActiveIndex(action.activeIndex);
+    if (action.openInNewTab !== undefined) {
+      const entry = entries[action.activeIndex];
+      if (entry) chooseSelection(entry.selection, action.openInNewTab);
+    }
   };
 
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} aria-labelledby="global-chat-search-title" PaperProps={{ sx: { border: 1, borderColor: "divider", borderRadius: { sm: 2 }, bgcolor: "background.paper", backgroundImage: "none" } }}>
@@ -146,9 +226,17 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
           fullWidth
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={handleSearchKeyDown}
           placeholder="Search Ponderosa"
-          inputProps={{ maxLength: 200, "aria-label": "Search Ponderosa" }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" sx={{ px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
+          inputProps={{
+            maxLength: 200,
+            "aria-label": "Search Ponderosa",
+            role: "combobox",
+            "aria-expanded": open,
+            "aria-controls": "global-search-results",
+            "aria-activedescendant": activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined,
+          }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />
@@ -159,29 +247,55 @@ export function GlobalChatSearch({ open, onClose, onSelect }: {
       </Stack>
       {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
       {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}
-      {debouncedQuery ? <>
-        <Typography variant="overline" color="text.secondary">{scope === "all" ? "Results" : scope}</Typography>
-        <List disablePadding aria-label="Global chat search results">
-          {visibleResults.map((result) => <GlobalSearchResultItem key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`} result={result} onSelect={() => chooseResult(result)} />)}
+      <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
+      {debouncedQuery ? visibleResults.length > 0 ?
+        <Box role="group" aria-label={scope === "all" ? "Results" : scope}>
+        <Typography aria-hidden="true" variant="overline" color="text.secondary">{scope === "all" ? "Results" : scope}</Typography>
+        <List component="div" disablePadding role="presentation">
+          {visibleResults.map((result, index) => <GlobalSearchResultItem
+            key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`}
+            id={`global-search-option-${index}`}
+            active={activeIndex === index}
+            onActive={() => setActiveIndex(index)}
+            result={result}
+            onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
+          />)}
         </List>
-        {!search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      </> : <Stack spacing={1.5}>
-        <Box>
-          <Typography variant="overline" color="text.secondary">Unread messages</Typography>
-          <List disablePadding aria-label="Unread chat messages">
-            {unread.map((result) => <GlobalSearchResultItem key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`} result={result} onSelect={() => chooseResult(result)} />)}
+        </Box> : null : <>
+        {unread.length > 0 ? <Box role="group" aria-label="Unread messages" sx={{ mb: 1.5 }}>
+          <Typography aria-hidden="true" variant="overline" color="text.secondary">Unread messages</Typography>
+          <List component="div" disablePadding role="presentation">
+            {unread.map((result, index) => <GlobalSearchResultItem
+              key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`}
+              id={`global-search-option-${index}`}
+              active={activeIndex === index}
+              onActive={() => setActiveIndex(index)}
+              result={result}
+              onSelect={(openInNewTab) => chooseResult(result, openInNewTab)}
+            />)}
           </List>
-          {!search.isFetching && unread.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>You’re all caught up.</Typography> : null}
-        </Box>
-        <Box>
-          <Typography variant="overline" color="text.secondary">Recent chats</Typography>
-          <List disablePadding aria-label="Recent chats">
-            {(search.data?.recentChats ?? []).map((recent) => <RecentChatItem key={`${recent.chat.kind}:${recent.chat.id}`} recent={recent} onSelect={() => chooseRecent(recent)} />)}
+        </Box> : null}
+        {(search.data?.recentChats.length ?? 0) > 0 ? <Box role="group" aria-label="Recent chats">
+          <Typography aria-hidden="true" variant="overline" color="text.secondary">Recent chats</Typography>
+          <List component="div" disablePadding role="presentation">
+            {(search.data?.recentChats ?? []).map((recent, recentIndex) => {
+              const index = unread.length + recentIndex;
+              return <RecentChatItem
+                key={`${recent.chat.kind}:${recent.chat.id}`}
+                id={`global-search-option-${index}`}
+                active={activeIndex === index}
+                onActive={() => setActiveIndex(index)}
+                recent={recent}
+                onSelect={(openInNewTab) => chooseRecent(recent, openInNewTab)}
+              />;
+            })}
           </List>
-        </Box>
-      </Stack>}
+        </Box> : null}
+      </>}
+      </Box>
+      {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
+      {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>You’re all caught up.</Typography> : null}
       {search.data?.truncated ? <Alert severity="info" sx={{ mt: 1 }}>Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert> : null}
-      <Stack direction="row" spacing={2} sx={{ mt: 2, pt: 1.25, borderTop: 1, borderColor: "divider", color: "text.secondary" }}><Typography variant="caption">↑↓ Navigate</Typography><Typography variant="caption">↵ Open</Typography><Typography variant="caption">⌘↵ Open in new tab</Typography></Stack>
     </DialogContent>
   </Dialog>;
 }

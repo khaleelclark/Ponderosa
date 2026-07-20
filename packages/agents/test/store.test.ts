@@ -4,10 +4,12 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentDeletionConflictError, AgentStore } from "../src/store.js";
+import { publishManagedArtifactContent } from "../src/managed-artifact-files.js";
+import { EventLog } from "../src/eventlog.js";
 import { CoordinationV3Store } from "../src/coordination-v3-store.js";
 import type { CommunicationEvent, CommunicationRevisionEvent } from "@ponderosa/core";
 import type { LogEvent } from "../src/log-event.js";
-import { agentDir, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, importedAgentHistoryPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
+import { agentDir, agentPresetsPath, agentsDir, artifactContentPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, eventsPath, importedAgentHistoryPath, managedArtifactContentPath, managedArtifactsLogPath, messageDispatchesPath, projectDir, projectJsonPath } from "../src/paths.js";
 
 let dir: string;
 let store: AgentStore;
@@ -40,6 +42,10 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "imported_history_messages",
     "activity_projection",
     "changed_file_projection",
+    "changed_file_execution_projection",
+    "agent_event_head_projection",
+    "agent_health_projection",
+    "all_chat_feed_projection",
     "managed_artifact_projection",
     "continuation_handoffs",
   ];
@@ -57,6 +63,12 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
           ? "agent_id, seq"
         : t === "changed_file_projection"
           ? "agent_id, path"
+        : t === "changed_file_execution_projection"
+          ? "agent_id, path, execution_id"
+        : t === "agent_event_head_projection" || t === "agent_health_projection"
+          ? "agent_id"
+        : t === "all_chat_feed_projection"
+          ? "project_id, communication_event_id"
         : t === "managed_artifact_projection"
           ? "project_id, artifact_id"
         : t === "continuation_handoffs"
@@ -549,6 +561,16 @@ describe("AgentStore — canonical communication events", () => {
     store = new AgentStore(dir);
   });
 
+  it("repairs a crash-torn delivery-order tail before allocating the next key", () => {
+    expect(store.nextDeliveryOrderKey("2026-07-20T00:00:00.000Z")).toMatch(/0000000000000001$/);
+    store.close();
+    const file = join(dir, "delivery-order.jsonl");
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"sequence":`, "utf8");
+    store = new AgentStore(dir);
+    expect(store.nextDeliveryOrderKey("2026-07-20T00:00:01.000Z")).toMatch(/0000000000000002$/);
+    expect(readFileSync(file, "utf8")).toBe('{"sequence":1}\n{"sequence":2}\n');
+  });
+
   it("reconciles and rebuilds a direct-agent projection by canonical event ID", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
@@ -904,6 +926,81 @@ const RUN: LogEvent[] = [
 ];
 
 describe("AgentStore — append + projection", () => {
+  it("recovers artifact publication after a crash immediately following the canonical event append", () => {
+    const { projectId, agentId } = seedAgent();
+    store.close();
+    const stored = new EventLog(eventsPath(dir, projectId, agentId)).append({
+      type: "command", command: "crash-boundary", cwd: "/repo",
+    });
+    store = new AgentStore(dir);
+    const artifactId = `${agentId}:a:${stored.seq}:0`;
+    expect(store.getProjectArtifact(projectId, artifactId)).toMatchObject({
+      id: artifactId, kind: "log", originAgentId: agentId, sha256: expect.any(String),
+    });
+    expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8")).toContain("crash-boundary");
+  });
+
+  it("rebuilds every execution artifact association and retains deleted-Agent audit evidence", () => {
+    const { projectId, agentId } = seedAgent();
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-audit",
+    });
+    store.appendEvent(agentId, { type: "command", command: "inspect", cwd: "/repo" });
+    store.appendEvent(agentId, { type: "file_change", path: "result.txt", kind: "edit", diff: "+result\n" });
+    store.appendEvent(agentId, { type: "test_result", passed: true, summary: "verified" });
+    store.appendEvent(agentId, { type: "tool_result", id: "tool-audit", output: "durable activity" });
+    store.appendEvent(agentId, {
+      type: "agent_output", executionId: "run-audit", text: "durable work log", sourceSeqStart: 2, sourceSeqEnd: 5,
+    });
+    const screenshot = publishManagedArtifactContent(dir, projectId, "screenshot-audit", Buffer.from("png-audit"));
+    store.appendEvent(agentId, {
+      type: "browser_screenshot", sessionId: "browser", executionId: "run-audit",
+      artifactId: "screenshot-audit", path: "browser/screenshot-audit.png", width: 1280, height: 720,
+      size: screenshot.size, sha256: screenshot.sha256,
+    });
+    const generated = publishManagedArtifactContent(dir, projectId, "generated-audit", Buffer.from("generated-audit"));
+    store.appendEvent(agentId, {
+      type: "generated_artifact", artifactId: "generated-audit", executionId: "run-audit",
+      path: "generated/generated-audit.txt", sourcePath: "result.txt", name: "result.txt",
+      mediaType: "text/plain", size: generated.size, sha256: generated.sha256, visibility: "project",
+    });
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-audit",
+    });
+    const now = new Date().toISOString();
+    store.sqlite.prepare(`
+      INSERT INTO provider_inputs (
+        execution_id, scheduler_run_id, agent_id, project_id, provider_prompt,
+        prompt_hash, source_manifest_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("run-audit", "scheduler-run-audit", agentId, projectId, "exact provider input", "a".repeat(64), "[]", now, now);
+
+    const expectedIds = store.getProjectArtifacts(projectId).map((artifact) => artifact.id);
+    store.updateProjectArtifactVisibility(projectId, "screenshot-audit", "published", true);
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.kind).sort()).toEqual([
+      "diff", "generated_file", "log", "screenshot", "test_report",
+    ]);
+    store.rebuildProjections();
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.id).sort()).toEqual([...expectedIds].sort());
+    expect(store.getProjectArtifact(projectId, "screenshot-audit")).toMatchObject({ visibility: "published", pinned: true });
+    for (const artifact of store.getProjectArtifacts(projectId)) {
+      expect(readFileSync(managedArtifactContentPath(dir, projectId, artifact.id))).toHaveLength(artifact.size!);
+    }
+
+    expect(store.deleteAgent(agentId)).toBe(true);
+    expect(store.getAgent(agentId)).toBeUndefined();
+    const audit = store.getAgentDetail(agentId)!;
+    expect(audit.agent).toMatchObject({ id: agentId, archived: true, deletedAt: expect.any(String) });
+    expect(audit.runOutput).toContainEqual(expect.objectContaining({ text: "durable work log" }));
+    expect(audit.activity).toContainEqual(expect.objectContaining({ event: expect.objectContaining({ id: "tool-audit" }) }));
+    expect(audit.runs).toContainEqual(expect.objectContaining({ id: "run-audit", status: "completed" }));
+    expect(store.getProviderInput("run-audit", true)).toMatchObject({ exactPrompt: "exact provider input" });
+    expect(store.getProjectArtifacts(projectId).map((artifact) => artifact.id).sort()).toEqual([...expectedIds].sort());
+    store.rebuildProjections();
+    expect(store.getAgent(agentId)).toBeUndefined();
+    expect(store.getAgentDetail(agentId)?.runOutput).toContainEqual(expect.objectContaining({ text: "durable work log" }));
+  });
+
   it("keeps generated output under a stable artifact ID with visibility updates", () => {
     const { projectId, agentId } = seedAgent();
     const managedPath = "generated/image.png";
@@ -963,8 +1060,9 @@ describe("AgentStore — append + projection", () => {
     })]);
     expect(detail.activity.map((item) => item.event.type)).toEqual(["command", "tool_result", "file_change"]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
-      path: "auth.ts", kind: "edit", lastSeq: 7, diff: "diff --git a/auth.ts b/auth.ts\n",
+      path: "auth.ts", kind: "edit", lastSeq: 7, executionCount: 1, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "auth.ts")?.diff).toBe("diff --git a/auth.ts b/auth.ts\n");
     expect(detail.runs).toEqual([expect.objectContaining({
       id: "run-1", status: "completed", reason: "turn_completed", title: "Refactor authentication", wakeCause: "direct_message",
       usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
@@ -986,6 +1084,24 @@ describe("AgentStore — append + projection", () => {
     expect(readFileSync(commandFile, "utf8")).toContain("pnpm test");
     // session id captured for resume
     expect(store.resumeSessionId(agentId)).toBe("sess-abc");
+  });
+
+  it("aggregates finalized Run time without counting active or inter-Run idle wall time", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-finalized-a" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-finalized-a" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-finalized-b" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-finalized-b" });
+    store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-active" });
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = ? WHERE id = ?")
+      .run("2026-07-20T10:00:00.000Z", "2026-07-20T10:20:10.000Z", "run-finalized-a");
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = ? WHERE id = ?")
+      .run("2026-07-20T12:00:00.000Z", "2026-07-20T12:03:05.000Z", "run-finalized-b");
+    store.sqlite.prepare("UPDATE runs SET started_at = ?, completed_at = NULL WHERE id = ?")
+      .run("2026-07-20T13:00:00.000Z", "run-active");
+
+    expect(store.getFinalizedWorkDurationMs(agentId)).toBe(23 * 60_000 + 15_000);
+    expect(store.getAgentDetail(agentId, 1)?.finalizedWorkDurationMs).toBe(23 * 60_000 + 15_000);
   });
 
   it("returns a bounded Agent history window while retaining full canonical tool output", () => {
@@ -1064,9 +1180,12 @@ describe("AgentStore — append + projection", () => {
       event: { type: "tool_result", id: "large-tool", output: expect.not.stringContaining("exact") },
       outputPreview: { totalUtf8Bytes: 20_006, sha256: expect.any(String) },
     });
-    expect(store.getChangedFiles(agentId)).toEqual([expect.objectContaining({
-      path: "src/large.ts", executionIds: ["run-long"], diff: expect.not.stringContaining("+".repeat(5_000)),
+    expect(store.getChangedFilePage(agentId, { limit: 10 }).items).toEqual([expect.objectContaining({
+      path: "src/large.ts", executionCount: 1, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "src/large.ts")).toMatchObject({
+      executionIds: ["run-long"], diff: expect.not.stringContaining("+".repeat(5_000)),
+    });
 
     const artifact = {
       id: "managed-long-history", projectId, agentId, originAgentId: agentId, executionId: "run-long",
@@ -1083,6 +1202,75 @@ describe("AgentStore — append + projection", () => {
       expect.objectContaining({ id: artifact.id }),
     ]);
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
+  });
+
+  it("serves 50-Agent health heads and reconnect tails without reopening canonical JSONL", () => {
+    const project = store.createProject({ label: "Large team", hostPath: "/large-team" });
+    const team = Array.from({ length: 50 }, (_, index) =>
+      store.createAgent(project.id, { title: `Agent ${index}`, engine: "codex" }));
+    for (const [index, agent] of team.entries()) {
+      for (let seq = 0; seq < 20; seq += 1) {
+        store.appendEvent(agent.id, { type: "session", sessionId: `session-${index}-${seq}` });
+      }
+      store.appendEvent(agent.id, {
+        type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: `run-${index}`,
+      });
+      renameSync(eventsPath(dir, project.id, agent.id), `${eventsPath(dir, project.id, agent.id)}.offline`);
+    }
+
+    for (const [index, agent] of team.entries()) {
+      expect(store.lastSeqOf(agent.id)).toBe(21);
+      expect(store.latestHealthObservation(agent.id)).toMatchObject({ status: "idle", reason: "turn_completed" });
+      expect(store.readEventsSince(agent.id, 20)).toEqual([
+        expect.objectContaining({ seq: 21, event: expect.objectContaining({ executionId: `run-${index}` }) }),
+      ]);
+    }
+  }, 20_000);
+
+  it("keyset-pages page N of many files and bounds normalized execution provenance", () => {
+    const { agentId } = seedAgent();
+    for (let index = 0; index < 240; index += 1) {
+      store.appendEvent(agentId, { type: "file_change", path: `src/file-${String(index).padStart(3, "0")}.ts`, kind: "edit", diff: `+${index}` });
+    }
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = store.getChangedFilePage(agentId, { limit: 17, cursor });
+      seen.push(...page.items.map((file) => file.path));
+      cursor = page.history.cursor;
+    } while (cursor);
+    expect(seen).toHaveLength(240);
+    expect(new Set(seen).size).toBe(240);
+
+    for (let index = 0; index < 150; index += 1) {
+      store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: `provenance-${index}` });
+      store.appendEvent(agentId, { type: "file_change", path: "src/shared.ts", kind: "edit", diff: `+${index}` });
+    }
+    expect(store.getChangedFileDetail(agentId, "src/shared.ts")).toMatchObject({
+      executionCount: 150,
+      provenanceTruncated: true,
+      executionIds: expect.arrayContaining(["provenance-149"]),
+    });
+    expect(store.getChangedFileDetail(agentId, "src/shared.ts")?.executionIds).toHaveLength(100);
+  }, 20_000);
+
+  it("uses the deduplicated All Chat keyset index without window ranking or a temp sort", () => {
+    const project = store.createProject({ label: "Feed plan", hostPath: "/feed-plan" });
+    const room = store.createConversation(project.id, { title: "Feed" });
+    const plan = store.sqlite.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT search.row_key
+      FROM all_chat_feed_projection feed
+      JOIN chat_search_messages search ON search.row_key = feed.row_key
+      WHERE feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?)
+      ORDER BY feed.order_key DESC, feed.row_key DESC
+      LIMIT ?
+    `).all("z", "z", "z", 51) as Array<{ detail: string }>;
+    const details = plan.map((row) => row.detail).join("\n");
+    expect(details).toContain("idx_all_chat_feed_keyset");
+    expect(details).not.toContain("TEMP B-TREE");
+    expect(details).not.toContain("CO-ROUTINE");
+    expect(room.id).toBeTruthy();
   });
 
   it("resolves stable focused items across every Agent telemetry stream", () => {
@@ -1204,8 +1392,11 @@ describe("AgentStore — append + projection", () => {
       ["run-a", "command"], ["run-a", "file_change"], ["run-b", "test_result"], ["run-b", "file_change"],
     ]);
     expect(detail.changedFiles).toEqual([expect.objectContaining({
-      path: "src/a.ts", kind: "edit", diff: "+second", executionIds: ["run-a", "run-b"],
+      path: "src/a.ts", kind: "edit", executionCount: 2, diffAvailable: true,
     })]);
+    expect(store.getChangedFileDetail(agentId, "src/a.ts")).toMatchObject({
+      diff: "+second", executionIds: ["run-b", "run-a"], provenanceTruncated: false,
+    });
     expect(detail.runOutput.map((entry) => entry.fileActivity)).toEqual([
       [expect.objectContaining({ path: "src/a.ts", kind: "create", sourceSeq: 3, additions: 1 })],
       [expect.objectContaining({ path: "src/a.ts", kind: "edit", sourceSeq: 8, additions: 1 })],
@@ -1655,7 +1846,10 @@ describe("agent organizational hierarchy", () => {
 
     store = new AgentStore(dir);
     expect(store.getAgent(deleted.id)).toBeUndefined();
-    expect(existsSync(agentDir(dir, project.id, deleted.id))).toBe(false);
+    expect(store.getAgentDetail(deleted.id)?.agent).toMatchObject({
+      id: deleted.id, archived: true, deletedAt: expect.any(String),
+    });
+    expect(existsSync(agentDir(dir, project.id, deleted.id))).toBe(true);
     expect(existsSync(deletedTombstone)).toBe(false);
     expect(store.sqlite.prepare(`SELECT COUNT(*) AS count FROM agent_deletion_tombstones`).get()).toEqual({ count: 0 });
   });
@@ -1705,6 +1899,22 @@ describe("agent presets", () => {
     expect(store.getAgentPreset(preset.id)).toBeUndefined();
     expect(store.getAgent(agent.id)?.presetSnapshot?.name).toBe("Release");
   });
+
+  it("repairs a crash-torn preset tail on restart and accepts a later durable update", () => {
+    const project = store.createProject({ label: "Preset recovery", hostPath: "/repo" });
+    const file = agentPresetsPath(dir, project.id);
+    store.close();
+    writeFileSync(file, `${readFileSync(file, "utf8")}{"type":"upsert","preset":`, "utf8");
+
+    store = new AgentStore(dir);
+    expect(store.listAgentPresets(project.id)).toHaveLength(4);
+    const added = store.createAgentPreset(project.id, {
+      name: "Recovered", description: "Recovered safely", guidance: "Continue after restart.", engine: "codex",
+    });
+    store.rebuildProjections();
+    expect(store.getAgentPreset(added.id)?.name).toBe("Recovered");
+    expect(readFileSync(file, "utf8")).not.toContain('"preset":\n');
+  });
 });
 
 describe("project lifecycle", () => {
@@ -1730,6 +1940,84 @@ describe("project lifecycle", () => {
     expect(JSON.parse(readFileSync(projectJsonPath(dir, project.id), "utf8"))).toMatchObject({ label: "After", hostPath: "/repo" });
     store.rebuildProjections();
     expect(store.getProject(project.id)?.label).toBe("After");
+  });
+
+  it("persists Project deletion quarantine until the Project purge commits", () => {
+    const project = store.createProject({ label: "Pending deletion", hostPath: "/repo" });
+    store.markProjectDeletionPending(project.id, "2026-07-20T00:00:00.000Z");
+    store.recordProjectDeletionCleanupError(project.id, "browser cleanup pending");
+    store.close();
+    store = new AgentStore(dir);
+
+    expect(store.listPendingProjectDeletions()).toEqual([{
+      projectId: project.id,
+      createdAt: "2026-07-20T00:00:00.000Z",
+      lastError: "browser cleanup pending",
+    }]);
+    expect(store.deleteProject(project.id)).toBe(true);
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+  });
+
+  it("recovers a rename-before-purge crash and purges V3 state only on the successful retry", () => {
+    const project = store.createProject({ label: "Crash-safe deletion", hostPath: "/repo" });
+    const conversation = store.getConversation(project.lastConversationId!)!;
+    const agent = store.createAgent(project.id, {
+      title: "Trigger owner", engine: "codex", conversationId: conversation.id,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.createTriggerDefinition({
+      id: "deletion-crash-trigger", projectId: project.id, conversationId: conversation.id,
+      agentId: agent.id, name: "Retained until commit", instructions: "Run later",
+      sourceKind: "webhook", sourceConfig: { replayWindowSeconds: 300 }, enabled: false,
+    });
+    store.markProjectDeletionPending(project.id, "2026-07-20T01:00:00.000Z");
+    const tombstoneName = `.${project.id}.deleting-crash-window`;
+    store.sqlite.prepare(`UPDATE project_deletion_pending SET tombstone_name = ? WHERE project_id = ?`)
+      .run(tombstoneName, project.id);
+    renameSync(projectDir(dir, project.id), join(dir, "projects", tombstoneName));
+    const committedCleanup = join(dir, "projects", ".already-committed.deleting-cleanup");
+    mkdirSync(committedCleanup);
+    writeFileSync(join(committedCleanup, "stale"), "committed");
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(existsSync(projectDir(dir, project.id))).toBe(true);
+    expect(existsSync(join(dir, "projects", tombstoneName))).toBe(false);
+    expect(existsSync(committedCleanup)).toBe(false);
+    expect(store.listPendingProjectDeletions()).toEqual([{
+      projectId: project.id, createdAt: "2026-07-20T01:00:00.000Z",
+    }]);
+    expect(new CoordinationV3Store(store.sqlite).getTriggerDefinition("deletion-crash-trigger")).toBeDefined();
+
+    const restartedCoordination = new CoordinationV3Store(store.sqlite);
+    expect(store.deleteProject(project.id, (projectId) => restartedCoordination.purgeProject(projectId))).toBe(true);
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+    expect(restartedCoordination.getTriggerDefinition("deletion-crash-trigger")).toBeUndefined();
+    expect(existsSync(projectDir(dir, project.id))).toBe(false);
+  });
+
+  it("retains a committed Project deletion receipt across restart and finishes its tombstone cleanup", () => {
+    const project = store.createProject({ label: "Committed receipt", hostPath: "/repo" });
+    const receipt = store.commitProjectDeletion(project.id)!;
+
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      projectId: project.id,
+      tombstoneName: receipt.tombstoneName,
+      storageCleanupCompleted: false,
+    });
+    expect(existsSync(join(dir, "projects", receipt.tombstoneName))).toBe(true);
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(store.getProject(project.id)).toBeUndefined();
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({
+      projectId: project.id,
+      tombstoneName: receipt.tombstoneName,
+      storageCleanupCompleted: true,
+      completedAt: expect.any(String),
+    });
+    expect(existsSync(join(dir, "projects", receipt.tombstoneName))).toBe(false);
   });
 
   it("permanently deletes one canonical project tree and all of its projections", () => {

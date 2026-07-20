@@ -16,7 +16,7 @@ export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
 export { terminateProcessGroup } from "./process-termination.js";
 export type { ProcessStreamSnapshot, RuntimeProcessFaults } from "./process.js";
-export { LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
+export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
 export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
 export { shouldRolloverEngineSession, classifyProviderFailure } from "./session-recovery.js";
 export type { ProviderFailureKind } from "./session-recovery.js";

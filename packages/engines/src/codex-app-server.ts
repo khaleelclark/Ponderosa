@@ -7,6 +7,7 @@ import type {
   RuntimeSession,
   RuntimeSteerResult,
   RuntimeTurnInput,
+  RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
@@ -14,7 +15,7 @@ import type { SpawnFn } from "./process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 
-interface ThreadResponse { thread: { id: string } }
+interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
 interface DynamicToolCallParams {
@@ -40,6 +41,88 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
+function isApprovalPolicy(value: unknown): boolean {
+  if (value === "untrusted" || value === "on-request" || value === "never") return true;
+  const granular = object(object(value)?.granular);
+  return typeof granular?.sandbox_approval === "boolean" &&
+    typeof granular.rules === "boolean" &&
+    typeof granular.skill_approval === "boolean" &&
+    typeof granular.request_permissions === "boolean" &&
+    typeof granular.mcp_elicitations === "boolean";
+}
+
+function isSandboxPolicy(value: unknown): boolean {
+  const policy = object(value);
+  if (policy?.type === "dangerFullAccess") return true;
+  if (policy?.type === "readOnly") return typeof policy.networkAccess === "boolean";
+  if (policy?.type === "externalSandbox") {
+    return policy.networkAccess === "restricted" || policy.networkAccess === "enabled";
+  }
+  return policy?.type === "workspaceWrite" &&
+    Array.isArray(policy.writableRoots) && policy.writableRoots.every((root) => typeof root === "string") &&
+    typeof policy.networkAccess === "boolean" &&
+    typeof policy.excludeTmpdirEnvVar === "boolean" &&
+    typeof policy.excludeSlashTmp === "boolean";
+}
+
+function isActivePermissionProfile(value: unknown): boolean {
+  if (value === null) return true;
+  const profile = object(value);
+  return typeof profile?.id === "string" && isNullableString(profile.extends);
+}
+
+function isCollaborationMode(value: unknown): boolean {
+  const mode = object(value);
+  const settings = object(mode?.settings);
+  return (mode?.mode === "plan" || mode?.mode === "default") &&
+    typeof settings?.model === "string" &&
+    isNullableString(settings.reasoning_effort) &&
+    isNullableString(settings.developer_instructions);
+}
+
+function isMultiAgentMode(value: unknown): boolean {
+  if (value === "explicitRequestOnly" || value === "proactive") return true;
+  const mode = object(value);
+  return !!mode &&
+    Object.keys(mode).length === 1 &&
+    Object.hasOwn(mode, "custom") &&
+    typeof mode.custom === "string" &&
+    !!mode.custom.trim();
+}
+
+function isThreadSettings(value: unknown): value is Record<string, unknown> & { model: string } {
+  const settings = object(value);
+  return typeof settings?.cwd === "string" &&
+    isApprovalPolicy(settings.approvalPolicy) &&
+    (settings.approvalsReviewer === "user" || settings.approvalsReviewer === "auto_review" ||
+      settings.approvalsReviewer === "guardian_subagent") &&
+    isSandboxPolicy(settings.sandboxPolicy) &&
+    isActivePermissionProfile(settings.activePermissionProfile) &&
+    typeof settings.model === "string" && !!settings.model.trim() &&
+    typeof settings.modelProvider === "string" && !!settings.modelProvider.trim() &&
+    isNullableString(settings.serviceTier) &&
+    isNullableString(settings.effort) &&
+    (settings.summary === null || settings.summary === "auto" || settings.summary === "concise" ||
+      settings.summary === "detailed" || settings.summary === "none") &&
+    isCollaborationMode(settings.collaborationMode) &&
+    isMultiAgentMode(settings.multiAgentMode) &&
+    (settings.personality === null || settings.personality === "none" ||
+      settings.personality === "friendly" || settings.personality === "pragmatic");
+}
+
+function isModelReroutedNotification(value: unknown): value is Record<string, unknown> & { toModel: string } {
+  const notification = object(value);
+  return typeof notification?.threadId === "string" &&
+    typeof notification.turnId === "string" && !!notification.turnId.trim() &&
+    typeof notification.fromModel === "string" && !!notification.fromModel.trim() &&
+    typeof notification.toModel === "string" && !!notification.toModel.trim() &&
+    notification.reason === "highRiskCyberActivity";
 }
 
 async function optionalPaginatedRequest(
@@ -104,9 +187,15 @@ export async function discoverCodexAppServerCapabilities(opts: {
   sandboxMode: string;
   killGraceMs: number;
   configuredMcps: EngineMcpServer[];
+  signal: AbortSignal;
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   timeoutMs?: number;
 }): Promise<EngineCapabilities> {
+  if (opts.signal.aborted) throw new Error("codex app-server capability discovery aborted");
   const controller = new AbortController();
+  const abortFromHost = (): void => controller.abort();
+  opts.signal.addEventListener("abort", abortFromHost);
+  if (opts.signal.aborted) controller.abort();
   let timedOut = false;
   const timeout = setTimeout(() => {
     timedOut = true;
@@ -124,7 +213,7 @@ export async function discoverCodexAppServerCapabilities(opts: {
     signal: controller.signal,
     spawnFn: opts.spawnFn,
     killGraceMs: opts.killGraceMs,
-    onRuntimeSpawned: () => undefined,
+    onRuntimeSpawned: opts.onRuntimeSpawned,
     onRuntimeRootExit: () => undefined,
   });
   try {
@@ -159,8 +248,12 @@ export async function discoverCodexAppServerCapabilities(opts: {
     });
   } finally {
     clearTimeout(timeout);
+    opts.signal.removeEventListener("abort", abortFromHost);
     controller.abort();
-    await rpc.close().catch(() => undefined);
+    // Cleanup failure is authoritative: the host retains the spawn-time handle
+    // and must keep Project deletion/shutdown pending until a retry observes
+    // the complete process group gone.
+    await rpc.close();
   }
 }
 
@@ -172,8 +265,10 @@ export class CodexAppServerSession implements RuntimeSession {
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
   private capabilitiesSnapshot?: EngineCapabilities;
+  private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
   private catalogGeneration = 0;
+  private providerModelGeneration = 0;
   private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
   readonly events: AsyncIterable<AgentEvent>;
 
@@ -183,7 +278,7 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly cwd: string,
     fresh: boolean,
     private readonly seedHistory: OpenRuntimeSessionOptions["history"],
-    private readonly selectedModel: string | undefined,
+    private activeModel: string | undefined,
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
   ) {
@@ -256,7 +351,7 @@ export class CodexAppServerSession implements RuntimeSession {
       opts.cwd,
       !opts.resumeSessionId,
       opts.resumeSessionId ? [] : [...opts.history],
-      opts.model,
+      typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
       opts.configuredMcps ?? [],
       opts.onCapabilitiesChanged,
     );
@@ -265,31 +360,49 @@ export class CodexAppServerSession implements RuntimeSession {
 
   async capabilities(): Promise<EngineCapabilities> {
     if (!this.capabilitiesDirty && this.capabilitiesSnapshot) return this.capabilitiesSnapshot;
-    const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
-      optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
-      optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
-      optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
-      optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
-      optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
-    ]);
-    const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
-    const snapshot = normalizeCodexProviderDiscovery({
-      cwd: this.cwd,
-      selectedModel: this.selectedModel,
-      sessionId: this.engineAgentId,
-      skills,
-      plugins,
-      pluginDetails,
-      models,
-      modelProviderCapabilities,
-      mcpStatuses,
-      mcpStartup: this.mcpStartup,
-      configuredMcps: this.configuredMcps,
-    });
-    snapshot.catalogVersion = `${this.engineAgentId}:${this.catalogGeneration}`;
-    this.capabilitiesSnapshot = snapshot;
-    this.capabilitiesDirty = false;
-    return snapshot;
+    if (this.capabilitiesDiscovery) return this.capabilitiesDiscovery;
+    const discovery = this.discoverCapabilities();
+    this.capabilitiesDiscovery = discovery;
+    try {
+      return await discovery;
+    } finally {
+      if (this.capabilitiesDiscovery === discovery) this.capabilitiesDiscovery = undefined;
+    }
+  }
+
+  private async discoverCapabilities(): Promise<EngineCapabilities> {
+    // A provider notification can invalidate the catalog while its requests are
+    // in flight. Repeat inside the same single-flight operation so no caller can
+    // publish or observe that stale generation as the refreshed snapshot.
+    for (;;) {
+      const generation = this.catalogGeneration;
+      const [skills, plugins, models, modelProviderCapabilities, mcpStatuses] = await Promise.all([
+        optionalRequest(this.rpc, "skills/list", { cwds: [this.cwd], forceReload: true }),
+        optionalRequest(this.rpc, "plugin/installed", { cwds: [this.cwd] }),
+        optionalPaginatedRequest(this.rpc, "model/list", { includeHidden: false }),
+        optionalRequest(this.rpc, "modelProvider/capabilities/read", {}),
+        optionalPaginatedRequest(this.rpc, "mcpServerStatus/list", { detail: "toolsAndAuthOnly", threadId: this.engineAgentId }),
+      ]);
+      const pluginDetails = await readInstalledPluginDetails(this.rpc, plugins);
+      const snapshot = normalizeCodexProviderDiscovery({
+        cwd: this.cwd,
+        selectedModel: this.activeModel,
+        sessionId: this.engineAgentId,
+        skills,
+        plugins,
+        pluginDetails,
+        models,
+        modelProviderCapabilities,
+        mcpStatuses,
+        mcpStartup: this.mcpStartup,
+        configuredMcps: this.configuredMcps,
+      });
+      snapshot.catalogVersion = `${this.engineAgentId}:${generation}`;
+      if (generation !== this.catalogGeneration) continue;
+      this.capabilitiesSnapshot = snapshot;
+      this.capabilitiesDirty = false;
+      return snapshot;
+    }
   }
 
   async invokeCommand(name: string, argumentsText?: string): Promise<void> {
@@ -302,7 +415,17 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
-    if (notification.method === "mcpServer/startupStatus/updated") {
+    if (notification.method === "model/rerouted") {
+      if (!isModelReroutedNotification(notification.params) ||
+          notification.params.threadId !== this.engineAgentId) return;
+      const raw = notification.params;
+      this.observeProviderModel(raw.toModel.trim());
+    } else if (notification.method === "thread/settings/updated") {
+      const raw = object(notification.params);
+      if (raw?.threadId !== this.engineAgentId || !isThreadSettings(raw.threadSettings)) return;
+      const threadSettings = raw.threadSettings;
+      this.observeProviderModel(threadSettings.model.trim());
+    } else if (notification.method === "mcpServer/startupStatus/updated") {
       const raw = notification.params && typeof notification.params === "object"
         ? notification.params as { name?: unknown; status?: unknown; error?: unknown } : undefined;
       if (typeof raw?.name === "string" && typeof raw.status === "string") {
@@ -317,6 +440,12 @@ export class CodexAppServerSession implements RuntimeSession {
     }
   }
 
+  private observeProviderModel(model: string): void {
+    this.providerModelGeneration += 1;
+    this.activeModel = model;
+    this.invalidateCapabilities();
+  }
+
   private invalidateCapabilities(): void {
     this.capabilitiesDirty = true;
     this.catalogGeneration += 1;
@@ -327,6 +456,7 @@ export class CodexAppServerSession implements RuntimeSession {
     const prompt = this.seedHistory.length > 0
       ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
       : input.prompt;
+    const providerModelGeneration = this.providerModelGeneration;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
@@ -335,6 +465,13 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(input.effort ? { effort: input.effort } : {}),
     });
     this.activeTurnId = response.turn.id;
+    const acceptedModel = input.model?.trim() || this.activeModel;
+    // A matching-thread model notification is more authoritative than RPC
+    // success, including when it arrives before this continuation resumes.
+    if (providerModelGeneration === this.providerModelGeneration && acceptedModel !== this.activeModel) {
+      this.activeModel = acceptedModel;
+      this.invalidateCapabilities();
+    }
     return { turnId: response.turn.id };
   }
 
@@ -379,10 +516,6 @@ export class CodexAppServerSession implements RuntimeSession {
   private async *eventStream(): AsyncIterable<AgentEvent> {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
-      if (notification.method === "skills/changed" || notification.method === "app/list/updated" ||
-          notification.method === "mcpServer/startupStatus/updated") {
-        this.observeCapabilityNotification(notification);
-      }
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
@@ -449,7 +582,14 @@ export class CodexAppServerSession implements RuntimeSession {
 }
 
 function zeroUsage(): TokenUsage {
-  return { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0 };
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
 }
 
 const USAGE_KEYS: Array<keyof TokenUsage> = [
@@ -527,15 +667,17 @@ export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsa
   };
   const inputTokens = delta("inputTokens");
   const cachedInputTokens = delta("cachedInputTokens");
+  const cacheWriteInputTokens = delta("cacheWriteInputTokens");
   const outputTokens = delta("outputTokens");
   const reasoningOutputTokens = delta("reasoningOutputTokens");
   const totalTokens = delta("totalTokens");
   if (totalTokens === undefined || inputTokens === undefined || outputTokens === undefined) return undefined;
-  if (cachedInputTokens !== undefined && cachedInputTokens > inputTokens) return undefined;
+  if ((cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0) > inputTokens) return undefined;
   if (reasoningOutputTokens !== undefined && reasoningOutputTokens > outputTokens) return undefined;
   return {
     inputTokens,
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(cacheWriteInputTokens !== undefined ? { cacheWriteInputTokens } : {}),
     outputTokens,
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
     totalTokens,
@@ -551,6 +693,10 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   const outputTokens = number("outputTokens");
   const reasoningOutputTokens = number("reasoningOutputTokens");
   const providerTotal = number("totalTokens");
+  // Codex's generated app-server TokenUsageBreakdown currently exposes cached
+  // reads but no cache-write counter. Keep that gap explicit rather than
+  // guessing from input totals; downstream TokenUsage still preserves cache
+  // writes for providers that report them canonically.
   if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),

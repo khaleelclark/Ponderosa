@@ -7,7 +7,6 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import InboxOutlinedIcon from "@mui/icons-material/InboxOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
@@ -43,11 +42,11 @@ import { useMemo, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
-import { chatStateKey, writeChatState } from "../chatState";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { routeProjectId, type Route } from "../routing";
 import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { OperatorAvatar } from "./OperatorAvatar";
 import {
   clampWorkspaceSidebarWidth,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
@@ -72,12 +71,20 @@ export function operatorInitials(displayName: string): string {
   return initials.toLocaleUpperCase();
 }
 
+export function globalSearchShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘K" | "Ctrl K" {
+  return /Mac|iPhone|iPad/iu.test(platform) ? "⌘K" : "Ctrl K";
+}
+
+export function globalSearchShortcutAccessibleLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "Command K" | "Control K" {
+  return /Mac|iPhone|iPad/iu.test(platform) ? "Command K" : "Control K";
+}
+
 function actionableProjectHealth(
   health: AgentHealthDto[] | undefined,
   agents: Pick<AgentDto, "id" | "activeEngine">[],
   engines: EngineDto[],
 ): { health: AgentHealthDto[] | undefined; unavailableEngineFailures: number } {
-  if (!health || engines.length === 0 || !engines.some(engineIsAvailable)) {
+  if (!health || engines.length === 0) {
     return { health, unavailableEngineFailures: 0 };
   }
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
@@ -277,8 +284,7 @@ export function WorkspaceSidebar({
     setFilter("");
   };
   const openTriggerManager = (projectId: string, agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "triggers");
-    onNavigate({ kind: "agent", projectId, agentId });
+    onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
   };
 
   const openProject = (snapshot: WorkspaceProjectSnapshot) => {
@@ -321,19 +327,19 @@ export function WorkspaceSidebar({
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25, objectFit: "contain" }} /></Tooltip>
-      <RailButton label="Home" selected={sidebarSection === "navigation" && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="All Chat" selected={sidebarSection === "navigation" && route.kind === "allChat"} onClick={() => showNavigation({ kind: "allChat" })}><ChatBubbleOutlineIcon /></RailButton>
-      <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={openAllProjects}><FolderOutlinedIcon /></RailButton>
+      <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Inbox" badge={counts.unread || undefined} badgeColor="error" onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
       <RailButton label="Wiki" selected={sidebarSection === "navigation" && route.kind === "wiki"} onClick={() => showNavigation({ kind: "wiki" })}><MenuBookOutlinedIcon /></RailButton>
+      <RailButton label={drawer ? "Search All Chats" : `Search All Chats (${globalSearchShortcutAccessibleLabel()})`} onClick={() => onSearch?.()}><SearchIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
       {!drawer && onCollapsedChange ? <RailButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}</RailButton> : null}
       <RailButton label="Settings" onClick={() => onOpenSettings?.()}><SettingsOutlinedIcon /></RailButton>
-      <Tooltip title="Operator profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42, borderRadius: "50%", bgcolor: "background.paper", color: "text.primary", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 750, boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}` }}>{operatorInitials(preferences.profile.displayName)}<Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
+      <Tooltip title="Operator Profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42 }}><OperatorAvatar profile={preferences.profile} size={42} fallback={operatorInitials(preferences.profile.displayName)} /><Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
     </Stack>
   </Box>;
 
@@ -341,7 +347,7 @@ export function WorkspaceSidebar({
   const starredProjectIds = new Set(preferences.starredProjectIds);
   const starred = projectList.filter((snapshot) => starredProjectIds.has(snapshot.project.id));
   const remaining = projectList.filter((snapshot) => !starredProjectIds.has(snapshot.project.id));
-  const sortLabel = preferences.projectSort === "alphabetical" ? "A–Z" : preferences.projectSort === "custom" ? "Custom" : "Recent activity";
+  const sortLabel = preferences.projectSort === "alphabetical" ? "A–Z" : preferences.projectSort === "custom" ? "Custom" : "Recent Activity";
   const toggleStar = (projectId: string) => onPreferences({
     starredProjectIds: starredProjectIds.has(projectId)
       ? preferences.starredProjectIds.filter((id) => id !== projectId)
@@ -350,33 +356,31 @@ export function WorkspaceSidebar({
 
   const sidebarSurface = (theme: { palette: { mode: "light" | "dark" } }) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5";
   const projectsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Projects</Typography><Typography variant="caption" color="text.secondary">{projects.length} total</Typography></Stack>
+    <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Projects</Typography><Typography variant="caption" color="text.secondary">{projects.length} total</Typography></Stack>
     <Box sx={{ px: 1.75, pb: 1.5 }}><TextField
       fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search projects"
       inputProps={{ "aria-label": "Search projects" }}
-      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Box component="kbd" sx={{ px: .75, py: .35, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>⌘K</Box> }}
-      onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }}
+      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
     /></Box>
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
-      {starred.length ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography><List disablePadding sx={{ mt: .5 }}>{starred.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ mb: .35, borderRadius: 1, overflow: "hidden", bgcolor: snapshot.project.id === selectedProjectId ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover" } }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} selected={snapshot.project.id === selectedProjectId} onClick={() => openProject(snapshot)} sx={{ minWidth: 0, px: 1 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} secondary={`${snapshot.conversations.filter((item) => !item.archived).length} active chats`} primaryTypographyProps={{ fontWeight: 750, noWrap: true }} secondaryTypographyProps={{ noWrap: true }} /></ListItemButton><Tooltip title={`Unstar ${snapshot.project.label}`}><IconButton size="small" aria-label={`Unstar ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)} sx={{ color: "primary.light" }}><StarRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box> : null}
-      <Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>All projects</Typography><List disablePadding sx={{ mt: .5 }}>{remaining.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ alignItems: "center" }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ noWrap: true }} /><Typography variant="caption" color="text.secondary">{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton><Tooltip title={`Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`Star ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}><StarBorderRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box>
+      {starred.length ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography><List disablePadding sx={{ mt: .5 }}>{starred.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ mb: .35, borderRadius: 1, overflow: "hidden", bgcolor: snapshot.project.id === selectedProjectId ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover" } }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} selected={snapshot.project.id === selectedProjectId} onClick={() => openProject(snapshot)} sx={{ minWidth: 0, px: 1 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} secondary={`${snapshot.conversations.filter((item) => !item.archived).length} active chats`} primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }} secondaryTypographyProps={{ noWrap: true }} /></ListItemButton><Tooltip title={`Unstar ${snapshot.project.label}`}><IconButton size="small" aria-label={`Unstar ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)} sx={{ color: "primary.light" }}><StarRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box> : null}
+      <Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>All Projects</Typography><List disablePadding sx={{ mt: .5 }}>{remaining.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ alignItems: "center" }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }} /><Typography variant="caption" color="text.secondary" sx={{ ml: 2, minWidth: 24, textAlign: "right", flexShrink: 0 }}>{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton><Tooltip title={`Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`Star ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}><StarBorderRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box>
       {projectList.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No projects match “{filter.trim()}”.</Typography> : null}
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View all projects</Button><Button fullWidth color="inherit" aria-label="Sort projects" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setSortMenuAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{sortLabel}</Box></Typography></Button>{sortMenuAnchor ? <Menu anchorEl={sortMenuAnchor} open onClose={() => setSortMenuAnchor(undefined)}><MenuItem selected={preferences.projectSort === "last_used"} onClick={() => { onPreferences({ projectSort: "last_used" }); setSortMenuAnchor(undefined); }}>Recent activity</MenuItem><MenuItem selected={preferences.projectSort === "alphabetical"} onClick={() => { onPreferences({ projectSort: "alphabetical" }); setSortMenuAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={preferences.projectSort === "custom"} onClick={() => { onPreferences({ projectSort: "custom" }); setSortMenuAnchor(undefined); }}>Custom order</MenuItem></Menu> : null}</Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View All Projects</Button><Button fullWidth color="inherit" aria-label="Sort projects" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setSortMenuAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{sortLabel}</Box></Typography></Button>{sortMenuAnchor ? <Menu anchorEl={sortMenuAnchor} open onClose={() => setSortMenuAnchor(undefined)}><MenuItem selected={preferences.projectSort === "last_used"} onClick={() => { onPreferences({ projectSort: "last_used" }); setSortMenuAnchor(undefined); }}>Recent Activity</MenuItem><MenuItem selected={preferences.projectSort === "alphabetical"} onClick={() => { onPreferences({ projectSort: "alphabetical" }); setSortMenuAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={preferences.projectSort === "custom"} onClick={() => { onPreferences({ projectSort: "custom" }); setSortMenuAnchor(undefined); }}>Custom Order</MenuItem></Menu> : null}</Box>
   </Box>;
 
   const agentRows = workspaceAgents(snapshots).filter(({ agent, project }) => !normalizedFilter
     || `${agent.title} ${project.label} ${project.hostPath} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter));
   const agentsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}>
+    <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}>
       <Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Agents</Typography>
       <Typography variant="caption" color="text.secondary">{workspaceAgents(snapshots).length} total</Typography>
     </Stack>
     <Box sx={{ px: 1.75, pb: 1 }}><TextField
       fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search agents"
       inputProps={{ "aria-label": "Search agents" }}
-      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Box component="kbd" sx={{ px: .75, py: .35, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>⌘K</Box> }}
-      onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }}
+      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
     /></Box>
     <Stack direction="row" spacing={1} sx={{ px: 2, pb: 1.25, color: "text.secondary", alignItems: "center" }}>
       <Typography variant="caption">Across {projects.length} projects</Typography>
@@ -402,7 +406,7 @@ export function WorkspaceSidebar({
       </ListItemButton>)}</List>
       {agentRows.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{filter.trim() ? `No agents match “${filter.trim()}”.` : "No active agents."}</Typography> : null}
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={showProjects} sx={{ justifyContent: "flex-start", color: "text.secondary" }}>Browse projects</Button></Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={showProjects} sx={{ justifyContent: "flex-start", color: "text.secondary" }}>Browse Projects</Button></Box>
   </Box>;
 
   const triggerDestinations = workspaceAgents(snapshots);
@@ -420,7 +424,7 @@ export function WorkspaceSidebar({
   const triggerManagers = triggerDestinations.filter(({ agent, project: triggerProject }) => !normalizedFilter
     || `${agent.title} ${triggerProject.label} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter));
   const triggersPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}>
+    <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}>
       <Box sx={{ width: 32, height: 32, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center", mr: 1 }}><BoltOutlinedIcon fontSize="small" /></Box>
       <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800}>Triggers</Typography><Typography variant="caption" color="text.secondary">Automations across every project</Typography></Box>
       <Typography variant="caption" color="text.secondary">{allTriggersQuery.data?.length ?? 0}</Typography>
@@ -442,7 +446,7 @@ export function WorkspaceSidebar({
             key={trigger.id}
             aria-label={`Manage trigger ${trigger.name}`}
             onClick={() => openTriggerManager(destination.project.id, destination.agent.id)}
-            onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id } }); }}
+            onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } }); }}
             sx={{ borderRadius: 1.25, px: 1, py: .75, mb: .35, minWidth: 0 }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}><BoltOutlinedIcon sx={{ fontSize: 18 }} /></ListItemIcon>
@@ -457,14 +461,13 @@ export function WorkspaceSidebar({
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1, mb: .5 }}>Choose an agent to open its Trigger manager.</Typography>
         <List disablePadding>{triggerManagers.map(({ agent, project: triggerProject }) => <ListItemButton
           key={agent.id}
-          aria-label={`Manage triggers for ${agent.title}`}
+          aria-label={`Open triggers for ${agent.title}`}
           onClick={() => openTriggerManager(triggerProject.id, agent.id)}
-          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: triggerProject.id, agentId: agent.id } }); }}
+          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: triggerProject.id, agentId: agent.id, view: "triggers" } }); }}
           sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}
         >
           <ListItemIcon sx={{ minWidth: 38 }}><SmartToyOutlinedIcon sx={{ fontSize: 17 }} /></ListItemIcon>
           <ListItemText primary={agent.title} secondary={triggerProject.label} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
-          <Typography variant="caption" color="text.secondary">Manage</Typography>
         </ListItemButton>)}</List>
       </Box>
     </Box>
@@ -480,9 +483,9 @@ export function WorkspaceSidebar({
   const grouped = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({ group, conversations: filteredConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group) }));
 
   const chatsPanel = project ? <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", px: 1.25, pt: 1.25 }}><Button size="small" color="inherit" startIcon={<ArrowBackIcon />} onClick={openAllProjects} sx={{ color: "text.secondary", justifyContent: "flex-start" }}>All Projects</Button><IconButton aria-label={`Project settings for ${project.project.label}`} onClick={() => onManageProject(project.project)} sx={{ ml: "auto" }}><MoreHorizIcon /></IconButton></Stack>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1, minWidth: 0 }} noWrap>{project.project.label}</Typography><Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow><Stack direction="row" spacing={.75} role="button" tabIndex={0} aria-label={`${projectHealth.label}. ${projectHealthTooltip} Open AI provider details.`} onClick={() => onOpenEngineStatus?.()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenEngineStatus?.(); } }} sx={{ alignItems: "center", flexShrink: 0, cursor: "pointer" }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Tooltip></Stack>
-    <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Project Chats" inputProps={{ "aria-label": "Search Project Chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Box component="kbd" sx={{ px: .75, py: .35, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>⌘K</Box> }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") onSearch?.(); }} /><Button fullWidth variant="contained" startIcon={<AddIcon />} onClick={() => void createChat(project.project)} sx={{ justifyContent: "flex-start" }}>New Project Chat</Button></Stack>
+    <Stack direction="row" sx={{ alignItems: "center", pl: 1.25, pr: drawer ? 7 : 1.25, pt: 1.25 }}><Button size="small" color="inherit" startIcon={<ArrowBackIcon />} onClick={showProjects} sx={{ color: "text.secondary", justifyContent: "flex-start" }}>Projects</Button><IconButton aria-label={`Project settings for ${project.project.label}`} onClick={() => onManageProject(project.project)} sx={{ ml: "auto" }}><MoreHorizIcon /></IconButton></Stack>
+    <Stack spacing={.4} sx={{ alignItems: "flex-start", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ minWidth: 0, overflowWrap: "anywhere", lineHeight: 1.25 }}>{project.project.label}</Typography><Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow><Stack direction="row" spacing={.75} role="button" tabIndex={0} aria-label={`${projectHealth.label}. ${projectHealthTooltip} Open AI provider details.`} onClick={() => onOpenEngineStatus?.()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenEngineStatus?.(); } }} sx={{ alignItems: "center", cursor: "pointer" }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Tooltip></Stack>
+    <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Project Chats" inputProps={{ "aria-label": "Search Project Chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} /><Button fullWidth variant="contained" startIcon={<AddIcon />} onClick={() => void createChat(project.project)} sx={{ justifyContent: "flex-start" }}>New Project Chat</Button></Stack>
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
       {grouped.map(({ group, conversations }) => conversations.length ? <Box key={group} component="section" sx={{ mb: 1.75 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>{group}</Typography><List disablePadding>{conversations.map((conversation) => {
         const title = conversationDisplayTitle(conversation, activeConversations);
@@ -492,27 +495,32 @@ export function WorkspaceSidebar({
     </Box>
     <Box sx={{ boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}`, p: 1.5 }}>
       <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "agents" ? "page" : undefined} onClick={() => onNavigate({ kind: "agents", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agents", projectId: project.project.id } }); }} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "agents" ? "text.primary" : "text.secondary", bgcolor: route.kind === "agents" ? "action.selected" : "transparent" }}>Project Agents</Button>
-      <Button fullWidth color="inherit" aria-label="Open project browser" aria-current={route.kind === "browser" ? "page" : undefined} onClick={() => onNavigate({ kind: "browser", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "browser", projectId: project.project.id } }); }} startIcon={<LanguageIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "browser" ? "text.primary" : "text.secondary", bgcolor: route.kind === "browser" ? "action.selected" : "transparent" }}>Project browser</Button>
-      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.project.id } }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project overview</Button>
+      <Button fullWidth color="inherit" aria-label="Open project browser" aria-current={route.kind === "browser" ? "page" : undefined} onClick={() => onNavigate({ kind: "browser", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "browser", projectId: project.project.id } }); }} startIcon={<LanguageIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "browser" ? "text.primary" : "text.secondary", bgcolor: route.kind === "browser" ? "action.selected" : "transparent" }}>Project Browser</Button>
+      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.project.id } }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project Overview</Button>
     </Box>
   </Box> : null;
 
   const panel = showingAgents ? agentsPanel : showingTriggers ? triggersPanel : showingProjects ? projectsPanel : insideProject ? chatsPanel : projectsPanel;
+  const [resizing, setResizing] = useState(false);
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = width;
+    setResizing(true);
     const move = (next: PointerEvent) => onWidthChange(clampWorkspaceSidebarWidth(startWidth + next.clientX - startX));
     const stop = () => {
+      setResizing(false);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
 
-  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden" }}>
+  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} data-sidebar-resizing={resizing ? "true" : "false"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, maxWidth: "100vw", height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden", transition: !drawer && !resizing ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)" : "none", "@media (prefers-reduced-motion: reduce)": { transition: "none" } }}>
     {rail}
     {collapsed && !drawer ? null : panel}
     {!drawer && !collapsed && onWidthChange ? <Box
@@ -526,10 +534,13 @@ export function WorkspaceSidebar({
         event.preventDefault();
         onWidthChange(clampWorkspaceSidebarWidth(width + (event.key === "ArrowRight" ? 16 : -16)));
       }}
-      sx={{ position: "absolute", zIndex: 2, insetBlock: 0, right: -3, width: 7, cursor: "col-resize", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }}
+      sx={{ position: "absolute", zIndex: 2, insetBlock: 0, right: 0, width: 12, cursor: "col-resize", touchAction: "none", "&::after": { content: '""', position: "absolute", insetBlock: 0, left: 5, width: 2, bgcolor: "transparent" }, "&:hover::after, &:focus-visible::after": { bgcolor: "primary.main" } }}
     /> : null}
     {menu ? <Menu anchorEl={menu.anchor} open onClose={() => setMenu(undefined)}>
-      <MenuItem disabled={!onOpenInNewTab} onClick={() => { onOpenInNewTab?.(menu.route); setMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+      <MenuItem disabled={!onOpenInNewTab} onClick={() => {
+        onOpenInNewTab?.(menu.route);
+        setMenu(undefined);
+      }}>Open in New Ponderosa Tab</MenuItem>
       {menu.conversation ? <MenuItem onClick={() => { onRenameConversation(menu.conversation!); setMenu(undefined); }}>Rename</MenuItem> : null}
       {menu.conversation ? <MenuItem sx={{ color: "error.main" }} onClick={() => { onDeleteConversation(menu.conversation!); setMenu(undefined); }}>Delete</MenuItem> : null}
     </Menu> : null}

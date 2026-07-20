@@ -473,6 +473,31 @@ interface TriggerOccurrenceRow {
   created_at: string; updated_at: string;
 }
 
+interface TriggerFilesystemBurstRow {
+  trigger_id: string;
+  occurrence_key: string;
+  project_id: string;
+  agent_id: string;
+  started_at: string;
+  last_at: string;
+  event_count: number;
+  changes_json: string;
+  dropped_path_event_count: number;
+  updated_at: string;
+}
+
+export interface TriggerFilesystemBurst {
+  triggerId: string;
+  occurrenceKey: string;
+  projectId: string;
+  agentId: string;
+  startedAt: string;
+  lastAt: string;
+  eventCount: number;
+  changes: Array<{ path: string; types: string[] }>;
+  droppedPathEventCount: number;
+}
+
 export interface CreateTriggerDefinitionInput {
   id?: string;
   projectId: string;
@@ -538,8 +563,9 @@ export interface CoordinationV3StoreOptions {
 
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
-const DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT = 1_000;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
+
+class PendingActivationCapacityError extends Error {}
 
 const PRIORITY = {
   human: 100,
@@ -568,18 +594,79 @@ function activationDefaults(kind: string, priority: number): {
   };
 }
 
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => item === undefined ? "null" : stableJson(item)).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).filter((key) => record[key] !== undefined).sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+const DEFAULT_CANONICAL_JSON_LIMITS = { maxDepth: 512, maxNodes: 1_000_000 } as const;
+const TRIGGER_CANONICAL_JSON_LIMITS = { maxDepth: 64, maxNodes: 250_000 } as const;
+
+/** Deterministic JSON without recursive descent. External signed JSON can be
+ * deeply nested even under the byte limit, so canonicalization is explicitly
+ * bounded by both structure depth and visited nodes. */
+function stableJson(
+  value: unknown,
+  limits: { maxDepth: number; maxNodes: number } = DEFAULT_CANONICAL_JSON_LIMITS,
+): string {
+  type Task = { kind: "value"; value: unknown; depth: number } | { kind: "text"; value: string };
+  const tasks: Task[] = [{ kind: "value", value, depth: 0 }];
+  const output: string[] = [];
+  let nodes = 0;
+  let scheduledNodes = 1;
+  while (tasks.length) {
+    const task = tasks.pop()!;
+    if (task.kind === "text") {
+      output.push(task.value);
+      continue;
+    }
+    nodes += 1;
+    if (nodes > limits.maxNodes) {
+      throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
+    }
+    if (task.depth > limits.maxDepth) {
+      throw new Error(`canonical JSON exceeds maximum depth ${limits.maxDepth}`);
+    }
+    if (Array.isArray(task.value)) {
+      if (scheduledNodes + task.value.length > limits.maxNodes) {
+        throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
+      }
+      scheduledNodes += task.value.length;
+      tasks.push({ kind: "text", value: "]" });
+      for (let index = task.value.length - 1; index >= 0; index -= 1) {
+        tasks.push({
+          kind: "value",
+          value: task.value[index] === undefined ? null : task.value[index],
+          depth: task.depth + 1,
+        });
+        if (index > 0) tasks.push({ kind: "text", value: "," });
+      }
+      tasks.push({ kind: "text", value: "[" });
+      continue;
+    }
+    if (task.value && typeof task.value === "object") {
+      const record = task.value as Record<string, unknown>;
+      const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
+      if (scheduledNodes + keys.length > limits.maxNodes) {
+        throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
+      }
+      scheduledNodes += keys.length;
+      tasks.push({ kind: "text", value: "}" });
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index]!;
+        tasks.push({ kind: "value", value: record[key], depth: task.depth + 1 });
+        tasks.push({ kind: "text", value: ":" });
+        tasks.push({ kind: "text", value: JSON.stringify(key) });
+        if (index > 0) tasks.push({ kind: "text", value: "," });
+      }
+      tasks.push({ kind: "text", value: "{" });
+      continue;
+    }
+    output.push(JSON.stringify(task.value) ?? "null");
   }
-  return JSON.stringify(value) ?? "null";
+  return output.join("");
 }
 
-function payloadHash(value: unknown): string {
-  return createHash("sha256").update(stableJson(value)).digest("hex");
+function payloadHash(
+  value: unknown,
+  limits?: { maxDepth: number; maxNodes: number },
+): string {
+  return createHash("sha256").update(stableJson(value, limits)).digest("hex");
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -971,6 +1058,13 @@ export class CoordinationV3Store {
     } : undefined;
   }
 
+  requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT request_id FROM coordination_request_updates WHERE id = ?
+    `).get(updateId) as { request_id: string } | undefined;
+    return row ? this.getRequest(row.request_id) : undefined;
+  }
+
   /** Project immutable authored messages onto mutable, per-recipient delivery
    * evidence without rewriting the Communication or its chat projection. */
   deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {
@@ -1341,6 +1435,7 @@ export class CoordinationV3Store {
           terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
         WHERE id = ? AND state IN ('pending', 'retry_pending')
       `).run(now, error, now, activation.id).changes;
+      if (changed === 1) this.settleRequestsForFailedActivations([activation.id], now);
       const result: Omit<SettleUnavailableActivationResult, "replayed"> = changed === 1 || activation.terminal_outcome === "recipient_unavailable"
         ? { settled: changed === 1, status: "recipient_unavailable" }
         : { settled: false, status: "not_pending" };
@@ -1356,19 +1451,31 @@ export class CoordinationV3Store {
    * Orphaned Runs must be recovered first so their pre-submission Activations
    * return to retry_pending before this scan. */
   reconcileUnavailableActivationRecipients(now = new Date().toISOString()): { settled: number } {
-    const error = "activation recipient is missing or archived during startup reconciliation";
-    const changed = this.sqlite.prepare(`
-      UPDATE agent_activations
-      SET state = 'failed', terminal_outcome = 'recipient_unavailable',
-        terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
-      WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
-        SELECT 1 FROM agents
-        WHERE agents.id = agent_activations.agent_id
-          AND agents.project_id = agent_activations.project_id
-          AND agents.archived = 0
-      )
-    `).run(now, error, now).changes;
-    return { settled: changed };
+    return this.sqlite.transaction(() => {
+      const error = "activation recipient is missing or archived during startup reconciliation";
+      const candidates = (this.sqlite.prepare(`
+        SELECT id FROM agent_activations
+        WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
+          SELECT 1 FROM agents
+          WHERE agents.id = agent_activations.agent_id
+            AND agents.project_id = agent_activations.project_id
+            AND agents.archived = 0
+        )
+      `).all() as Array<{ id: string }>).map((row) => row.id);
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'failed', terminal_outcome = 'recipient_unavailable',
+          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
+        WHERE state IN ('pending', 'retry_pending') AND NOT EXISTS (
+          SELECT 1 FROM agents
+          WHERE agents.id = agent_activations.agent_id
+            AND agents.project_id = agent_activations.project_id
+            AND agents.archived = 0
+        )
+      `).run(now, error, now).changes;
+      this.settleRequestsForFailedActivations(candidates, now);
+      return { settled: changed };
+    })();
   }
 
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
@@ -2018,6 +2125,103 @@ export class CoordinationV3Store {
     return row ? this.triggerOccurrenceDto(row) : undefined;
   }
 
+  listPendingFilesystemTriggerBursts(): TriggerFilesystemBurst[] {
+    const rows = this.sqlite.prepare(`
+      SELECT * FROM trigger_filesystem_bursts ORDER BY started_at, trigger_id
+    `).all() as TriggerFilesystemBurstRow[];
+    return rows.map((row) => this.triggerFilesystemBurst(row));
+  }
+
+  recordFilesystemTriggerEvent(input: {
+    triggerId: string;
+    path: string;
+    eventType: string;
+    maxCapturedPaths: number;
+    now?: string;
+  }): TriggerFilesystemBurst {
+    const now = input.now ?? new Date().toISOString();
+    if (!input.path || !input.eventType) throw new Error("filesystem Trigger path and event type are required");
+    if (!Number.isSafeInteger(input.maxCapturedPaths) || input.maxCapturedPaths < 1) {
+      throw new Error("filesystem Trigger captured path limit must be positive");
+    }
+    return this.sqlite.transaction(() => {
+      const definition = this.triggerDefinitionRow(input.triggerId);
+      if (!definition || !definition.enabled || definition.source_kind !== "filesystem") {
+        throw new Error("filesystem Trigger is unavailable");
+      }
+      const existing = this.sqlite.prepare(`
+        SELECT * FROM trigger_filesystem_bursts WHERE trigger_id = ?
+      `).get(input.triggerId) as TriggerFilesystemBurstRow | undefined;
+      if (!existing) {
+        this.sqlite.prepare(`
+          INSERT INTO trigger_filesystem_bursts (
+            trigger_id, occurrence_key, project_id, agent_id, started_at, last_at,
+            event_count, changes_json, dropped_path_event_count, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 0, ?)
+        `).run(
+          definition.id,
+          `filesystem:${randomUUID()}`,
+          definition.project_id,
+          definition.agent_id,
+          now,
+          now,
+          stableJson([{ path: input.path, types: [input.eventType] }]),
+          now,
+        );
+      } else {
+        const changes = JSON.parse(existing.changes_json) as Array<{ path: string; types: string[] }>;
+        const changed = changes.find((item) => item.path === input.path);
+        let dropped = existing.dropped_path_event_count;
+        if (changed) {
+          if (!changed.types.includes(input.eventType)) changed.types.push(input.eventType);
+        } else if (changes.length < input.maxCapturedPaths) {
+          changes.push({ path: input.path, types: [input.eventType] });
+        } else {
+          dropped += 1;
+        }
+        this.sqlite.prepare(`
+          UPDATE trigger_filesystem_bursts
+          SET last_at = ?, event_count = event_count + 1, changes_json = ?,
+              dropped_path_event_count = ?, updated_at = ?
+          WHERE trigger_id = ?
+        `).run(now, stableJson(changes), dropped, now, input.triggerId);
+      }
+      const row = this.sqlite.prepare(`
+        SELECT * FROM trigger_filesystem_bursts WHERE trigger_id = ?
+      `).get(input.triggerId) as TriggerFilesystemBurstRow;
+      return this.triggerFilesystemBurst(row);
+    })();
+  }
+
+  flushFilesystemTriggerBurst(triggerId: string): TriggerOccurrenceResult | undefined {
+    return this.sqlite.transaction(() => {
+      const row = this.sqlite.prepare(`
+        SELECT * FROM trigger_filesystem_bursts WHERE trigger_id = ?
+      `).get(triggerId) as TriggerFilesystemBurstRow | undefined;
+      if (!row) return undefined;
+      const changes = JSON.parse(row.changes_json) as Array<{ path: string; types: string[] }>;
+      const result = this.recordTriggerOccurrence({
+        triggerId,
+        occurrenceKey: row.occurrence_key,
+        payload: {
+          changes,
+          lowLevelEventCount: row.event_count,
+          capturedPathCount: changes.length,
+          startedAt: row.started_at,
+          endedAt: row.last_at,
+          ...(row.dropped_path_event_count ? {
+            pathLimitReached: true,
+            droppedPathEventCount: row.dropped_path_event_count,
+          } : {}),
+        },
+        provenance: { source: "project_filesystem", watcher: "project_root", contentInjected: false },
+        now: row.last_at,
+      });
+      this.sqlite.prepare(`DELETE FROM trigger_filesystem_bursts WHERE trigger_id = ?`).run(triggerId);
+      return result;
+    })();
+  }
+
   isSchedulerRunCancelled(runId: string): boolean {
     return Boolean(this.sqlite.prepare(`
       SELECT 1 FROM scheduler_runs WHERE id = ? AND status = 'cancelled'
@@ -2043,6 +2247,20 @@ export class CoordinationV3Store {
       occurredAt: row.occurred_at,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+    };
+  }
+
+  private triggerFilesystemBurst(row: TriggerFilesystemBurstRow): TriggerFilesystemBurst {
+    return {
+      triggerId: row.trigger_id,
+      occurrenceKey: row.occurrence_key,
+      projectId: row.project_id,
+      agentId: row.agent_id,
+      startedAt: row.started_at,
+      lastAt: row.last_at,
+      eventCount: row.event_count,
+      changes: JSON.parse(row.changes_json) as Array<{ path: string; types: string[] }>,
+      droppedPathEventCount: row.dropped_path_event_count,
     };
   }
 
@@ -2096,7 +2314,7 @@ export class CoordinationV3Store {
         occurrenceKey: input.occurrenceKey,
         payload: input.payload,
         payloadMediaType: input.payloadMediaType ?? "application/json",
-      });
+      }, TRIGGER_CANONICAL_JSON_LIMITS);
       const existing = this.sqlite.prepare(`
         SELECT id, input_hash, state, activation_id FROM trigger_occurrences
         WHERE trigger_id = ? AND occurrence_key = ?
@@ -2119,17 +2337,7 @@ export class CoordinationV3Store {
       this.requireConversationMember(definition.conversation_id, definition.agent_id);
 
       const occurrenceId = randomUUID();
-      const maximumPending = Math.max(
-        1,
-        this.options.maxPendingTriggerOccurrencesPerAgent
-          ?? DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT,
-      );
-      const pending = (this.sqlite.prepare(`
-        SELECT COUNT(*) AS count FROM trigger_occurrences
-        WHERE agent_id = ? AND state = 'pending'
-      `).get(definition.agent_id) as { count: number }).count;
-      const overflow = pending >= maximumPending;
-      const initialState: TriggerOccurrenceState = overflow ? "dead_lettered" : "pending";
+      const initialState: TriggerOccurrenceState = "pending";
       this.sqlite.prepare(`
         INSERT INTO trigger_occurrences (
           id, trigger_id, occurrence_key, project_id, agent_id, scope_key,
@@ -2140,13 +2348,14 @@ export class CoordinationV3Store {
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)
       `).run(
         occurrenceId, definition.id, input.occurrenceKey, definition.project_id, definition.agent_id, scopeKey,
-        stableJson(input.payload), stableJson(input.provenance), stableJson(triggerSnapshot),
+        stableJson(input.payload, TRIGGER_CANONICAL_JSON_LIMITS),
+        stableJson(input.provenance, TRIGGER_CANONICAL_JSON_LIMITS),
+        stableJson(triggerSnapshot, TRIGGER_CANONICAL_JSON_LIMITS),
         input.payloadMediaType ?? "application/json", hash, stableJson(activationConfig),
-        initialState, now,
-        overflow ? `pending trigger occurrence limit reached for Agent (${maximumPending})` : null,
-        now, now, now, overflow ? now : null,
+        initialState, now, null,
+        now, now, now, null,
       );
-      if (initialState === "pending") this.processTriggerOccurrence(occurrenceId, now);
+      this.processTriggerOccurrence(occurrenceId, now);
       return this.triggerOccurrenceResult(occurrenceId, false);
     })();
   }
@@ -2221,6 +2430,18 @@ export class CoordinationV3Store {
   }
 
   ownsRun(runId: string, fencingToken: number, workerId?: string): boolean {
+    const row = this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_runs
+      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
+        AND side_effects_fenced_at IS NULL
+        AND (? IS NULL OR lease_owner = ?)
+    `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
+    return Boolean(row);
+  }
+
+  /** Host cleanup retains the original scheduler fence after provider-facing
+   * side effects close, so it can consume Activations and finish the Run. */
+  ownsRunForCleanup(runId: string, fencingToken: number, workerId?: string): boolean {
     const row = this.sqlite.prepare(`
       SELECT 1 FROM scheduler_runs
       WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
@@ -3021,19 +3242,6 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       const request = this.getRequestRow(input.requestId);
       if (request.project_id !== initialRequest.project_id) throw new Error("request Project changed during artifact admission");
-      if (input.runAuthorization) {
-        this.requireAuthorizedRun(input.runAuthorization);
-        const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
-        const requesterOwnedTerminalControl =
-          (input.kind === "cancelled" || input.kind === "superseded") &&
-          input.actor.kind === "agent" &&
-          input.actor.id === request.requester_agent_id &&
-          input.runAuthorization.agentId === request.requester_agent_id;
-        if (!attached.includes(input.requestId) && !requesterOwnedTerminalControl) {
-          throw new Error("request is not attached to the authoritative run");
-        }
-      }
-      this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
         FROM coordination_request_updates WHERE id = ?
@@ -3053,6 +3261,20 @@ export class CoordinationV3Store {
           replayed: true,
         };
       }
+
+      if (input.runAuthorization) {
+        this.requireAuthorizedRun(input.runAuthorization);
+        const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
+        const requesterOwnedTerminalControl =
+          (input.kind === "cancelled" || input.kind === "superseded") &&
+          input.actor.kind === "agent" &&
+          input.actor.id === request.requester_agent_id &&
+          input.runAuthorization.agentId === request.requester_agent_id;
+        if (!attached.includes(input.requestId) && !requesterOwnedTerminalControl) {
+          throw new Error("request is not attached to the authoritative run");
+        }
+      }
+      this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
 
       this.authorizeUpdate(request, input.kind, input.actor);
       const next = reduceCoordinationRequest(
@@ -3103,8 +3325,34 @@ export class CoordinationV3Store {
       const joined = (this.sqlite.prepare(`
         SELECT COUNT(*) AS count FROM coordination_join_members WHERE request_id = ?
       `).get(request.id) as { count: number }).count > 0;
+      if (input.kind === "cancelled" || input.kind === "superseded" || input.kind === "expired") {
+        this.cancelPendingRequestWork(request.id, input.kind, now);
+      }
       this.reevaluateRequestJoins(request.id, now);
       this.activateForRequestTransition(request, input.kind, next.state, joined, input.updateId, input.payload, now);
+      if (
+        input.runAuthorization &&
+        request.recipient_agent_id === input.runAuthorization.agentId &&
+        !TERMINAL_REQUEST_STATES.has(request.state) &&
+        TERMINAL_REQUEST_STATES.has(next.state) &&
+        this.nonterminalInboundRequestIdsAttachedToRun(
+          input.runAuthorization.runId,
+          input.runAuthorization.agentId,
+        ).length === 0
+      ) {
+        this.sqlite.prepare(`
+          UPDATE scheduler_runs
+          SET side_effects_fenced_at = COALESCE(side_effects_fenced_at, ?), updated_at = ?
+          WHERE id = ? AND agent_id = ? AND fencing_token = ?
+            AND status IN ('leased', 'running')
+        `).run(
+          now,
+          now,
+          input.runAuthorization.runId,
+          input.runAuthorization.agentId,
+          input.runAuthorization.fencingToken,
+        );
+      }
       return { requestId: request.id, state: next.state, version: next.version, replayed: false };
     })();
   }
@@ -3381,10 +3629,10 @@ export class CoordinationV3Store {
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE project_id = ? AND state IN ('pending', 'retry_pending', 'attached')
       `).run(now, projectId);
-      const projectTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions WHERE project_id = ?
-      `).all(projectId) as Array<{ id: string }>;
-      for (const trigger of projectTriggers) this.deleteTriggerDefinition(trigger.id, now);
+      // Trigger sources are fenced by the Project quarantine at the server
+      // boundary. Keep their definitions intact until purgeProject commits in
+      // the canonical Project-deletion transaction, so a failed cleanup retry
+      // cannot partially mutate user-authored automation.
     })();
   }
 
@@ -3392,6 +3640,7 @@ export class CoordinationV3Store {
    * SQLite transaction that deletes the canonical project projections. */
   purgeProject(projectId: string): void {
     this.sqlite.transaction(() => {
+      this.sqlite.prepare(`DELETE FROM trigger_filesystem_bursts WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM trigger_definitions WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM trigger_occurrences WHERE project_id = ?`).run(projectId);
       this.sqlite.prepare(`DELETE FROM activation_outbox WHERE activation_id IN (
@@ -3469,6 +3718,7 @@ export class CoordinationV3Store {
             SELECT 1 FROM trigger_occurrences occurrence
             JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
             WHERE occurrence.activation_id = a.id
+              AND occurrence.budget_charge_id IS NULL
               AND definition.run_budget_limit IS NOT NULL
               AND definition.run_budget_used >= definition.run_budget_limit + definition.run_budget_allowance
           )
@@ -3518,6 +3768,13 @@ export class CoordinationV3Store {
         }
       };
       const candidateTriggerId = triggerId(queuedActivations[0]!);
+      const triggerBudgetChargeId = (activation: ActivationRow): string | undefined => {
+        if (activation.kind !== "trigger_occurrence") return undefined;
+        return (this.sqlite.prepare(`
+          SELECT budget_charge_id FROM trigger_occurrences WHERE activation_id = ?
+        `).get(activation.id) as { budget_charge_id: string | null } | undefined)?.budget_charge_id ?? undefined;
+      };
+      const candidateBudgetChargeId = triggerBudgetChargeId(queuedActivations[0]!);
       // Queue is an operator-selected turn boundary. Attaching multiple queued
       // turns to one Run lets a single provider response consume later work it
       // never handled. Isolate the candidate and never pull a later queued turn
@@ -3531,7 +3788,8 @@ export class CoordinationV3Store {
               !isExplicitQueuedTurn(activation) &&
               startsFreshTask(activation) === candidateStartsFreshTask &&
               (candidateTriggerId
-                ? triggerId(activation) === candidateTriggerId
+                ? triggerId(activation) === candidateTriggerId &&
+                  triggerBudgetChargeId(activation) === candidateBudgetChargeId
                 : triggerId(activation) === undefined))
             .slice(0, limit);
       if (activations.length === 0) return undefined;
@@ -3543,13 +3801,23 @@ export class CoordinationV3Store {
         this.settleUnauthorizedPendingActivations(now);
         return undefined;
       }
-      if (candidateTriggerId) {
+      if (candidateTriggerId && !candidateBudgetChargeId) {
         const charged = this.sqlite.prepare(`
           UPDATE trigger_definitions
-          SET run_budget_used = run_budget_used + 1, updated_at = ?
+          SET run_budget_used = CASE
+                WHEN run_budget_limit IS NULL THEN run_budget_used
+                ELSE run_budget_used + 1
+              END,
+              updated_at = ?
           WHERE id = ? AND (run_budget_limit IS NULL OR run_budget_used < run_budget_limit + run_budget_allowance)
         `).run(now, candidateTriggerId).changes;
         if (charged !== 1) return undefined;
+        const budgetChargeId = randomUUID();
+        this.sqlite.prepare(`
+          UPDATE trigger_occurrences
+          SET budget_charge_id = ?, budget_charged_at = ?, updated_at = ?
+          WHERE budget_charge_id IS NULL AND activation_id IN (${activations.map(() => "?").join(", ")})
+        `).run(budgetChargeId, now, now, ...activations.map((activation) => activation.id));
       }
       const fencingToken = this.nextFence(candidate.agent_id);
       const runId = randomUUID();
@@ -4165,6 +4433,14 @@ export class CoordinationV3Store {
           UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
           WHERE run_id = ? AND state IN ('submitted', 'injected')
         `).run(now, now, input.runId);
+        const terminalActivations = (this.sqlite.prepare(`
+          SELECT attached.activation_id AS id
+          FROM scheduler_run_activations attached
+          JOIN agent_activations activation ON activation.id = attached.activation_id
+          WHERE attached.run_id = ? AND activation.state = 'failed'
+            AND activation.terminal_outcome IS NOT NULL
+        `).all(input.runId) as Array<{ id: string }>).map((row) => row.id);
+        this.settleRequestsForFailedActivations(terminalActivations, now);
         const pending = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM agent_activations
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
@@ -5077,18 +5353,125 @@ export class CoordinationV3Store {
         activation.agent_id,
         activation.scope_key,
       )) continue;
-      settled += fail.run(
+      const changed = fail.run(
         now,
         "activation recipient is no longer authorized for its scope",
         now,
         activation.id,
       ).changes;
+      settled += changed;
+      if (changed === 1) this.settleRequestsForFailedActivations([activation.id], now);
     }
     return settled;
   }
 
+  private cancelPendingRequestWork(
+    requestId: string,
+    reason: "cancelled" | "superseded" | "expired",
+    now: string,
+  ): void {
+    this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'cancelled', terminal_outcome = NULL, terminal_at = ?,
+        last_delivery_error = ?, updated_at = ?
+      WHERE state IN ('pending', 'retry_pending')
+        AND kind = 'coordination_request'
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'request' AND source_id = ?
+        )
+    `).run(now, `request ${reason} before delivery`, now, requestId);
+  }
+
+  private settleRequestsForFailedActivations(activationIds: string[], now: string): void {
+    if (activationIds.length === 0) return;
+    const placeholders = activationIds.map(() => "?").join(", ");
+    const requests = this.sqlite.prepare(`
+      SELECT DISTINCT request.id, activation.id AS activation_id,
+        activation.terminal_outcome, activation.last_delivery_error
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id AND source.source_kind = 'request'
+      JOIN coordination_requests request ON request.id = source.source_id
+      WHERE activation.id IN (${placeholders})
+        AND activation.state = 'failed'
+        AND activation.terminal_outcome IS NOT NULL
+        AND activation.agent_id = request.recipient_agent_id
+        AND request.state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
+      ORDER BY request.created_at, request.id
+    `).all(...activationIds) as Array<{
+      id: string;
+      activation_id: string;
+      terminal_outcome: ActivationTerminalOutcome;
+      last_delivery_error: string | null;
+    }>;
+    for (const request of requests) {
+      const kind: CoordinationRequestUpdateKind = request.terminal_outcome === "recipient_unavailable"
+        ? "recipient_unavailable"
+        : "failed";
+      this.updateRequest({
+        requestId: request.id,
+        updateId: `system:activation-terminal:${request.activation_id}:${request.terminal_outcome}`,
+        kind,
+        actor: request.terminal_outcome === "recipient_unavailable"
+          ? { kind: "system", id: "v3-activation-supervisor" }
+          : { kind: "supervisor", id: "v3-activation-supervisor" },
+        payload: {
+          activationId: request.activation_id,
+          activationOutcome: request.terminal_outcome,
+          reason: request.last_delivery_error ?? "activation could not execute",
+        },
+        now,
+      });
+    }
+  }
+
+  private nonterminalInboundRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    return this.requestIdsAttachedToRun(runId, agentId).filter((requestId) => {
+      const request = this.getRequestRow(requestId);
+      return request.recipient_agent_id === agentId && !TERMINAL_REQUEST_STATES.has(request.state);
+    });
+  }
+
   private agentSurvives(agentId: string): boolean {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents WHERE id = ? AND archived = 0`).get(agentId));
+  }
+
+  /** A recipient whose request Activation is consumed and whose Request is
+   * awaiting an answer has no provider work left to stop. Cancelling that
+   * clarification wait is passive; attached or unconsumed work still receives
+   * the urgent control Activation used for steering/interruption. */
+  private isConsumedClarificationWait(request: RequestRow): boolean {
+    if (request.state !== "awaiting_answer") return false;
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE source.source_kind = 'request' AND source.source_id = ?
+        AND activation.agent_id = ?
+        AND activation.kind = 'coordination_request'
+        AND activation.state = 'consumed'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scheduler_runs active_run
+          JOIN scheduler_run_activations attached ON attached.run_id = active_run.id
+          JOIN activation_sources active_source ON active_source.activation_id = attached.activation_id
+          LEFT JOIN coordination_request_updates active_update
+            ON active_source.source_kind = 'request_update' AND active_update.id = active_source.source_id
+          WHERE active_run.agent_id = ? AND active_run.status IN ('leased', 'running')
+            AND (
+              (active_source.source_kind = 'request' AND active_source.source_id = ?)
+              OR active_update.request_id = ?
+            )
+        )
+      LIMIT 1
+    `).get(
+      request.id,
+      request.recipient_agent_id,
+      request.recipient_agent_id,
+      request.id,
+      request.id,
+    ));
   }
 
   private getRequestRow(requestId: string): RequestRow {
@@ -5103,6 +5486,8 @@ export class CoordinationV3Store {
     const isRequester = actor.kind === "agent" && actor.id === request.requester_agent_id;
     const allowed = authorization === "recipient"
       ? isRecipient
+      : authorization === "recipient_or_supervisor"
+        ? isRecipient || actor.kind === "supervisor"
       : authorization === "requester_or_user"
         ? isRequester || actor.kind === "user"
         : authorization === "system"
@@ -5143,11 +5528,13 @@ export class CoordinationV3Store {
       });
       return;
     }
+    if (kind === "cancelled" && this.isConsumedClarificationWait(request)) return;
     if ((kind === "cancelled" || kind === "superseded") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
         scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: `coordination_${kind}`, priority: PRIORITY.urgent,
+        ...(kind === "cancelled" ? { dispatchPolicy: "steer_or_run" as const } : {}),
         dedupeKey: `request:${request.id}:${kind}`,
         payload: { requestId: request.id, state: nextState, update: updatePayload ?? null },
         sourceKind: "request", sourceId: request.id, now,
@@ -5407,6 +5794,21 @@ export class CoordinationV3Store {
       return "activated";
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 2_000);
+      if (error instanceof PendingActivationCapacityError) {
+        let retryDelayMs = 1_000;
+        try {
+          const config = JSON.parse(row.activation_config_json) as { retryDelayMs?: unknown };
+          if (typeof config.retryDelayMs === "number" && Number.isFinite(config.retryDelayMs)) {
+            retryDelayMs = Math.max(1, Math.min(3_600_000, Math.floor(config.retryDelayMs)));
+          }
+        } catch { /* accepted occurrence config was validated before activation admission */ }
+        this.sqlite.prepare(`
+          UPDATE trigger_occurrences
+          SET available_at = ?, last_error = ?, updated_at = ?
+          WHERE id = ? AND state = 'pending'
+        `).run(new Date(Date.parse(now) + retryDelayMs).toISOString(), message, now, occurrenceId);
+        return "pending";
+      }
       const maximumAttempts = Math.max(1, this.options.maxTriggerAttempts ?? DEFAULT_MAX_TRIGGER_ATTEMPTS);
       let retryDelayMs = 1_000;
       try {
@@ -5486,11 +5888,12 @@ export class CoordinationV3Store {
     }
   }
 
-  private resetExpiredTriggerBudgets(now: string): void {
+  resetExpiredTriggerBudgets(now = new Date().toISOString()): number {
     const rows = this.sqlite.prepare(`
       SELECT * FROM trigger_definitions
       WHERE run_budget_limit IS NOT NULL AND run_budget_period != 'lifetime'
     `).all() as TriggerDefinitionRow[];
+    let reset = 0;
     for (const row of rows) {
       const startedAt = row.run_budget_period_started_at ?? row.created_at;
       const endsAt = row.run_budget_period ? triggerBudgetEndsAt(row.run_budget_period, startedAt) : undefined;
@@ -5500,10 +5903,13 @@ export class CoordinationV3Store {
         SET run_budget_used = 0, run_budget_allowance = 0, run_budget_period_started_at = ?, updated_at = ?
         WHERE id = ?
       `).run(now, now, row.id);
+      reset += 1;
     }
+    return reset;
   }
 
   private cancelPendingTriggerWork(triggerId: string, reason: string, now: string): void {
+    this.sqlite.prepare(`DELETE FROM trigger_filesystem_bursts WHERE trigger_id = ?`).run(triggerId);
     const uninjectedRuns = this.sqlite.prepare(`
       SELECT DISTINCT run.id, run.agent_id
       FROM scheduler_runs run
@@ -5572,7 +5978,7 @@ export class CoordinationV3Store {
         WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
       `).get(input.agentId) as { count: number }).count;
       if (pending >= maximum) {
-        throw new Error(`pending activation limit reached for Agent (${maximum})`);
+        throw new PendingActivationCapacityError(`pending activation limit reached for Agent (${maximum})`);
       }
     }
     const id = randomUUID();
@@ -5726,6 +6132,7 @@ export class CoordinationV3Store {
       SELECT scope_key FROM scheduler_runs
       WHERE id = ? AND agent_id = ? AND fencing_token = ?
         AND status IN ('leased', 'running')
+        AND side_effects_fenced_at IS NULL
     `).get(authorization.runId, authorization.agentId, authorization.fencingToken) as { scope_key: string } | undefined;
     if (!authoritative) throw new Error("run is no longer authoritative");
     if (expectedScopeKey && authoritative.scope_key !== expectedScopeKey) {

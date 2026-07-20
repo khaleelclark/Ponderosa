@@ -1,6 +1,6 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
-  Alert, Box, Button, Chip, CircularProgress, Divider, Paper, Stack, Typography,
+  Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -9,6 +9,8 @@ import { api } from "../api";
 import { useAllChat } from "../hooks/queries";
 import type { Route } from "../routing";
 import { Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./panes";
+import { MessageTimestamp } from "./MessageTimestamp";
+import { useMobileComposerAutoHide } from "../mobileChat";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -37,23 +39,45 @@ function sourceLabel(item: AllChatItemDto): string {
   return `${item.project.label} · Agent Chat · ${item.source.title}`;
 }
 
+export function allChatSourceAccessibleName(item: AllChatItemDto): string {
+  const normalized = item.text.replace(/\s+/gu, " ").trim();
+  const excerpt = normalized.length > 80 ? `${normalized.slice(0, 79)}…` : normalized || "Empty message";
+  return `Select message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
+}
+
+export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | undefined {
+  if (item.author.kind === "user") return "You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.";
+  if (!item.directMessageAgent) return "This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.";
+  return undefined;
+}
+
 export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }): JSX.Element {
   const queryClient = useQueryClient();
   const query = useAllChat();
   const [older, setOlder] = useState<{ items: AllChatItemDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
+  const [mobileTimestampId, setMobileTimestampId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const firstLayout = useRef(true);
   const followLatest = useRef(true);
   const restoreDistance = useRef<number>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const theme = useTheme();
+  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
+  const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
   const selected = items.find((item) => item.communicationEventId === selectedId);
+  const replyUnavailable = selected ? allChatReplyUnavailableMessage(selected) : undefined;
+  const selectItem = (item: AllChatItemDto) => {
+    setSelectedId(item.communicationEventId);
+    setNotice(undefined);
+    send.reset();
+  };
   const history = older ?? {
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
   };
@@ -104,10 +128,11 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       scrollChatToBottom(element);
       firstLayout.current = false;
       setShowScrollToLatest(false);
+      mobileComposer.showAtLatest(element);
     }
   }, [layoutKey]);
 
-  return <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
+  return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography variant="h5" component="h1" fontWeight={800}>All Chat</Typography>
@@ -121,41 +146,63 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       if (!scrollRef.current) return;
       followLatest.current = isChatNearBottom(scrollRef.current);
       setShowScrollToLatest(!followLatest.current);
+      mobileComposer.observeScroll(scrollRef.current, followLatest.current);
     }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
-      {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load older messages"}</Button></Stack> : null}
-      <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }}>
-        {items.map((item) => {
+      {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
+      <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
+        {items.map((item, index) => {
           const selectedItem = selectedId === item.communicationEventId;
           return <Paper
             key={item.communicationEventId}
             component="article"
             variant="outlined"
-            tabIndex={0}
-            aria-selected={selectedItem}
-            onClick={() => { setSelectedId(item.communicationEventId); setNotice(undefined); send.reset(); }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault(); setSelectedId(item.communicationEventId); setNotice(undefined); send.reset();
-              }
+            onClick={() => {
+              selectItem(item);
+              setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId);
             }}
             sx={{ p: 1.75, cursor: "pointer", borderColor: selectedItem ? "primary.main" : "divider", bgcolor: selectedItem ? "action.selected" : "background.paper" }}
           >
             <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
-              <Box sx={{ flex: 1, minWidth: 0 }}>
-                <Typography variant="subtitle2">{item.author.label}</Typography>
-                <Typography variant="caption" color="text.secondary">{sourceLabel(item)} · {new Date(item.createdAt).toLocaleString()}</Typography>
-              </Box>
+              <ButtonBase
+                role="radio"
+                aria-checked={selectedItem}
+                aria-label={allChatSourceAccessibleName(item)}
+                tabIndex={selectedId ? (selectedItem ? 0 : -1) : (index === 0 ? 0 : -1)}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  selectItem(item);
+                  setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId);
+                }}
+                onKeyDown={(event) => {
+                  if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
+                  event.preventDefault();
+                  const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+                  const nextIndex = (index + delta + items.length) % items.length;
+                  const nextItem = items[nextIndex];
+                  if (!nextItem) return;
+                  selectItem(nextItem);
+                  const group = event.currentTarget.closest<HTMLElement>('[role="radiogroup"]');
+                  group?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
+                }}
+                sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", borderRadius: 1 }}
+              >
+                <Box sx={{ minWidth: 0 }}>
+                  <Typography variant="subtitle2">{item.author.label}</Typography>
+                  <Typography variant="caption" color="text.secondary">{sourceLabel(item)}<Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}> · {new Date(item.createdAt).toLocaleString()}</Box></Typography>
+                </Box>
+              </ButtonBase>
               <Button
                 size="small"
                 color="inherit"
                 endIcon={<OpenInNewIcon fontSize="small" />}
                 onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }}
-              >Open source</Button>
+              >Open Source</Button>
             </Stack>
             <Divider sx={{ my: 1.25 }} />
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.text}</Typography>
+            {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align="start" /></Box> : null}
             {item.directMessageAgent ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.25 }}>Select to message {item.directMessageAgent.title} directly.</Typography> : null}
           </Paper>;
         })}
@@ -167,13 +214,25 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       followLatest.current = true;
       scrollChatToBottom(scrollRef.current);
       setShowScrollToLatest(false);
+      mobileComposer.showAtLatest(scrollRef.current);
     }} />
     </Box>
 
-    <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1.5, md: 2 } }}>
+    <Box
+      className="mobile-chat-chrome mobile-chat-composer"
+      data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
+      onTransitionEnd={(event) => {
+        if (
+          event.currentTarget !== event.target
+          || event.propertyName !== "max-height"
+        ) return;
+        mobileComposer.finishTransition();
+      }}
+      sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}
+    >
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
-          : !selected.directMessageAgent ? <Alert severity="info">This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.</Alert>
+          : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>
             : <Stack spacing={1}>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
               {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}

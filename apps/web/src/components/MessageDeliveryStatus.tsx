@@ -36,6 +36,24 @@ function deliveryLabel(
   }
 }
 
+export function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">): string {
+  switch (receipt.state) {
+    case "queued": return "Queued";
+    case "steering": return "Steering";
+    case "started": return "Started";
+    case "delivered": return "Delivered";
+    case "processed": return "Processed";
+    case "unconfirmed": return "Unconfirmed";
+    case "waiting_for_run": return "Waiting";
+    case "recovery_queued": return "Recovery queued";
+    case "recovering": return "Recovering";
+    case "recovered": return "Recovered";
+    case "undelivered": return "Undelivered";
+    case "failed": return "Failed";
+    case "cancelled": return "Cancelled";
+  }
+}
+
 function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "warning" | "error" {
   if (receipt.state === "delivered" || receipt.state === "processed" || receipt.state === "recovered") return "success";
   if (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run" || receipt.state === "recovery_queued" || receipt.state === "recovering") return "warning";
@@ -137,8 +155,11 @@ export function MessageDeliveryStatus({
           }}
         >
           <StatusIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
-          <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>
+          <Typography variant="caption" component="span" sx={{ display: { xs: "none", sm: "inline" }, color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>
             {deliveryLabel(receipt, name, now)}
+          </Typography>
+          <Typography variant="caption" component="span" sx={{ display: { xs: "inline", sm: "none" }, color: "text.secondary", fontWeight: 650 }}>
+            {compactDeliveryLabel(receipt)}
           </Typography>
         </ButtonBase>
         {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
@@ -148,7 +169,7 @@ export function MessageDeliveryStatus({
           disabled={pendingInjectionId === receipt.injectionId}
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >Let current Run finish</Button> : null}
+        >Let Current Run Finish</Button> : null}
         {receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
@@ -179,7 +200,7 @@ export function MessageDeliveryStatus({
           variant="contained"
           onClick={() => confirmRetry && void retryDelivery(confirmRetry)}
           disabled={Boolean(pendingRetryId)}
-        >{pendingRetryId ? "Retrying…" : "Retry anyway"}</Button>
+        >{pendingRetryId ? "Retrying…" : "Retry Anyway"}</Button>
       </DialogActions>
     </Dialog>
   </Stack>;

@@ -20,6 +20,15 @@ export function costSummaryLabel(data?: TokenUsageSummaryDto): string {
   return cost.unpricedRuns > 0 ? `Partial · ${formatUsd(cost.usd)}` : formatUsd(cost.usd);
 }
 
+export function providerUsageSummaryLabel(engineId: string, data?: TokenUsageSummaryDto, loading = false): string {
+  if (loading) return "Provider-reported usage: checking Ponderosa Run telemetry…";
+  const usage = data?.breakdown.filter((item) => item.engine === engineId);
+  const runs = usage?.reduce((total, item) => total + item.runs, 0) ?? 0;
+  if (runs === 0) return "Provider-reported usage: unknown — no Run telemetry is available for this provider.";
+  const tokens = usage?.reduce((total, item) => total + (item.usage.totalTokens ?? 0), 0) ?? 0;
+  return `Provider-reported usage: ${new Intl.NumberFormat().format(tokens)} tokens across ${runs} finalized Run${runs === 1 ? "" : "s"}.`;
+}
+
 function runsLabel(value: number): string {
   return `${value} run${value === 1 ? "" : "s"}`;
 }
@@ -161,10 +170,10 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
         <FormControl size="small" sx={{ minWidth: 150, mb: 2 }}>
           <InputLabel id={`${scope}-usage-range-label`}>Time range</InputLabel>
           <Select labelId={`${scope}-usage-range-label`} label="Time range" value={rangeKey} onChange={(event) => setRangeKey(event.target.value as typeof rangeKey)}>
-            <MenuItem value="24h">Last 24 hours</MenuItem>
-            <MenuItem value="7d">Last 7 days</MenuItem>
-            <MenuItem value="30d">Last 30 days</MenuItem>
-            <MenuItem value="all">All time</MenuItem>
+            <MenuItem value="24h">Last 24 Hours</MenuItem>
+            <MenuItem value="7d">Last 7 Days</MenuItem>
+            <MenuItem value="30d">Last 30 Days</MenuItem>
+            <MenuItem value="all">All Time</MenuItem>
           </Select>
         </FormControl>
         {usage.isError ? <Alert severity="error">Cost could not be loaded.</Alert> : !data ? <LinearProgress /> : <TokenUsageDetails data={data} />}

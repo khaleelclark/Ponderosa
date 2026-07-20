@@ -1,7 +1,7 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { MessageReactionDto, MessageReferenceDto } from "@ponderosa/core";
+import { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "@ponderosa/agents";
 
 export interface UserReactionEvent {
   id: string;
@@ -23,14 +23,7 @@ export class UserReactionStore {
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "user-reactions.jsonl");
-    mkdirSync(path.dirname(this.file), { recursive: true });
-    if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
-    chmodSync(this.file, 0o600);
-    for (const line of readFileSync(this.file, "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      const event = JSON.parse(line) as UserReactionEvent;
-      this.remember(event);
-    }
+    for (const event of readRepairableJsonl<UserReactionEvent>(this.file, "user reaction journal", true)) this.remember(event);
   }
 
   set(input: Omit<UserReactionEvent, "id" | "createdAt">): { event: UserReactionEvent; replayed: boolean } {
@@ -50,7 +43,7 @@ export class UserReactionStore {
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
-    appendFileSync(this.file, `${JSON.stringify(event)}\n`, "utf8");
+    appendFsyncedJsonl(this.file, [event]);
     this.remember(event);
     return { event, replayed: false };
   }
@@ -66,7 +59,7 @@ export class UserReactionStore {
     }
     const active = this.byCommunicationEmoji.get(this.stateKey(event.communicationEventId, event.emoji));
     if (active) return { event: active, replayed: true };
-    appendFileSync(this.file, `${JSON.stringify(event)}\n`, "utf8");
+    appendFsyncedJsonl(this.file, [event]);
     this.remember(event);
     return { event, replayed: false };
   }
@@ -86,11 +79,11 @@ export class UserReactionStore {
 
   deleteProject(projectId: string): void {
     const kept = this.events.filter((event) => event.projectId !== projectId);
+    writeAtomicFsyncedJsonl(this.file, kept);
     this.events.length = 0;
     this.byIdempotencyKey.clear();
     this.byCommunicationEmoji.clear();
     for (const event of kept) this.remember(event);
-    writeFileSync(this.file, kept.map((event) => JSON.stringify(event)).join("\n") + (kept.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
   }
 
   private remember(event: UserReactionEvent): void {

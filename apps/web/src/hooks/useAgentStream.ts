@@ -114,6 +114,10 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
     const id = `${agentId}:activity:${seq}`;
     const activeExecutionId = [...(detail.runs ?? [])].reverse()
       .find((run) => run.status === "running" || run.status === "compacting")?.id;
+    const activeExecutionAlreadyChangedPath = event.type === "file_change" && Boolean(activeExecutionId)
+      && activity.some((item) => item.executionId === activeExecutionId
+        && item.event.type === "file_change"
+        && item.event.path === event.path);
     if (!activity.some((item) => item.id === id)) {
       const entry: AgentActivityDto = {
         id, agentId, seq, createdAt: ts,
@@ -130,10 +134,10 @@ export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, d
         kind: event.kind,
         lastSeq: seq,
         lastChangedAt: ts,
-        executionIds: activeExecutionId && !previous?.executionIds.includes(activeExecutionId)
-          ? [...(previous?.executionIds ?? []), activeExecutionId]
-          : previous?.executionIds ?? [],
-        ...(event.diff ? { diff: event.diff } : {}),
+        executionCount: previous
+          ? previous.executionCount + (activeExecutionId && !activeExecutionAlreadyChangedPath ? 1 : 0)
+          : activeExecutionId ? 1 : 0,
+        diffAvailable: Boolean(event.diff),
       };
       detail = {
         ...detail,

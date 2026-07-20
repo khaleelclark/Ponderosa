@@ -65,7 +65,7 @@ describe("chat interaction refinement", () => {
     expect([...codex.commands, ...changedModel.commands, ...claude.commands].some((item) => ["cancel", "fresh", "status"].includes(item.name))).toBe(false);
 
     const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
-    expect(agentDetail).toContain("Start fresh provider session");
+    expect(agentDetail).toContain("Start Fresh Provider Session");
     expect(agentDetail).toContain("inventory ${inventoriedMcps.length}/${configuredMcps.length}");
     expect(agentDetail).not.toMatch(/name:\s*["'](?:cancel|fresh|status)["']/);
   });
@@ -90,7 +90,9 @@ describe("chat interaction refinement", () => {
     expect(html).toContain("−3");
     expect(html).toContain("1 changed file");
     expect(html).toContain("Open focused diff for src/app.ts");
-    expect(html).toContain(">Review all</button>");
+    expect(html).toContain(">Review All</button>");
+    expect(html).toContain("Open agent Agent One from profile image");
+    expect(html).toContain("Open agent Agent One from name");
   });
 
   it("focuses direct replies and supports hover/focus/touch action disclosure", () => {

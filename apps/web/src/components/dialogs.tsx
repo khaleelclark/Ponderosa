@@ -48,7 +48,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
     : advertisedEfforts;
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md"><DialogTitle>Agent presets</DialogTitle><DialogContent>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ pt: 1 }}>
-      <Stack sx={{ minWidth: 260 }}><Button onClick={() => edit()}>New preset</Button><List>{presets.map((preset) => <ListItem key={preset.id} secondaryAction={<Button color="error" onClick={() => onDelete(preset.id)}>Delete</Button>}><ListItemText primary={preset.name} secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`} onClick={() => edit(preset)} sx={{ cursor: "pointer" }} /></ListItem>)}</List></Stack>
+      <Stack sx={{ minWidth: 260 }}><Button onClick={() => edit()}>New Preset</Button><List>{presets.map((preset) => <ListItem key={preset.id} secondaryAction={<Button color="error" onClick={() => onDelete(preset.id)}>Delete</Button>}><ListItemText primary={preset.name} secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`} onClick={() => edit(preset)} sx={{ cursor: "pointer" }} /></ListItem>)}</List></Stack>
       <Stack spacing={1.5} sx={{ flex: 1 }}>
         <TextField required label="Name" value={name} onChange={(e) => setName(e.target.value)} inputProps={{ maxLength: 60 }} />
         <TextField required label="Description" value={description} onChange={(e) => setDescription(e.target.value)} inputProps={{ maxLength: 240 }} />
@@ -56,7 +56,7 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
         <FormControl required><InputLabel>Engine</InputLabel><Select label="Engine" value={engine} onChange={(e) => { setEngine(e.target.value); setModel(""); setEffort(""); }}>{engines.map((item) => <MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}</Select></FormControl>
         <Stack direction="row" spacing={1}><FormControl fullWidth><InputLabel>Model</InputLabel><Select label="Model" value={model} onChange={(e) => { const next = e.target.value; setModel(next); if (!effortSelectionIsCompatible(selected, next, effort)) setEffort(""); }}><MenuItem value="">Default</MenuItem>{models.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl><FormControl fullWidth><InputLabel>Effort</InputLabel><Select label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)}><MenuItem value="">Default</MenuItem>{efforts.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl></Stack>
         <FormControlLabel control={<Checkbox checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />} label="Enabled" />
-        <Button variant="contained" disabled={!name.trim() || !description.trim() || guidance.trim().length < 10 || !engine} onClick={() => onSave(editing?.id, { name: name.trim(), description: description.trim(), guidance: guidance.trim(), engine, model: modelSelectionIsCompatible(selected, model) ? model || undefined : undefined, effort: effortSelectionIsCompatible(selected, model, effort) ? effort || undefined : undefined, enabled })}>{editing ? "Save changes" : "Create preset"}</Button>
+        <Button variant="contained" disabled={!name.trim() || !description.trim() || guidance.trim().length < 10 || !engine} onClick={() => onSave(editing?.id, { name: name.trim(), description: description.trim(), guidance: guidance.trim(), engine, model: modelSelectionIsCompatible(selected, model) ? model || undefined : undefined, effort: effortSelectionIsCompatible(selected, model, effort) ? effort || undefined : undefined, enabled })}>{editing ? "Save Changes" : "Create Preset"}</Button>
       </Stack>
     </Stack>
   </DialogContent><DialogActions><Button onClick={onClose}>Done</Button></DialogActions></Dialog>;
@@ -112,11 +112,11 @@ export function CreateConversationDialog({
               value={engine}
               onChange={(event: SelectChangeEvent) => setEngine(event.target.value)}
             >
-              <MenuItem value={UNSET}>No default — choose per agent</MenuItem>
+              <MenuItem value={UNSET}>No Default — Choose per Agent</MenuItem>
               {engines.map((option) => (
                 <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
                   {option.displayName}
-                  {engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — not signed in"}
+                  {engineIsAvailable(option) ? "" : option.authenticated ? " — Unavailable" : " — Not Signed In"}
                 </MenuItem>
               ))}
             </Select>
@@ -285,7 +285,7 @@ export function CreateAgentDialog({
               {engines.map((option) => (
                 <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
                   {option.displayName}
-                  {engineIsAvailable(option) ? "" : option.authenticated ? " — unavailable" : " — not signed in"}
+                  {engineIsAvailable(option) ? "" : option.authenticated ? " — Unavailable" : " — Not Signed In"}
                 </MenuItem>
               ))}
             </Select>
@@ -303,7 +303,7 @@ export function CreateAgentDialog({
                   if (!effortSelectionIsCompatible(activeEngine, nextModel, effort)) setEffort(UNSET);
                 }}
               >
-                <MenuItem value={UNSET}>Engine default</MenuItem>
+                <MenuItem value={UNSET}>Engine Default</MenuItem>
                 {models.map((option) => (
                   <MenuItem key={option.id} value={option.id}>
                     {option.label}
@@ -321,7 +321,7 @@ export function CreateAgentDialog({
                 value={efforts.some((option) => option.id === effort) ? effort : UNSET}
                 onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
               >
-                <MenuItem value={UNSET}>Engine default</MenuItem>
+                <MenuItem value={UNSET}>Engine Default</MenuItem>
                 {efforts.map((option) => (
                   <MenuItem key={option.id} value={option.id}>
                     {option.label}
@@ -356,7 +356,7 @@ export function CreateAgentDialog({
               value={managerAgentId}
               onChange={(event: SelectChangeEvent) => setManagerAgentId(event.target.value)}
             >
-              <MenuItem value={UNSET}>User / Top level</MenuItem>
+              <MenuItem value={UNSET}>User / Top Level</MenuItem>
               {activeManagerOptions(agents).map((agent) => (
                 <MenuItem key={agent.id} value={agent.id}>{agent.title}</MenuItem>
               ))}

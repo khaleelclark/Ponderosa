@@ -87,7 +87,7 @@ export function ProjectOverview({
               {attentionWork.length ? <Typography variant="body2">{attentionWork.length} work {attentionWork.length === 1 ? "trace" : "traces"} need attention</Typography> : null}
               {attentionAgents.length ? <Typography variant="body2">{attentionAgents.length} {attentionAgents.length === 1 ? "Agent is" : "Agents are"} blocked, failed, or interrupted</Typography> : null}
             </Stack>}
-            <Button size="small" startIcon={<TimelineIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Agent work</Button>
+            <Button size="small" startIcon={<TimelineIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Agent Work</Button>
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="overline" color="text.secondary">Current activity</Typography>
@@ -99,7 +99,7 @@ export function ProjectOverview({
             <Typography variant="overline" color="text.secondary">Important outputs</Typography>
             {importantOutputs.length ? <Stack spacing={0.15}>{importantOutputs.map((artifact) => <Button key={artifact.id} size="small" color="inherit" onClick={() => onOpenImportantArtifact(artifact)} sx={{ justifyContent: "flex-start", px: 0, minWidth: 0 }}><Typography variant="body2" noWrap>{artifactDisplayLabel(artifact)}</Typography></Button>)}</Stack>
               : <Typography variant="body2" color="text.secondary">No pinned or published outputs yet.</Typography>}
-            <Button size="small" startIcon={<FolderOutlinedIcon />} onClick={onOpenProjectFiles} sx={{ mt: 0.5 }}>Files & results</Button>
+            <Button size="small" startIcon={<FolderOutlinedIcon />} onClick={onOpenProjectFiles} sx={{ mt: 0.5 }}>Files & Results</Button>
           </Box>
         </Stack>
         {work.isError || decisions.isError ? <Alert severity="warning">Some overview details could not be refreshed. Open the linked source view for authoritative state.</Alert> : null}

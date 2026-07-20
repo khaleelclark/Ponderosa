@@ -4,7 +4,6 @@ import CloseIcon from "@mui/icons-material/Close";
 import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
@@ -28,7 +27,11 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   if (kind === "browser") return <LanguageIcon fontSize="small" />;
   if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
   if (kind === "wiki") return <MenuBookOutlinedIcon fontSize="small" />;
-  return <HomeOutlinedIcon fontSize="small" />;
+  return <FolderOutlinedIcon fontSize="small" />;
+}
+
+export function newTabShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘T" | "Ctrl T" {
+  return /Mac|iPhone|iPad/iu.test(platform) ? "⌘T" : "Ctrl T";
 }
 
 export function WorkspaceTabs({
@@ -63,7 +66,7 @@ export function WorkspaceTabs({
   const resourcesByProject = new Map(projectIds.map((projectId, index) => [projectId, {
     conversations: conversationQueries[index]?.data ?? [], agents: agentQueries[index]?.data ?? [],
   }]));
-  const activeRoute = tabs.find((tab) => tab.key === activeKey)?.route ?? { kind: "home" as const };
+  const activeRoute = tabs.find((tab) => tab.key === activeKey)?.route ?? { kind: "allChat" as const };
   const activeProjectId = routeProjectId(activeRoute);
 
   const beginRename = (key: string, label: string) => {
@@ -71,12 +74,22 @@ export function WorkspaceTabs({
     setRenameDraft(label);
     setContextMenu(undefined);
   };
+  const moveContextTab = (offset: -1 | 1) => {
+    if (!contextMenu) return;
+    const index = tabs.findIndex((tab) => tab.key === contextMenu.key);
+    const target = tabs[index + offset];
+    if (target) onReorder(contextMenu.key, target.key);
+    setContextMenu(undefined);
+  };
 
   return <Stack component="nav" aria-label="Open workspace tabs" direction="row" sx={{
-    display: { xs: "none", md: "flex" }, minWidth: 0, height: { md: 52 }, px: 1, py: 0.75,
+    minWidth: 0, height: { xs: 52, md: 52 }, px: { xs: 0.5, sm: 1 }, py: 0.5,
     bgcolor: "background.paper", alignItems: "center", overflow: "hidden", borderBottom: 1, borderColor: "divider",
   }}>
-    <Stack direction="row" spacing={0.5} sx={{ minWidth: 0, flex: 1, height: 38, overflow: "hidden", alignItems: "stretch" }}>
+    <Stack className="workspace-tab-strip" direction="row" spacing={0.5} sx={{
+      minWidth: 0, flex: 1, height: { xs: 44, md: 38 }, overflowX: "auto", overflowY: "hidden", alignItems: "stretch", overscrollBehaviorInline: "contain", scrollSnapType: "x proximity",
+      scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
+    }}>
       {tabs.map((tab) => {
         const tabRoute = tab.route;
         const projectId = "projectId" in tabRoute ? tabRoute.projectId : undefined;
@@ -87,12 +100,12 @@ export function WorkspaceTabs({
           : tabRoute.kind === "agent"
             ? resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"
             : tabRoute.kind === "review"
-              ? tabRoute.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"} review`
+              ? tabRoute.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"} Review`
               : tabRoute.kind === "agents" ? "Agents"
                 : tabRoute.kind === "browser" ? "Browser"
                 : tabRoute.kind === "allAgents" ? "All Agents"
                   : tabRoute.kind === "allChat" ? "All Chat"
-                  : tabRoute.kind === "project" ? "Project overview"
+                  : tabRoute.kind === "project" ? "Project Overview"
                     : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";
         const label = tab.title ?? generatedLabel;
@@ -125,8 +138,8 @@ export function WorkspaceTabs({
           onContextMenu={(event) => { event.preventDefault(); setContextMenu({ anchor: event.currentTarget, key: tab.key, label }); }}
           onDoubleClick={() => beginRename(tab.key, label)}
           sx={{
-            position: "relative", containerType: "inline-size", minWidth: 38, maxWidth: 240, flex: "1 1 200px",
-            height: 38, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 2,
+            position: "relative", containerType: "inline-size", minWidth: { xs: 132, md: 140 }, maxWidth: 240, flex: "0 1 220px",
+            height: { xs: 44, md: 38 }, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 2, scrollSnapAlign: "start",
             border: 1, borderColor: dragTargetKey === tab.key ? "primary.main" : selected ? "divider" : "transparent",
             color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent",
             boxShadow: dragTargetKey === tab.key ? (theme) => `inset 3px 0 0 ${theme.palette.primary.main}` : "none",
@@ -135,7 +148,12 @@ export function WorkspaceTabs({
           }}
         >
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={500}>
-            <ButtonBase onClick={() => onActivate(tab.key)} aria-label={`Open ${accessibleLabel} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{
+            <ButtonBase onClick={() => onActivate(tab.key)} onKeyDown={(event) => {
+              if (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10")) {
+                event.preventDefault();
+                setContextMenu({ anchor: event.currentTarget, key: tab.key, label });
+              }
+            }} aria-keyshortcuts="Shift+F10" aria-label={`Open ${accessibleLabel} in ${projectLabel}`} aria-current={selected ? "page" : undefined} sx={{
               minWidth: 0, flex: 1, px: 1, gap: 0.75, justifyContent: "flex-start", overflow: "hidden",
               "& > svg": { flex: "0 0 auto", fontSize: 18 },
             }}>
@@ -149,22 +167,25 @@ export function WorkspaceTabs({
             size="small" aria-label={`Close ${label}`} disabled={tabs.length === 1}
             onClick={(event) => { event.stopPropagation(); onClose(tab.key); }}
             sx={{
-              width: 28, minWidth: 28, height: 28, alignSelf: "center", mr: 0.25, color: "text.secondary",
-              opacity: selected ? 0.75 : 0, "&:hover": { color: "text.primary", opacity: 1 },
+              width: { xs: 36, md: 28 }, minWidth: { xs: 36, md: 28 }, height: { xs: 36, md: 28 }, alignSelf: "center", mr: 0.25, color: "text.secondary",
+              opacity: { xs: selected ? 0.75 : 0.45, md: selected ? 0.75 : 0 }, "&:hover": { color: "text.primary", opacity: 1 },
+              "&:focus-visible, &.Mui-focusVisible": { color: "text.primary", opacity: 1 },
               "@container (max-width: 86px)": { display: "none" },
             }}
           ><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
         </Box>;
       })}
     </Stack>
-    <Tooltip title="New tab (⌘T)"><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
-    <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: "flex", alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
+    <Tooltip title={`New Tab (${newTabShortcutLabel()})`}><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: { xs: 44, md: 36 }, height: { xs: 44, md: 36 }, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
+    <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
       {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project" /> : <TokenUsageButton scope="overall" label="Overall" />}
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
-      <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename tab</MenuItem>
-      <MenuItem disabled={tabs.length === 1} onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close tab</MenuItem>
-      <MenuItem disabled={tabs.length === 1} onClick={() => { onCloseOthers(contextMenu.key); setContextMenu(undefined); }}>Close other tabs</MenuItem>
+      <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename Tab</MenuItem>
+      <MenuItem disabled={tabs.findIndex((tab) => tab.key === contextMenu.key) <= 0} onClick={() => moveContextTab(-1)}>Move Left</MenuItem>
+      <MenuItem disabled={tabs.findIndex((tab) => tab.key === contextMenu.key) >= tabs.length - 1} onClick={() => moveContextTab(1)}>Move Right</MenuItem>
+      <MenuItem disabled={tabs.length === 1} onClick={() => { onClose(contextMenu.key); setContextMenu(undefined); }}>Close Tab</MenuItem>
+      <MenuItem disabled={tabs.length === 1} onClick={() => { onCloseOthers(contextMenu.key); setContextMenu(undefined); }}>Close Other Tabs</MenuItem>
     </Menu> : null}
     <Dialog open={Boolean(renameTarget)} onClose={() => setRenameTarget(undefined)} fullWidth maxWidth="xs">
       <DialogTitle>Rename tab</DialogTitle>

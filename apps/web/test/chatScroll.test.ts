@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import {
+  ChatMessageBody,
   individualChatSenderLabel,
   chatMessageLayoutKey,
   isLongChatMessage,
@@ -85,10 +86,15 @@ describe("scrollbar activity", () => {
 });
 
 describe("long message presentation", () => {
-  it("identifies long prose and heavily structured messages for progressive disclosure", () => {
+  it("waits for the doubled display-only boundaries before progressive disclosure", () => {
     expect(isLongChatMessage("short answer")).toBe(false);
-    expect(isLongChatMessage("x".repeat(1_601))).toBe(true);
-    expect(isLongChatMessage(Array.from({ length: 19 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
+    expect(isLongChatMessage("x".repeat(6_400))).toBe(false);
+    expect(isLongChatMessage("x".repeat(6_401))).toBe(true);
+    expect(isLongChatMessage("🌲".repeat(6_400))).toBe(false);
+    expect(isLongChatMessage("🌲".repeat(6_401))).toBe(true);
+    expect(isLongChatMessage(Array.from({ length: 72 }, (_, index) => `line ${index}`).join("\n"))).toBe(false);
+    expect(isLongChatMessage(Array.from({ length: 73 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
+    expect(renderToStaticMarkup(createElement(ChatMessageBody, { text: "x".repeat(6_401) }))).toContain("Show Full Message");
   });
 });
 

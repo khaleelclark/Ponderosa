@@ -9,7 +9,7 @@ import type {
   BrowserOperatorInputRequest,
   BrowserSessionDto,
 } from "@ponderosa/core";
-import { artifactsDir } from "@ponderosa/agents";
+import { publishManagedArtifactContent } from "@ponderosa/agents";
 import { terminateProcessGroup } from "@ponderosa/engines";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
@@ -35,7 +35,15 @@ export interface BrowserPageInfo {
   title: string;
 }
 
-export interface BrowserDriver {
+export interface BrowserTerminationHandle {
+  /** Opaque process-group authority shared by handles whose successful close
+   * observes the same whole-process shutdown. Absent means this handle is its
+   * own distinct authority. */
+  readonly terminationAuthority?: object;
+  close(): Promise<void>;
+}
+
+export interface BrowserDriver extends BrowserTerminationHandle {
   pageInfo(): Promise<BrowserPageInfo>;
   navigate(url: string): Promise<BrowserPageInfo>;
   inspect(): Promise<string>;
@@ -49,9 +57,19 @@ export interface BrowserDriver {
   close(): Promise<void>;
 }
 
+export interface BrowserSpawnPublicationOptions {
+  /** This is the final process authority the factory can publish. */
+  complete?: boolean;
+  /** This handle explicitly covers the authority of the eventual driver. */
+  coversReturnedDriver?: boolean;
+}
+
 export type BrowserDriverFactory = (
   sessionId: string,
   onConsole: (level: "log" | "info" | "warning" | "error", text: string) => void,
+  /** Publish every spawned process authority synchronously. Set `complete` only
+   * on the final publication; a settled factory is also implicitly complete. */
+  onSpawned?: (handle: BrowserTerminationHandle, options?: BrowserSpawnPublicationOptions) => void,
 ) => Promise<BrowserDriver>;
 
 type BrowserAuditEvent = Extract<AgentEvent, {
@@ -64,13 +82,48 @@ interface ManagedSession {
   /** Retained until driver shutdown succeeds so a timed-out Project deletion
    * can retry without losing the browser authority handle. */
   closingDriver?: BrowserDriver;
+  /** Registered synchronously by the factory when a browser process spawns,
+   * before CDP readiness can succeed or fail. A Set preserves every late or
+   * duplicate publication until whole-process shutdown is observed. */
+  spawnHandles: Set<BrowserTerminationHandle>;
+  cleanupError?: string;
+  cleanup?: Promise<void>;
+  /** Authority-specific cleanup started by a distinct callback after the
+   * factory has already produced a healthy ready driver. */
+  lateCleanups: Set<Promise<void>>;
   queue: Promise<unknown>;
   lifecycleEpoch: number;
   opening?: Promise<BrowserSessionDto>;
+  spawnPublication?: SpawnPublication;
   /** A URL is replayable only when it contains no credential-bearing query. */
   replayUrl?: string;
   lastFrame?: { body: Buffer; revision: number; capturedAt: number };
   frameCapture?: Promise<{ body: Buffer; revision: number }>;
+}
+
+interface SpawnPublication {
+  promise: Promise<void>;
+  readonly sealed: boolean;
+  readonly coversReturnedDriver: boolean;
+  finish(coversReturnedDriver?: boolean): void;
+}
+
+function spawnPublication(): SpawnPublication {
+  let finishPromise!: () => void;
+  let complete = false;
+  let coversReturnedDriver = false;
+  const promise = new Promise<void>((resolve) => { finishPromise = resolve; });
+  return {
+    promise,
+    get sealed() { return complete; },
+    get coversReturnedDriver() { return coversReturnedDriver; },
+    finish(coversDriver = false) {
+      if (complete) return;
+      complete = true;
+      coversReturnedDriver = coversDriver;
+      finishPromise();
+    },
+  };
 }
 
 export class BrowserSessionError extends Error {
@@ -197,7 +250,7 @@ function sameScope(dto: BrowserSessionDto, scope: BrowserScope): boolean {
 
 export class BrowserSessionManager {
   private readonly sessions = new Map<string, ManagedSession>();
-  private readonly closingDrivers = new WeakMap<BrowserDriver, Promise<void>>();
+  private readonly closingAuthorities = new WeakMap<object, Promise<void>>();
 
   constructor(
     private readonly dataDir: string,
@@ -208,6 +261,19 @@ export class BrowserSessionManager {
   get(agentId: string): BrowserSessionDto | undefined {
     const session = this.sessions.get(agentId);
     return session ? publicDto(session) : undefined;
+  }
+
+  authorityStatus(): { openings: number; active: number; pendingCleanup: number; retainedFailures: number } {
+    const sessions = [...this.sessions.values()];
+    return {
+      openings: sessions.filter((session) => Boolean(session.opening)).length,
+      active: sessions.filter((session) => Boolean(session.driver)).length,
+      pendingCleanup: sessions.filter((session) => Boolean(
+        session.closingDriver || session.cleanup || session.lateCleanups.size || session.cleanupError ||
+        ((session.dto.status === "closed" || session.dto.status === "failed") && session.spawnHandles.size),
+      )).length,
+      retainedFailures: sessions.filter((session) => Boolean(session.cleanupError)).length,
+    };
   }
 
   private owned(scope: BrowserScope): ManagedSession {
@@ -246,16 +312,132 @@ export class BrowserSessionManager {
     return result;
   }
 
-  private async closeDriver(driver: BrowserDriver | undefined): Promise<void> {
-    if (!driver) return;
-    const inProgress = this.closingDrivers.get(driver);
+  private authority(handle: BrowserTerminationHandle): object {
+    return handle.terminationAuthority ?? handle;
+  }
+
+  private async closeHandle(handle: BrowserTerminationHandle | undefined): Promise<void> {
+    if (!handle) return;
+    const authority = this.authority(handle);
+    const inProgress = this.closingAuthorities.get(authority);
     if (inProgress) return inProgress;
-    const closing = driver.close().catch((error) => {
-      this.closingDrivers.delete(driver);
+    const closing = handle.close().catch((error) => {
+      this.closingAuthorities.delete(authority);
       throw error;
     });
-    this.closingDrivers.set(driver, closing);
+    this.closingAuthorities.set(authority, closing);
     await closing;
+  }
+
+  private retainedHandles(session: ManagedSession): BrowserTerminationHandle[] {
+    const byAuthority = new Map<object, BrowserTerminationHandle>();
+    // Prefer a ready/closing driver over its spawn-time fallback handle so an
+    // ordinary close performs the driver's complete protocol exactly once.
+    for (const handle of [session.driver, session.closingDriver, ...session.spawnHandles]) {
+      if (handle) byAuthority.set(this.authority(handle), byAuthority.get(this.authority(handle)) ?? handle);
+    }
+    return [...byAuthority.values()];
+  }
+
+  private hasAuthority(session: ManagedSession, authority: object): boolean {
+    return this.retainedHandles(session).some((handle) => this.authority(handle) === authority);
+  }
+
+  private discardSpawnAuthority(session: ManagedSession, authority: object): void {
+    for (const published of session.spawnHandles) {
+      if (this.authority(published) === authority) session.spawnHandles.delete(published);
+    }
+  }
+
+  /** A factory callback after readiness cannot expand the ready driver's
+   * process authority. Contain only the newly published distinct authority so
+   * the canonical ready session remains usable and truthful. */
+  private closeLateSpawnAuthority(session: ManagedSession, handle: BrowserTerminationHandle): void {
+    const authority = this.authority(handle);
+    const cleanup = this.closeHandle(handle).then(
+      () => this.discardSpawnAuthority(session, authority),
+      (error: unknown) => {
+        session.cleanupError = error instanceof Error ? error.message : String(error);
+        this.lifecycle(session, `late browser authority cleanup did not complete: ${session.cleanupError}`);
+        throw error;
+      },
+    );
+    session.lateCleanups.add(cleanup);
+    void cleanup.finally(() => session.lateCleanups.delete(cleanup)).catch(() => undefined);
+  }
+
+  /** Close every process authority retained by a session, clearing only handles
+   * whose whole-process shutdown was observed. Failed handles remain attached
+   * to the session so later cleanup and readiness checks cannot lose them. */
+  private async performRetainedCleanup(session: ManagedSession): Promise<void> {
+    while (true) {
+      // A full lifecycle close joins any authority-specific late cleanup first.
+      // If it failed, closeHandle released its coalescing entry and this pass
+      // retries that exact retained authority alongside the session driver.
+      const lateCleanups = [...session.lateCleanups];
+      if (lateCleanups.length) await Promise.allSettled(lateCleanups);
+      const handles = this.retainedHandles(session);
+      if (!handles.length) {
+        session.cleanupError = undefined;
+        return;
+      }
+      const results = await Promise.allSettled(handles.map((handle) => this.closeHandle(handle)));
+      const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      results.forEach((result, index) => {
+        if (result.status !== "fulfilled") return;
+        const handle = handles[index]!;
+        const authority = this.authority(handle);
+        if (session.driver && this.authority(session.driver) === authority) session.driver = undefined;
+        if (session.closingDriver && this.authority(session.closingDriver) === authority) session.closingDriver = undefined;
+        this.discardSpawnAuthority(session, authority);
+      });
+      if (failures.length) {
+        session.cleanupError = failures.map((error) => error instanceof Error ? error.message : String(error)).join("; ");
+        throw new AggregateError(failures, `browser cleanup did not complete: ${session.cleanupError}`);
+      }
+      // A spawn callback can publish another handle while an earlier close is
+      // in flight. Loop until one pass observes the retained set empty.
+    }
+  }
+
+  private closeRetainedHandles(session: ManagedSession): Promise<void> {
+    if (session.cleanup) return session.cleanup;
+    const cleanup = this.performRetainedCleanup(session);
+    session.cleanup = cleanup;
+    cleanup.then(
+      () => { if (session.cleanup === cleanup) session.cleanup = undefined; },
+      () => { if (session.cleanup === cleanup) session.cleanup = undefined; },
+    );
+    return cleanup;
+  }
+
+  private registerSpawnHandle(
+    scope: BrowserScope,
+    session: ManagedSession,
+    lifecycleEpoch: number,
+    publication: SpawnPublication,
+    handle: BrowserTerminationHandle,
+    options: BrowserSpawnPublicationOptions = {},
+  ): void {
+    const wasSealed = publication.sealed;
+    if (options.complete) publication.finish(options.coversReturnedDriver);
+    const authority = this.authority(handle);
+    // Duplicate callbacks and spawn/driver handles sharing one explicit
+    // termination authority never create another close obligation.
+    if (this.hasAuthority(session, authority)) return;
+    session.spawnHandles.add(handle);
+    if (this.sessions.get(scope.agentId) === session &&
+        (wasSealed || session.dto.status === "ready" ||
+          (session.dto.status === "opening" && session.lifecycleEpoch !== lifecycleEpoch))) {
+      this.closeLateSpawnAuthority(session, handle);
+      return;
+    }
+    if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening" ||
+        session.lifecycleEpoch !== lifecycleEpoch) {
+      // Cleanup has already fenced this opening. Start closing immediately;
+      // close() observes the same coalesced authority attempt.
+      void this.closeRetainedHandles(session).catch(() => undefined);
+    }
   }
 
   private assertLifecycle(
@@ -314,7 +496,7 @@ export class BrowserSessionManager {
       }
       return url ? this.navigate(scope, url, initialOwner) : Promise.resolve(publicDto(existing));
     }
-    if (existing?.dto.status === "opening" && existing.opening) {
+    if (existing?.opening) {
       if (!sameScope(existing.dto, scope)) {
         return Promise.reject(new BrowserSessionError("another run owns this agent's browser session", 409));
       }
@@ -332,15 +514,29 @@ export class BrowserSessionManager {
         openedAt: now,
         updatedAt: now,
       },
+      spawnHandles: new Set(),
+      lateCleanups: new Set(),
       queue: Promise.resolve(),
       lifecycleEpoch: 1,
     };
-    this.sessions.set(scope.agentId, session);
-    this.lifecycle(session, "open_requested");
-    const opening = (async () => {
+    const publication = spawnPublication();
+    session.spawnPublication = publication;
+    const replacementEpoch = existing ? ++existing.lifecycleEpoch : undefined;
+    let installed = false;
+    let opening!: Promise<BrowserSessionDto>;
+    opening = (async () => {
       let createdDriver: BrowserDriver | undefined;
       try {
-        await this.closeDriver(existing?.driver ?? existing?.closingDriver);
+        if (existing) {
+          await existing.queue.catch(() => undefined);
+          await this.closeRetainedHandles(existing);
+          if (this.sessions.get(scope.agentId) !== existing || existing.lifecycleEpoch !== replacementEpoch) {
+            throw new BrowserSessionError("browser session changed while replacement cleanup was running", 409);
+          }
+        }
+        this.sessions.set(scope.agentId, session);
+        installed = true;
+        this.lifecycle(session, "open_requested");
         createdDriver = await this.createDriver(session.dto.id, (level, text) => {
           if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "ready") return;
           this.emit(scope, {
@@ -350,7 +546,8 @@ export class BrowserSessionManager {
             level,
             text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
           });
-        });
+        }, (handle, options) => this.registerSpawnHandle(scope, session, 1, publication, handle, options));
+        publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was opening", 409);
         }
@@ -368,22 +565,34 @@ export class BrowserSessionManager {
         this.lifecycle(session, "opened");
         return publicDto(session);
       } catch (error) {
+        publication.finish();
+        if (!installed) throw error;
         if (createdDriver) session.closingDriver = createdDriver;
-        await this.closeDriver(createdDriver);
+        let cleanupError: unknown;
+        try {
+          await this.closeRetainedHandles(session);
+        } catch (closeError) {
+          cleanupError = closeError;
+        }
         if (session.driver === createdDriver) session.driver = undefined;
-        if (session.closingDriver === createdDriver) session.closingDriver = undefined;
         const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
         if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
           session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
           this.lifecycle(session, failure);
         }
+        if (cleanupError) {
+          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
+        }
         if (error instanceof BrowserSessionError) throw error;
         throw new BrowserSessionError(failure, 503);
       } finally {
-        session.opening = undefined;
+        if (session.opening === opening) session.opening = undefined;
+        if (session.spawnPublication === publication) session.spawnPublication = undefined;
+        if (existing?.opening === opening) existing.opening = undefined;
       }
     })();
     session.opening = opening;
+    if (existing) existing.opening = opening;
     return opening;
   }
 
@@ -393,7 +602,11 @@ export class BrowserSessionManager {
     const previousUrl = session.replayUrl;
     const previousDriver = session.driver;
     session.driver = undefined;
+    if (previousDriver) session.closingDriver = previousDriver;
     session.lifecycleEpoch += 1;
+    const reconnectEpoch = session.lifecycleEpoch;
+    const publication = spawnPublication();
+    session.spawnPublication = publication;
     session.dto = {
       ...session.dto,
       status: "opening",
@@ -405,13 +618,14 @@ export class BrowserSessionManager {
     session.lastFrame = undefined;
     session.frameCapture = undefined;
     this.lifecycle(session, "reconnect_requested");
-    const reconnecting = (async () => {
+    let reconnecting!: Promise<BrowserSessionDto>;
+    reconnecting = (async () => {
       let createdDriver: BrowserDriver | undefined;
       try {
         // The epoch/status fence rejects completion from the old driver before
         // we wait for its queued command and replace the process.
         await session.queue.catch(() => undefined);
-        await this.closeDriver(previousDriver);
+        await this.closeRetainedHandles(session);
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
@@ -421,7 +635,8 @@ export class BrowserSessionManager {
             type: "browser_console", sessionId: session.dto.id, executionId: scope.runId,
             level, text: redactBrowserText(text).slice(0, MAX_CONSOLE_TEXT),
           });
-        });
+        }, (handle, options) => this.registerSpawnHandle(scope, session, reconnectEpoch, publication, handle, options));
+        publication.finish();
         if (this.sessions.get(scope.agentId) !== session || session.dto.status !== "opening") {
           throw new BrowserSessionError("browser session closed while it was reconnecting", 409);
         }
@@ -439,19 +654,28 @@ export class BrowserSessionManager {
         this.lifecycle(session, "reconnected");
         return publicDto(session);
       } catch (error) {
+        publication.finish();
         if (createdDriver) session.closingDriver = createdDriver;
-        await this.closeDriver(createdDriver);
-        if (session.closingDriver === createdDriver) session.closingDriver = undefined;
+        let cleanupError: unknown;
+        try {
+          await this.closeRetainedHandles(session);
+        } catch (closeError) {
+          cleanupError = closeError;
+        }
         if (session.driver === createdDriver) session.driver = undefined;
         const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
         if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
           session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
           this.lifecycle(session, failure);
         }
+        if (cleanupError) {
+          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
+        }
         if (error instanceof BrowserSessionError) throw error;
         throw new BrowserSessionError(failure, 503);
       } finally {
-        session.opening = undefined;
+        if (session.opening === reconnecting) session.opening = undefined;
+        if (session.spawnPublication === publication) session.spawnPublication = undefined;
       }
     })();
     session.opening = reconnecting;
@@ -622,22 +846,23 @@ export class BrowserSessionManager {
       session.dto = { ...session.dto, frameRevision: session.dto.frameRevision + 1, updatedAt: new Date().toISOString() };
       return captured;
     });
-    const relative = path.posix.join("browser", `${session.dto.id}-${Date.now()}-${randomUUID()}.png`);
-    const directory = artifactsDir(this.dataDir, scope.projectId, scope.actorAgentId ?? scope.agentId);
-    const file = path.join(directory, ...relative.split("/"));
-    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await fs.writeFile(file, body, { mode: 0o600, flag: "wx" });
+    const artifactId = randomUUID();
+    const relative = path.posix.join("browser", `${artifactId}.png`);
+    const published = publishManagedArtifactContent(this.dataDir, scope.projectId, artifactId, body);
     this.emit(scope, {
       type: "browser_screenshot", sessionId: session.dto.id, executionId: scope.actorRunId ?? scope.runId,
-      path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
+      artifactId, path: relative, width: VIEWPORT.width, height: VIEWPORT.height,
+      size: published.size, sha256: published.sha256,
     });
     return { path: relative, ...VIEWPORT };
   }
 
   async close(scope: BrowserScope, reason = "explicit_close"): Promise<BrowserSessionDto> {
     const session = this.owned(scope);
-    if (session.dto.status === "closed" && !session.closingDriver && !session.opening) return publicDto(session);
+    if (session.dto.status === "closed" && !session.closingDriver && !session.spawnHandles.size &&
+        !session.opening && !session.cleanup) return publicDto(session);
     const opening = session.opening;
+    const publication = session.spawnPublication;
     const driver = session.driver ?? session.closingDriver;
     session.driver = undefined;
     session.closingDriver = driver;
@@ -650,15 +875,29 @@ export class BrowserSessionManager {
       updatedAt: new Date().toISOString(),
     };
     this.lifecycle(session, reason);
-    // Fence the lifecycle first, then wait for an in-flight factory. Its own
-    // status/epoch checks route any late driver into retained cleanup.
-    await opening?.catch(() => undefined);
-    const retained = session.driver ?? session.closingDriver ?? driver;
-    session.driver = undefined;
-    if (retained) session.closingDriver = retained;
-    await this.closeDriver(retained);
-    if (session.closingDriver === retained) session.closingDriver = undefined;
-    return publicDto(session);
+
+    // A spawn-time handle is actionable even while readiness is stalled. Close
+    // it before awaiting the factory so deletion/shutdown cannot be held hostage
+    // by an initialization Promise whose process is already known.
+    try {
+      await this.closeRetainedHandles(session);
+      if (opening) {
+        // A factory may never settle after publishing its process handles. The
+        // final synchronous publication explicitly seals the authority set, so
+        // cleanup need not guess from the timing of the first callback.
+        const openingSettled = opening.then(() => undefined, () => undefined);
+        await Promise.race([
+          openingSettled,
+          ...(publication ? [publication.promise.then(() =>
+            publication.coversReturnedDriver ? undefined : openingSettled)] : []),
+        ]);
+        await this.closeRetainedHandles(session);
+      }
+      return publicDto(session);
+    } finally {
+      if (session.dto.status === "closed" && session.opening === opening) session.opening = undefined;
+      if (session.spawnPublication === publication) session.spawnPublication = undefined;
+    }
   }
 
   async closeRun(scope: BrowserScope, reason: string): Promise<void> {
@@ -681,7 +920,7 @@ export class BrowserSessionManager {
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, `browser cleanup for Project ${projectId} did not complete`);
       const pending = [...this.sessions.values()].some((session) => session.dto.projectId === projectId &&
-        Boolean(session.opening || session.driver || session.closingDriver));
+        Boolean(session.opening || session.driver || session.closingDriver || session.spawnHandles.size || session.cleanup));
       if (!pending) return;
     }
     throw new Error(`browser cleanup for Project ${projectId} did not reach a fixed point`);
@@ -788,9 +1027,15 @@ class ChromeCdpDriver implements BrowserDriver {
     private readonly connection: CdpConnection,
     private readonly cdpSessionId: string,
     private readonly profileDir: string,
+    readonly terminationAuthority: object,
   ) {}
 
-  static async create(executable: string, profileDir: string, onConsole: Parameters<BrowserDriverFactory>[1]): Promise<ChromeCdpDriver> {
+  static async create(
+    executable: string,
+    profileDir: string,
+    onConsole: Parameters<BrowserDriverFactory>[1],
+    onSpawned?: Parameters<BrowserDriverFactory>[2],
+  ): Promise<ChromeCdpDriver> {
     await fs.mkdir(profileDir, { recursive: true, mode: 0o700 });
     const child = spawn(executable, [
       "--headless=new",
@@ -816,7 +1061,20 @@ class ChromeCdpDriver implements BrowserDriver {
     child.stderr?.on("data", (chunk: string) => {
       launchError = `${launchError}${chunk}`.slice(-MAX_BROWSER_LAUNCH_ERROR);
     });
+    const terminationAuthority = {};
+    const spawnHandle: BrowserTerminationHandle = {
+      terminationAuthority,
+      close: async () => {
+        await terminateBrowserProcess(child);
+        await removeBrowserProfile(profileDir);
+      },
+    };
+    let externallyOwned = false;
     try {
+      if (onSpawned) {
+        onSpawned(spawnHandle, { complete: true, coversReturnedDriver: true });
+        externallyOwned = true;
+      }
       const input = child.stdio[3] as Writable | null;
       const output = child.stdio[4] as Readable | null;
       if (!input || !output) throw new Error("browser debugging pipe could not be created");
@@ -827,7 +1085,7 @@ class ChromeCdpDriver implements BrowserDriver {
       const attached = await connection.send("Target.attachToTarget", { targetId, flatten: true });
       const sessionId = String(attached.sessionId ?? "");
       if (!sessionId) throw new Error("browser did not attach to the page target");
-      const driver = new ChromeCdpDriver(child, connection, sessionId, profileDir);
+      const driver = new ChromeCdpDriver(child, connection, sessionId, profileDir, terminationAuthority);
       connection.onEvent((message) => {
         if (message.sessionId !== sessionId || message.method !== "Runtime.consoleAPICalled") return;
         const type = String(message.params?.type ?? "log");
@@ -850,8 +1108,10 @@ class ChromeCdpDriver implements BrowserDriver {
       ]);
       return driver;
     } catch (error) {
-      await terminateBrowserProcess(child);
-      await removeBrowserProfile(profileDir).catch(() => undefined);
+      // BrowserSessionManager owns a synchronously registered process handle
+      // across readiness failure. Direct factory consumers still receive the
+      // previous self-cleaning behavior.
+      if (!externallyOwned) await spawnHandle.close();
       const primary = error instanceof Error ? error.message : String(error);
       const diagnostics = redactBrowserText(launchError.trim());
       throw new Error(diagnostics ? `${primary}\n${diagnostics}` : primary);
@@ -979,11 +1239,11 @@ export function findBrowserExecutable(configured = process.env.PONDEROSA_BROWSER
 }
 
 export function chromeBrowserDriverFactory(dataDir: string, executable = findBrowserExecutable()): BrowserDriverFactory {
-  return async (sessionId, onConsole) => {
+  return async (sessionId, onConsole, onSpawned) => {
     if (!executable) {
       throw new Error("host browser is unavailable; set PONDEROSA_BROWSER_EXECUTABLE to a Chromium/Chrome binary");
     }
     const profileDir = path.join(dataDir, "browser-sessions", sessionId);
-    return ChromeCdpDriver.create(executable, profileDir, onConsole);
+    return ChromeCdpDriver.create(executable, profileDir, onConsole, onSpawned);
   };
 }

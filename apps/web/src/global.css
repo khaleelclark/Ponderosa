@@ -36,6 +36,13 @@ body {
   pointer-events: auto;
 }
 
+@media (hover: none), (pointer: coarse) {
+  .chat-message-actions .chat-message-action-buttons {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .chat-scroll-region {
   /* Keep the gutter allocated while only changing the thumb's visibility. This
      avoids the document column moving when a scrollbar appears on hover. */
@@ -80,7 +87,7 @@ body {
 }
 
 .chat-scroll-region:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--ponderosa-focus-ring);
   outline-offset: -2px;
 }
 
@@ -94,7 +101,7 @@ body {
 }
 
 .chat-text-navigation:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--ponderosa-focus-ring);
   outline-offset: 2px;
 }
 
@@ -104,6 +111,48 @@ body {
 
 html {
   -webkit-text-size-adjust: 100%;
+}
+
+@media (max-width: 599.95px) {
+  html {
+    /* A slightly denser type scale for phone layouts; interactive targets keep
+       their explicit 44px sizing and no browser zoom is involved. */
+    font-size: 15px;
+  }
+
+  .ponderosa-composer {
+    margin-top: 6px;
+  }
+
+  .chat-message-actions {
+    margin-top: 2px;
+  }
+
+  .mobile-chat-chrome {
+    display: block !important;
+    overflow: hidden;
+  }
+
+  .mobile-chat-composer {
+    display: block !important;
+    max-height: 100dvh;
+    overflow: hidden;
+    opacity: 1;
+    transform: translateY(0);
+    transform-origin: bottom center;
+    transition: max-height 180ms cubic-bezier(0.2, 0, 0, 1), opacity 140ms ease-out, transform 180ms cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  .mobile-chat-composer[data-mobile-composer-hidden="true"] {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(12px);
+    pointer-events: none;
+    border-top-width: 0;
+    margin: 0 !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
+  }
 }
 
 button,
@@ -119,11 +168,14 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--ponderosa-focus-ring);
   outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .mobile-chat-composer {
+    transition: none !important;
+  }
   *,
   *::before,
   *::after {

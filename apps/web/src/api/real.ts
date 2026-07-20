@@ -24,6 +24,7 @@ import type {
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
   CollaborationViewDto,
+  ChangedFileDetailDto,
   CommitAgentDeletionRequest,
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
@@ -70,6 +71,7 @@ import type {
   ProjectBrowserSessionDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
+  ReadinessDto,
   ProjectFolderOptionsDto,
   PutConversationDraftRequest,
   QueuedConversationMessageDto,
@@ -92,6 +94,7 @@ import type {
   UpdateProjectRequest,
   UpdateTriggerRequest,
   UpdateWorkspacePreferencesRequest,
+  UploadedOperatorAvatarDto,
   WebPushStatusDto,
   WebPushSubscriptionDto,
   WorkspaceEventEnvelope,
@@ -114,7 +117,7 @@ import {
 
 const API_BASE = "";
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body != null && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -125,7 +128,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
     let message = `${response.status} ${response.statusText}`;
     if (response.headers.get("content-type")?.includes("application/json")) {
       try {
@@ -289,10 +292,18 @@ export const realApi = {
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
+  uploadOperatorAvatar(file: File): Promise<UploadedOperatorAvatarDto> {
+    return requestJson<UploadedOperatorAvatarDto>("/api/workspace/profile-images", {
+      method: "POST",
+      headers: { "content-type": file.type },
+      body: file,
+    });
+  },
   listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
   async clearConversationNotifications(conversationId: string): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
+  async clearProjectNotifications(projectId: string): Promise<void> { await requestJson(`/api/projects/${encodeURIComponent(projectId)}/notifications`, { method: "DELETE" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
   listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
@@ -438,6 +449,9 @@ export const realApi = {
   getAgentHistory(agentId: string, stream: AgentTelemetryStream, limit: number = 100, cursor?: string, focusId?: string): Promise<AgentTelemetryPageDto> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/history/${encodeURIComponent(stream)}${toQuery({ limit: String(limit), cursor, focusId })}`);
   },
+  getChangedFileDetail(agentId: string, path: string): Promise<ChangedFileDetailDto> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/changed-file${toQuery({ path })}`);
+  },
   getActivityOutput(retrievalUrl: string, cursor?: string): Promise<AgentActivityOutputDto> {
     return requestJson(`${retrievalUrl}${toQuery({ cursor })}`);
   },
@@ -485,6 +499,9 @@ export const realApi = {
   },
   listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");
+  },
+  getReadiness(): Promise<ReadinessDto> {
+    return requestJson<ReadinessDto>("/api/ready", undefined, [503]);
   },
   updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });

@@ -49,12 +49,12 @@ describe("Run cause visibility", () => {
     });
 
     const rendered = JSON.stringify(view.toJSON());
-    expect(rendered).toContain("Why this Run started");
+    expect(rendered).toContain("Why This Run Started");
     expect(rendered).toContain("activation-1");
     expect(rendered).toContain("activation-2");
     expect(rendered).toContain("message-1");
-    expect(rendered).toContain("Show exact provider input");
-    const cause = view.root.findAll((node) => node.type === "button" && JSON.stringify(node.children).includes("Why this Run started"))[0]!;
+    expect(rendered).toContain("Show Exact Provider Input");
+    const cause = view.root.findAll((node) => node.type === "button" && JSON.stringify(node.children).includes("Why This Run Started"))[0]!;
     act(() => cause.props.onClick());
     expect(onOpenAgentWork).toHaveBeenCalledWith(run.id);
     view.unmount();

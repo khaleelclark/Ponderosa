@@ -44,11 +44,13 @@ describe("composer surface ownership", () => {
 
   it("keeps the active-turn actions explicit and presents chat as an open transcript", () => {
     expect(panes).toContain('aria-label={defaultsToQueue ? "Queue message" : "Steer active response"}');
-    expect(panes).toContain('showTimestamp={fromUser}');
+    expect(panes).toContain('showTimestamp={false}');
+    expect(panes).toContain('mobileTimestampRevealed={mobileTimestampMessageId === message.id}');
     expect(conversation).toContain('justifyContent: fromManager ? "flex-end" : "flex-start"');
     expect(conversation).toContain('width: fromManager ? "fit-content" : "min(100%, 960px)"');
-    expect(conversation).toContain('maxWidth: fromManager ? "min(78%, 780px)" : "100%"');
-    expect(conversation).toContain('showTimestamp={fromManager}');
+    expect(conversation).toContain('maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%"');
+    expect(conversation).toContain('showTimestamp={false}');
+    expect(conversation).toContain('mobileTimestampRevealed={mobileTimestampRevealed}');
   });
 
   it("keeps an existing queue sticky without blocking concurrent Project chat work", () => {

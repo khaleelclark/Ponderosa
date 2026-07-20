@@ -42,7 +42,17 @@ export function formatMessageTimestamp(
   };
 }
 
-export function MessageTimestamp({ value, compact = false, align = "end" }: { value: string; compact?: boolean; align?: "start" | "end" }): JSX.Element | null {
+export function MessageTimestamp({
+  value,
+  compact = false,
+  align = "end",
+  desktopOnly = false,
+}: {
+  value: string;
+  compact?: boolean;
+  align?: "start" | "end";
+  desktopOnly?: boolean;
+}): JSX.Element | null {
   const timestamp = formatMessageTimestamp(value);
   if (!timestamp) {
     return null;
@@ -52,10 +62,11 @@ export function MessageTimestamp({ value, compact = false, align = "end" }: { va
     <Typography
       component="time"
       dateTime={timestamp.dateTime}
+      data-compact={compact ? "true" : undefined}
       title={timestamp.title}
       variant="caption"
       sx={{
-        display: "block",
+        display: desktopOnly ? { xs: "none", sm: "block" } : "block",
         color: "inherit",
         maxWidth: "100%",
         mt: 0,
@@ -63,19 +74,23 @@ export function MessageTimestamp({ value, compact = false, align = "end" }: { va
         textAlign: align,
       }}
     >
-      {compact ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)) : timestamp.label}
+      {timestamp.label}
     </Typography>
   );
 }
 
-/** Keeps every chat surface's timestamp after its message actions. */
+/** Keeps desktop metadata with actions and revealed mobile time beside its message. */
 export function MessageActionsAndTimestamp({
   actions,
+  mobileTimestampAlign = "start",
+  mobileTimestampRevealed = false,
   status,
   value,
   showTimestamp = true,
 }: {
   actions?: ReactNode;
+  mobileTimestampAlign?: "start" | "end";
+  mobileTimestampRevealed?: boolean;
   status?: ReactNode;
   value: string;
   showTimestamp?: boolean;
@@ -84,12 +99,15 @@ export function MessageActionsAndTimestamp({
   const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") setTouchRevealed(true);
   };
-  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minHeight: 28, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
-    <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", minHeight: 28 }}>
-      <Box className="chat-message-action-buttons" sx={{ display: "flex", alignItems: "center", gap: 0.25 }}>{actions}</Box>
+  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: { xs: 1, sm: 0.35 }, minWidth: { xs: 44, sm: 28 }, minHeight: { xs: 44, sm: 28 } }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
+    {mobileTimestampRevealed ? <Box data-mobile-message-timestamp sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
+      <MessageTimestamp value={value} compact align={mobileTimestampAlign} />
+    </Box> : null}
+    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
+      <Box className="chat-message-action-buttons" sx={{ display: "flex", minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>
       <Box sx={{ flex: 1 }} />
-      {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} /> : null}
+      {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} desktopOnly /> : null}
     </Stack>
-    {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} /></Box> : null}
+    {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} desktopOnly /></Box> : null}
   </Box>;
 }

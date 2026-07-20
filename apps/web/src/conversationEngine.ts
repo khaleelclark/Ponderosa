@@ -4,6 +4,21 @@ export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "ava
   return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
 }
 
+/** An operator-disabled provider is intentionally inactive, not unhealthy. */
+export function engineCanTestAccess(engine: Pick<EngineDto, "authenticated" | "available" | "enabled">): boolean {
+  return engine.enabled !== false && engine.authenticated && !engine.available;
+}
+
+export function engineStatusPresentation(engine: Pick<EngineDto, "available" | "enabled">): {
+  label: "Ready" | "Needs attention" | "Inactive";
+  color: "success" | "warning" | "default";
+} {
+  if (engine.enabled === false) return { label: "Inactive", color: "default" };
+  return engine.available
+    ? { label: "Ready", color: "success" }
+    : { label: "Needs attention", color: "warning" };
+}
+
 function conciseAvailabilityDetail(detail: string | undefined): string | undefined {
   if (!detail) return undefined;
   const firstLine = detail.split("\n")[0]?.trim();
@@ -12,8 +27,8 @@ function conciseAvailabilityDetail(detail: string | undefined): string | undefin
 }
 
 export function engineAvailabilityPresentation(engines: EngineDto[]): {
-  label: "Engine ready" | "Needs attention" | "Checking engines";
-  severity: "success" | "warning";
+  label: "Engine ready" | "Needs attention" | "Inactive" | "Checking engines";
+  severity: "success" | "warning" | "default";
   detail: string;
 } {
   if (engines.length === 0) {
@@ -35,6 +50,13 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
   const disabledSummary = disabled.length
     ? `${disabled.map((engine) => engine.displayName).join(", ")} ${disabled.length === 1 ? "is" : "are"} disabled.`
     : "";
+  if (enabled.length === 0) {
+    return {
+      label: "Inactive",
+      severity: "default",
+      detail: `${disabledSummary || "All configured providers are disabled by the operator."} Enable a provider to run work.`,
+    };
+  }
   const detail = [
     `${available.length} of ${enabled.length} enabled ${enabled.length === 1 ? "engine" : "engines"} ready.`,
     availableSummary,

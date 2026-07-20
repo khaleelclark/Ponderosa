@@ -98,6 +98,14 @@ export interface OperatorProfileDto {
   avatarId: string;
 }
 
+export interface UploadedOperatorAvatarDto {
+  /** Content-addressed managed avatar identity persisted in OperatorProfileDto. */
+  avatarId: string;
+  mediaType: "image/png" | "image/jpeg" | "image/webp";
+  size: number;
+  url: string;
+}
+
 export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
 
 export interface DraftAttachmentDto {
@@ -379,6 +387,8 @@ export interface ConversationDto {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  /** Present only on a deletion-surviving audit identity with no live authority. */
+  deletedAt?: string;
 }
 
 /** POST /api/projects/:id/conversations body. */
@@ -1471,11 +1481,12 @@ export interface AgentActivityOutputDto {
   nextCursor?: string;
 }
 
-export type AgentTelemetryStream = "runOutput" | "activity" | "runs" | "workItems" | "artifacts";
+export type AgentTelemetryStream = "runOutput" | "activity" | "changedFiles" | "runs" | "workItems" | "artifacts";
 
 export type AgentTelemetryPageDto =
   | ({ stream: "runOutput" } & HistoryPageDto<RunOutputDto>)
   | ({ stream: "activity" } & HistoryPageDto<AgentActivityDto>)
+  | ({ stream: "changedFiles" } & HistoryPageDto<ChangedFileDto>)
   | ({ stream: "runs" } & HistoryPageDto<AgentRunDto>)
   | ({ stream: "workItems" } & HistoryPageDto<WorkItemDto>)
   | ({ stream: "artifacts" } & HistoryPageDto<ArtifactDto>);
@@ -1486,8 +1497,14 @@ export interface ChangedFileDto {
   kind: "create" | "edit" | "delete";
   lastSeq: number;
   lastChangedAt: string;
+  executionCount: number;
+  diffAvailable: boolean;
+}
+
+/** On-demand bounded provenance and diff preview for one changed path. */
+export interface ChangedFileDetailDto extends ChangedFileDto {
   executionIds: string[];
-  /** Most recent engine-provided unified diff, when available. */
+  provenanceTruncated: boolean;
   diff?: string;
 }
 
@@ -1520,10 +1537,12 @@ export interface ArtifactDto {
 
 /** GET /api/agents/:id/artifacts/:aid — the artifact plus its rendered content. */
 export interface ArtifactContentDto extends ArtifactDto {
-  /** Raw text content (diff text, report body, log text). */
+  /** UTF-8 preview content, bounded to 2 MiB. */
   content: string;
   /** Hint for the read-only viewer (markdown vs plain vs unified diff). */
   contentType: "markdown" | "diff" | "text";
+  truncated?: boolean;
+  totalBytes?: number;
 }
 
 export interface AgentOutputEvent {
@@ -1603,6 +1622,8 @@ export interface AgentDetailDto {
   activity: AgentActivityDto[];
   changedFiles: ChangedFileDto[];
   runs: AgentRunDto[];
+  /** Sum of authoritative finalized Run intervals. Active Runs and idle wall time are excluded. */
+  finalizedWorkDurationMs?: number;
   coordinationV3?: AgentCoordinationV3Dto;
   workItems: WorkItemDto[];
   artifacts: ArtifactDto[];
@@ -1801,24 +1822,45 @@ export interface ReadinessCheckDto {
   detail: string;
 }
 
+export interface NetworkSecurityPostureDto {
+  mode: "loopback" | "authenticated" | "trusted_tailnet";
+  /** Exact configured listener host. Never contains credentials. */
+  bindHost: string;
+  authenticationRequired: boolean;
+  detail: string;
+  warning?: string;
+}
+
 /** GET /api/ready response. Readiness is allowed to be unavailable (HTTP 503). */
 export interface ReadinessDto {
   status: "ready" | "not_ready";
   service: "ponderosa";
   version: string;
   canAcceptWork: boolean;
+  networkSecurity: NetworkSecurityPostureDto;
   /** Durable API intake remains available while deployment draining pauses
    * provider leasing. */
   acceptingDurableIntake: boolean;
   leasingRuns: boolean;
   deploymentDrain: {
     state: "accepting" | "draining";
+    /** True only when every durable and local execution/cleanup authority has
+     * reached zero; this is the deployment replacement gate. */
+    readyForRestart: boolean;
     activeRuns: number;
+    schedulerRuns: number;
+    localRuns: number;
+    providerAuthorities: number;
+    browserAuthorities: number;
+    pendingCleanupOperations: number;
+    retainedTeardownFailures: number;
   };
   checks: {
     daemon: ReadinessCheckDto;
     dataDirectory: ReadinessCheckDto;
     projections: ReadinessCheckDto;
+    /** Linux procfs descriptor bridge required for race-safe artifact reads. */
+    artifactFilesystem: ReadinessCheckDto;
     runtimes: ReadinessCheckDto;
     communicationMigration: ReadinessCheckDto;
   };

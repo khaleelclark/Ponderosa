@@ -100,26 +100,36 @@ describe("chat transcript export", () => {
       transcriptMarkdown="# Chat\n"
       transcriptFileName="chat.md"
     />);
-    expect(html).toContain('aria-label="Chat actions"');
+    expect(html).toContain('aria-label="Chat Actions"');
     expect(html).toContain('aria-haspopup="menu"');
-    expect(CHAT_EXPORT_ACTION_LABELS).toEqual(["Copy", "Download", "Chat transcript"]);
+    expect(CHAT_EXPORT_ACTION_LABELS).toEqual(["Copy", "Download", "Chat Transcript"]);
   });
 
   it("keeps setup and mutations in menus and replaces the subagent prompt card with lineage", () => {
     const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    expect(agentDetail).toContain('label="Agent chat actions"');
-    expect(agentDetail).toContain('detailsLabel="Run setup"');
-    expect(agentDetail).toContain('label: "Assign chats"');
-    expect(agentDetail).toContain('label: "Create agent"');
+    expect(agentDetail).toContain('label="Agent Chat Actions"');
+    expect(agentDetail).toContain('detailsLabel="Run Settings"');
+    expect(agentDetail).toContain('aria-label="Run settings" sx={{ px: 2, py: 1.5 }}');
+    expect(agentDetail).toContain("<Divider flexItem />");
+    expect(agentDetail).toContain('label: "Start Fresh Provider Session",\n                icon: <RestartAltIcon');
+    expect(agentDetail).toContain('label: "Assign Chats"');
+    expect(agentDetail).toContain('icon: <ForumOutlinedIcon fontSize="small" />');
+    expect(agentDetail).toContain('label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon');
+    expect(agentDetail).toContain('label: "Create Agent"');
     expect(agentDetail).toContain('label: "Full Agent"');
-    expect(agentDetail).toContain('label: "Full organization"');
+    expect(agentDetail).toContain('label: "Full Organization"');
     expect(agentDetail).not.toContain("Copy Agent context");
-    expect(agentDetail).toContain('label: "Import Agent or organization…"');
+    expect(agentDetail).toContain('label: "Import Agent or Organization"');
+    expect(agentDetail).not.toContain("Import Agent or Organization…");
+    expect(agentDetail).toContain('icon: <FileUploadOutlinedIcon fontSize="small" />');
     expect(agentDetail).toContain("Created by");
     expect(agentDetail).not.toContain("Original message");
-    expect(conversation).toContain('label: "Create agent"');
-    expect(conversation).toContain('label: "Import Agent or organization…"');
+    expect(conversation).toContain('label: "Create Agent"');
+    expect(conversation).toContain('label: "Import Agent or Organization"');
+    expect(conversation).not.toContain("Import Agent or Organization…");
+    expect(conversation).toContain('icon: <FileUploadOutlinedIcon fontSize="small" />');
     expect(conversation).toContain("ChatOverflowMenu");
+    expect(conversation).not.toContain("Describe a request — starts a new agent");
   });
 });

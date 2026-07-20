@@ -92,6 +92,8 @@ export interface GeneratedArtifactEvent {
   name: string;
   mediaType: string;
   size: number;
+  /** Immutable digest of the already-published Project-owned bytes. */
+  sha256?: string;
   visibility: "project" | "published";
   pinned?: boolean;
 }

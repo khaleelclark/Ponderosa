@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { readRepairableJsonl, writeAtomicFsyncedJsonl } from "@ponderosa/agents";
 
 export interface ContextCursor {
   agentId: string;
@@ -20,14 +20,11 @@ export class ContextCursorStore {
 
   constructor(dataDir: string) {
     this.file = path.join(dataDir, "context-cursors.jsonl");
-    mkdirSync(path.dirname(this.file), { recursive: true });
-    if (!existsSync(this.file)) closeSync(openSync(this.file, "a", 0o600));
-    chmodSync(this.file, 0o600);
-    for (const line of readFileSync(this.file, "utf8").split("\n")) {
-      if (!line) continue;
-      const cursor = (JSON.parse(line) as { cursor?: ContextCursor }).cursor;
+    for (const record of readRepairableJsonl<{ cursor?: ContextCursor }>(this.file, "context cursor journal", true)) {
+      const cursor = record.cursor;
       if (cursor) this.cursors.set(ContextCursorStore.key(cursor), cursor);
     }
+    this.persist(this.cursors);
   }
 
   private static key(cursor: Omit<ContextCursor, "lastMessageId" | "routingHash" | "updatedAt">): string {
@@ -46,16 +43,24 @@ export class ContextCursorStore {
 
   commit(cursor: Omit<ContextCursor, "updatedAt">): void {
     const stored = { ...cursor, updatedAt: new Date().toISOString() };
-    appendFileSync(this.file, `${JSON.stringify({ type: "cursor", cursor: stored })}\n`, "utf8");
-    this.cursors.set(ContextCursorStore.key(stored), stored);
+    const next = new Map(this.cursors);
+    next.set(ContextCursorStore.key(stored), stored);
+    this.persist(next);
+    this.replaceInMemory(next);
   }
 
   deleteAgents(agentIds: ReadonlySet<string>): void {
-    const records = readFileSync(this.file, "utf8").split("\n").filter(Boolean)
-      .map((line) => JSON.parse(line) as { type: "cursor"; cursor: ContextCursor })
-      .filter((record) => !agentIds.has(record.cursor.agentId));
+    const next = new Map([...this.cursors].filter(([, cursor]) => !agentIds.has(cursor.agentId)));
+    this.persist(next);
+    this.replaceInMemory(next);
+  }
+
+  private persist(cursors: ReadonlyMap<string, ContextCursor>): void {
+    writeAtomicFsyncedJsonl(this.file, [...cursors.values()].map((cursor) => ({ type: "cursor", cursor })));
+  }
+
+  private replaceInMemory(cursors: ReadonlyMap<string, ContextCursor>): void {
     this.cursors.clear();
-    for (const { cursor } of records) this.cursors.set(ContextCursorStore.key(cursor), cursor);
-    writeFileSync(this.file, records.map((record) => JSON.stringify(record)).join("\n") + (records.length ? "\n" : ""), { encoding: "utf8", mode: 0o600 });
+    for (const [key, cursor] of cursors) this.cursors.set(key, cursor);
   }
 }

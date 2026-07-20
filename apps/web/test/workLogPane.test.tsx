@@ -5,7 +5,7 @@ import { AGENT_DETAIL_TAB_LABELS } from "../src/components/AgentDetail";
 
 describe("WorkLogPane", () => {
   it("is a dedicated agent-detail tab beside the existing panes", () => {
-    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Work log", "Activity", "Changed Files", "Review", "Runs", "Files & results", "Triggers"]);
+    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Work Log", "Activity", "Changed Files", "Review", "Runs", "Files & Results", "Triggers"]);
   });
 
   it("renders completed responses and transient reasoning distinctly in chronological order", () => {
@@ -43,7 +43,7 @@ describe("WorkLogPane", () => {
       }],
     }]} />);
     expect(html).toContain("Open file artifact for result.png");
-    expect(html).toContain("Files &amp; results");
+    expect(html).toContain("Files &amp; Results");
     expect(html).toContain("Preview");
     expect(html).toContain("Download");
     expect(html).toContain("/api/projects/project/artifacts/generated-9/download");

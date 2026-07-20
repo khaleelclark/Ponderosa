@@ -6,6 +6,6 @@ describe("Wiki app integration", () => {
     const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
     expect(app).toContain('import { WikiView } from "./components/WikiView"');
     expect(app).toContain('route.kind === "wiki" ? (');
-    expect(app).toContain("<WikiView articleId={route.articleId} navigate={goHome} />");
+    expect(app).toContain("<WikiView articleId={route.articleId} navigate={navigateWorkspace} />");
   });
 });

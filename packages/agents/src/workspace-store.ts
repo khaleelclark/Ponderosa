@@ -223,7 +223,16 @@ export class WorkspaceStore {
   }
 
   readSince(id: number): WorkspaceEventEnvelope[] {
-    return this.events.filter((item) => item.id > id).map(({ mutation: _mutation, ...event }) => event);
+    // Reconnects usually ask for a small tail of a long canonical log. Locate
+    // that tail without rescanning every prior event.
+    let low = 0;
+    let high = this.events.length;
+    while (low < high) {
+      const middle = low + Math.floor((high - low) / 2);
+      if (this.events[middle]!.id <= id) low = middle + 1;
+      else high = middle;
+    }
+    return this.events.slice(low).map(({ mutation: _mutation, ...event }) => event);
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
@@ -338,6 +347,18 @@ export class WorkspaceStore {
 
   clearNotifications(): number {
     const notificationIds = this.listNotifications().map((item) => item.id);
+    if (notificationIds.length === 0) return 0;
+    this.append(
+      { type: "notification_changed", action: "cleared" },
+      { kind: "notifications_cleared", notificationIds },
+    );
+    return notificationIds.length;
+  }
+
+  clearProjectNotifications(projectId: string): number {
+    const notificationIds = this.listNotifications()
+      .filter((item) => item.projectId === projectId)
+      .map((item) => item.id);
     if (notificationIds.length === 0) return 0;
     this.append(
       { type: "notification_changed", action: "cleared" },
@@ -578,6 +599,8 @@ function normalizeProfile(input: unknown): WorkspacePreferencesDto["profile"] {
   const displayName = typeof value.displayName === "string" && value.displayName.trim() ? value.displayName.trim().slice(0, 80) : "User";
   const rawHandle = typeof value.handle === "string" ? value.handle.trim().replace(/^#/, "").toLowerCase() : "operator";
   const handle = /^[a-z][a-z0-9_-]{1,31}$/.test(rawHandle) && !["broadcast", "everyone", "user"].includes(rawHandle) ? rawHandle : "operator";
-  const avatarId = typeof value.avatarId === "string" && /^[a-z0-9_-]{1,64}$/i.test(value.avatarId) ? value.avatarId : "default-user";
+  const avatarId = typeof value.avatarId === "string" && (
+    /^[a-z0-9_-]{1,64}$/i.test(value.avatarId) || /^uploaded:(?:png|jpeg|webp|gif|avif):[a-f0-9]{64}$/u.test(value.avatarId)
+  ) ? value.avatarId : "default-user";
   return { displayName, handle, avatarId };
 }

@@ -20,7 +20,6 @@ export function useAllChat(limit = 50) {
   return useQuery({
     queryKey: ["all-chat", limit],
     queryFn: () => api.getAllChat(limit),
-    refetchInterval: 5_000,
   });
 }
 

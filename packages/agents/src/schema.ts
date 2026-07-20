@@ -15,6 +15,27 @@ export const projects = sqliteTable("projects", {
   defaultEffort: text("default_effort"),
   lastConversationId: text("last_conversation_id"),
 });
+
+/** Durable fail-closed quarantine created before Project runtime cleanup. */
+export const projectDeletionPending = sqliteTable("project_deletion_pending", {
+  projectId: text("project_id").primaryKey(),
+  createdAt: text("created_at").notNull(),
+  lastError: text("last_error"),
+  /** Exact hidden directory used across the filesystem/SQLite commit boundary. */
+  tombstoneName: text("tombstone_name"),
+});
+
+/** Durable receipt for an irreversible Project purge and its retryable
+ * filesystem tombstone cleanup. */
+export const projectDeletionReceipts = sqliteTable("project_deletion_receipts", {
+  projectId: text("project_id").primaryKey(),
+  tombstoneName: text("tombstone_name").notNull(),
+  storageCleanupCompleted: integer("storage_cleanup_completed").notNull().default(0),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+  completedAt: text("completed_at"),
+});
 export const agentPresets = sqliteTable("agent_presets", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),
   description: text("description").notNull(), guidance: text("guidance").notNull(), engine: text("engine").notNull(),
@@ -37,6 +58,8 @@ export const agents = sqliteTable("agents", {
   stateCommit: text("state_commit"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
+  /** Null for live authority; populated for an immutable deleted-Agent audit tombstone. */
+  deletedAt: text("deleted_at"),
   // SQLite has no boolean: 0/1.
   archived: integer("archived").notNull().default(0),
   managerAgentId: text("manager_agent_id"),
@@ -185,6 +208,7 @@ export const changedFileProjection = sqliteTable("changed_file_projection", {
   lastSeq: integer("last_seq").notNull(),
   lastChangedAt: text("last_changed_at").notNull(),
   executionIdsJson: text("execution_ids_json").notNull(),
+  executionCount: integer("execution_count").notNull().default(0),
   diff: text("diff"),
 }, (table) => [primaryKey({ columns: [table.agentId, table.path] })]);
 
@@ -195,6 +219,10 @@ export const managedArtifactProjection = sqliteTable("managed_artifact_projectio
   visibility: text("visibility").notNull(),
   pinned: integer("pinned").notNull(),
   artifactJson: text("artifact_json").notNull(),
+  ownerKind: text("owner_kind").notNull(),
+  ownerId: text("owner_id").notNull(),
+  audienceJson: text("audience_json").notNull(),
+  senderAgentId: text("sender_agent_id"),
 }, (table) => [primaryKey({ columns: [table.projectId, table.artifactId] })]);
 
 export const runs = sqliteTable("runs", {

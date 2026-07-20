@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
+import { browserTouchScrollDelta, createBrowserFrameScheduler, decodeBrowserFrame, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
 type Input = BrowserOperatorInputRequest extends infer Item
@@ -17,11 +18,12 @@ type Input = BrowserOperatorInputRequest extends infer Item
   : never;
 
 export function ProjectBrowserDialog({
-  projectId, open, request, onClose, embedded = false,
+  projectId, open, request, onRequestHandled, onClose, embedded = false,
 }: {
   projectId?: string;
   open: boolean;
   request?: ProjectBrowserRequest;
+  onRequestHandled?(requestId: number): void;
   onClose(): void;
   embedded?: boolean;
 }): JSX.Element {
@@ -31,7 +33,11 @@ export function ProjectBrowserDialog({
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
   const [typeText, setTypeText] = useState("");
-  const wheelAt = useRef(0);
+  const inputBusy = useRef(false);
+  const queuedScroll = useRef<BrowserScrollInput>();
+  const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
+  const suppressClick = useRef(false);
+  const refreshFrame = useRef<() => void>(() => undefined);
   const handledRequest = useRef(0);
 
   const sessionQuery = useQuery({
@@ -74,15 +80,19 @@ export function ProjectBrowserDialog({
   });
   const input = useMutation({
     mutationFn: (value: Input) => api.sendProjectBrowserInput(projectId!, { ...value, expectedControlEpoch: session!.controlEpoch } as BrowserOperatorInputRequest),
-    onSuccess: update,
+    onSuccess: (next) => {
+      update(next);
+      refreshFrame.current();
+    },
   });
 
   useEffect(() => {
     if (!open || !projectId || !request || request.requestId === handledRequest.current) return;
     handledRequest.current = request.requestId;
+    onRequestHandled?.(request.requestId);
     if (request.url) setAddress(request.url);
     openBrowser.mutate(request.url);
-  }, [open, projectId, request?.requestId]);
+  }, [open, projectId, request?.requestId, onRequestHandled]);
 
   useEffect(() => {
     if (session?.url && session.url !== "about:blank") setAddress(session.url);
@@ -94,36 +104,50 @@ export function ProjectBrowserDialog({
       return undefined;
     }
     let cancelled = false;
-    let timer: number | undefined;
-    const load = async () => {
-      try {
-        const frame = await api.getProjectBrowserFrame(projectId);
-        if (cancelled) return;
-        const next = URL.createObjectURL(frame.blob);
-        const preload = new Image();
-        preload.onload = () => {
-          if (cancelled) { URL.revokeObjectURL(next); return; }
+    const scheduler = createBrowserFrameScheduler({
+      capture: async () => {
+        try {
+          const frame = await api.getProjectBrowserFrame(projectId);
+          if (cancelled || document.visibilityState !== "visible") return;
+          const next = await decodeBrowserFrame(frame.blob);
+          if (cancelled || document.visibilityState !== "visible") { URL.revokeObjectURL(next); return; }
           setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return next; });
           setFrameError(undefined);
-        };
-        preload.onerror = () => { URL.revokeObjectURL(next); if (!cancelled) setFrameError("Browser frame could not be decoded."); };
-        preload.src = next;
-      } catch (error) {
-        if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void load(), 700);
-      }
-    };
-    void load();
+        } catch (error) {
+          if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
+        }
+      },
+    });
+    const updateVisibility = () => scheduler.setVisible(document.visibilityState === "visible");
+    refreshFrame.current = () => scheduler.requestInteractionRefresh();
+    document.addEventListener("visibilitychange", updateVisibility);
+    updateVisibility();
     return () => {
       cancelled = true;
-      if (timer !== undefined) window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", updateVisibility);
+      scheduler.dispose();
+      refreshFrame.current = () => undefined;
       setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return undefined; });
     };
   }, [open, projectId, session?.id, session?.status]);
 
   const operator = session?.status === "ready" && session.controlOwner === "operator";
-  const sendInput = (value: Input) => { if (operator && !input.isPending) input.mutate(value); };
+  const sendInput = (value: Input): void => {
+    if (!operator) return;
+    if (inputBusy.current) {
+      if (value.kind === "scroll") queuedScroll.current = mergeBrowserScrollInputs(queuedScroll.current, value);
+      return;
+    }
+    inputBusy.current = true;
+    input.mutate(value, {
+      onSettled: (_data, error) => {
+        inputBusy.current = false;
+        const next = queuedScroll.current;
+        queuedScroll.current = undefined;
+        if (!error && next) sendInput(next);
+      },
+    });
+  };
   const error = openBrowser.error ?? navigate.error ?? reconnect.error ?? close.error ?? control.error ?? input.error;
   const submitAddress = () => {
     const url = address.trim();
@@ -143,7 +167,7 @@ export function ProjectBrowserDialog({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
           <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Project browser</Typography>
           {session ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
-          {!embedded ? <Tooltip title="Close panel"><IconButton aria-label="Close Project browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
+          {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Project browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
         </Stack>
         <Typography variant="caption" color="text.secondary">Persistent across agent Runs until closed or the server restarts</Typography>
       </Stack>
@@ -152,19 +176,24 @@ export function ProjectBrowserDialog({
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr) auto auto", sm: "minmax(0, 1fr) auto auto auto" }, gap: 1 }}>
         <TextField size="small" fullWidth label="Address" value={address} onChange={(event) => setAddress(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitAddress(); }} sx={{ gridColumn: { xs: "1 / -1", sm: "auto" } }} />
         <Button variant="contained" disabled={!address.trim() || openBrowser.isPending || navigate.isPending || session?.controlOwner === "agent"} onClick={submitAddress}>Go</Button>
-        <Tooltip title="Restart browser process"><span><IconButton aria-label="Reconnect Project browser" disabled={!session || reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
-        <Button color="inherit" disabled={!session || session.status === "closed" || close.isPending} onClick={() => close.mutate()}>Close browser</Button>
+        <Tooltip title="Restart Browser Process"><span><IconButton aria-label="Reconnect Project browser" disabled={!session || reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
+        <Button color="inherit" disabled={!session || session.status === "closed" || close.isPending} onClick={() => close.mutate()}>Close Browser</Button>
       </Box>
 
       <Box sx={{ minHeight: 0, aspectRatio: { xs: `${VIEWPORT.width} / ${VIEWPORT.height}`, sm: "auto" }, display: "grid", placeItems: "center", bgcolor: "grey.950", borderRadius: 1, overflow: "hidden", border: 1, borderColor: operator ? "success.main" : "warning.main" }}>
         {session?.status === "opening" || openBrowser.isPending ? <Stack spacing={1} alignItems="center"><CircularProgress /><Typography color="grey.300">Starting browser…</Typography></Stack> : null}
         {session?.status === "failed" ? <Alert severity="error">{session.failure ?? "Browser failed to start."}</Alert> : null}
-        {(!session || missing || session.status === "closed") && !openBrowser.isPending ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Project browser is open.</Typography><Button variant="contained" onClick={() => openBrowser.mutate(address.trim() || undefined)}>Open browser</Button></Stack> : null}
+        {(!session || missing || session.status === "closed") && !openBrowser.isPending ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Project browser is open.</Typography><Button variant="contained" onClick={() => openBrowser.mutate(address.trim() || undefined)}>Open Browser</Button></Stack> : null}
         {session?.status === "ready" && frameUrl ? <Box component="img" src={frameUrl} alt={`Project browser viewport: ${session.title ?? session.url ?? "page"}`} tabIndex={operator ? 0 : -1}
-          onClick={(event) => { if (!operator) return; const rect = event.currentTarget.getBoundingClientRect(); sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT.width / rect.width, y: (event.clientY - rect.top) * VIEWPORT.height / rect.height }); }}
+          onClick={(event) => { if (!operator) return; if (suppressClick.current) { suppressClick.current = false; return; } const rect = event.currentTarget.getBoundingClientRect(); sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT.width / rect.width, y: (event.clientY - rect.top) * VIEWPORT.height / rect.height }); }}
           onKeyDown={(event) => { if (!operator || event.key === "Tab" || event.key === "Escape") return; event.preventDefault(); sendInput({ kind: "key", key: event.key }); }}
-          onWheel={(event) => { if (!operator || Date.now() - wheelAt.current < 120) return; wheelAt.current = Date.now(); sendInput({ kind: "scroll", deltaX: event.deltaX, deltaY: event.deltaY }); }}
-          sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", cursor: operator ? "crosshair" : "default", outlineOffset: -3 }} /> : null}
+          onWheel={(event) => { if (!operator) return; event.preventDefault(); sendInput({ kind: "scroll", deltaX: normalizeBrowserWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth), deltaY: normalizeBrowserWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight) }); }}
+          onPointerDown={(event) => { if (!operator || event.pointerType !== "touch") return; touchGesture.current = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY }; event.currentTarget.setPointerCapture(event.pointerId); }}
+          onPointerMove={(event) => { const gesture = touchGesture.current; if (!operator || !gesture || gesture.pointerId !== event.pointerId) return; const deltaX = browserTouchScrollDelta(gesture.lastX, event.clientX); const deltaY = browserTouchScrollDelta(gesture.lastY, event.clientY); gesture.lastX = event.clientX; gesture.lastY = event.clientY; if (Math.abs(deltaX) + Math.abs(deltaY) < 2) return; suppressClick.current = true; event.preventDefault(); sendInput({ kind: "scroll", deltaX, deltaY }); }}
+          onPointerUp={(event) => { if (touchGesture.current?.pointerId === event.pointerId) touchGesture.current = undefined; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (suppressClick.current) window.setTimeout(() => { suppressClick.current = false; }, 0); }}
+          onPointerCancel={() => { touchGesture.current = undefined; }}
+          draggable={false}
+          sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", touchAction: operator ? "none" : "auto", cursor: operator ? "crosshair" : "default", outlineOffset: -3 }} /> : null}
       </Box>
 
       <Stack spacing={1}>
@@ -172,9 +201,9 @@ export function ProjectBrowserDialog({
           <TextField size="small" fullWidth label="Type into focused page control" value={typeText} onChange={(event) => setTypeText(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && typeText) { event.preventDefault(); sendInput({ kind: "type", text: typeText }); setTypeText(""); } }} />
           <Button variant="outlined" disabled={!typeText || input.isPending} onClick={() => { sendInput({ kind: "type", text: typeText }); setTypeText(""); }}>Type</Button>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-            {runningAgents.map((agent) => <Button key={agent.id} color="warning" variant="outlined" disabled={control.isPending} onClick={() => control.mutate({ owner: "agent", agentId: agent.id })}>Give {agent.title} control</Button>)}
+            {runningAgents.map((agent) => <Button key={agent.id} color="warning" variant="outlined" disabled={control.isPending} onClick={() => control.mutate({ owner: "agent", agentId: agent.id })}>Give {agent.title} Control</Button>)}
           </Stack>
-        </Stack> : <Stack direction="row" spacing={1} alignItems="center"><Typography variant="body2" sx={{ flex: 1 }}>The selected agent has temporary control for its current Run.</Typography><Button variant="contained" onClick={() => control.mutate({ owner: "operator" })}>Take control back</Button></Stack> : null}
+        </Stack> : <Stack direction="row" spacing={1} alignItems="center"><Typography variant="body2" sx={{ flex: 1 }}>The selected agent has temporary control for its current Run.</Typography><Button variant="contained" onClick={() => control.mutate({ owner: "operator" })}>Take Control Back</Button></Stack> : null}
         {operator && runningAgents.length === 0 ? <Typography variant="caption" color="text.secondary">Start an agent Run to make it available for temporary control.</Typography> : null}
         {frameError ? <Alert severity="warning">Live frame disconnected: {frameError}</Alert> : null}
         {error ? <Alert severity="error">{String(error)}</Alert> : null}

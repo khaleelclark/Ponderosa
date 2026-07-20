@@ -1,5 +1,8 @@
+import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { diffLineKind, formatActivitySpan, groupActivityByExecution, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
+import { ActivityPane, diffLineKind, formatActivitySpan, groupActivityByExecution, resolveWorkspaceReviewPath, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
 
 describe("activity summaries", () => {
   it("collapses multiline output and bounds large payloads", () => {
@@ -21,6 +24,36 @@ describe("activity summaries", () => {
     expect(formatActivitySpan(groups[0]!.firstAt, groups[0]!.lastAt)).toBe("2s activity span");
   });
 
+  it("owns a keyboard-focusable bounded scroll region through the complete Agent pane height chain", () => {
+    const activity = Array.from({ length: 80 }, (_, index) => ({
+      id: `event-${index}`,
+      agentId: "agent",
+      executionId: "run-a",
+      seq: index + 1,
+      createdAt: new Date(Date.UTC(2026, 6, 12, 0, 0, index)).toISOString(),
+      event: { type: "command" as const, command: `printf ${index}`, cwd: "/repo" },
+    }));
+    const markup = renderToStaticMarkup(createElement("div", { style: { height: 180, minHeight: 0, overflow: "hidden" } },
+      createElement(ActivityPane, { activity, connected: true, running: false })));
+
+    expect(markup).toContain("height:180px");
+    expect(markup).toContain('data-testid="activity-scroll-region"');
+    expect(markup).toContain('tabindex="0"');
+    expect(markup).toContain("overflow-y:auto");
+    expect(markup).toContain("max-height:100%");
+    expect(markup).toContain("height:100%");
+    expect(markup).toContain("align-self:stretch");
+    expect(markup).toContain("overscroll-behavior:contain");
+    expect(markup).toContain("printf 79");
+    const detailSource = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    expect(detailSource).toContain('height: "100%", maxHeight: "100%", minHeight: 0');
+    expect(detailSource).toContain('maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid"');
+    expect(detailSource).toContain('tab === "chat" || tab === "activity" ? "hidden" : "auto"');
+    expect(detailSource).toContain('gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
+    const panesSource = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+    expect(panesSource).toContain('data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "visible" }}');
+  });
+
   it("counts content lines without treating unified-diff headers as changes", () => {
     expect(unifiedDiffLineTotals(
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-old\n+new\n+added",
@@ -30,5 +63,13 @@ describe("activity summaries", () => {
     expect(diffLineKind("-removed")).toBe("deletion");
     expect(diffLineKind("+++ b/file.ts")).toBe("neutral");
     expect(diffLineKind("--- a/file.ts")).toBe("neutral");
+  });
+
+  it("keeps an operator-selected review file until it disappears", () => {
+    const changes = [{ path: "first.ts" }, { path: "selected.ts" }];
+    expect(resolveWorkspaceReviewPath(changes, "selected.ts", "first.ts")).toBe("selected.ts");
+    expect(resolveWorkspaceReviewPath([{ path: "first.ts" }], "selected.ts", "first.ts")).toBe("first.ts");
+    expect(resolveWorkspaceReviewPath([{ path: "fallback.ts" }], "missing.ts", "also-missing.ts")).toBe("fallback.ts");
+    expect(resolveWorkspaceReviewPath([], "missing.ts", "also-missing.ts")).toBeUndefined();
   });
 });

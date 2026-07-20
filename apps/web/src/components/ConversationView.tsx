@@ -7,7 +7,10 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import CloseIcon from "@mui/icons-material/Close";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Avatar,
@@ -16,6 +19,7 @@ import {
   ButtonBase,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -58,6 +62,7 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { useMobileComposerAutoHide } from "../mobileChat";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -106,6 +111,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
+import { mobileOperationalStatus } from "../mobileChat";
 
 export function ConversationMessage({
   message,
@@ -143,6 +149,7 @@ export function ConversationMessage({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
+  const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
   // Older projections stored the structured broadcast scope as visible prose.
   // Agent-authored Project-chat messages already carry that scope structurally.
   const visibleText = conversation === "main" && message.authorAgentId
@@ -157,23 +164,25 @@ export function ConversationMessage({
       className="chat-message"
       aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
+      onClick={() => setMobileTimestampRevealed((current) => !current)}
       sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? "min(78%, 780px)" : "100%" }}>
+        {!fromManager ? <Tooltip title={`Open ${senderName}`}><ButtonBase
+          aria-label={`Open agent ${senderName} from profile image`}
+          onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
+          sx={{ borderRadius: "50%", flex: "0 0 auto" }}
+        ><Avatar sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar></ButtonBase></Tooltip> : null}
+        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
-            <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
-            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
-            <Box sx={{ flex: 1 }} />
-            {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
-              size="small"
-              aria-label={`Open agent ${senderName}`}
-              onClick={() => onOpenAgent(message.authorAgentId!)}
-              sx={{ color: "text.secondary", width: 28, height: 28, opacity: 0.88, "&:hover": { color: "text.primary", opacity: 1 } }}
-            ><OpenInNewIcon sx={{ fontSize: 16 }} /></IconButton></Tooltip> : null}
+            <ButtonBase
+              aria-label={`Open agent ${senderName} from name`}
+              onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
+              sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
+            ><MessageSenderLabel name={senderName} /></ButtonBase>
+            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
           </Stack> : null}
-          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} /></Box> : null}
+          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
           <Box
             data-message-bubble="true"
             sx={{
@@ -235,7 +244,9 @@ export function ConversationMessage({
         <MessageReactions reactions={message.reactions} />
           </Box>
           <MessageActionsAndTimestamp
-            showTimestamp={fromManager}
+            mobileTimestampAlign={fromManager && message.role === "user" ? "end" : "start"}
+            mobileTimestampRevealed={mobileTimestampRevealed}
+            showTimestamp={false}
             value={message.createdAt}
             status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
               projectId={projectId}
@@ -245,10 +256,15 @@ export function ConversationMessage({
               onOpenWorkLog={onOpenWorkLog}
             /> : undefined}
             actions={conversation === "main" ? <>
+        {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
+          size="small"
+          aria-label={`Open agent ${senderName}`}
+          onClick={() => onOpenAgent(message.authorAgentId!)}
+        ><OpenInNewIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && onEdit ? <Tooltip title="Edit latest message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && onEdit ? <Tooltip title="Edit Latest Message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && message.authorAgentId ? (
           <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
             size="small"
@@ -386,8 +402,12 @@ export function ConversationView({
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
+  const mobileComposer = useMobileComposerAutoHide(mobileRoster);
 
   useEffect(() => {
+    setMobileHeaderCollapsed(false);
+    mobileComposer.reset();
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
@@ -525,14 +545,17 @@ export function ConversationView({
         chatScrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
         setShowScrollToLatest(!shouldFollowNewMessages.current);
+        mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
         return;
       }
       shouldFollowNewMessages.current = true;
       setShowScrollToLatest(false);
+      mobileComposer.showAtLatest(chatScrollRef.current);
     }
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
       setShowScrollToLatest(false);
+      mobileComposer.showAtLatest(chatScrollRef.current);
     }
   }, [conversationId, activeView, messageLayoutKey, collaborationLayoutKey, operationalLayoutKey]);
 
@@ -959,28 +982,36 @@ export function ConversationView({
   /> : null;
 
   return (
-    <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <Box sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+    <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
         <Stack
           direction="row"
           spacing={0.5}
           useFlexGap
           sx={{ alignItems: "center", minWidth: 0 }}
         >
-          <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180} sx={{ minWidth: 0, flex: 1 }}>
+          <Box sx={{ minWidth: 0 }}>
             <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
             <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
           </Box>
-          <Tooltip title="Agent work"><IconButton
+          </Collapse>
+          <Tooltip title="Agent Work"><IconButton
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             aria-haspopup="dialog"
             aria-expanded={agentWorkOpen}
             aria-label="Open Agent work"
           ><TimelineIcon /></IconButton></Tooltip>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
           <ChatOverflowMenu
-            label={`${activeView === "collaboration" ? "Team" : "Project"} chat actions`}
+            label={`${activeView === "collaboration" ? "Team" : "Project"} Chat Actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={[
@@ -993,12 +1024,13 @@ export function ConversationView({
                 },
               },
               {
-                label: "Create agent",
+                label: "Create Agent",
                 icon: <AddIcon fontSize="small" />,
                 onSelect: () => onNewAgent(conversation),
               },
               {
-                label: "Import Agent or organization…",
+                label: "Import Agent or Organization",
+                icon: <FileUploadOutlinedIcon fontSize="small" />,
                 onSelect: () => setImportOpen(true),
               },
               {
@@ -1010,11 +1042,13 @@ export function ConversationView({
             ]}
           />
         </Stack>
+        <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "text.primary" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
           <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
           <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => setAgentsOpen(true)} aria-haspopup="dialog" aria-expanded={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ px: 1.5, color: "text.secondary" }}>Agents</Button>
         </Stack>
+        </Collapse>
       </Box>
 
       <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
@@ -1029,6 +1063,7 @@ export function ConversationView({
             if (chatScrollRef.current) {
               shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
               setShowScrollToLatest(!shouldFollowNewMessages.current);
+              mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
               writeChatState(
                 chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
                 String(chatScrollRef.current.scrollTop),
@@ -1053,7 +1088,7 @@ export function ConversationView({
             <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
             <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
               {decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}
-              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
+              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
             </Stack>
           </Alert>)}
 
@@ -1066,15 +1101,16 @@ export function ConversationView({
                 onClick={() => void loadOlderHistory()}
                 sx={{ alignSelf: "center", mb: 1 }}
               >
-                {loadingOlder ? "Loading…" : "Load older history"}
+                {loadingOlder ? "Loading…" : "Load Older History"}
               </Button>
             ) : null}
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
               {operationalEvents.map((event) => {
                 const content = <>
                   <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
-                  <Typography variant="body2" sx={{ flex: 1 }}>{event.text}</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+                  <Typography variant="body2" sx={{ display: { xs: "none", sm: "block" }, flex: 1 }}>{event.text}</Typography>
+                  <Typography variant="body2" sx={{ display: { xs: "block", sm: "none" }, flex: 1 }}>{mobileOperationalStatus(event.state)}</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
                 </>;
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
@@ -1136,6 +1172,7 @@ export function ConversationView({
             shouldFollowNewMessages.current = true;
             scrollChatToBottom(chatScrollRef.current);
             setShowScrollToLatest(false);
+            mobileComposer.showAtLatest(chatScrollRef.current);
           }}
         />
       </Box>
@@ -1155,7 +1192,7 @@ export function ConversationView({
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
             <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
             <Chip size="small" label={agents.length} />
-            <Tooltip title="Close agent roster">
+            <Tooltip title="Close Agent Roster">
               <IconButton aria-label="Close agent roster" onClick={() => setAgentsOpen(false)} sx={{ minWidth: 44, minHeight: 44 }}>
                 <CloseIcon />
               </IconButton>
@@ -1182,7 +1219,7 @@ export function ConversationView({
                       pl: agentRosterIndent(depth),
                     }}
                     secondaryAction={
-                      <Tooltip title="Delete agent">
+                      <Tooltip title="Delete Agent">
                         <IconButton
                           edge="end"
                           size="small"
@@ -1233,7 +1270,17 @@ export function ConversationView({
         onClose={() => setAgentWorkOpen(false)}
       />
 
-      <Box>
+      <Box
+        className="mobile-chat-chrome mobile-chat-composer"
+        data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
+        onTransitionEnd={(event) => {
+          if (
+            event.currentTarget !== event.target
+            || event.propertyName !== "max-height"
+          ) return;
+          mobileComposer.finishTransition();
+        }}
+      >
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (
@@ -1266,7 +1313,7 @@ export function ConversationView({
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady
-              ? "Describe a request — starts a new agent"
+              ? "Send a message"
               : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
@@ -1329,7 +1376,7 @@ export function ConversationView({
           <TextField autoFocus fullWidth multiline minRows={3} label="Message" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
           {correctMessage.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(correctMessage.error)}</Alert> : null}
         </DialogContent>
-        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save edit</Button></DialogActions>
+        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save Edit</Button></DialogActions>
       </Dialog>
 
       <Dialog

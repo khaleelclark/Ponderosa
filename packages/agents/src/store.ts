@@ -20,13 +20,15 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type {
   ArtifactDto,
   AgentActivityDto,
   ChangedFileDto,
+  ChangedFileDetailDto,
   AgentOrganizationEvent,
   CommunicationEvent,
+  CommunicationAudience,
   CommunicationRevisionEvent,
   CommunicationDocumentRecord,
   CommunicationDocumentReference,
@@ -52,6 +54,7 @@ import type {
   WorkItemDto,
   WorkItemStatus,
   AgentLifecycleReason,
+  AgentLifecycleStatus,
   AgentRunStatus,
   AgentDetailDto,
   HistoryPageDto,
@@ -88,6 +91,7 @@ import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
 import { artifactId, messageId as projectedMessageId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import {
   initProjectionState,
@@ -128,6 +132,8 @@ import {
   agentManagementApprovals,
   agentConversationMemberships,
   continuationHandoffs,
+  projectDeletionPending,
+  projectDeletionReceipts,
 } from "./schema.js";
 
 export interface ContextReadBoundary {
@@ -170,6 +176,30 @@ const ACTIVITY_EVENT_TYPES = new Set([
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
 ]);
+
+function healthObservation(event: LogEvent, timestamp: string): {
+  status: AgentLifecycleStatus;
+  statusTimestamp: string;
+  reason: AgentLifecycleReason;
+  executionId?: string;
+} | undefined {
+  const executionId = "executionId" in event && typeof event.executionId === "string" ? event.executionId : undefined;
+  if (event.type === "error") return { status: "failed", statusTimestamp: timestamp, reason: "runtime_error", ...(executionId ? { executionId } : {}) };
+  if (event.type === "agent_lifecycle") return {
+    status: event.status === "completed" ? "idle" : event.status,
+    statusTimestamp: timestamp,
+    reason: event.reason,
+    executionId: event.executionId,
+  };
+  if (event.type === "work_item_update" && event.status === "waiting_approval") {
+    return { status: "waiting", statusTimestamp: timestamp, reason: "work_item_waiting_approval", ...(executionId ? { executionId } : {}) };
+  }
+  if (event.type === "turn_done") return { status: "idle", statusTimestamp: timestamp, reason: "turn_completed", ...(executionId ? { executionId } : {}) };
+  if (event.type === "work_item_update" && event.status === "done") {
+    return { status: "idle", statusTimestamp: timestamp, reason: "work_item_completed", ...(executionId ? { executionId } : {}) };
+  }
+  return undefined;
+}
 
 function utf8Prefix(text: string, maximumBytes: number): string {
   const bytes = Buffer.from(text, "utf8");
@@ -220,8 +250,15 @@ interface ProjectJson {
   instructions?: string;
 }
 
+export interface ManagedArtifactAccess {
+  ownerKind: "project" | "communication" | "request_update";
+  ownerId: string;
+  audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
+  senderAgentId?: string;
+}
+
 type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string } }
+  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 
@@ -284,6 +321,7 @@ interface AgentJson {
   createdAt: string;
   updatedAt: string;
   archived: boolean;
+  deletedAt?: string;
   managementPermissions?: AgentDto["managementPermissions"];
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;
@@ -399,6 +437,16 @@ export interface AgentDeletionReceipt {
   completedAt?: string;
 }
 
+export interface ProjectDeletionReceipt {
+  projectId: string;
+  tombstoneName: string;
+  storageCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
 export interface AgentManagementAuthorization {
   planId: string;
   projectId: string;
@@ -507,7 +555,7 @@ export class AgentStore {
     mkdirSync(projectsDir(dataDir), { recursive: true });
     this.ownership = acquireDataDirectoryOwnership(dataDir);
     this.deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
-    this.deliverySequence = readJsonLines<{ sequence: number }>(this.deliverySequenceFile)
+    this.deliverySequence = readRepairableJsonl<{ sequence: number }>(this.deliverySequenceFile, "delivery order journal", true)
       .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
     try {
       const opened = openDb(dbPath(dataDir));
@@ -527,7 +575,7 @@ export class AgentStore {
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
     this.deliverySequence += 1;
-    appendFileSync(this.deliverySequenceFile, `${JSON.stringify({ sequence: this.deliverySequence })}\n`, "utf8");
+    appendFsyncedJsonl(this.deliverySequenceFile, [{ sequence: this.deliverySequence }]);
     return `${createdAt}:${String(this.deliverySequence).padStart(16, "0")}`;
   }
 
@@ -625,6 +673,7 @@ export class AgentStore {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!chatKind || !message || !event || !this.communicationProjectionAllowed(projectId, projection)) {
       this.db.delete(chatSearchMessages).where(eq(chatSearchMessages.rowKey, rowKey)).run();
+      this.refreshAllChatFeedEvent(projectId, projection.eventId);
       return;
     }
     const canonicalRole = event.sender.kind === "agent"
@@ -671,11 +720,58 @@ export class AgentStore {
         contextPolicy: behavior.contextPolicy,
       },
     }).run();
+    this.refreshAllChatFeedEvent(projectId, projection.eventId);
+  }
+
+  /** Choose one active placement for a canonical communication. This work is
+   * paid when a placement/lifecycle event changes, never on each All Chat read. */
+  private refreshAllChatFeedEvent(projectId: string, eventId: string): void {
+    const row = this.client.prepare(`
+      SELECT search.row_key AS rowKey, search.order_key AS orderKey
+      FROM chat_search_messages search
+      LEFT JOIN conversations conversation
+        ON search.chat_kind IN ('conversation', 'collaboration')
+        AND conversation.id = search.chat_id AND conversation.archived = 0
+      LEFT JOIN agents chat_agent
+        ON search.chat_kind = 'agent'
+        AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
+      WHERE search.project_id = ? AND search.communication_event_id = ?
+        AND (conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL)
+      ORDER BY CASE search.chat_kind
+        WHEN 'conversation' THEN 0
+        WHEN 'collaboration' THEN 1
+        ELSE CASE WHEN search.chat_id = search.author_agent_id THEN 2 ELSE 3 END
+      END, search.chat_id, search.row_key
+      LIMIT 1
+    `).get(projectId, eventId) as { rowKey: string; orderKey: string } | undefined;
+    if (!row) {
+      this.client.prepare(`
+        DELETE FROM all_chat_feed_projection
+        WHERE project_id = ? AND communication_event_id = ?
+      `).run(projectId, eventId);
+      return;
+    }
+    this.client.prepare(`
+      INSERT INTO all_chat_feed_projection(
+        project_id, communication_event_id, row_key, order_key
+      ) VALUES (?, ?, ?, ?)
+      ON CONFLICT(project_id, communication_event_id) DO UPDATE SET
+        row_key = excluded.row_key, order_key = excluded.order_key
+    `).run(projectId, eventId, row.rowKey, row.orderKey);
+  }
+
+  private refreshAllChatFeedProject(projectId: string): void {
+    const eventIds = this.client.prepare(`
+      SELECT DISTINCT communication_event_id AS eventId
+      FROM chat_search_messages WHERE project_id = ?
+    `).all(projectId) as Array<{ eventId: string }>;
+    for (const { eventId } of eventIds) this.refreshAllChatFeedEvent(projectId, eventId);
   }
 
   /** Rebuild the disposable global Chat search index from canonical ledgers. */
   private rebuildGlobalChatSearchProjection(): void {
     this.db.delete(chatSearchMessages).run();
+    this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
     for (const project of this.listProjects()) {
       for (const projection of this.projectionIndex(project.id).projections) {
         this.upsertGlobalChatSearchProjection(project.id, projection);
@@ -886,9 +982,12 @@ export class AgentStore {
     if (!event?.document) return undefined;
     if (event.document.content !== undefined) return { event, document: event.document };
     if (!event.document.artifactId) return undefined;
-    const file = managedArtifactContentPath(this.dataDir, projectId, event.document.artifactId);
-    if (!existsSync(file)) return undefined;
-    return { event, document: { ...event.document, content: readFileSync(file, "utf8") } };
+    const artifact = this.getProjectArtifact(projectId, event.document.artifactId);
+    if (!artifact?.size || !artifact.sha256) return undefined;
+    const file = readManagedArtifactContent(
+      this.dataDir, projectId, event.document.artifactId, artifact.size, artifact.sha256,
+    );
+    return file ? { event, document: { ...event.document, content: file.body.toString("utf8") } } : undefined;
   }
 
   private communicationProjectionAllowed(
@@ -1367,16 +1466,116 @@ export class AgentStore {
     return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
   }
 
-  /** Permanently remove the canonical project tree and every rebuildable
-   * projection. The callback shares the projection-deletion transaction so
-   * authoritative runtime state cannot survive a deleted Project row. */
-  deleteProject(id: string, beforeProjectionDelete?: (projectId: string) => void): boolean {
+  markProjectDeletionPending(projectId: string, now = new Date().toISOString()): void {
+    if (!this.getProject(projectId)) throw new Error("project not found");
+    this.db.insert(projectDeletionPending).values({ projectId, createdAt: now })
+      .onConflictDoNothing({ target: projectDeletionPending.projectId }).run();
+  }
+
+  recordProjectDeletionCleanupError(projectId: string, error: string): void {
+    this.db.update(projectDeletionPending).set({ lastError: error.slice(0, 4_000) })
+      .where(eq(projectDeletionPending.projectId, projectId)).run();
+  }
+
+  listPendingProjectDeletions(): Array<{ projectId: string; createdAt: string; lastError?: string }> {
+    return this.db.select().from(projectDeletionPending).all().map((row) => ({
+      projectId: row.projectId,
+      createdAt: row.createdAt,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+    }));
+  }
+
+  getProjectDeletionReceipt(projectId: string): ProjectDeletionReceipt | undefined {
+    const row = this.db.select().from(projectDeletionReceipts)
+      .where(eq(projectDeletionReceipts.projectId, projectId)).get();
+    return row ? {
+      projectId: row.projectId,
+      tombstoneName: row.tombstoneName,
+      storageCleanupCompleted: row.storageCleanupCompleted === 1,
+      ...(row.lastError ? { lastError: row.lastError } : {}),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+    } : undefined;
+  }
+
+  listPendingProjectDeletionReceipts(): ProjectDeletionReceipt[] {
+    return this.db.select().from(projectDeletionReceipts)
+      .where(eq(projectDeletionReceipts.storageCleanupCompleted, 0)).all()
+      .map((row) => ({
+        projectId: row.projectId,
+        tombstoneName: row.tombstoneName,
+        storageCleanupCompleted: false,
+        ...(row.lastError ? { lastError: row.lastError } : {}),
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        ...(row.completedAt ? { completedAt: row.completedAt } : {}),
+      }));
+  }
+
+  recordProjectDeletionReceiptCleanupError(projectId: string, error: string): void {
+    this.db.update(projectDeletionReceipts).set({
+      lastError: error.slice(0, 4_000),
+      updatedAt: new Date().toISOString(),
+    }).where(eq(projectDeletionReceipts.projectId, projectId)).run();
+  }
+
+  finishProjectDeletionStorageCleanup(
+    receipt: ProjectDeletionReceipt,
+    afterTombstoneRemoval?: (projectId: string) => void,
+  ): void {
+    const current = this.getProjectDeletionReceipt(receipt.projectId);
+    if (!current) throw new Error("Project deletion receipt not found");
+    if (current.storageCleanupCompleted) return;
+    const prefix = `.${current.projectId}.deleting-`;
+    if (current.tombstoneName.includes("/") || current.tombstoneName.includes("\\") ||
+        !current.tombstoneName.startsWith(prefix)) {
+      throw new Error("invalid Project deletion receipt");
+    }
+    const root = projectsDir(this.dataDir);
+    const canonical = projectDir(this.dataDir, current.projectId);
+    if (existsSync(canonical)) throw new Error("committed Project deletion storage was resurrected");
+    const tombstone = join(root, current.tombstoneName);
+    if (existsSync(tombstone)) {
+      rmSync(tombstone, { recursive: true, force: true });
+      afterTombstoneRemoval?.(current.projectId);
+    }
+    // Also fsync when the tombstone was already absent: a previous attempt may
+    // have removed it and failed before durably recording the directory entry.
+    fsyncDirectory(root);
+    const now = new Date().toISOString();
+    this.db.update(projectDeletionReceipts).set({
+      storageCleanupCompleted: 1,
+      lastError: null,
+      updatedAt: now,
+      completedAt: now,
+    }).where(eq(projectDeletionReceipts.projectId, current.projectId)).run();
+  }
+
+  /** Commit the irreversible SQLite purge and its durable receipt. Fallible
+   * tombstone removal is deliberately a separate retryable operation. */
+  commitProjectDeletion(id: string, beforeProjectionDelete?: (projectId: string) => void): ProjectDeletionReceipt | undefined {
+    const priorReceipt = this.getProjectDeletionReceipt(id);
+    if (priorReceipt) return priorReceipt;
     const current = this.getProject(id);
-    if (!current) return false;
+    if (!current) return undefined;
     const agentIds = this.listAgents(id).map((agent) => agent.id);
     const canonicalDir = projectDir(this.dataDir, id);
-    const deletingDir = join(dirname(canonicalDir), `.${id}.deleting-${randomUUID()}`);
+    this.markProjectDeletionPending(id);
+    const pending = this.db.select().from(projectDeletionPending)
+      .where(eq(projectDeletionPending.projectId, id)).get();
+    const tombstoneName = pending?.tombstoneName ?? `.${id}.deleting-${randomUUID()}`;
+    if (tombstoneName.includes("/") || tombstoneName.includes("\\") ||
+        !tombstoneName.startsWith(`.${id}.deleting-`)) {
+      throw new Error("invalid Project deletion recovery journal");
+    }
+    this.db.update(projectDeletionPending).set({ tombstoneName })
+      .where(eq(projectDeletionPending.projectId, id)).run();
+    const parentDir = dirname(canonicalDir);
+    const deletingDir = join(parentDir, tombstoneName);
     renameSync(canonicalDir, deletingDir);
+    fsyncDirectory(parentDir);
+    const now = new Date().toISOString();
     try {
       this.db.transaction(() => {
         beforeProjectionDelete?.(id);
@@ -1395,25 +1594,47 @@ export class AgentStore {
           .run(id);
         this.client.prepare(`DELETE FROM agent_presets WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_management_approvals WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM project_deletion_pending WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_tombstones WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agent_deletion_receipts WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM all_chat_feed_projection WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM chat_search_messages WHERE project_id = ?`).run(id);
+        this.client.prepare(`DELETE FROM managed_artifact_projection WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM agents WHERE project_id = ?`).run(id);
         this.client.prepare(`DELETE FROM projects WHERE id = ?`).run(id);
+        this.db.insert(projectDeletionReceipts).values({
+          projectId: id,
+          tombstoneName,
+          storageCleanupCompleted: 0,
+          createdAt: now,
+          updatedAt: now,
+        }).run();
       });
     } catch (error) {
       renameSync(deletingDir, canonicalDir);
+      fsyncDirectory(parentDir);
       throw error;
     }
-    // A crash before this cleanup leaves a hidden tombstone directory which
-    // startup projection repair already discards rather than resurrecting.
-    rmSync(deletingDir, { recursive: true, force: true });
     this.communicationEventCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
       this.logs.delete(agentId);
       this.states.delete(agentId);
+    }
+    return this.getProjectDeletionReceipt(id)!;
+  }
+
+  /** Permanently remove the canonical project tree and every rebuildable
+   * projection. The callback shares the projection-deletion transaction so
+   * authoritative runtime state cannot survive a deleted Project row. */
+  deleteProject(id: string, beforeProjectionDelete?: (projectId: string) => void): boolean {
+    const receipt = this.commitProjectDeletion(id, beforeProjectionDelete);
+    if (!receipt) return false;
+    try { this.finishProjectDeletionStorageCleanup(receipt); }
+    catch (error) {
+      this.recordProjectDeletionReceiptCleanupError(id, error instanceof Error ? error.message : String(error));
     }
     return true;
   }
@@ -1429,18 +1650,18 @@ export class AgentStore {
     if (!this.getProject(projectId)) throw new Error("unknown project");
     const now = new Date().toISOString();
     const preset: AgentPresetDto = { id: randomUUID(), projectId, ...input, enabled: input.enabled ?? true, createdAt: now, updatedAt: now };
-    appendFileSync(agentPresetsPath(this.dataDir, projectId), JSON.stringify({ type: "upsert", preset } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, projectId), [{ type: "upsert", preset } satisfies PresetEvent]);
     this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run(); return preset;
   }
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): AgentPresetDto | undefined {
     const current = this.getAgentPreset(id); if (!current) return undefined;
     const next = { ...current, ...patch, model: patch.model === null ? undefined : patch.model ?? current.model, effort: patch.effort === null ? undefined : patch.effort ?? current.effort, updatedAt: new Date().toISOString() } as AgentPresetDto;
-    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "upsert", preset: next } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "upsert", preset: next } satisfies PresetEvent]);
     this.db.update(agentPresets).set({ ...next, model: next.model ?? null, effort: next.effort ?? null, enabled: next.enabled ? 1 : 0 }).where(eq(agentPresets.id, id)).run(); return next;
   }
   deleteAgentPreset(id: string): boolean {
     const current = this.getAgentPreset(id); if (!current) return false;
-    appendFileSync(agentPresetsPath(this.dataDir, current.projectId), JSON.stringify({ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent) + "\n");
+    appendFsyncedJsonl(agentPresetsPath(this.dataDir, current.projectId), [{ type: "delete", id, at: new Date().toISOString() } satisfies PresetEvent]);
     this.db.delete(agentPresets).where(eq(agentPresets.id, id)).run(); return true;
   }
 
@@ -1609,6 +1830,7 @@ export class AgentStore {
       defaultEffort: next.defaultEffort ?? undefined,
       updatedAt: now,
     });
+    if (next.archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.getConversation(id);
   }
 
@@ -1630,6 +1852,7 @@ export class AgentStore {
       this.persistAgentMemberships(agent.id, remaining, primary);
     }
     rmSync(conversationDir(this.dataDir, row.projectId, id), { recursive: true, force: true });
+    this.refreshAllChatFeedProject(row.projectId);
     return true;
   }
 
@@ -2059,6 +2282,7 @@ export class AgentStore {
       eq(agents.spawnedByAgentId, agentId),
       eq(agents.spawnedByExecutionId, executionId),
       eq(agents.spawnIdempotencyKey, idempotencyKey),
+      isNull(agents.deletedAt),
     )).get();
     return row ? this.agentRowToDto(row) : undefined;
   }
@@ -2067,13 +2291,14 @@ export class AgentStore {
     return this.db
       .select()
       .from(agents)
-      .where(eq(agents.projectId, projectId))
+      .where(and(eq(agents.projectId, projectId), isNull(agents.deletedAt)))
       .all()
       .map((r) => this.agentRowToDto(r));
   }
 
   getAgent(id: string): AgentDto | undefined {
-    return this.rowToAgentDto(id);
+    const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
+    return row ? this.agentRowToDto(row) : undefined;
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
@@ -2302,7 +2527,7 @@ export class AgentStore {
 
   updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
     const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) return undefined;
+    if (!row || row.deletedAt) return undefined;
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
@@ -2340,6 +2565,7 @@ export class AgentStore {
       })
       .where(eq(agents.id, id))
       .run();
+    if (archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
     return this.rowToAgentDto(id);
   }
 
@@ -2559,17 +2785,22 @@ export class AgentStore {
         }).run();
         // Coordination V3 shares this SQLite connection. Its nested
         // transactions become savepoints, so all scheduler outcomes and every
-        // selected Agent projection commit or roll back as one unit.
+        // selected Agent authority fence commit or roll back as one unit.
         for (const agent of current.affectedAgents) beforeProjectionDelete?.(agent.id);
         for (const agent of current.affectedAgents) {
-          tx.delete(events).where(eq(events.agentId, agent.id)).run();
-          tx.delete(artifacts).where(eq(artifacts.agentId, agent.id)).run();
-          tx.delete(workItems).where(eq(workItems.agentId, agent.id)).run();
-          tx.delete(runs).where(eq(runs.agentId, agent.id)).run();
-          this.client.prepare(`DELETE FROM provider_inputs WHERE agent_id = ?`).run(agent.id);
-          tx.delete(messages).where(eq(messages.agentId, agent.id)).run();
           tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, agent.id)).run();
-          tx.delete(agents).where(eq(agents.id, agent.id)).run();
+          tx.update(agents).set({
+            conversationId: null,
+            activeSessionId: null,
+            activeSessionContractHash: null,
+            activeSessionArtifactIdsJson: "[]",
+            archived: 1,
+            managerAgentId: null,
+            allowAutomaticDescendantDeletion: 0,
+            allowAutomaticDescendantReorganization: 0,
+            deletedAt: createdAt,
+            updatedAt: createdAt,
+          }).where(eq(agents.id, agent.id)).run();
         }
       });
     } catch (error) {
@@ -2589,6 +2820,7 @@ export class AgentStore {
     catch (error) {
       this.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "Agent storage cleanup failed");
     }
+    this.refreshAllChatFeedProject(committedPreview!.projectId);
     return committedPreview!;
   }
 
@@ -2597,11 +2829,33 @@ export class AgentStore {
     const touchedDirectories = new Set<string>();
     for (const agentId of receipt.deletedAgentIds) {
       const row = this.client.prepare(`
-        SELECT project_id, tombstone_name FROM agent_deletion_tombstones WHERE agent_id = ?
-      `).get(agentId) as { project_id: string; tombstone_name: string } | undefined;
+        SELECT project_id, tombstone_name, created_at FROM agent_deletion_tombstones WHERE agent_id = ?
+      `).get(agentId) as { project_id: string; tombstone_name: string; created_at: string } | undefined;
       if (row) {
         const directory = agentsDir(this.dataDir, row.project_id);
-        rmSync(join(directory, row.tombstone_name), { recursive: true, force: true });
+        const tombstone = join(directory, row.tombstone_name);
+        const canonical = agentDir(this.dataDir, row.project_id, agentId);
+        if (existsSync(tombstone)) {
+          // Upload staging and attachment capability state are live authority,
+          // not deletion-surviving execution audit.
+          rmSync(join(tombstone, "attachments"), { recursive: true, force: true });
+          const metadataPath = join(tombstone, "agent.json");
+          const metadata = readJson<AgentJson>(metadataPath);
+          writeJson(metadataPath, {
+            ...metadata,
+            conversationId: undefined,
+            conversationIds: [],
+            archived: true,
+            deletedAt: row.created_at,
+            updatedAt: row.created_at,
+            managementPermissions: {
+              allowAutomaticDescendantDeletion: false,
+              allowAutomaticDescendantReorganization: false,
+            },
+          });
+          if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
+          renameSync(tombstone, canonical);
+        }
         touchedDirectories.add(directory);
       }
       this.logs.delete(agentId);
@@ -2637,6 +2891,7 @@ export class AgentStore {
     const messages = includeMessages ? this.getMessages(id) : [];
     const runOutputPage = limit === undefined ? undefined : this.getRunOutputPage(id, { limit });
     const activityPage = limit === undefined ? undefined : this.getActivityPage(id, { limit });
+    const changedFilePage = this.getChangedFilePage(id, { limit: limit ?? 100 });
     const runPage = limit === undefined ? undefined : this.getRunPage(id, { limit });
     const workItemPage = limit === undefined ? undefined : this.getWorkItemPage(id, { limit });
     const artifactPage = limit === undefined ? undefined : this.getArtifactPage(id, { limit });
@@ -2645,8 +2900,9 @@ export class AgentStore {
       messages: limit === undefined ? messages : messages.slice(-limit),
       runOutput: runOutputPage?.items ?? this.getRunOutputs(id),
       activity: activityPage?.items ?? this.getActivity(id),
-      changedFiles: this.getChangedFiles(id),
+      changedFiles: changedFilePage.items,
       runs: runPage?.items ?? this.getRuns(id),
+      finalizedWorkDurationMs: this.getFinalizedWorkDurationMs(id),
       workItems: workItemPage?.items ?? this.getWorkItems(id),
       artifacts: artifactPage?.items ?? this.getArtifacts(id),
       state: agent.state,
@@ -2655,12 +2911,28 @@ export class AgentStore {
         telemetryHistory: {
           runOutput: runOutputPage!.history,
           activity: activityPage!.history,
+          changedFiles: changedFilePage.history,
           runs: runPage!.history,
           workItems: workItemPage!.history,
           artifacts: artifactPage!.history,
         },
       } : {}),
     };
+  }
+
+  getFinalizedWorkDurationMs(agentId: string): number {
+    const row = this.client.prepare(`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN completed_at IS NOT NULL AND completed_at >= started_at
+            THEN CAST(ROUND((julianday(completed_at) - julianday(started_at)) * 86400000) AS INTEGER)
+          ELSE 0
+        END
+      ), 0) AS durationMs
+      FROM runs
+      WHERE agent_id = ?
+    `).get(agentId) as { durationMs: number };
+    return Math.max(0, Number(row.durationMs) || 0);
   }
 
   getMessages(agentId: string): MessageDto[] {
@@ -2935,23 +3207,74 @@ export class AgentStore {
     };
   }
 
-  /** One persistent row per touched path, retaining the latest canonical change and executions. */
-  getChangedFiles(agentId: string): ChangedFileDto[] {
+  /** Bounded newest-first keyset over one row per touched path. */
+  getChangedFilePage(
+    agentId: string,
+    input: { limit: number; cursor?: string },
+  ): HistoryPageDto<ChangedFileDto> {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const boundary = input.cursor
+      ? this.decodeHistoryCursor(input.cursor, "agent:changedFiles", agentId)
+      : undefined;
+    const boundarySeq = boundary ? Number(boundary.orderKey) : undefined;
+    if (boundary && (!Number.isSafeInteger(boundarySeq) || boundarySeq! < 1)) throw new Error("invalid history cursor");
     const rows = this.client.prepare(`
-      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, diff
-      FROM changed_file_projection WHERE agent_id = ? ORDER BY last_seq, path
-    `).all(agentId) as Array<{
+      SELECT path, kind, last_seq, last_changed_at, execution_count, diff IS NOT NULL AS diff_available
+      FROM changed_file_projection
+      WHERE agent_id = ?
+        ${boundary ? "AND (last_seq < ? OR (last_seq = ? AND path < ?))" : ""}
+      ORDER BY last_seq DESC, path DESC
+      LIMIT ?
+    `).all(...(boundary
+      ? [agentId, boundarySeq, boundarySeq, boundary.rowKey, limit + 1]
+      : [agentId, limit + 1])) as Array<{
       path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
-      execution_ids_json: string; diff: string | null;
+      execution_count: number; diff_available: number;
     }>;
-    return rows.map((row) => ({
+    const hasMore = rows.length > limit;
+    const selected = rows.slice(0, limit);
+    const oldest = selected.at(-1);
+    return {
+      items: selected.map((row) => ({
+        path: row.path,
+        kind: row.kind,
+        lastSeq: row.last_seq,
+        lastChangedAt: row.last_changed_at,
+        executionCount: row.execution_count,
+        diffAvailable: row.diff_available === 1,
+      })),
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
+          stream: "agent:changedFiles", scope: agentId,
+          orderKey: String(oldest.last_seq), rowKey: oldest.path,
+        }) } : {}),
+      },
+    };
+  }
+
+  getChangedFileDetail(agentId: string, path: string): ChangedFileDetailDto | undefined {
+    const row = this.client.prepare(`
+      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
+      FROM changed_file_projection WHERE agent_id = ? AND path = ?
+    `).get(agentId, path) as {
+      path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
+      execution_ids_json: string; execution_count: number; diff: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    const executionIds = JSON.parse(row.execution_ids_json) as string[];
+    return {
       path: row.path,
       kind: row.kind,
       lastSeq: row.last_seq,
       lastChangedAt: row.last_changed_at,
-      executionIds: JSON.parse(row.execution_ids_json) as string[],
+      executionCount: row.execution_count,
+      diffAvailable: row.diff !== null,
+      executionIds,
+      provenanceTruncated: executionIds.length < row.execution_count,
       ...(row.diff ? { diff: row.diff } : {}),
-    }));
+    };
   }
 
   /**
@@ -3029,7 +3352,7 @@ export class AgentStore {
   }
 
   getProjectedAgentMessages(agentId: string, limit?: number): MessageDto[] {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return [];
     const projected = this.readProjectedCommunicationMessages(agent.projectId, "direct_agent_audit", agentId, limit);
     return this.projectedAgentMessageDtos(agentId, projected);
@@ -3039,14 +3362,14 @@ export class AgentStore {
     agentId: string,
     input: { limit: number; cursor?: string; focusId?: string },
   ): { messages: MessageDto[]; hasMore: boolean; cursor?: string } {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return { messages: [], hasMore: false };
     const page = this.readProjectedCommunicationMessagePage(agent.projectId, "direct_agent_audit", agentId, input);
     return { ...page, messages: this.projectedAgentMessageDtos(agentId, page.messages) };
   }
 
   getProjectedAgentMessageById(agentId: string, id: string): MessageDto | undefined {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return undefined;
     const row = this.client.prepare(`
       SELECT communication_event_id AS eventId FROM chat_search_messages
@@ -3328,54 +3651,39 @@ export class AgentStore {
       orderKey: string;
     };
     const rows = this.client.prepare(`
-      WITH eligible AS (
-        SELECT
-          search.row_key AS rowKey,
-          search.project_id AS projectId,
-          project.label AS projectLabel,
-          search.chat_kind AS chatKind,
-          search.chat_id AS chatId,
-          COALESCE(conversation.title, chat_agent.title) AS chatTitle,
-          search.message_id AS messageId,
-          search.communication_event_id AS eventId,
-          search.role AS role,
-          search.author_agent_id AS authorAgentId,
-          author_agent.title AS authorTitle,
-          search.order_key AS orderKey
-        FROM chat_search_messages search
-        JOIN projects project ON project.id = search.project_id
-        LEFT JOIN conversations conversation
-          ON search.chat_kind IN ('conversation', 'collaboration')
-          AND conversation.id = search.chat_id AND conversation.archived = 0
-        LEFT JOIN agents chat_agent
-          ON search.chat_kind = 'agent'
-          AND chat_agent.id = search.chat_id AND chat_agent.archived = 0
-        LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
-        WHERE conversation.id IS NOT NULL OR chat_agent.id IS NOT NULL
-      ), ranked AS (
-        SELECT eligible.*,
-          ROW_NUMBER() OVER (
-            PARTITION BY projectId, eventId
-            ORDER BY CASE chatKind
-              WHEN 'conversation' THEN 0
-              WHEN 'collaboration' THEN 1
-              ELSE CASE WHEN chatId = authorAgentId THEN 2 ELSE 3 END
-            END, chatId ASC, rowKey ASC
-          ) AS sourceRank
-        FROM eligible
-      )
-      SELECT rowKey, projectId, projectLabel, chatKind, chatId, chatTitle,
-        messageId, eventId, role, authorAgentId, authorTitle, orderKey
-      FROM ranked
-      WHERE sourceRank = 1
-        ${boundary ? "AND (orderKey < ? OR (orderKey = ? AND rowKey < ?))" : ""}
-      ORDER BY orderKey DESC, rowKey DESC
+      SELECT
+        search.row_key AS rowKey,
+        search.project_id AS projectId,
+        project.label AS projectLabel,
+        search.chat_kind AS chatKind,
+        search.chat_id AS chatId,
+        COALESCE(conversation.title, chat_agent.title) AS chatTitle,
+        search.message_id AS messageId,
+        search.communication_event_id AS eventId,
+        search.role AS role,
+        search.author_agent_id AS authorAgentId,
+        author_agent.title AS authorTitle,
+        feed.order_key AS orderKey
+      FROM all_chat_feed_projection feed
+      JOIN chat_search_messages search ON search.row_key = feed.row_key
+      JOIN projects project ON project.id = search.project_id
+      LEFT JOIN conversations conversation
+        ON search.chat_kind IN ('conversation', 'collaboration') AND conversation.id = search.chat_id
+      LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
+      LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
+      WHERE 1 = 1
+        ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
+      ORDER BY feed.order_key DESC, feed.row_key DESC
       LIMIT ?
     `).all(...(boundary
       ? [boundary.orderKey, boundary.orderKey, boundary.rowKey, limit + 1]
       : [limit + 1])) as AllChatRow[];
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
+    const activeAgentByProject = new Map([...new Set(selected.map((row) => row.projectId))].map((projectId) => [
+      projectId,
+      new Map(this.listAgents(projectId).filter((agent) => !agent.archived).map((agent) => [agent.id, agent] as const)),
+    ]));
     const items = selected.flatMap((row): AllChatItemDto[] => {
       const surface: CommunicationProjection["surface"] = row.chatKind === "conversation"
         ? "conversation"
@@ -3390,7 +3698,6 @@ export class AgentStore {
         : undefined;
       const event = this.communicationIndex(row.projectId).byId.get(row.eventId);
       if (!message || !event) return [];
-      const activeAgents = this.listAgents(row.projectId).filter((agent) => !agent.archived);
       const exactAudienceAgentId = event.schemaVersion === 2 && event.intent === "user_dm"
         ? event.audience.kind === "user_agent"
           ? event.audience.agentId
@@ -3400,7 +3707,7 @@ export class AgentStore {
         ? row.chatId
         : row.authorAgentId ?? exactAudienceAgentId;
       const directMessageAgent = targetAgentId
-        ? activeAgents.find((agent) => agent.id === targetAgentId)
+        ? activeAgentByProject.get(row.projectId)?.get(targetAgentId)
         : undefined;
       const author: GlobalChatSearchAuthorDto = row.authorAgentId
         ? { kind: "agent", label: row.authorTitle ?? "Agent", agentId: row.authorAgentId }
@@ -3837,7 +4144,7 @@ export class AgentStore {
   }
 
   private artifactDtoFromProjectionRow(agentId: string, row: ArtifactProjectionReadRow): ArtifactDto | undefined {
-    const agent = this.getAgent(agentId);
+    const agent = this.rowToAgentDto(agentId);
     if (!agent) return undefined;
     if (row.kind === "generated_file" && row.source_path && row.media_type && row.size !== null) {
       const root = `/api/projects/${encodeURIComponent(agent.projectId)}/agents/${encodeURIComponent(agentId)}/generated-artifacts/${encodeURIComponent(row.id)}`;
@@ -3929,16 +4236,39 @@ export class AgentStore {
 
   private projectManagedArtifactEvent(projectId: string, event: ManagedArtifactEvent): void {
     if (event.type === "created") {
+      const access = event.access ?? {
+        ownerKind: "project" as const,
+        ownerId: event.artifact.id,
+        audience: { kind: "organization" as const, organizationId: projectId },
+      };
+      const prior = this.client.prepare(`
+        SELECT artifact_json, owner_kind, owner_id, audience_json, sender_agent_id
+        FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+      `).get(projectId, event.artifact.id) as {
+        artifact_json: string;
+        owner_kind: string;
+        owner_id: string;
+        audience_json: string;
+        sender_agent_id: string | null;
+      } | undefined;
+      if (prior) {
+        if (prior.artifact_json === JSON.stringify(event.artifact) &&
+            prior.owner_kind === access.ownerKind && prior.owner_id === access.ownerId &&
+            prior.audience_json === JSON.stringify(access.audience) &&
+            prior.sender_agent_id === (access.senderAgentId ?? null)) return;
+        throw new Error("managed artifact identity, provenance, and audience are immutable");
+      }
       this.client.prepare(`
-        INSERT INTO managed_artifact_projection(project_id, artifact_id, created_at, visibility, pinned, artifact_json)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(project_id, artifact_id) DO UPDATE SET
-          created_at = excluded.created_at, visibility = excluded.visibility,
-          pinned = excluded.pinned, artifact_json = excluded.artifact_json
+        INSERT INTO managed_artifact_projection(
+          project_id, artifact_id, created_at, visibility, pinned, artifact_json,
+          owner_kind, owner_id, audience_json, sender_agent_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         projectId, event.artifact.id, event.artifact.createdAt,
         event.artifact.visibility ?? "project", event.artifact.pinned ? 1 : 0,
         JSON.stringify(event.artifact),
+        access.ownerKind, access.ownerId, JSON.stringify(access.audience), access.senderAgentId ?? null,
       );
       return;
     }
@@ -3993,7 +4323,7 @@ export class AgentStore {
     });
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ?
+      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
         ${boundary ? "AND (created_at < ? OR (created_at = ? AND artifact_id < ?))" : ""}
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(...(boundary
@@ -4033,11 +4363,55 @@ export class AgentStore {
     return { ...artifact, previewUrl: `${root}/preview`, downloadUrl: `${root}/download` };
   }
 
+  getProjectArtifactAccess(projectId: string, artifactIdValue: string): ManagedArtifactAccess | undefined {
+    const row = this.client.prepare(`
+      SELECT owner_kind, owner_id, audience_json, sender_agent_id
+      FROM managed_artifact_projection WHERE project_id = ? AND artifact_id = ?
+    `).get(projectId, artifactIdValue) as {
+      owner_kind: ManagedArtifactAccess["ownerKind"];
+      owner_id: string;
+      audience_json: string;
+      sender_agent_id: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    try {
+      return {
+        ownerKind: row.owner_kind,
+        ownerId: row.owner_id,
+        audience: JSON.parse(row.audience_json) as ManagedArtifactAccess["audience"],
+        ...(row.sender_agent_id ? { senderAgentId: row.sender_agent_id } : {}),
+      };
+    } catch { return undefined; }
+  }
+
+  projectArtifactIsOrganizationVisible(projectId: string, artifactIdValue: string): boolean {
+    return this.getProjectArtifactAccess(projectId, artifactIdValue)?.audience.kind === "organization";
+  }
+
+  operatorCanReadProjectArtifact(projectId: string, artifactIdValue: string): boolean {
+    // The single local operator owns the Project audit surfaces (including
+    // Team Chat), but private artifacts still stay out of the organizational
+    // catalog and future-agent context.
+    return Boolean(this.getProject(projectId) && this.getProjectArtifactAccess(projectId, artifactIdValue));
+  }
+
+  agentCanReadProjectArtifact(projectId: string, artifactIdValue: string, agentId: string): boolean {
+    const agent = this.getAgent(agentId);
+    const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
+    if (!agent || agent.projectId !== projectId || agent.archived || !access) return false;
+    if (access.audience.kind === "organization") return true;
+    if (access.senderAgentId === agentId) return true;
+    if (access.audience.kind === "agents" || access.audience.kind === "user_agents" ||
+        access.audience.kind === "request_agents") return access.audience.agentIds.includes(agentId);
+    return access.audience.kind === "user_agent" && access.audience.agentId === agentId;
+  }
+
   getProjectContextArtifacts(projectId: string, limit = 100): ArtifactDto[] {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND (pinned = 1 OR visibility = 'published')
+      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+        AND (pinned = 1 OR visibility = 'published')
       ORDER BY created_at DESC, artifact_id DESC LIMIT ?
     `).all(projectId, boundedLimit) as Array<{ artifact_json: string }>;
     return rows.map((row) => {
@@ -4047,14 +4421,32 @@ export class AgentStore {
     });
   }
 
-  recordProjectArtifact(artifact: ArtifactDto & { projectId: string; originAgentId: string }): void {
+  recordProjectArtifact(
+    artifact: ArtifactDto & { projectId: string; originAgentId: string },
+    access: ManagedArtifactAccess = {
+      ownerKind: "project",
+      ownerId: artifact.id,
+      audience: { kind: "organization", organizationId: artifact.projectId },
+    },
+  ): void {
     if (!this.getProject(artifact.projectId)) throw new Error("artifact project not found");
-    if (artifact.kind === "generated_file" &&
-        (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
-          !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? ""))) {
-      throw new Error("generated artifact immutable metadata is required");
+    if (!artifact.summary?.trim() || !artifact.mediaType?.trim() || artifact.size === undefined ||
+        !Number.isSafeInteger(artifact.size) || artifact.size < 1 || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "") ||
+        !artifact.originAgentId.trim()) {
+      throw new Error("managed artifact immutable metadata is required");
     }
-    const event = { type: "created", artifact } satisfies ManagedArtifactEvent;
+    const existing = this.getProjectArtifact(artifact.projectId, artifact.id);
+    if (existing) {
+      const immutableFields = [
+        "id", "projectId", "agentId", "originAgentId", "executionId", "kind", "path",
+        "summary", "createdAt", "mediaType", "sourcePath", "size", "sha256",
+      ] as const;
+      const existingAccess = this.getProjectArtifactAccess(artifact.projectId, artifact.id);
+      if (immutableFields.every((field) => existing[field] === artifact[field]) &&
+          JSON.stringify(existingAccess) === JSON.stringify(access)) return;
+      throw new Error("managed artifact identity and provenance are immutable");
+    }
+    const event = { type: "created", artifact, access } satisfies ManagedArtifactEvent;
     appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [event]);
     this.projectManagedArtifactEvent(artifact.projectId, event);
   }
@@ -4121,6 +4513,7 @@ export class AgentStore {
    * event (seq + ts) so the caller can broadcast it over SSE.
    */
   appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
+    if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
     const projectId = this.projectIdOf(agentId);
     const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
       ? event.communicationEventId : undefined;
@@ -4158,12 +4551,39 @@ export class AgentStore {
   }
 
   readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.logFor(agentId, this.projectIdOf(agentId)).readSince(sinceSeq);
+    return (this.client.prepare(`
+      SELECT seq, created_at, payload_json
+      FROM events
+      WHERE agent_id = ? AND seq > ?
+      ORDER BY seq
+    `).all(agentId, sinceSeq) as Array<{ seq: number; created_at: string; payload_json: string }>).map((row) => ({
+      seq: row.seq,
+      ts: row.created_at,
+      event: JSON.parse(row.payload_json) as LogEvent,
+    }));
   }
 
   lastSeqOf(agentId: string): number {
-    const evs = this.readEvents(agentId);
-    return evs.length === 0 ? 0 : (evs[evs.length - 1]?.seq ?? 0);
+    const row = this.client.prepare(`
+      SELECT last_seq FROM agent_event_head_projection WHERE agent_id = ?
+    `).get(agentId) as { last_seq: number } | undefined;
+    return row?.last_seq ?? 0;
+  }
+
+  latestHealthObservation(agentId: string): {
+    status: AgentLifecycleStatus;
+    statusTimestamp: string;
+    reason: AgentLifecycleReason;
+    executionId?: string;
+  } | undefined {
+    const row = this.client.prepare(`
+      SELECT status, status_timestamp, reason, execution_id
+      FROM agent_health_projection WHERE agent_id = ?
+    `).get(agentId) as { status: AgentLifecycleStatus; status_timestamp: string; reason: AgentLifecycleReason; execution_id: string | null } | undefined;
+    return row ? {
+      status: row.status, statusTimestamp: row.status_timestamp, reason: row.reason,
+      ...(row.execution_id ? { executionId: row.execution_id } : {}),
+    } : undefined;
   }
 
   // ─── Rebuild (SQLite is disposable; the log is truth) ──────────────────────
@@ -4183,10 +4603,29 @@ export class AgentStore {
         throw new Error("invalid Agent deletion recovery journal");
       }
       const directory = agentsDir(this.dataDir, row.projectId);
-      rmSync(join(directory, row.tombstoneName), { recursive: true, force: true });
-      // A committed journal row is authoritative even if a filesystem rollback
-      // resurrected the canonical name after the SQLite commit.
-      rmSync(agentDir(this.dataDir, row.projectId, row.agentId), { recursive: true, force: true });
+      const tombstone = join(directory, row.tombstoneName);
+      const canonical = agentDir(this.dataDir, row.projectId, row.agentId);
+      const auditDirectory = existsSync(tombstone) ? tombstone : canonical;
+      if (!existsSync(auditDirectory)) throw new Error("committed Agent deletion lost its audit directory");
+      rmSync(join(auditDirectory, "attachments"), { recursive: true, force: true });
+      const metadataPath = join(auditDirectory, "agent.json");
+      const metadata = readJson<AgentJson>(metadataPath);
+      writeJson(metadataPath, {
+        ...metadata,
+        conversationId: undefined,
+        conversationIds: [],
+        archived: true,
+        deletedAt: row.createdAt,
+        updatedAt: row.createdAt,
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      });
+      if (auditDirectory === tombstone) {
+        if (existsSync(canonical)) throw new Error("deleted Agent audit destination already exists");
+        renameSync(tombstone, canonical);
+      }
       if (existsSync(directory)) touchedDirectories.add(directory);
     }
     const root = projectsDir(this.dataDir);
@@ -4217,11 +4656,73 @@ export class AgentStore {
     });
   }
 
+  /** Recover the filesystem side of Project deletion before projection rebuild
+   * can discard hidden directories or prune quarantine rows. A journal row means
+   * the SQLite purge did not commit, so its exact rename is rolled back. Without
+   * a row, a tombstone is committed cleanup and must never be resurrected. */
+  private recoverProjectDeletionDirectories(): void {
+    const root = projectsDir(this.dataDir);
+    if (!existsSync(root)) return;
+    const pending = this.db.select().from(projectDeletionPending).all();
+    const journalNames = new Set<string>();
+    for (const row of pending) {
+      const prefix = `.${row.projectId}.deleting-`;
+      const candidates = readdirSync(root).filter((name) => name.startsWith(prefix));
+      const tombstoneName = row.tombstoneName ?? (candidates.length === 1 ? candidates[0] : undefined);
+      if (tombstoneName && (tombstoneName.includes("/") || tombstoneName.includes("\\") ||
+          !tombstoneName.startsWith(prefix))) {
+        throw new Error("invalid Project deletion recovery journal");
+      }
+      const canonical = projectDir(this.dataDir, row.projectId);
+      if (existsSync(canonical)) {
+        if (tombstoneName && existsSync(join(root, tombstoneName))) {
+          throw new Error(`Project ${row.projectId} has ambiguous deletion storage`);
+        }
+        if (tombstoneName) journalNames.add(tombstoneName);
+        continue;
+      }
+      if (!tombstoneName || !existsSync(join(root, tombstoneName))) {
+        throw new Error(`Project ${row.projectId} deletion quarantine has no recoverable canonical storage`);
+      }
+      renameSync(join(root, tombstoneName), canonical);
+      fsyncDirectory(root);
+      journalNames.add(tombstoneName);
+      if (!row.tombstoneName) {
+        this.db.update(projectDeletionPending).set({ tombstoneName })
+          .where(eq(projectDeletionPending.projectId, row.projectId)).run();
+      }
+    }
+    const receiptNames = new Set<string>();
+    for (const receipt of this.db.select().from(projectDeletionReceipts).all()) {
+      receiptNames.add(receipt.tombstoneName);
+      if (receipt.storageCleanupCompleted === 1) continue;
+      try { this.finishProjectDeletionStorageCleanup(this.getProjectDeletionReceipt(receipt.projectId)!); }
+      catch (error) {
+        this.recordProjectDeletionReceiptCleanupError(
+          receipt.projectId,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+    let removedCommitted = false;
+    for (const name of readdirSync(root)) {
+      if (!/^\..+\.deleting-.+$/.test(name) || journalNames.has(name) || receiptNames.has(name)) continue;
+      rmSync(join(root, name), { recursive: true, force: true });
+      removedCommitted = true;
+    }
+    if (removedCommitted) fsyncDirectory(root);
+  }
+
   rebuildProjections(): void {
+    this.recoverProjectDeletionDirectories();
     this.recoverAgentDeletionDirectories();
+    this.client.prepare(`DELETE FROM all_chat_feed_projection`).run();
+    this.client.prepare(`DELETE FROM agent_health_projection`).run();
+    this.client.prepare(`DELETE FROM agent_event_head_projection`).run();
     this.client.prepare(`DELETE FROM tool_output_projection`).run();
     this.db.delete(continuationHandoffs).run();
     this.db.delete(activityProjection).run();
+    this.client.prepare(`DELETE FROM changed_file_execution_projection`).run();
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
     this.db.delete(importedHistoryMessages).run();
@@ -4265,7 +4766,7 @@ export class AgentStore {
         })
         .run();
       const resolved = new Map<string, AgentPresetDto>();
-      for (const event of readJsonLines<PresetEvent>(agentPresetsPath(this.dataDir, projectId))) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
+      for (const event of readRepairableJsonl<PresetEvent>(agentPresetsPath(this.dataDir, projectId), "agent preset journal", true)) event.type === "upsert" ? resolved.set(event.preset.id, event.preset) : resolved.delete(event.id);
       for (const preset of resolved.values()) this.db.insert(agentPresets).values({ ...preset, enabled: preset.enabled ? 1 : 0 }).run();
       const organizationalParents = new Map<string, string | null>();
       for (const event of readJsonLines<AgentOrganizationEvent>(agentOrganizationEventsPath(this.dataDir, projectId))) {
@@ -4325,6 +4826,7 @@ export class AgentStore {
             effort: t.effort ?? null,
             createdAt: t.createdAt,
             updatedAt: t.updatedAt,
+            deletedAt: t.deletedAt ?? null,
             archived: t.archived ? 1 : 0,
             managerAgentId: organizationalParents.get(t.id) ?? null,
             allowAutomaticDescendantDeletion: t.managementPermissions?.allowAutomaticDescendantDeletion ? 1 : 0,
@@ -4360,9 +4862,30 @@ export class AgentStore {
         pruneArtifactDirectory(artifactsDir(this.dataDir, projectId, agentId), protectedArtifactPaths);
         const ops = projectAll(agentId, stored, t.activeEngine);
         this.applyOps(agentId, projectId, ops);
+        if (t.deletedAt) {
+          this.db.update(agents).set({
+            conversationId: null,
+            activeSessionId: null,
+            activeSessionContractHash: null,
+            activeSessionArtifactIdsJson: "[]",
+            archived: 1,
+            managerAgentId: null,
+            allowAutomaticDescendantDeletion: 0,
+            allowAutomaticDescendantReorganization: 0,
+            deletedAt: t.deletedAt,
+            updatedAt: t.deletedAt,
+          }).where(eq(agents.id, t.id)).run();
+        }
       }
       this.sanitizeOrganizationProjection(projectId);
     }
+    // Project rows are rebuildable and are deleted/reinserted above. The
+    // deletion quarantine is authoritative, so prune it only after canonical
+    // Project folders have been fully reconstructed.
+    this.client.prepare(`
+      DELETE FROM project_deletion_pending
+      WHERE project_id NOT IN (SELECT id FROM projects)
+    `).run();
     this.rebuildGlobalChatSearchProjection();
   }
 
@@ -4378,10 +4901,39 @@ export class AgentStore {
 
   private applyOps(agentId: string, projectId: string, ops: ProjectionOp[]): void {
     for (const op of ops) {
-      if (op.kind === "insert_artifact" && op.content !== undefined) {
-        const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, op.content, "utf8");
+      if (op.kind === "insert_artifact") {
+        let managed = op.managed;
+        if (op.content !== undefined) {
+          const target = artifactContentPath(this.dataDir, projectId, agentId, op.row.path);
+          mkdirSync(dirname(target), { recursive: true });
+          writeFileSync(target, op.content, "utf8");
+          const published = publishManagedArtifactContent(this.dataDir, projectId, op.row.id, op.content);
+          managed = {
+            size: published.size,
+            sha256: published.sha256,
+            mediaType: op.row.kind === "diff" ? "text/x-diff" : "text/markdown",
+          };
+        }
+        if (managed) {
+          const artifact = {
+            id: op.row.id,
+            projectId,
+            agentId: op.row.agentId,
+            originAgentId: op.row.agentId,
+            ...(op.row.executionId ? { executionId: op.row.executionId } : {}),
+            kind: op.row.kind as ArtifactKind,
+            path: op.row.path,
+            ...(op.row.sourcePath ? { sourcePath: op.row.sourcePath } : {}),
+            summary: op.row.summary ?? op.row.path,
+            createdAt: op.row.createdAt,
+            mediaType: managed.mediaType,
+            visibility: op.row.visibility === "published" ? "published" as const : "project" as const,
+            pinned: op.row.pinned === 1,
+            size: managed.size,
+            sha256: managed.sha256,
+          };
+          this.recordProjectArtifact(artifact);
+        }
       }
     }
 
@@ -4395,6 +4947,29 @@ export class AgentStore {
             break;
           case "insert_event":
             tx.insert(events).values(op.row).onConflictDoNothing().run();
+            this.client.prepare(`
+              INSERT INTO agent_event_head_projection(agent_id, last_seq) VALUES (?, ?)
+              ON CONFLICT(agent_id) DO UPDATE SET last_seq = MAX(last_seq, excluded.last_seq)
+            `).run(agentId, op.row.seq);
+            {
+              const event = JSON.parse(op.row.payloadJson) as LogEvent;
+              const observation = healthObservation(event, op.row.createdAt);
+              if (observation) this.client.prepare(`
+                INSERT INTO agent_health_projection(
+                  agent_id, source_seq, status, status_timestamp, reason, execution_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                  source_seq = excluded.source_seq,
+                  status = excluded.status,
+                  status_timestamp = excluded.status_timestamp,
+                  reason = excluded.reason,
+                  execution_id = excluded.execution_id
+                WHERE excluded.source_seq > agent_health_projection.source_seq
+              `).run(
+                agentId, op.row.seq, observation.status,
+                observation.statusTimestamp, observation.reason, observation.executionId ?? null,
+              );
+            }
             if (ACTIVITY_EVENT_TYPES.has(op.row.type)) {
               const event = JSON.parse(op.row.payloadJson) as LogEvent;
               let eventJson = op.row.payloadJson;
@@ -4424,25 +4999,36 @@ export class AgentStore {
                 previewUtf8Bytes, totalUtf8Bytes, outputSha256,
               );
               if (event.type === "file_change") {
-                const existing = this.client.prepare(`
-                  SELECT execution_ids_json FROM changed_file_projection WHERE agent_id = ? AND path = ?
-                `).get(agentId, event.path) as { execution_ids_json: string } | undefined;
-                const executionIds = existing ? JSON.parse(existing.execution_ids_json) as string[] : [];
-                if (op.executionId && !executionIds.includes(op.executionId)) executionIds.push(op.executionId);
+                if (op.executionId) this.client.prepare(`
+                  INSERT INTO changed_file_execution_projection(agent_id, path, execution_id, last_seq)
+                  VALUES (?, ?, ?, ?)
+                  ON CONFLICT(agent_id, path, execution_id) DO UPDATE SET last_seq = excluded.last_seq
+                `).run(agentId, event.path, op.executionId, op.row.seq);
+                const executionIds = (this.client.prepare(`
+                  SELECT execution_id AS executionId
+                  FROM changed_file_execution_projection
+                  WHERE agent_id = ? AND path = ?
+                  ORDER BY last_seq DESC, execution_id DESC LIMIT 100
+                `).all(agentId, event.path) as Array<{ executionId: string }>).map((row) => row.executionId);
+                const executionCount = (this.client.prepare(`
+                  SELECT COUNT(*) AS count FROM changed_file_execution_projection
+                  WHERE agent_id = ? AND path = ?
+                `).get(agentId, event.path) as { count: number }).count;
                 const boundedDiff = event.diff ? utf8Prefix(event.diff, ACTIVITY_OUTPUT_PREVIEW_BYTES) : null;
                 this.client.prepare(`
                   INSERT INTO changed_file_projection(
-                    agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, diff
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    agent_id, path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                   ON CONFLICT(agent_id, path) DO UPDATE SET
                     kind = excluded.kind,
                     last_seq = excluded.last_seq,
                     last_changed_at = excluded.last_changed_at,
                     execution_ids_json = excluded.execution_ids_json,
+                    execution_count = excluded.execution_count,
                     diff = excluded.diff
                 `).run(
                   agentId, event.path, event.kind, op.row.seq, op.row.createdAt,
-                  JSON.stringify(executionIds), boundedDiff,
+                  JSON.stringify(executionIds), executionCount, boundedDiff,
                 );
               }
             }
@@ -4647,7 +5233,8 @@ export class AgentStore {
       state,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
-      archived: row.archived === 1,
+      archived: row.archived === 1 || Boolean(row.deletedAt),
+      ...(row.deletedAt ? { deletedAt: row.deletedAt } : {}),
       managerAgentId: row.managerAgentId ?? undefined,
       managementPermissions: {
         allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,

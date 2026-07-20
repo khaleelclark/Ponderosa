@@ -94,6 +94,19 @@ describe("WorkspaceStore canonical replay", () => {
     expect(new WorkspaceStore(dir).listNotifications()).toEqual([]);
   });
 
+  it("clears only one Project notification group canonically across restart", () => {
+    const { dir, store } = fixture();
+    store.createNotification({ projectId: "alpha", conversationId: "one", communicationEventId: "one", kind: "mentions", title: "One", body: "First" });
+    store.createNotification({ projectId: "alpha", conversationId: "two", communicationEventId: "two", kind: "direct_responses", title: "Two", body: "Second" });
+    store.createNotification({ projectId: "beta", conversationId: "three", communicationEventId: "three", kind: "mentions", title: "Three", body: "Third" });
+
+    expect(store.clearProjectNotifications("alpha")).toBe(2);
+    expect(store.clearProjectNotifications("alpha")).toBe(0);
+    expect(new WorkspaceStore(dir).listNotifications()).toEqual([
+      expect.objectContaining({ projectId: "beta", communicationEventId: "three" }),
+    ]);
+  });
+
   it("persists provider switches, master rules, profile, urgent alerts, and Decisions", () => {
     const { dir, store } = fixture();
     store.updatePreferences({
@@ -144,6 +157,30 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.getNotification(decisionNotification.id)?.decision?.status).toBe("resolved");
     expect(restarted.getDecision(abandoned.id)).toMatchObject({ status: "cancelled" });
     expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
+  });
+
+  it("preserves a managed uploaded profile picture across replay", () => {
+    const { dir, store } = fixture();
+    const avatarId = `uploaded:png:${"a".repeat(64)}`;
+    store.updatePreferences({
+      profile: { displayName: "Patrick", handle: "patrick", avatarId },
+    });
+
+    expect(store.getPreferences().profile.avatarId).toBe(avatarId);
+    expect(new WorkspaceStore(dir).getPreferences().profile.avatarId).toBe(avatarId);
+  });
+
+  it("preserves every supported uploaded profile format across replay", () => {
+    const formats = ["png", "jpeg", "webp", "gif", "avif"];
+    for (const format of formats) {
+      const { dir, store } = fixture();
+      const avatarId = `uploaded:${format}:${"a".repeat(64)}`;
+      store.updatePreferences({
+        profile: { displayName: "Patrick", handle: "patrick", avatarId },
+      });
+      expect(store.getPreferences().profile.avatarId).toBe(avatarId);
+      expect(new WorkspaceStore(dir).getPreferences().profile.avatarId).toBe(avatarId);
+    }
   });
 
   it("indexes bounded Decision pages and exact Run relationships across replay", () => {

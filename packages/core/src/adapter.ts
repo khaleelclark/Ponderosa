@@ -251,6 +251,14 @@ export interface EngineCapabilities {
   composerCapabilities: EngineComposerCapability[];
 }
 
+/** Host authority for a sessionless provider capability-discovery operation. */
+export interface EngineCapabilityDiscoveryOptions {
+  model?: string;
+  signal: AbortSignal;
+  /** Called synchronously for every helper process spawned by discovery. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+}
+
 /**
  * The engine adapter. Adding an engine = implementing this, nothing else.
  * Both methods return a live stream of normalized {@link AgentEvent}s.
@@ -275,7 +283,7 @@ export interface Adapter {
 
   /** Discover engine-native commands, skills/plugins, structured actions, and
    * MCP state for the selected provider/model boundary. */
-  capabilities?(cwd: string, context?: { model?: string }): Promise<EngineCapabilities>;
+  capabilities?(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities>;
 
   /**
    * Continue the agent's ACTIVE session with the next user message. Resume by

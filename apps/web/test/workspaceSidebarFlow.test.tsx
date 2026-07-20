@@ -2,7 +2,7 @@ import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePrefere
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { operatorInitials, projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { globalSearchShortcutAccessibleLabel, globalSearchShortcutLabel, operatorInitials, projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -42,7 +42,8 @@ describe("responsive workspace sidebar flow", () => {
     expect(projectHealthDetail(failed, [claudeAgent], engineRoster)).toContain("1 agent failure is tied to an unavailable engine");
     expect(projectHealthDetail(failed, [claudeAgent], engineRoster)).toContain("Claude is unavailable");
     expect(projectHealthPresentation(failed, [{ ...claudeAgent, activeEngine: "codex" }], engineRoster)).toEqual({ label: "Needs attention", color: "error.main" });
-    expect(projectHealthPresentation(failed, [claudeAgent], engineRoster.map((item) => ({ ...item, available: false })))).toEqual({ label: "Needs attention", color: "error.main" });
+    expect(projectHealthPresentation(failed, [claudeAgent], engineRoster.map((item) => ({ ...item, available: false })))).toEqual({ label: "Healthy", color: "success.main" });
+    expect(projectHealthPresentation(failed, [claudeAgent], engineRoster.map((item) => ({ ...item, enabled: false, available: false })))).toEqual({ label: "Healthy", color: "success.main" });
   });
 
   it("keeps one project-scoped chat navigator and persistent global destinations", async () => {
@@ -72,7 +73,8 @@ describe("responsive workspace sidebar flow", () => {
 
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);
     const rendered = JSON.stringify(view.toJSON());
-    expect(rendered).toContain("All Projects");
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Home")).toHaveLength(0);
+    expect(view.root.findByProps({ "aria-label": "All Chat" })).toBeTruthy();
     expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
@@ -80,9 +82,12 @@ describe("responsive workspace sidebar flow", () => {
     expect(view.root.findAll((node) => node.props.color === "error" && node.props.badgeContent === 1)).toHaveLength(1);
 
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
+    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "projects" });
     expect(JSON.stringify(view.toJSON())).toContain("Search projects");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
+    expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
+    act(() => view.root.findByProps({ children: "View All Projects" }).props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project overview" }).props.onClick());
@@ -96,11 +101,41 @@ describe("responsive workspace sidebar flow", () => {
     await act(async () => view.root.findByProps({ "aria-label": "Triggers" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search triggers or agents");
-    act(() => view.root.findAllByProps({ "aria-label": "Manage triggers for Reviewer" })[0]!.props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
+    act(() => view.root.findAllByProps({ "aria-label": "Open triggers for Reviewer" })[0]!.props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha", view: "triggers" });
 
     expect(view.root.findByProps({ "data-sidebar-state": "expanded" })).toBeTruthy();
     view.unmount();
+    client.clear();
+  });
+
+  it("puts global search in its own sidebar icon with an OS-aware accessible shortcut", () => {
+    expect(globalSearchShortcutLabel("MacIntel")).toBe("⌘K");
+    expect(globalSearchShortcutLabel("Win32")).toBe("Ctrl K");
+    expect(globalSearchShortcutAccessibleLabel("MacIntel")).toBe("Command K");
+    expect(globalSearchShortcutAccessibleLabel("Linux x86_64")).toBe("Control K");
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    projects.forEach((project) => {
+      client.setQueryData(["conversations", project.id], []);
+      client.setQueryData(["agents", project.id], []);
+      client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
+    });
+    const onSearch = vi.fn();
+    const render = (drawer = false) => create(<QueryClientProvider client={client}><WorkspaceSidebar
+      projects={projects} engines={engineRoster} preferences={preferences} route={{ kind: "projects" }} notifications={[]}
+      drawer={drawer} onNavigate={vi.fn()} onCreateProject={vi.fn()} onManageProject={vi.fn()} onPreferences={vi.fn()}
+      onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={onSearch}
+    /></QueryClientProvider>);
+    const desktop = render();
+    const search = desktop.root.findByProps({ "aria-label": `Search All Chats (${globalSearchShortcutAccessibleLabel()})` });
+    act(() => search.props.onClick());
+    expect(onSearch).toHaveBeenCalledOnce();
+    expect(desktop.root.findAllByType("kbd")).toHaveLength(0);
+    const mobile = render(true);
+    expect(mobile.root.findByProps({ "aria-label": "Search All Chats" })).toBeTruthy();
+    expect(mobile.root.findAllByType("kbd")).toHaveLength(0);
+    desktop.unmount();
+    mobile.unmount();
     client.clear();
   });
 
@@ -129,7 +164,7 @@ describe("responsive workspace sidebar flow", () => {
       onDeleteConversation={vi.fn()}
       onOpenProfile={onOpenProfile}
     /></QueryClientProvider>);
-    expect(JSON.stringify(view.toJSON())).toContain("KC");
+    expect(view.root.findByProps({ "aria-label": "Khaleel Clark avatar" })).toBeTruthy();
     act(() => view.root.findByProps({ "aria-label": "Open operator profile" }).props.onClick());
     expect(onOpenProfile).toHaveBeenCalledOnce();
     view.unmount();
@@ -195,7 +230,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onPreferences).toHaveBeenCalledWith({ starredProjectIds: [] });
     const sortProjects = view.root.findByProps({ "aria-label": "Sort projects" });
     expect(sortProjects.props.onClick).toEqual(expect.any(Function));
-    expect(JSON.stringify(view.toJSON())).toContain("Recent activity");
+    expect(JSON.stringify(view.toJSON())).toContain("Recent Activity");
     view.unmount();
     client.clear();
   });

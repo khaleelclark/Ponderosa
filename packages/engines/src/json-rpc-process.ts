@@ -1,8 +1,8 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import { createInterface } from "node:readline";
 import type { RuntimeProcessHandle } from "@ponderosa/core";
 import type { SpawnFn } from "./process.js";
-import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
+import { assertPersistentRuntimeHostingSupported, processGroupAlive, terminateProcessGroup } from "./process-termination.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -97,16 +97,40 @@ export class JsonRpcProcess {
     this.child.stderr?.on("data", (chunk: string) => {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
-    const lines = createInterface({ input: this.child.stdout! });
+    const lines = new LineBuffer();
     let postExitDrainTimer: NodeJS.Timeout | undefined;
     const clearPostExitDrain = () => {
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
       postExitDrainTimer = undefined;
     };
     this.child.stdout?.once("close", clearPostExitDrain);
-    lines.on("line", (line) => this.receive(line));
-    const rootExited = () => {
+    const failRecord = () => {
+      if (this.closed) return;
       reportRootExit();
+      this.child.stdout?.destroy();
+      this.finish(new Error(
+        `${opts.bin} JSONL record exceeded the ${JSONL_MAX_RECORD_BYTES / (1024 * 1024)} MiB limit`,
+      ));
+      void this.close().catch(() => undefined);
+    };
+    this.child.stdout?.on("data", (chunk: Buffer | string) => {
+      try {
+        for (const line of lines.push(chunk)) this.receive(line);
+      } catch (error) {
+        if (error instanceof JsonlRecordLimitError) failRecord();
+        else throw error;
+      }
+    });
+    this.child.stdout?.once("end", () => {
+      if (this.closed) return;
+      const tail = lines.flush();
+      if (tail !== undefined) this.receive(tail);
+    });
+    const rootExited = () => {
+      // Host-initiated rollover, replacement, cancellation, and shutdown are
+      // expected closes. Only an independently exiting root is a crash that
+      // fences the active Run through onRuntimeRootExit.
+      if (!this.closed) reportRootExit();
       // A descendant outside the owned process group can inherit stdout and
       // otherwise keep the provider event stream open forever. Allow already
       // buffered output to drain briefly, then close the transport locally.
@@ -117,7 +141,9 @@ export class JsonRpcProcess {
     this.child.once("close", (code) => this.finish(code === 0 || this.closed
       ? undefined
       : new Error(`${opts.bin} exited with code ${code}${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}`)));
-    opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
+    const abort = (): void => { void this.close().catch(() => undefined); };
+    opts.signal.addEventListener("abort", abort);
+    if (opts.signal.aborted) abort();
   }
 
   async initialize(): Promise<void> {
@@ -143,7 +169,7 @@ export class JsonRpcProcess {
   }
 
   isAlive(): boolean {
-    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
+    return processGroupAlive(this.child);
   }
 
   close(): Promise<void> {

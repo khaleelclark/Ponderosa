@@ -8,7 +8,7 @@ import { DEFAULT_ASSET_LIMITS, type ArtifactDto, type AssetDto, type AssetLimits
 import {
   attachmentsDir,
   managedArtifactContentPath,
-  managedArtifactsDir,
+  readManagedArtifactContent,
   type RuntimeArtifactInputV3,
   type RuntimeAttachmentReservationReceiptV3,
 } from "@ponderosa/agents";
@@ -118,7 +118,7 @@ function generatedArtifactIdentity(artifact: RegisteredGeneratedArtifact): Recor
   };
 }
 
-function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedArtifact): boolean {
+export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedArtifact): boolean {
   if (!OWNER_ID.test(artifact.id) || !OWNER_ID.test(artifact.projectId) ||
       !OWNER_ID.test(artifact.agentId) || !OWNER_ID.test(artifact.originAgentId) ||
       artifact.kind !== "generated_file" || !artifact.summary.trim() ||
@@ -583,6 +583,15 @@ async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
   try { await rename(temporary, file); } catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
 }
 
+type AssetDirectorySyncPhase = "stage" | "associate";
+
+interface AssetStoreTestHooks {
+  /** Test-only fault injection immediately before the durable directory barrier. */
+  beforeDirectorySync?(phase: AssetDirectorySyncPhase): void | Promise<void>;
+  /** Test-only observation after the directory entry changes are durable. */
+  afterDirectorySync?(phase: AssetDirectorySyncPhase): void | Promise<void>;
+}
+
 function canonicalFiles(id: string): { originalFile: string; previewFile: string } {
   return { originalFile: `${id}.bin`, previewFile: `${id}.preview.png` };
 }
@@ -641,7 +650,7 @@ export class AssetStore {
   private root?: string;
   private authority: AssetAuthority;
 
-  constructor(private dataDir: string) { this.authority = new AssetAuthority(dataDir); }
+  constructor(private dataDir: string, private testHooks?: AssetStoreTestHooks) { this.authority = new AssetAuthority(dataDir); }
   close(): void { this.authority.close(); }
 
   private validateOwner(projectId: string, agentId: string): void {
@@ -674,6 +683,19 @@ export class AssetStore {
     const descriptorRealpath = await realpath(descriptorPath);
     if (descriptorRealpath !== actual) { await handle.close(); throw new AssetError(409, "asset storage is unavailable"); }
     return { path: descriptorPath, handle };
+  }
+
+  /**
+   * A rename makes a file visible but does not make its directory entry durable.
+   * All callers hold the no-follow directory descriptor that was verified by
+   * safeDirectory, so sync that descriptor before any dependent authority can
+   * advance. Re-syncing an already-associated asset makes a retry after an I/O
+   * failure complete the same barrier without changing its immutable metadata.
+   */
+  private async syncDirectory(handle: FileHandle, phase: AssetDirectorySyncPhase): Promise<void> {
+    await this.testHooks?.beforeDirectorySync?.(phase);
+    await handle.sync();
+    await this.testHooks?.afterDirectorySync?.(phase);
   }
 
   async read(projectId: string, agentId: string, id: string): Promise<StoredAsset | undefined> {
@@ -779,53 +801,54 @@ export class AssetStore {
       : undefined;
   }
 
+  /** Validate the immutable runtime-artifact ledger identity without reading
+   * its blob. HTTP transfer paths use this before opening the blob through the
+   * async descriptor-retained reader. */
+  authoritativeRuntimeArtifactMetadataById(
+    projectId: string,
+    id: string,
+  ): RuntimeArtifactInputV3 | undefined {
+    const registered = this.authority.runtimeArtifact(projectId, id);
+    return registered?.projectId === projectId ? this.validRuntimeArtifactMetadata(registered) : undefined;
+  }
+
+  private validRuntimeArtifactMetadata(registered: RegisteredRuntimeArtifact): RuntimeArtifactInputV3 | undefined {
+    const { projectId: _projectId, createdAt: _createdAt, ...authoritativeMetadata } = registered;
+    const artifact = authoritativeMetadata as RuntimeArtifactInputV3;
+    if (!/^text-[a-f0-9]{64}$/.test(artifact.id) ||
+        (artifact.role !== "long_text" && artifact.role !== "document") ||
+        !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
+        artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
+        !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
+        artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
+        ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
+        (artifact.originAgentId !== undefined &&
+          (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
+    return artifact;
+  }
+
   private readAuthoritativeRuntimeArtifact(
     registered: RegisteredRuntimeArtifact,
   ): AuthoritativeRuntimeArtifact | undefined {
-    let contentFd: number | undefined;
     try {
-      const { projectId, createdAt: _createdAt, ...authoritativeMetadata } = registered;
-      const artifact = authoritativeMetadata as RuntimeArtifactInputV3;
-      if (!/^text-[a-f0-9]{64}$/.test(artifact.id) ||
-          (artifact.role !== "long_text" && artifact.role !== "document") ||
-          !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
-          artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
-          !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
-          artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
-          ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
-          (artifact.originAgentId !== undefined &&
-            (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
-      const root = this.root ??= realpathSync(this.dataDir);
-      const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
-      const actualDirectory = realpathSync(contentDirectory);
-      const expectedDirectory = path.join(root, "projects", projectId, "artifacts", "content");
-      if (actualDirectory !== expectedDirectory) return undefined;
-      for (const ancestor of [
-        path.join(this.dataDir, "projects"),
-        path.join(this.dataDir, "projects", projectId),
-        managedArtifactsDir(this.dataDir, projectId),
-        contentDirectory,
-      ]) {
-        const info = lstatSync(ancestor);
-        if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
-      }
+      const { projectId } = registered;
+      const artifact = this.validRuntimeArtifactMetadata(registered);
+      if (!artifact) return undefined;
       const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, artifact.id);
-      if (canonicalPath !== path.join(actualDirectory, artifact.id)) return undefined;
-      contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const before = fstatSync(contentFd);
-      if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.byteLength ||
-          before.size < 1 || before.size > ASSET_LIMITS.maxFileBytes) return undefined;
-      const body = readFileSync(contentFd);
-      const after = fstatSync(contentFd);
-      if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
-          after.size !== before.size || body.length !== before.size) return undefined;
-      const contentHash = createHash("sha256").update(body).digest("hex");
-      try { new TextDecoder("utf-8", { fatal: true }).decode(body); }
+      const content = readManagedArtifactContent(
+        this.dataDir, projectId, artifact.id, artifact.byteLength, artifact.blobHash,
+      );
+      if (!content) return undefined;
+      try { new TextDecoder("utf-8", { fatal: true }).decode(content.body); }
       catch { return undefined; }
-      if (contentHash !== artifact.blobHash || body.length !== artifact.byteLength) return undefined;
-      return { artifact, body, localPath: canonicalPath, contentHash, byteLength: body.length };
+      return {
+        artifact,
+        body: content.body,
+        localPath: canonicalPath,
+        contentHash: content.sha256,
+        byteLength: content.size,
+      };
     } catch { return undefined; }
-    finally { if (contentFd !== undefined) closeSync(contentFd); }
   }
 
   /** Commit one generated-file catalog identity only after its exact managed
@@ -869,42 +892,52 @@ export class AssetStore {
     return this.readGeneratedArtifact(registered);
   }
 
+  /** Validate generated-file catalog/ledger agreement without synchronously
+   * materializing the managed blob. */
+  authoritativeGeneratedArtifactMetadata(
+    projectId: string,
+    expected: ArtifactDto,
+  ): boolean {
+    if (expected.projectId !== projectId || expected.kind !== "generated_file" ||
+        !expected.originAgentId || !expected.summary || !expected.mediaType ||
+        expected.size === undefined || !expected.sha256) return false;
+    const candidate: RegisteredGeneratedArtifact = {
+      id: expected.id,
+      projectId,
+      agentId: expected.agentId,
+      originAgentId: expected.originAgentId,
+      ...(expected.executionId ? { executionId: expected.executionId } : {}),
+      kind: "generated_file",
+      path: expected.path,
+      ...(expected.sourcePath ? { sourcePath: expected.sourcePath } : {}),
+      summary: expected.summary,
+      createdAt: expected.createdAt,
+      mediaType: expected.mediaType,
+      size: expected.size,
+      sha256: expected.sha256,
+    };
+    if (!generatedArtifactMetadataIsValid(candidate)) return false;
+    const registered = this.authority.generatedArtifact(projectId, expected.id);
+    return Boolean(registered && JSON.stringify(generatedArtifactIdentity(registered)) ===
+      JSON.stringify(generatedArtifactIdentity(candidate)));
+  }
+
   private readGeneratedArtifact(
     artifact: RegisteredGeneratedArtifact,
   ): AuthoritativeGeneratedArtifact | undefined {
-    let contentFd: number | undefined;
     try {
       if (!generatedArtifactMetadataIsValid(artifact)) return undefined;
       const { projectId, id } = artifact;
-      const root = this.root ??= realpathSync(this.dataDir);
-      const contentDirectory = path.join(managedArtifactsDir(this.dataDir, projectId), "content");
-      const actualDirectory = realpathSync(contentDirectory);
-      if (actualDirectory !== path.join(root, "projects", projectId, "artifacts", "content")) return undefined;
-      for (const ancestor of [
-        path.join(this.dataDir, "projects"),
-        path.join(this.dataDir, "projects", projectId),
-        managedArtifactsDir(this.dataDir, projectId),
-        contentDirectory,
-      ]) {
-        const info = lstatSync(ancestor);
-        if (info.isSymbolicLink() || !info.isDirectory()) return undefined;
-      }
       const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, id);
-      if (canonicalPath !== path.join(actualDirectory, id)) return undefined;
-      contentFd = openSync(canonicalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-      const before = fstatSync(contentFd);
-      if (!before.isFile() || before.nlink !== 1 || before.size !== artifact.size || before.size > 64 * 1024 * 1024) {
-        return undefined;
-      }
-      const body = readFileSync(contentFd);
-      const after = fstatSync(contentFd);
-      if (!after.isFile() || after.dev !== before.dev || after.ino !== before.ino ||
-          after.size !== before.size || body.length !== artifact.size) return undefined;
-      const contentHash = createHash("sha256").update(body).digest("hex");
-      if (contentHash !== artifact.sha256) return undefined;
-      return { artifact, body, localPath: canonicalPath, contentHash, byteLength: body.length };
+      const content = readManagedArtifactContent(this.dataDir, projectId, id, artifact.size, artifact.sha256);
+      return content ? {
+        artifact,
+        body: content.body,
+        localPath: canonicalPath,
+        contentHash: content.sha256,
+        byteLength: content.size,
+      } : undefined;
     } catch { return undefined; }
-    finally { if (contentFd !== undefined) closeSync(contentFd); }
   }
 
   reserveRuntimeCommunication(
@@ -1018,6 +1051,9 @@ export class AssetStore {
       try {
         if (preview && previewFile) await writeAtomic(path.join(directory, previewFile), preview);
         await writeAtomic(path.join(directory, `${id}.json`), JSON.stringify(asset));
+        // Persist all staged names (content, optional preview, and metadata)
+        // before quota state can make this asset authoritative.
+        await this.syncDirectory(openedDirectory.handle, "stage");
         this.authority.settle(reservationId);
       } catch (error) {
         await Promise.allSettled([unlink(path.join(directory, originalFile)), previewFile ? unlink(path.join(directory, previewFile)) : Promise.resolve(), unlink(path.join(directory, `${id}.json`))]);
@@ -1039,12 +1075,23 @@ export class AssetStore {
     const now = new Date().toISOString();
     const associated = assets as StoredAsset[];
     await Promise.all(associated.map(async (asset) => {
-      if (asset.state === "associated") return;
-      const updated = { ...asset, state: "associated" as const, associatedAt: now };
       const directory = await this.safeDirectory(projectId, agentId);
-      try { await writeAtomic(path.join(directory.path, `${asset.id}.json`), JSON.stringify(updated)); }
+      try {
+        if (asset.state === "associated") {
+          // This is intentionally not a no-op: a previous metadata rename may
+          // have succeeded while its directory sync failed. A retry must finish
+          // that durability barrier before reporting success.
+          await this.syncDirectory(directory.handle, "associate");
+          return;
+        }
+        const updated = { ...asset, state: "associated" as const, associatedAt: now };
+        await writeAtomic(path.join(directory.path, `${asset.id}.json`), JSON.stringify(updated));
+        // Communication/attachment recovery may rely on this state only after
+        // the replacement metadata name is durable.
+        await this.syncDirectory(directory.handle, "associate");
+        Object.assign(asset, updated);
+      }
       finally { await directory.handle.close(); }
-      Object.assign(asset, updated);
     }));
     return associated.map(publicDto);
   }

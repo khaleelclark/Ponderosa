@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -33,5 +33,25 @@ describe("EngineAvailabilityStore", () => {
     });
     expect(new EngineAvailabilityStore(dir).denial("claude")).toBeUndefined();
     expect(readFileSync(path.join(dir, "engine-availability.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
+  });
+
+  it("persists current provider evidence after an interrupted trailing record", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-evidence-"));
+    dirs.push(dir);
+    const file = path.join(dir, "engine-availability.jsonl");
+    writeFileSync(file, '{"engineId":"codex"', "utf8");
+
+    const first = new EngineAvailabilityStore(dir);
+    first.record({
+      engineId: "codex",
+      available: false,
+      detail: "subscription access denied",
+      source: "provider_run",
+      observedAt: "2026-07-20T00:00:00.000Z",
+    });
+
+    const restarted = new EngineAvailabilityStore(dir);
+    expect(restarted.denial("codex")).toMatchObject({ detail: "subscription access denied" });
+    expect(readFileSync(file, "utf8")).toContain('\n{"engineId":"codex","available":false');
   });
 });

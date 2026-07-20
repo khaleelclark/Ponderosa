@@ -1,9 +1,20 @@
 import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { WorkspaceTabs } from "../src/components/WorkspaceTabs";
 import { openWorkspaceTab } from "../src/workspaceTabs";
+
+vi.mock("@mui/material", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mui/material")>();
+  const { createElement, forwardRef } = await import("react");
+  return {
+    ...actual,
+    Menu: forwardRef<HTMLDivElement, { children?: ReactNode }>(({ children }, ref) =>
+      createElement("div", { ref, role: "menu" }, children)),
+  };
+});
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/work/website", defaultEngine: "codex", createdAt: "2026-07-17T00:00:00.000Z" },
@@ -56,8 +67,11 @@ describe("workspace tab bar", () => {
     const releaseTabContainer = view.root.findByProps({ "data-tab-key": "release-tab" });
     expect(releaseTabContainer.props.onContextMenu).toEqual(expect.any(Function));
     expect(releaseTabContainer.props.sx.borderRadius).toBe(2);
-    expect(releaseTabContainer.props.sx.minWidth).toBe(38);
-    expect(releaseTabContainer.props.sx.flex).toBe("1 1 200px");
+    expect(releaseTabContainer.props.sx.minWidth).toEqual({ xs: 132, md: 140 });
+    expect(releaseTabContainer.props.sx.flex).toBe("0 1 220px");
+    const tabStrip = view.root.findByProps({ className: "workspace-tab-strip" });
+    expect(tabStrip.props.sx.overflowX).toBe("auto");
+    expect(tabStrip.props.sx.scrollbarWidth).toBe("none");
     expect(onCloseOthers).not.toHaveBeenCalled();
     const releaseTab = view.root.findByProps({ "aria-label": "Open Release planning in Website" });
     act(() => releaseTab.props.onClick());
@@ -77,6 +91,70 @@ describe("workspace tab bar", () => {
     act(() => reviewerTabContainer.props.onDragOver({ preventDefault: vi.fn(), dataTransfer }));
     act(() => view.root.findByProps({ "data-tab-key": "reviewer-tab" }).props.onDrop({ preventDefault: vi.fn(), dataTransfer }));
     expect(onReorder).toHaveBeenCalledWith("release-tab", "reviewer-tab");
+    view.unmount();
+    client.clear();
+  });
+
+  it("visibly presents an inactive close control for native and MUI focus-visible states", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const tabs = openWorkspaceTab(
+      openWorkspaceTab([], { kind: "projects" }, 1, "inactive-tab"),
+      { kind: "allChat" }, 2, "active-tab",
+    );
+    const view = create(<QueryClientProvider client={client}><WorkspaceTabs
+      tabs={tabs}
+      projects={[]}
+      activeKey="active-tab"
+      onActivate={vi.fn()}
+      onCreate={vi.fn()}
+      onClose={vi.fn()}
+      onCloseOthers={vi.fn()}
+      onRename={vi.fn()}
+      onReorder={vi.fn()}
+    /></QueryClientProvider>);
+
+    const inactiveClose = view.root.findByProps({ "aria-label": "Close Projects" });
+    expect(inactiveClose.props.disabled).toBe(false);
+    expect(inactiveClose.props.sx.opacity).toEqual({ xs: 0.45, md: 0 });
+    expect(inactiveClose.props.sx["&:focus-visible, &.Mui-focusVisible"]).toEqual({
+      color: "text.primary",
+      opacity: 1,
+    });
+    view.unmount();
+    client.clear();
+  });
+
+  it("opens keyboard tab actions that move a tab without changing its persisted identity", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const tabs = openWorkspaceTab(
+      openWorkspaceTab(openWorkspaceTab([], { kind: "projects" }, 1, "projects"), { kind: "allChat" }, 2, "chat"),
+      { kind: "allAgents" }, 3, "agents",
+    );
+    const onReorder = vi.fn();
+    const view = create(<QueryClientProvider client={client}><WorkspaceTabs
+      tabs={tabs}
+      projects={[]}
+      activeKey="chat"
+      onActivate={vi.fn()}
+      onCreate={vi.fn()}
+      onClose={vi.fn()}
+      onCloseOthers={vi.fn()}
+      onRename={vi.fn()}
+      onReorder={onReorder}
+    /></QueryClientProvider>);
+
+    const chatTab = view.root.findByProps({ "aria-label": "Open All Chat in Ponderosa" });
+    expect(chatTab.props["aria-keyshortcuts"]).toBe("Shift+F10");
+    const menuKey = { key: "ContextMenu", shiftKey: false, preventDefault: vi.fn(), currentTarget: {} };
+    act(() => chatTab.props.onKeyDown(menuKey));
+    expect(menuKey.preventDefault).toHaveBeenCalledOnce();
+    const moveLeft = view.root.findAll((node) => node.props.children === "Move Left")[0]!;
+    const moveRight = view.root.findAll((node) => node.props.children === "Move Right")[0]!;
+    expect(moveLeft.props.disabled).toBe(false);
+    expect(moveRight.props.disabled).toBe(false);
+
+    act(() => moveRight.props.onClick());
+    expect(onReorder).toHaveBeenCalledWith("chat", "agents");
     view.unmount();
     client.clear();
   });

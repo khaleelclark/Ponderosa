@@ -118,7 +118,7 @@ export function EmojiReactionPicker({
         <DialogActions>
           <Button disabled={sending} onClick={() => setOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={sending || !isSingleEmoji(customEmoji)} onClick={() => void send(customEmoji)}>
-            {sending ? "Sending…" : "Send reaction"}
+            {sending ? "Sending…" : "Send Reaction"}
           </Button>
         </DialogActions>
       </Dialog>

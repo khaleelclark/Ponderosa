@@ -273,13 +273,18 @@ describe("Communication V3 agent deletion", () => {
       `).get()).toEqual({ count: 1 });
       coordination.createTriggerDefinition({
         id: "project-delete-trigger", projectId: project.id, conversationId: chat.id, agentId: recipient.id,
-        name: "Project trigger", instructions: "Handle it", sourceKind: "webhook",
-        sourceConfig: { replayWindowSeconds: 300 },
+        name: "Project trigger", instructions: "Handle it", sourceKind: "filesystem",
+        sourceConfig: { include: ["**/*"], exclude: [], quietMs: 100, maxWindowMs: 1_000 },
       });
       coordination.recordTriggerOccurrence({
         triggerId: "project-delete-trigger", occurrenceKey: "delivery-1",
         payload: { task: "watch" }, provenance: { source: "test" },
       });
+      coordination.recordFilesystemTriggerEvent({
+        triggerId: "project-delete-trigger", path: "src/app.ts", eventType: "change",
+        maxCapturedPaths: 100,
+      });
+      expect(coordination.listPendingFilesystemTriggerBursts()).toHaveLength(1);
 
       coordination.prepareProjectDeletion(project.id);
       expect(coordination.activeRunCount()).toBe(0);
@@ -292,7 +297,7 @@ describe("Communication V3 agent deletion", () => {
         "activation_outbox", "scheduler_runs", "scheduler_run_activations",
         "scheduler_prompt_injections", "scheduler_cancellation_receipts",
         "provider_operation_outbox", "coordination_idempotency", "scheduler_agent_fences",
-        "trigger_occurrences", "trigger_definitions",
+        "trigger_filesystem_bursts", "trigger_occurrences", "trigger_definitions",
       ]) {
         expect(agents.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get(), table).toEqual({ count: 0 });
       }
