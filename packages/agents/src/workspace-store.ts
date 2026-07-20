@@ -355,6 +355,18 @@ export class WorkspaceStore {
     return notificationIds.length;
   }
 
+  clearProjectNotifications(projectId: string): number {
+    const notificationIds = this.listNotifications()
+      .filter((item) => item.projectId === projectId)
+      .map((item) => item.id);
+    if (notificationIds.length === 0) return 0;
+    this.append(
+      { type: "notification_changed", action: "cleared" },
+      { kind: "notifications_cleared", notificationIds },
+    );
+    return notificationIds.length;
+  }
+
   putPushSubscription(input: Omit<WebPushSubscriptionDto, "updatedAt">): WebPushSubscriptionDto {
     const existing = this.pushSubscriptions.get(input.deviceId);
     if (existing && existing.endpoint === input.endpoint && existing.expirationTime === input.expirationTime &&

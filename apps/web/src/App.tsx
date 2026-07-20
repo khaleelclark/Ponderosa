@@ -6,6 +6,8 @@ import SearchIcon from "@mui/icons-material/Search";
 import LanguageIcon from "@mui/icons-material/Language";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import CloseIcon from "@mui/icons-material/Close";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
+import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 import {
   Alert,
   AppBar,
@@ -50,6 +52,8 @@ import { ProviderStatusDialog } from "./components/ProviderStatusDialog";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
+import { ImportAgentDialog } from "./components/ImportAgentDialog";
+import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
 import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
@@ -148,11 +152,14 @@ export default function App({
   const [profileNameDraft, setProfileNameDraft] = useState("User");
   const [profileHandleDraft, setProfileHandleDraft] = useState("operator");
   const [profileAvatarDraft, setProfileAvatarDraft] = useState("default-user");
+  const [profileUploadBusy, setProfileUploadBusy] = useState(false);
+  const [profileUploadError, setProfileUploadError] = useState<string>();
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [pushState, setPushState] = useState<WebPushState>({ kind: "permission_default", message: "Checking browser push status…" });
   const [pushBusy, setPushBusy] = useState(false);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
+  const [projectImportOpen, setProjectImportOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsProjectId, setSettingsProjectId] = useState<string>();
   const [renamedProjectLabel, setRenamedProjectLabel] = useState("");
@@ -168,6 +175,12 @@ export default function App({
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const projectFoldersQuery = useProjectFolders(projectDialogOpen);
+  const settingsProjectConversationsQuery = useQuery({
+    queryKey: ["conversations", settingsProjectId],
+    queryFn: () => api.listConversations(settingsProjectId!),
+    enabled: projectImportOpen && Boolean(settingsProjectId),
+    staleTime: 10_000,
+  });
   const providerUsageQuery = useQuery({
     queryKey: ["token-usage", "overall", undefined, "all"],
     queryFn: () => api.getTokenUsage("overall", undefined, {}),
@@ -505,6 +518,7 @@ export default function App({
     setProfileNameDraft(preferences.profile.displayName);
     setProfileHandleDraft(preferences.profile.handle);
     setProfileAvatarDraft(preferences.profile.avatarId);
+    setProfileUploadError(undefined);
     setOperatorProfileOpen(true);
   };
   const openProjectSettings = (project: ProjectDto) => {
@@ -560,16 +574,6 @@ export default function App({
               sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "pointer" }}
             />
           </Tooltip>
-          <Button
-            variant="outlined"
-            color="inherit"
-            startIcon={<SearchIcon />}
-            onClick={() => setGlobalSearchOpen(true)}
-            aria-label="Search all chats"
-            sx={{ ml: 1, minWidth: { md: 190 }, justifyContent: "space-between", display: { xs: "none", md: "inline-flex" }, color: "text.secondary", borderColor: "divider" }}
-          >
-            Search <Box component="kbd" sx={{ ml: 2, px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K"}</Box>
-          </Button>
           <Tooltip title="Search Chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, minWidth: 44, minHeight: 44 }}><SearchIcon /></IconButton></Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
@@ -954,18 +958,36 @@ export default function App({
       </Dialog>
 
       <Dialog open={operatorProfileOpen} onClose={() => setOperatorProfileOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Operator profile</DialogTitle>
+        <DialogTitle>Operator Profile</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Typography variant="body2" color="text.secondary">This synced identity controls how Agents address you and how your profile appears throughout Ponderosa.</Typography>
             <TextField autoFocus label="What Agents call you" value={profileNameDraft} onChange={(event) => setProfileNameDraft(event.target.value)} inputProps={{ maxLength: 80 }} />
             <TextField label="Handle" value={profileHandleDraft} onChange={(event) => setProfileHandleDraft(event.target.value.replace(/^#/, "").toLowerCase())} helperText="Used as your stable #handle." inputProps={{ maxLength: 32 }} />
-            <FormControl fullWidth><InputLabel id="operator-profile-avatar-label">Picture</InputLabel><Select labelId="operator-profile-avatar-label" label="Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}><MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
+            <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+              <OperatorAvatar profile={{ displayName: profileNameDraft || "User", handle: profileHandleDraft || "operator", avatarId: profileAvatarDraft }} size={56} />
+              <Button component="label" variant="outlined" startIcon={<PhotoCameraOutlinedIcon />} disabled={profileUploadBusy}>
+                {profileUploadBusy ? "Uploading…" : "Upload Picture"}
+                <input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setProfileUploadBusy(true);
+                  setProfileUploadError(undefined);
+                  void api.uploadOperatorAvatar(file).then((uploaded) => setProfileAvatarDraft(uploaded.avatarId))
+                    .catch((reason) => setProfileUploadError(reason instanceof Error ? reason.message : "Picture upload failed."))
+                    .finally(() => setProfileUploadBusy(false));
+                }} />
+              </Button>
+            </Stack>
+            <FormControl fullWidth><InputLabel id="operator-profile-avatar-label">Generated Picture</InputLabel><Select labelId="operator-profile-avatar-label" label="Generated Picture" value={profileAvatarDraft} onChange={(event) => setProfileAvatarDraft(event.target.value)}>{profileAvatarDraft.startsWith("uploaded:") ? <MenuItem value={profileAvatarDraft}>Uploaded Picture</MenuItem> : null}<MenuItem value="default-user">Pine</MenuItem><MenuItem value="sunset">Sunset</MenuItem><MenuItem value="river">River</MenuItem><MenuItem value="mountain">Mountain</MenuItem><MenuItem value="fox">Fox</MenuItem><MenuItem value="owl">Owl</MenuItem></Select></FormControl>
+            <Typography variant="caption" color="text.secondary">PNG, JPEG, or WebP up to 2 MiB. Uploaded pictures are stored in Ponderosa-managed workspace data.</Typography>
+            {profileUploadError ? <Alert severity="error">{profileUploadError}</Alert> : null}
           </Stack>
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setOperatorProfileOpen(false)}>Cancel</Button>
-          <Button variant="contained" disabled={!profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
+          <Button variant="contained" disabled={profileUploadBusy || !profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
             savePreferences({ profile: { displayName: profileNameDraft.trim(), handle: profileHandleDraft, avatarId: profileAvatarDraft } });
             setOperatorProfileOpen(false);
           }}>Save Profile</Button>
@@ -973,7 +995,7 @@ export default function App({
       </Dialog>
 
       <Dialog open={projectSettingsOpen} onClose={() => setProjectSettingsOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Project settings</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
+        <DialogTitle>Project Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
           <TextField label="Project name" value={renamedProjectLabel} onChange={(event) => setRenamedProjectLabel(event.target.value)} fullWidth />
           <FormControl fullWidth><InputLabel id="settings-project-engine-label">Default engine</InputLabel><Select labelId="settings-project-engine-label" label="Default engine" value={settingsProjectDefaultEngine} onChange={(event) => { setSettingsProjectDefaultEngine(event.target.value); setSettingsProjectDefaultModel(""); setSettingsProjectDefaultEffort(""); }}>{engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</Select></FormControl>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
@@ -987,10 +1009,19 @@ export default function App({
             </Select></FormControl>
           </Stack>
           <TextField label="Project master rules" value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} multiline minRows={5} helperText="These rules apply after global rules to every Agent working in this Project." fullWidth />
+          <Button variant="outlined" startIcon={<FileUploadOutlinedIcon />} onClick={() => { setProjectSettingsOpen(false); setProjectImportOpen(true); }}>Import Agent or Organization</Button>
           {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
           <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete Project Permanently</Button>
         </Stack></DialogContent><DialogActions><Button onClick={() => setProjectSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!renamedProjectLabel.trim() || updateProject.isPending} onClick={() => updateProject.mutate()}>Save</Button></DialogActions>
       </Dialog>
+      {settingsProjectId ? <ImportAgentDialog
+        open={projectImportOpen}
+        projectId={settingsProjectId}
+        engines={engines}
+        conversations={settingsProjectConversationsQuery.data ?? []}
+        onClose={() => setProjectImportOpen(false)}
+        onImported={(agentId) => navigateWorkspace({ kind: "agent", projectId: settingsProjectId, agentId })}
+      /> : null}
 
       <Dialog open={deleteConfirmationOpen} onClose={() => setDeleteConfirmationOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Delete this project?</DialogTitle><DialogContent><Alert severity="warning">This permanently deletes its Project chats, agents, runs, work items, and files &amp; results. The working folder and its source files are not deleted.</Alert>{deleteProject.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProject.error)}</Alert> : null}</DialogContent>

@@ -94,6 +94,7 @@ import type {
   UpdateProjectRequest,
   UpdateTriggerRequest,
   UpdateWorkspacePreferencesRequest,
+  UploadedOperatorAvatarDto,
   WebPushStatusDto,
   WebPushSubscriptionDto,
   WorkspaceEventEnvelope,
@@ -291,10 +292,18 @@ export const realApi = {
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
+  uploadOperatorAvatar(file: File): Promise<UploadedOperatorAvatarDto> {
+    return requestJson<UploadedOperatorAvatarDto>("/api/workspace/profile-images", {
+      method: "POST",
+      headers: { "content-type": file.type },
+      body: file,
+    });
+  },
   listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
   async clearConversationNotifications(conversationId: string): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
+  async clearProjectNotifications(projectId: string): Promise<void> { await requestJson(`/api/projects/${encodeURIComponent(projectId)}/notifications`, { method: "DELETE" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
   listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },

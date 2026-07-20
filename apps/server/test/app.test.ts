@@ -11,7 +11,7 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions, type UploadedOperatorAvatarDto } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, EventLog, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
 import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
@@ -1119,6 +1119,48 @@ describe("notification panel actions", () => {
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ readAt?: string }>>().every((item) => Boolean(item.readAt))).toBe(true);
     expect((await app.inject({ method: "DELETE", url: "/api/notifications" })).json()).toEqual({ cleared: 2 });
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
+    await app.close();
+  });
+
+  it("clears one Project group without removing notifications from another Project", async () => {
+    const alpha = store.createProject({ label: "Alpha", hostPath: repoDir, defaultEngine: "codex" });
+    const betaPath = mkdtempSync(path.join(tmpdir(), "pond-server-notifications-"));
+    writeFileSync(path.join(betaPath, "README.md"), "# beta\n", "utf8");
+    process.env.PONDEROSA_BROWSE_ROOTS = `${repoDir},${betaPath}`;
+    const beta = store.createProject({ label: "Beta", hostPath: betaPath, defaultEngine: "codex" });
+    const workspace = new WorkspaceStore(dataDir);
+    workspace.createNotification({ projectId: alpha.id, kind: "mentions", title: "Alpha", body: "One" });
+    workspace.createNotification({ projectId: beta.id, kind: "mentions", title: "Beta", body: "Two" });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    try {
+      expect((await app.inject({ method: "DELETE", url: `/api/projects/${alpha.id}/notifications` })).json()).toEqual({ cleared: 1 });
+      expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([
+        expect.objectContaining({ projectId: beta.id, title: "Beta" }),
+      ]);
+    } finally {
+      await app.close();
+      rmSync(betaPath, { recursive: true, force: true });
+    }
+  });
+
+  it("stores validated Operator pictures in managed files before profile authority references them", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
+    const uploaded = await app.inject({ method: "POST", url: "/api/workspace/profile-images", headers: { "content-type": "image/png" }, payload: png });
+    expect(uploaded.statusCode).toBe(201);
+    const avatar = uploaded.json<UploadedOperatorAvatarDto>();
+    expect(avatar.avatarId).toMatch(/^uploaded:png:[a-f0-9]{64}$/u);
+    expect((await app.inject({ method: "GET", url: avatar.url })).rawPayload).toEqual(png);
+    const saved = await app.inject({
+      method: "PATCH", url: "/api/workspace/preferences",
+      payload: { profile: { displayName: "Operator", handle: "operator", avatarId: avatar.avatarId } },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(new WorkspaceStore(dataDir).getPreferences().profile.avatarId).toBe(avatar.avatarId);
+    expect((await app.inject({
+      method: "PATCH", url: "/api/workspace/preferences",
+      payload: { profile: { displayName: "Operator", handle: "operator", avatarId: `uploaded:png:${"0".repeat(64)}` } },
+    })).statusCode).toBe(400);
     await app.close();
   });
 });

@@ -78,6 +78,7 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { useProjectBrowser } from "./ProjectBrowserContext";
 import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../faviconCache";
+import { OperatorAvatar } from "./OperatorAvatar";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -822,11 +823,10 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
 }
 
 export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorProfileDto; createdAt?: string }): JSX.Element {
-  const glyph = ({ "default-user": "🌲", sunset: "🌅", river: "🌊", mountain: "⛰️", fox: "🦊", owl: "🦉" } as Record<string, string>)[profile?.avatarId ?? "default-user"] ?? "●";
   const name = profile?.displayName ?? "User";
   return (
     <Stack direction="row" spacing={0.75} sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center" }}>
-      <Avatar aria-label={`${name} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{glyph}</Avatar>
+      <OperatorAvatar profile={profile} compactOnMobile />
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
         <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
         {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="start" desktopOnly /></Box> : null}

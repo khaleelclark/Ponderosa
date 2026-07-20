@@ -76,6 +76,16 @@ export function reorderProjectIds(order: string[], draggedId: string, targetId: 
   return next;
 }
 
+export function projectDropPreferencePatch(
+  order: string[],
+  draggedId: string,
+  targetId: string,
+  position: "before" | "after" = "before",
+): Pick<WorkspacePreferencesDto, "projectSort" | "projectOrder"> | undefined {
+  const projectOrder = reorderProjectIds(order, draggedId, targetId, position);
+  return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
+}
+
 export function AllProjectsView({ projects, preferences, onNavigate, onCreateProject, onManageProject, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
@@ -103,8 +113,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
   const dropProject = (targetId: string, position: "before" | "after") => {
     if (!draggedProjectId) return;
     const currentOrder = projects.map((project) => project.id);
-    const order = reorderProjectIds(currentOrder, draggedProjectId, targetId, position);
-    if (order !== currentOrder) onPreferences({ projectSort: "custom", projectOrder: order });
+    const patch = projectDropPreferencePatch(currentOrder, draggedProjectId, targetId, position);
+    if (patch) onPreferences(patch);
     setDraggedProjectId(undefined);
     setDropTarget(undefined);
   };
@@ -116,7 +126,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
   return <Box sx={{ width: "100%", minWidth: 0, minHeight: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" }, mb: 2 }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="h5" component="h2" fontWeight={800}>All projects</Typography>
+        <Typography variant="h5" component="h2" fontWeight={800}>All Projects</Typography>
         <Typography variant="body2" color="text.secondary">Every project stays identifiable by its host folder and recent Project chat.</Typography>
       </Box>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
@@ -170,12 +180,12 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
             <ListItemText
               primary={snapshot.project.label}
               secondary={`${snapshot.project.hostPath}${recent ? ` · Recent: ${recent.title}` : " · No Project chats"}`}
-              primaryTypographyProps={{ fontWeight: 750, noWrap: true }}
+              primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }}
               secondaryTypographyProps={{ noWrap: true }}
             />
             {running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
           </ListItemButton>
-          {preferences.projectSort === "custom" ? <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
+          <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
             <IconButton
               size="small"
               draggable
@@ -188,7 +198,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
               onDragEnd={() => { setDraggedProjectId(undefined); setDropTarget(undefined); }}
               sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
             ><DragIndicatorIcon fontSize="small" /></IconButton>
-          </Tooltip> : null}
+          </Tooltip>
           <Tooltip title={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
               {starredProjectIds.has(snapshot.project.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}

@@ -94,6 +94,19 @@ describe("WorkspaceStore canonical replay", () => {
     expect(new WorkspaceStore(dir).listNotifications()).toEqual([]);
   });
 
+  it("clears only one Project notification group canonically across restart", () => {
+    const { dir, store } = fixture();
+    store.createNotification({ projectId: "alpha", conversationId: "one", communicationEventId: "one", kind: "mentions", title: "One", body: "First" });
+    store.createNotification({ projectId: "alpha", conversationId: "two", communicationEventId: "two", kind: "direct_responses", title: "Two", body: "Second" });
+    store.createNotification({ projectId: "beta", conversationId: "three", communicationEventId: "three", kind: "mentions", title: "Three", body: "Third" });
+
+    expect(store.clearProjectNotifications("alpha")).toBe(2);
+    expect(store.clearProjectNotifications("alpha")).toBe(0);
+    expect(new WorkspaceStore(dir).listNotifications()).toEqual([
+      expect.objectContaining({ projectId: "beta", communicationEventId: "three" }),
+    ]);
+  });
+
   it("persists provider switches, master rules, profile, urgent alerts, and Decisions", () => {
     const { dir, store } = fixture();
     store.updatePreferences({

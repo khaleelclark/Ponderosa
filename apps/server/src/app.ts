@@ -85,6 +85,7 @@ import type {
   WorkspaceEventEnvelope,
   WorkspaceEvent,
   WorkspaceNotificationDto,
+  UploadedOperatorAvatarDto,
   NotificationPreferencesDto,
   NotificationPreference,
   VerifiedCitationDto,
@@ -163,6 +164,7 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
+import { isManagedOperatorAvatarId, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
 import {
   descriptorRelativeFilesystemCapability,
   readWorkspaceArtifactFile,
@@ -12565,6 +12567,28 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
+  const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
+
+  app.post<{ Body: Buffer }>("/api/workspace/profile-images", async (request, reply) => {
+    if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "profile image body is required" });
+    try {
+      const uploaded = await storeOperatorProfileImage(opts.dataDir, request.body, request.headers["content-type"]);
+      return reply.code(201).send(uploaded satisfies UploadedOperatorAvatarDto);
+    } catch (error) {
+      if (error instanceof OperatorProfileImageError) return reply.code(error.statusCode).send({ error: error.message });
+      throw error;
+    }
+  });
+
+  app.get<{ Params: { avatarId: string } }>("/api/workspace/profile-images/:avatarId", async (request, reply) => {
+    const image = await readOperatorProfileImage(opts.dataDir, request.params.avatarId);
+    if (!image) return reply.code(404).send({ error: "profile image not found" });
+    return reply.type(image.mediaType)
+      .header("cache-control", "private, max-age=31536000, immutable")
+      .header("content-disposition", "inline")
+      .send(image.body);
+  });
+
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
@@ -12599,8 +12623,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const profile = patch.profile;
       const handle = profile?.handle?.replace(/^#/, "").toLowerCase();
       if (!profile || typeof profile.displayName !== "string" || typeof handle !== "string" || !/^[a-z][a-z0-9_-]{1,31}$/.test(handle) || ["broadcast", "everyone", "user"].includes(handle) || typeof profile.avatarId !== "string") {
-        return reply.code(400).send({ error: "profile requires a display name, catalog avatar, and an available 2–32 character handle" });
+        return reply.code(400).send({ error: "profile requires a display name, picture, and an available 2–32 character handle" });
       }
+      if (!catalogOperatorAvatarIds.has(profile.avatarId) && (!isManagedOperatorAvatarId(profile.avatarId) || !await readOperatorProfileImage(opts.dataDir, profile.avatarId))) return reply.code(400).send({ error: "profile picture is not a durable managed upload or generated choice" });
       patch.profile = { ...profile, handle };
     }
     const previousPreferences = workspace.getPreferences();
@@ -12767,6 +12792,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.delete("/api/notifications", async () => {
     const cursor = workspace.cursor();
     const cleared = workspace.clearNotifications();
+    publishWorkspaceSince(cursor);
+    return { cleared };
+  });
+  app.delete<{ Params: { id: string } }>("/api/projects/:id/notifications", async (request, reply) => {
+    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
+    const cursor = workspace.cursor();
+    const cleared = workspace.clearProjectNotifications(request.params.id);
     publishWorkspaceSince(cursor);
     return { cleared };
   });

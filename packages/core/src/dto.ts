@@ -98,6 +98,14 @@ export interface OperatorProfileDto {
   avatarId: string;
 }
 
+export interface UploadedOperatorAvatarDto {
+  /** Content-addressed managed avatar identity persisted in OperatorProfileDto. */
+  avatarId: string;
+  mediaType: "image/png" | "image/jpeg" | "image/webp";
+  size: number;
+  url: string;
+}
+
 export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreferencesDto, "updatedAt">>;
 
 export interface DraftAttachmentDto {
