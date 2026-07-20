@@ -338,6 +338,112 @@ describe("Codex app-server persistent runtime", () => {
     await session.close();
   });
 
+  it.each([
+    ["model/rerouted", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "highRiskCyberActivity",
+      },
+    }],
+    ["thread/settings/updated", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+    }],
+  ])("keeps authoritative %s state when it arrives before turn/start completes", async (_method, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "model-notification-before-response", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    const capabilities = await session.capabilities();
+    expect(capabilities).toMatchObject({ model: "model-a", catalogVersion: "codex-thread-v1:1" });
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(changes).toHaveLength(1);
+    await session.close();
+    await draining;
+  });
+
+  it.each([
+    ["model/rerouted", {
+      method: "model/rerouted",
+      params: {
+        threadId: "codex-thread-v1", turnId: "turn-1", fromModel: "model-b", toModel: "model-a",
+        reason: "highRiskCyberActivity",
+      },
+    }],
+    ["thread/settings/updated", {
+      method: "thread/settings/updated",
+      params: { threadId: "codex-thread-v1", threadSettings: { model: "model-a" } },
+    }],
+  ])("applies authoritative %s state once when it arrives after turn/start", async (_method, notification) => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "model-notification-after-response", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsAfterTurnStartResponse: [notification],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    expect(changes).toHaveLength(1);
+    await vi.waitFor(() => expect(changes).toHaveLength(2));
+    const capabilities = await session.capabilities();
+    expect(capabilities).toMatchObject({ model: "model-a", catalogVersion: "codex-thread-v1:2" });
+    expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    await session.close();
+    await draining;
+  });
+
+  it("ignores foreign-thread and malformed provider model notifications", async () => {
+    const controller = new AbortController();
+    const changes: number[] = [];
+    const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>
+      spawn(process.execPath, [fake], opts)) as unknown as typeof spawn;
+    const session = await CodexAppServerSession.open({
+      agentId: "invalid-model-notification", cwd: here, history: [], model: "model-a",
+      signal: controller.signal, bin: "codex", spawnFn, sandboxMode: "workspace-write", killGraceMs: 50,
+      onRuntimeSpawned: retainOpeningHandleForTest,
+      onCapabilitiesChanged: () => changes.push(Date.now()),
+      environment: { PONDEROSA_TEST_CODEX_CATALOG: JSON.stringify({
+        models: { data: [{ id: "model-a", hidden: false, isDefault: true }], nextCursor: null },
+        notificationsBeforeTurnStartResponse: [
+          {
+            method: "model/rerouted",
+            params: { threadId: "foreign-thread", turnId: "turn-1", fromModel: "model-b", toModel: "foreign", reason: "highRiskCyberActivity" },
+          },
+          { method: "model/rerouted", params: { threadId: "codex-thread-v1", toModel: "malformed" } },
+          { method: "thread/settings/updated", params: { threadId: "foreign-thread", threadSettings: { model: "foreign" } } },
+          { method: "thread/settings/updated", params: { threadId: "codex-thread-v1", threadSettings: { model: "  " } } },
+        ],
+      }) },
+    });
+    const draining = (async () => { for await (const _event of session.events) { /* drain provider notifications */ } })();
+    await session.startTurn({ prompt: "request model B", kind: "user_message", model: "model-b" });
+    expect(await session.capabilities()).toMatchObject({ model: "model-b", catalogVersion: "codex-thread-v1:1" });
+    expect(changes).toHaveLength(1);
+    await session.close();
+    await draining;
+  });
+
   it("reads installed remote plugin skills by the provider-owned plugin id", async () => {
     const controller = new AbortController();
     const spawnFn = ((_bin: string, _args: readonly string[], opts: object) =>

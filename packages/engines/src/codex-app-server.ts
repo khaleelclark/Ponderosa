@@ -175,6 +175,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
   private catalogGeneration = 0;
+  private providerModelGeneration = 0;
   private readonly mcpStartup = new Map<string, { status: string; error?: string }>();
   readonly events: AsyncIterable<AgentEvent>;
 
@@ -321,7 +322,21 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
-    if (notification.method === "mcpServer/startupStatus/updated") {
+    if (notification.method === "model/rerouted") {
+      const raw = object(notification.params);
+      if (raw?.threadId !== this.engineAgentId ||
+          typeof raw.turnId !== "string" || !raw.turnId.trim() ||
+          typeof raw.fromModel !== "string" || !raw.fromModel.trim() ||
+          typeof raw.toModel !== "string" || !raw.toModel.trim() ||
+          typeof raw.reason !== "string" || !raw.reason.trim()) return;
+      this.observeProviderModel(raw.toModel.trim());
+    } else if (notification.method === "thread/settings/updated") {
+      const raw = object(notification.params);
+      const threadSettings = object(raw?.threadSettings);
+      if (raw?.threadId !== this.engineAgentId ||
+          typeof threadSettings?.model !== "string" || !threadSettings.model.trim()) return;
+      this.observeProviderModel(threadSettings.model.trim());
+    } else if (notification.method === "mcpServer/startupStatus/updated") {
       const raw = notification.params && typeof notification.params === "object"
         ? notification.params as { name?: unknown; status?: unknown; error?: unknown } : undefined;
       if (typeof raw?.name === "string" && typeof raw.status === "string") {
@@ -336,6 +351,12 @@ export class CodexAppServerSession implements RuntimeSession {
     }
   }
 
+  private observeProviderModel(model: string): void {
+    this.providerModelGeneration += 1;
+    this.activeModel = model;
+    this.invalidateCapabilities();
+  }
+
   private invalidateCapabilities(): void {
     this.capabilitiesDirty = true;
     this.catalogGeneration += 1;
@@ -346,6 +367,7 @@ export class CodexAppServerSession implements RuntimeSession {
     const prompt = this.seedHistory.length > 0
       ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
       : input.prompt;
+    const providerModelGeneration = this.providerModelGeneration;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
       input: [{ type: "text", text: prompt, text_elements: [] }],
@@ -355,7 +377,9 @@ export class CodexAppServerSession implements RuntimeSession {
     });
     this.activeTurnId = response.turn.id;
     const acceptedModel = input.model?.trim() || this.activeModel;
-    if (acceptedModel !== this.activeModel) {
+    // A matching-thread model notification is more authoritative than RPC
+    // success, including when it arrives before this continuation resumes.
+    if (providerModelGeneration === this.providerModelGeneration && acceptedModel !== this.activeModel) {
       this.activeModel = acceptedModel;
       this.invalidateCapabilities();
     }

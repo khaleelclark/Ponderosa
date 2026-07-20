@@ -89,8 +89,14 @@ lines.on("line", (line) => {
         discovery.rejectTurnStartModel === message.params?.model) {
       return send({ id: message.id, error: { code: -32000, message: `model ${message.params.model} was rejected` } });
     }
+    for (const notification of discovery.notificationsBeforeTurnStartResponse ?? []) send(notification);
     send({ id: message.id, result: { turn: { id: "turn-1" } } });
     send({ method: "turn/started", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "inProgress" } } });
+    if (discovery.notificationsAfterTurnStartResponse) {
+      setTimeout(() => {
+        for (const notification of discovery.notificationsAfterTurnStartResponse) send(notification);
+      }, discovery.turnStartNotificationDelayMs ?? 10);
+    }
     if (message.params?.input?.[0]?.text?.includes("History marker")) {
       send({ method: "item/completed", params: { threadId: "codex-thread-v1", turnId: "turn-1", item: { type: "agentMessage", id: "history", text: message.params.input[0].text } } });
       send({ method: "turn/completed", params: { threadId: "codex-thread-v1", turn: { id: "turn-1", status: "completed", error: null } } });
