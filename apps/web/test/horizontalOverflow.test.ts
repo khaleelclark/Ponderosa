@@ -30,6 +30,7 @@ describe("horizontal overflow containment", () => {
     expect(copyMessageButton).toContain('width: "1px", height: "1px"');
     expect(panes).toContain('maxWidth: "100%", overflowX: "auto"');
     expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width');
+    expect(app).toContain('width: "min(100vw, 390px)", maxWidth: "100vw"');
     expect(workspaceSidebar).toContain('minHeight: 0, overflowY: "auto"');
   });
 

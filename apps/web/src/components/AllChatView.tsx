@@ -135,7 +135,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
-      {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load older messages"}</Button></Stack> : null}
+      {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
       <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
         {items.map((item, index) => {
           const selectedItem = selectedId === item.communicationEventId;
@@ -176,7 +176,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                 color="inherit"
                 endIcon={<OpenInNewIcon fontSize="small" />}
                 onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }}
-              >Open source</Button>
+              >Open Source</Button>
             </Stack>
             <Divider sx={{ my: 1.25 }} />
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.text}</Typography>

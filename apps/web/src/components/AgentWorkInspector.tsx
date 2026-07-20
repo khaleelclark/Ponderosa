@@ -138,7 +138,7 @@ export function AgentWorkInspector({
           <Typography variant="h6">Agent work</Typography>
           <Typography variant="caption" color="text.secondary">Requests, waiting, wake-ups, Runs, Triggers, and Decisions</Typography>
         </Box>
-        <Tooltip title="Refresh now"><span><IconButton aria-label="Refresh Agent work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Agent work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
         <IconButton aria-label="Close Agent work" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>

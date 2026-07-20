@@ -72,6 +72,8 @@ describe("responsive workspace sidebar flow", () => {
 
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);
     const rendered = JSON.stringify(view.toJSON());
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Home")).toHaveLength(0);
+    expect(view.root.findByProps({ "aria-label": "All Chat" })).toBeTruthy();
     expect(rendered).toContain("All Projects");
     expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
@@ -195,7 +197,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onPreferences).toHaveBeenCalledWith({ starredProjectIds: [] });
     const sortProjects = view.root.findByProps({ "aria-label": "Sort projects" });
     expect(sortProjects.props.onClick).toEqual(expect.any(Function));
-    expect(JSON.stringify(view.toJSON())).toContain("Recent activity");
+    expect(JSON.stringify(view.toJSON())).toContain("Recent Activity");
     view.unmount();
     client.clear();
   });

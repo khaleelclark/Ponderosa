@@ -26,7 +26,7 @@ export const WORKSPACE_TABS_STORAGE_KEY = "ponderosa.workspaceTabs.v2";
 export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
-  if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allAgents") return true;
+  if (candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allAgents") return true;
   if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
   if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
   if (candidate.kind === "project" || candidate.kind === "agents") return true;
@@ -43,7 +43,6 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
 /** Stable resource identity, used only when a deleted resource must be removed. */
 export function workspaceTabKey(route: Route): string {
   switch (route.kind) {
-    case "home": return "home";
     case "projects": return "projects";
     case "allChat": return "all-chat";
     case "allAgents": return "all-agents";
@@ -130,12 +129,12 @@ export function mostRecentWorkspaceTab(current: WorkspaceTabState[], excludingKe
 export function removeWorkspaceRoute(current: WorkspaceTabState[], route: Route): WorkspaceTabState[] {
   const resourceKey = workspaceTabKey(route);
   const retained = current.filter((tab) => workspaceTabKey(tab.route) !== resourceKey);
-  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
+  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "allChat" })];
 }
 
 export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], projectIds: Set<string>): WorkspaceTabState[] {
   const retained = current.filter((tab) => !("projectId" in tab.route) || projectIds.has(tab.route.projectId));
-  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
+  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "allChat" })];
 }
 
 export function serializeWorkspaceTabs(tabs: WorkspaceTabState[], activeKey?: string): string {
@@ -149,14 +148,18 @@ export function restoreWorkspaceTabSession(value: string | null): WorkspaceTabSe
     if (parsed.version !== 2 || !Array.isArray(parsed.tabs)) return { tabs: [] };
     const seen = new Set<string>();
     const tabs = parsed.tabs.flatMap((candidate) => {
-      if (!candidate || typeof candidate !== "object" || !isWorkspaceTabRoute(candidate.route) ||
+      if (!candidate || typeof candidate !== "object") return [];
+      const route = (candidate.route as { kind?: unknown } | undefined)?.kind === "home"
+        ? { kind: "allChat" as const }
+        : candidate.route;
+      if (!isWorkspaceTabRoute(route) ||
           typeof candidate.key !== "string" || !candidate.key || seen.has(candidate.key) ||
           !Number.isFinite(candidate.lastActivatedAt) ||
           (candidate.title !== undefined && typeof candidate.title !== "string")) return [];
       seen.add(candidate.key);
       return [{
         key: candidate.key,
-        route: candidate.route,
+        route,
         lastActivatedAt: candidate.lastActivatedAt,
         ...(candidate.title?.trim() ? { title: candidate.title.trim().slice(0, 80) } : {}),
       }];

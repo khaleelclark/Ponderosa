@@ -142,7 +142,7 @@ export function BrowserPanel({
       <LanguageIcon color={ready ? "primary" : "disabled"} fontSize="small" />
       <Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="subtitle2" noWrap>Interactive browser in use</Typography><Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>{session.url ?? session.status}</Typography></Box>
       <Chip size="small" color={operatorControl ? "warning" : ready ? "info" : "default"} variant="outlined" label={ready ? browserControlLabel(session) : session.status} />
-      <Button size="small" variant="outlined" onClick={onOpenInTab}>Open tab</Button>
+      <Button size="small" variant="outlined" onClick={onOpenInTab}>Open Tab</Button>
     </Stack>
   </Paper>;
 
@@ -169,7 +169,7 @@ export function BrowserPanel({
             <Tooltip title="Reconnect the browser process to this run">
               <span><IconButton size="small" aria-label="Reconnect browser" disabled={reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon fontSize="small" /></IconButton></span>
             </Tooltip>
-            <Tooltip title="Close browser session">
+            <Tooltip title="Close Browser Session">
               <span><IconButton size="small" aria-label="Close browser" disabled={close.isPending} onClick={() => close.mutate()}><CloseIcon fontSize="small" /></IconButton></span>
             </Tooltip>
         </>
@@ -189,12 +189,12 @@ export function BrowserPanel({
                   disabled={control.isPending}
                   onClick={() => control.mutate(operatorControl ? "agent" : "operator")}
                 >
-                  {operatorControl ? "Return control to agent" : "Take control"}
+                  {operatorControl ? "Return Control to Agent" : "Take Control"}
                 </Button>
                 <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
                   Input is fenced to one owner. Other tabs must refresh after control changes.
                 </Typography>
-                <Tooltip title="Collapse browser"><IconButton size="small" aria-label="Collapse browser" onClick={() => setExpanded(false)}><ExpandLessIcon /></IconButton></Tooltip>
+                <Tooltip title="Collapse Browser"><IconButton size="small" aria-label="Collapse browser" onClick={() => setExpanded(false)}><ExpandLessIcon /></IconButton></Tooltip>
               </Stack>
               <Box
                 sx={{ position: "relative", width: "100%", aspectRatio: `${VIEWPORT_WIDTH} / ${VIEWPORT_HEIGHT}`, bgcolor: "grey.950", borderRadius: 1, overflow: "hidden", border: 1, borderColor: operatorControl ? "warning.main" : "divider" }}

@@ -158,8 +158,8 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
       <DialogActions>
         <Button onClick={() => setChooserOpen(false)}>Cancel</Button>
         {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open in Ponderosa</Button> : null}
-        {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open live app preview</Button> : null}
-        <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open externally</Button>
+        {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open Live App Preview</Button> : null}
+        <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open Externally</Button>
       </DialogActions>
     </Dialog>
   </>;
@@ -474,7 +474,7 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
 
 export function ScrollToLatestButton({ visible, onClick }: { visible: boolean; onClick(): void }): JSX.Element | null {
   if (!visible) return null;
-  return <Tooltip title="Jump to latest message">
+  return <Tooltip title="Jump to Latest Message">
     <IconButton
       aria-label="Jump to latest message"
       onClick={onClick}
@@ -1146,7 +1146,7 @@ export function ResponseFileActivity({
               >
                 <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{file.path}</Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ ml: 1, flexShrink: 0 }}>
-                  {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & results"}
+                  {file.kind}{file.additions !== undefined || file.deletions !== undefined ? ` · +${file.additions ?? 0} −${file.deletions ?? 0}` : " · Files & Results"}
                 </Typography>
                 <OpenInNewIcon sx={{ ml: 0.5, fontSize: 14, flexShrink: 0 }} />
               </Button>
@@ -1158,10 +1158,10 @@ export function ResponseFileActivity({
           })}
         </Stack>
       </Paper>
-      {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review all</Button> : null}
+      {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review All</Button> : null}
     </Stack>
     {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
-      <MenuItem onClick={() => { onOpenFileInNewTab?.(fileMenu.file); setFileMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+      <MenuItem onClick={() => { onOpenFileInNewTab?.(fileMenu.file); setFileMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
     </Menu> : null}
   </Box>;
 }
@@ -1282,7 +1282,7 @@ export function RunsPane({
                   color="inherit"
                   onClick={() => onOpenAgentWork(run.id)}
                   sx={{ display: "flex", justifyContent: "flex-start", px: 0, py: 0.25, textAlign: "left", color: "text.secondary" }}
-                >Why this Run started: {runCauseSentence(run.wakeCause)}</Button>
+                >Why This Run Started: {runCauseSentence(run.wakeCause)}</Button>
                   : <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Started by {wakeCauseLabel(run.wakeCause)}</Typography>
               ) : null}
               <Typography variant="caption" color={run.usage ? "text.secondary" : "warning.main"} sx={{ display: "block" }}>
@@ -1290,7 +1290,7 @@ export function RunsPane({
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
                   : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
               </Typography>
-              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent work</Button> : null}
+              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent Work</Button> : null}
               {run.providerInput ? <RunProviderInput run={run} /> : null}
             </Paper>
           ))}
@@ -1408,7 +1408,7 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
       </Stack>)}
     </Box>
     <Button size="small" sx={{ px: 0, minWidth: 0 }} onClick={() => setShowExact((value) => !value)}>
-      {showExact ? "Hide exact provider input" : "Show exact provider input"}
+      {showExact ? "Hide Exact Provider Input" : "Show Exact Provider Input"}
     </Button>
     {showExact ? <Paper variant="outlined" sx={{ p: 1, mt: 0.5, maxHeight: 260, overflow: "auto" }}>
       <Typography variant="caption" component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
@@ -1478,7 +1478,7 @@ function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element 
   const output = pages.map((page) => page.output).join("");
   return <Box sx={{ pl: 1.25, pt: 0.5 }}>
     <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>
-      {open ? "Hide full output" : `Load full output (${reference.totalUtf8Bytes.toLocaleString()} bytes)`}
+      {open ? "Hide Full Output" : `Load Full Output (${reference.totalUtf8Bytes.toLocaleString()} bytes)`}
     </Button>
     {open ? <Paper variant="outlined" sx={{ mt: 0.5, p: 1, maxHeight: 420, overflow: "auto" }}>
       {query.isLoading ? <CircularProgress size={18} />
@@ -1496,7 +1496,7 @@ function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element 
                   .then((page) => setAdditionalPages((current) => [...current, page]))
                   .catch(() => setLoadMoreError(true))
                   .finally(() => setLoadingMore(false));
-              }}>{loadingMore ? "Loading…" : "Load more"}</Button> : null}
+              }}>{loadingMore ? "Loading…" : "Load More"}</Button> : null}
             </Stack>
             {loadMoreError ? <Alert severity="error" sx={{ mt: 0.75 }}>The next output page could not be loaded.</Alert> : null}
           </>}
@@ -1596,7 +1596,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
       <Chip size="small" label={`${changes.length} change${changes.length === 1 ? "" : "s"}`} color={changes.length ? "warning" : "default"} />
       <Box sx={{ flex: 1 }} />
-      <Tooltip title="Refresh workspace changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
+      <Tooltip title="Refresh Workspace Changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
@@ -1639,11 +1639,11 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
                   {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
-                  {activePath && onOpenInNewTab ? <Button size="small" color="inherit" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in new tab</Button> : null}
+                  {activePath && onOpenInNewTab ? <Button size="small" color="inherit" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in New Tab</Button> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
-                  <Button size="small" variant={reviewMode === "file" ? "contained" : "outlined"} onClick={() => setReviewMode("file")}>Current file</Button>
+                  <Button size="small" variant={reviewMode === "file" ? "contained" : "outlined"} onClick={() => setReviewMode("file")}>Current File</Button>
                 </Stack>
                 {review.isLoading ? <CircularProgress size={22} />
                   : review.isError ? <Alert severity="error">Diff could not be loaded. {String(review.error)}</Alert>
@@ -1657,7 +1657,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
               </Box>
             </Box>}
     {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
-      <MenuItem onClick={() => { onOpenInNewTab?.(fileMenu.path); setFileMenu(undefined); }}>Open in new Ponderosa tab</MenuItem>
+      <MenuItem onClick={() => { onOpenInNewTab?.(fileMenu.path); setFileMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
     </Menu> : null}
   </Box>;
 }
@@ -1702,14 +1702,14 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
       Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
-    {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open current diff</Button> : null}
+    {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open Current Diff</Button> : null}
     {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
       : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
         : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
           : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>
       : null}
     {fileMenuAnchor ? <Menu anchorEl={fileMenuAnchor} open onClose={() => setFileMenuAnchor(undefined)}>
-      <MenuItem onClick={() => { onOpenReviewInNewTab?.(file.path); setFileMenuAnchor(undefined); }}>Open in new Ponderosa tab</MenuItem>
+      <MenuItem onClick={() => { onOpenReviewInNewTab?.(file.path); setFileMenuAnchor(undefined); }}>Open in New Ponderosa Tab</MenuItem>
     </Menu> : null}
   </Paper>;
 }
@@ -1842,7 +1842,7 @@ function ArtifactViewer({
     return <Box sx={{ p: 1.5, minWidth: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
         <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifactDisplayLabel(artifact)}</Typography>
-        {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open preview</Button> : null}
+        {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open Preview</Button> : null}
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
       <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
@@ -1890,7 +1890,7 @@ function ArtifactViewer({
           severity="info"
           sx={{ mb: 1 }}
           action={content.downloadUrl ? (
-            <Button component="a" href={content.downloadUrl} download size="small" color="inherit">Download full artifact</Button>
+            <Button component="a" href={content.downloadUrl} download size="small" color="inherit">Download Full Artifact</Button>
           ) : undefined}
         >
           Preview is limited to 2 MiB{content.totalBytes ? ` of ${content.totalBytes.toLocaleString()} bytes` : ""}.
@@ -1992,7 +1992,7 @@ export function ArtifactsPane({
     <Box sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%", overflow: "hidden" }}>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, px: 1.5, py: 1.25, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle1" fontWeight={750}>Files &amp; results</Typography>
+          <Typography variant="subtitle1" fontWeight={750}>Files &amp; Results</Typography>
           <Typography variant="caption" color="text.secondary">{artifacts.length} item{artifacts.length === 1 ? "" : "s"} from this agent</Typography>
         </Box>
         <TextField
@@ -2042,7 +2042,7 @@ export function ArtifactsPane({
         <ArtifactViewer artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
         </Box>
       </Box>
-      {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
+      {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
     </Box>
   );
 }
@@ -2105,8 +2105,8 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
             <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
             <Button size="small" color="inherit" disabled={busy} startIcon={<SubdirectoryArrowRightIcon />} onClick={() => void onSteer(message)}>Steer</Button>
-            <Tooltip title="Edit queued message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Delete queued message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position}`} onClick={() => void onDelete(message)}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position}`} onClick={() => void onDelete(message)}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
           </>}
         </Box>;
       })}
@@ -2583,7 +2583,7 @@ export function Composer({
               update(composerSubmissionText(text, pastedText));
               setPastedText(undefined);
               requestAnimationFrame(() => inputRef.current?.focus());
-            }}>Show in text field</Button>
+            }}>Show in Text Field</Button>
           </Box>
           <Typography variant="caption" color="text.secondary">{utf8ByteLength(pastedText).toLocaleString()} bytes</Typography>
           <IconButton size="small" aria-label="Remove pasted text" onClick={() => setPastedText(undefined)}><CloseIcon fontSize="small" /></IconButton>
@@ -2847,7 +2847,7 @@ export function Composer({
           </Tooltip>
         ) : null}
         {canCancel ? (
-          <Tooltip title="Cancel run">
+          <Tooltip title="Cancel Run">
             <IconButton color="error" onClick={onCancel} aria-label="Cancel run" sx={{ minWidth: 44, minHeight: 44 }}>
               <StopCircleIcon />
             </IconButton>

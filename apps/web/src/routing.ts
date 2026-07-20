@@ -1,6 +1,8 @@
 // Lightweight URL-driven navigation (no router dependency). Durable URLs let a
 // refresh or browser back/forward restore the exact project + selection:
 //
+//   / (All Chat)
+//   /chats (legacy/direct All Chat route)
 //   /projects/:projectId/chats/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
@@ -28,7 +30,6 @@ export function isAgentDetailView(value: unknown): value is AgentDetailView {
 }
 
 export type Route =
-  | { kind: "home" }
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allAgents" }
@@ -56,12 +57,13 @@ export function parseRoute(pathname: string, search = ""): Route {
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
+  if (parts.length === 0) return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
   if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
-    return { kind: "home" };
+    return { kind: "allChat" };
   }
   const projectId = decodeURIComponent(parts[1]);
   if (parts[2] === "agents" && parts[3] && parts[4] === "runs" && parts[5] && parts[6] === "browser") {
@@ -97,7 +99,7 @@ export function routeToPath(route: Route): string {
     case "projects":
       return "/projects";
     case "allChat":
-      return "/chats";
+      return "/";
     case "allAgents":
       return "/agents";
     case "wiki":

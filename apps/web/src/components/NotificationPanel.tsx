@@ -221,14 +221,14 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Needs attention"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
                     secondary={<Stack spacing={0.5}><Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                       {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondingDecisionId === item.decision!.id} onClick={(event) => { event.stopPropagation(); void respondDecision(item, option.id); }}>{option.label}</Button>)}
-                      {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
-                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
+                      {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
+                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
                       event.stopPropagation();
                       const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
                       setAgentWorkTarget({ projectId: item.projectId!, ...(item.conversationId ? { conversationId: item.conversationId } : {}), ...(focusId ? { focusId } : {}) });
                       onClose();
-                    }}>View Agent work</Button> : null}</Stack>}
+                    }}>View Agent Work</Button> : null}</Stack>}
                     secondaryTypographyProps={{ sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />
                 </ListItemButton>
@@ -240,8 +240,8 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>
-      <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark all read</Button>
-      <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!notifications.length || Boolean(pending)} onClick={() => void clearAll()}>Clear all</Button>
+      <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
+      <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!notifications.length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
   </Dialog>
   {agentWorkTarget ? <AgentWorkInspector

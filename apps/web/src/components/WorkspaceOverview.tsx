@@ -136,11 +136,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
           onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"] })}
           sx={{ minWidth: 132 }}
         >
-          <MenuItem value="last_used">Last used</MenuItem>
+          <MenuItem value="last_used">Last Used</MenuItem>
           <MenuItem value="alphabetical">Alphabetical</MenuItem>
           <MenuItem value="custom">Custom</MenuItem>
         </TextField>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New project</Button>
+        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>
       </Stack>
     </Stack>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>

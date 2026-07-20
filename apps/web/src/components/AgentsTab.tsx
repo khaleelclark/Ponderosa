@@ -161,7 +161,7 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
-        <Button variant="outlined" size="small" disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop all</Button>
+        <Button variant="outlined" size="small" disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop All</Button>
         {selectionMode ? <>
           <Button color="inherit" size="small" onClick={() => {
             const visibleIds = filtered.map(({ agent }) => agent.id);
@@ -171,10 +171,10 @@ export function AgentsTab({
               visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id));
               return next;
             });
-          }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear visible" : "Select all visible"}</Button>
-          <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete selected ({selectedAgentIds.size})</Button>
-          <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel selection</Button>
-        </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select agents</Button>}
+          }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear Visible" : "Select All Visible"}</Button>
+          <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete Selected ({selectedAgentIds.size})</Button>
+          <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel Selection</Button>
+        </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select Agents</Button>}
         <Button variant="outlined" size="small" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)} sx={{ minHeight: 44, flexShrink: 0 }}>Import Agent or Organization</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
@@ -238,7 +238,7 @@ export function AgentsTab({
             value={masterFilter}
             onChange={(event: SelectChangeEvent) => setMasterFilter(event.target.value)}
           >
-            <MenuItem value="all">All Project chats</MenuItem>
+            <MenuItem value="all">All Project Chats</MenuItem>
             {conversations.map((master) => (
               <MenuItem key={master.id} value={master.id}>
                 {master.title}
@@ -264,7 +264,7 @@ export function AgentsTab({
                     setSearch("");
                   }}
                 >
-                  Clear filters
+                  Clear Filters
                 </Button>
               ) : undefined
             }
@@ -329,7 +329,7 @@ export function AgentsTab({
                       </Typography>
                     </Stack>
                   </ButtonBase>
-                  {!selectionMode ? <Tooltip title="Delete agent">
+                  {!selectionMode ? <Tooltip title="Delete Agent">
                     <IconButton
                       size="small"
                       aria-label={`Delete agent ${agent.title}`}
@@ -340,7 +340,7 @@ export function AgentsTab({
                     </IconButton>
                   </Tooltip> : null}
                   {organizationParent ? (
-                    <Tooltip title="Promote to top level">
+                    <Tooltip title="Promote to Top Level">
                       <IconButton
                         size="small"
                         aria-label={`Promote agent ${agent.title} to top level`}
@@ -377,7 +377,7 @@ export function AgentsTab({
         onClose={() => setPendingDelete(undefined)}
         onDeleted={() => setPendingDelete(undefined)}
       />
-      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}><MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
+      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}><MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
       <AgentDeletionDialog
         open={deleteSelectedOpen}
         projectId={projectId}

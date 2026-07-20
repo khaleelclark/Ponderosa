@@ -25,7 +25,7 @@ describe("message delivery status", () => {
       canLetCurrentRunFinish: true,
     }]);
     expect(html).toContain("Delivery to Manager is unconfirmed");
-    expect(html).toContain("Let current Run finish");
+    expect(html).toContain("Let Current Run Finish");
   });
 
   it("offers a guarded retry for historical uncertainty", () => {
@@ -40,7 +40,7 @@ describe("message delivery status", () => {
       retryMayDuplicate: true,
     }]);
     expect(html).toContain("Undelivered to Manager");
-    expect(html).not.toContain("Let current Run finish");
+    expect(html).not.toContain("Let Current Run Finish");
     expect(html).toContain("Retry");
   });
 

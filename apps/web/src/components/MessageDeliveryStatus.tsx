@@ -148,7 +148,7 @@ export function MessageDeliveryStatus({
           disabled={pendingInjectionId === receipt.injectionId}
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >Let current Run finish</Button> : null}
+        >Let Current Run Finish</Button> : null}
         {receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
@@ -179,7 +179,7 @@ export function MessageDeliveryStatus({
           variant="contained"
           onClick={() => confirmRetry && void retryDelivery(confirmRetry)}
           disabled={Boolean(pendingRetryId)}
-        >{pendingRetryId ? "Retrying…" : "Retry anyway"}</Button>
+        >{pendingRetryId ? "Retrying…" : "Retry Anyway"}</Button>
       </DialogActions>
     </Dialog>
   </Stack>;

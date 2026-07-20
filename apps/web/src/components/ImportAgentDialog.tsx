@@ -144,7 +144,7 @@ export function ImportAgentDialog({
       {sourceEngines.map((source) => <FormControl key={source} fullWidth>
         <InputLabel id={`engine-map-${source}`}>Map {source}</InputLabel>
         <Select labelId={`engine-map-${source}`} label={`Map ${source}`} value={engineMapping[source] ?? ""} onChange={(event: SelectChangeEvent) => setEngineMapping((current) => ({ ...current, [source]: event.target.value }))}>
-          {engines.map((engine) => <MenuItem key={engine.id} value={engine.id}>{engine.displayName}{engine.enabled === false ? " — disabled" : ""}</MenuItem>)}
+          {engines.map((engine) => <MenuItem key={engine.id} value={engine.id}>{engine.displayName}{engine.enabled === false ? " — Disabled" : ""}</MenuItem>)}
         </Select>
       </FormControl>)}
       {invalidPermissionShape ? <Alert severity="error">

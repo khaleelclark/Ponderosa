@@ -12,7 +12,7 @@ describe("persistent Project browser surfaces", () => {
     expect(app).not.toContain("projectBrowserOpen");
     expect(panes).toContain("projectBrowser.open(link.url.href)");
     expect(panes).toContain("Open in Ponderosa");
-    expect(panes).toContain("Open externally");
+    expect(panes).toContain("Open Externally");
   });
 
   it("shows run browser activity only after a real session exists and routes it to a workspace tab", () => {
@@ -22,15 +22,15 @@ describe("persistent Project browser surfaces", () => {
     expect(panel).toContain("This Run’s interactive browser is no longer active.");
     expect(panel).toContain(": null;");
     expect(panel).toContain("Interactive browser in use");
-    expect(panel).toContain("Open tab");
+    expect(panel).toContain("Open Tab");
     expect(shell).toContain('kind: "browser"');
   });
 
   it("keeps operator control explicit and lends it only through an active-agent selector", () => {
     const dialog = readFileSync(new URL("../src/components/ProjectBrowserDialog.tsx", import.meta.url), "utf8");
-    expect(dialog).toContain("Give {agent.title} control");
+    expect(dialog).toContain("Give {agent.title} Control");
     expect(dialog).toContain('owner: "agent"');
-    expect(dialog).toContain("Take control back");
+    expect(dialog).toContain("Take Control Back");
     expect(dialog).toContain("Start an agent Run to make it available");
   });
 

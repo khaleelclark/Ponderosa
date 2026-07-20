@@ -196,12 +196,12 @@ function AgentRunState({
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "runOutput", label: "Work log", icon: <PsychologyOutlinedIcon /> },
+  { value: "runOutput", label: "Work Log", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
   { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
   { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
-  { value: "artifacts", label: "Files & results", icon: <Inventory2OutlinedIcon /> },
+  { value: "artifacts", label: "Files & Results", icon: <Inventory2OutlinedIcon /> },
   { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
 ];
 
@@ -537,7 +537,7 @@ export function AgentDetail({
     downloadJson(portable, portablePackageFileName(detail?.agent.title ?? "agent", organization, mode));
     setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`);
   };
-  const quickCopyIntoHomeChat = async () => {
+  const quickCopyIntoProjectChat = async () => {
     if (!detail?.agent.conversationId) return;
     const portable = await api.exportAgent(agentId, "full", false);
     const elevated = portable.agents.some((node) =>
@@ -773,7 +773,7 @@ export function AgentDetail({
     };
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -816,7 +816,7 @@ export function AgentDetail({
           flexWrap="wrap"
           sx={{ width: "100%", maxWidth: "100%", alignItems: "center", minWidth: 0, overflow: "hidden" }}
         >
-          <Tooltip title="Back to agents">
+          <Tooltip title="Back to Agents">
             <IconButton aria-label="Back to agents" onClick={onBack} edge="start" sx={{ minWidth: 44, minHeight: 44 }}>
               <ArrowBackIcon />
             </IconButton>
@@ -852,24 +852,24 @@ export function AgentDetail({
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             sx={{ minHeight: 36 }}
           >
-            Agent work
+            Agent Work
           </Button>
           <ChatOverflowMenu
-            label="Agent chat actions"
+            label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
-            detailsLabel="Run setup"
+            detailsLabel="Run Setup"
             copyActions={[
-              { label: "Agent template", onSelect: () => void copyAgentPackage("template") },
+              { label: "Agent Template", onSelect: () => void copyAgentPackage("template") },
               { label: "Full Agent", onSelect: () => void copyAgentPackage("full") },
-              { label: "Organization template", onSelect: () => void copyAgentPackage("template", true) },
-              { label: "Full organization", onSelect: () => void copyAgentPackage("full", true) },
+              { label: "Organization Template", onSelect: () => void copyAgentPackage("template", true) },
+              { label: "Full Organization", onSelect: () => void copyAgentPackage("full", true) },
             ]}
             downloadActions={[
-              { label: "Agent template", onSelect: () => void downloadAgentPackage("template") },
+              { label: "Agent Template", onSelect: () => void downloadAgentPackage("template") },
               { label: "Full Agent", onSelect: () => void downloadAgentPackage("full") },
-              { label: "Organization template", onSelect: () => void downloadAgentPackage("template", true) },
-              { label: "Full organization", onSelect: () => void downloadAgentPackage("full", true) },
+              { label: "Organization Template", onSelect: () => void downloadAgentPackage("template", true) },
+              { label: "Full Organization", onSelect: () => void downloadAgentPackage("full", true) },
             ]}
             details={<Stack spacing={1.25} aria-label="Agent setup">
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
@@ -895,7 +895,7 @@ export function AgentDetail({
                     recheckEngine.mutate(engine.id);
                   }}
                 >
-                  {recheckEngine.isPending ? "Testing access…" : "Test access"}
+                  {recheckEngine.isPending ? "Testing Access…" : "Test Access"}
                 </Button>
                 {recheckEngine.isError ? <Alert severity="error">{recheckEngine.error.message}</Alert> : null}
               </> : null}
@@ -911,7 +911,7 @@ export function AgentDetail({
                     if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
                   }}
                 >
-                  <MenuItem value="">Engine default</MenuItem>
+                  <MenuItem value="">Engine Default</MenuItem>
                   {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select>
               </FormControl>
@@ -923,7 +923,7 @@ export function AgentDetail({
                   label="Effort"
                   onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
                 >
-                  <MenuItem value="">Engine default</MenuItem>
+                  <MenuItem value="">Engine Default</MenuItem>
                   {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select>
               </FormControl>
@@ -981,7 +981,7 @@ export function AgentDetail({
             </Stack>}
             actions={[
               {
-                label: "Start fresh provider session",
+                label: "Start Fresh Provider Session",
                 onSelect: () => {
                   setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
                   void api.compactSession(agentId)
@@ -1011,9 +1011,9 @@ export function AgentDetail({
                 },
               },
               { label: "Import Agent or Organization…", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
-              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Home Chat", onSelect: () => void quickCopyIntoHomeChat() }] : []),
+              ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", onSelect: () => void quickCopyIntoProjectChat() }] : []),
               {
-                label: "Reports to",
+                label: "Reports To",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,
                 onSelect: () => {
                   setOrganizationParentId(detail.agent.managerAgentId ?? "");
@@ -1049,8 +1049,8 @@ export function AgentDetail({
       </Tabs>
 
       <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ minHeight: 0, minWidth: 0, overflow: tab === "chat" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older history"}</Button> : null}
-        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load older records"}</Button> : null}
+        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
+        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}
       </Box>
 
@@ -1202,7 +1202,7 @@ export function AgentDetail({
         <DialogActions>
           <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
           <Button variant="contained" disabled={updateMemberships.isPending || (membershipIds.length > 0 && !primaryConversationId)} onClick={() => updateMemberships.mutate()}>
-            Save membership
+            Save Membership
           </Button>
         </DialogActions>
       </Dialog>
@@ -1218,7 +1218,7 @@ export function AgentDetail({
               label="Reports to"
               onChange={(event) => setOrganizationParentId(event.target.value)}
             >
-              <MenuItem value="">Top level</MenuItem>
+              <MenuItem value="">Top Level</MenuItem>
               {eligibleOrganizationParents(detail.agent, agents)
                 .map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.title}</MenuItem>)}
             </Select>
@@ -1231,7 +1231,7 @@ export function AgentDetail({
         <DialogActions>
           <Button onClick={() => setOrganizationOpen(false)} disabled={updateOrganization.isPending}>Cancel</Button>
           <Button variant="contained" disabled={updateOrganization.isPending} onClick={() => updateOrganization.mutate()}>
-            Save organization
+            Save Organization
           </Button>
         </DialogActions>
       </Dialog>

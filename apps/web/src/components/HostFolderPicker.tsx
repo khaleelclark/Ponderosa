@@ -30,9 +30,9 @@ export function HostFolderPicker({ open, initialMode = "none", initialPath, init
     <DialogContent>
       <Stack spacing={2} sx={{ pt: 1 }}>
         <FormControl fullWidth><InputLabel id="host-folder-mode-label">Folder option</InputLabel><Select labelId="host-folder-mode-label" label="Folder option" value={mode} onChange={(event) => setMode(event.target.value as ProjectFolderMode)}>
-          <MenuItem value="none">Private empty workspace</MenuItem>
-          <MenuItem value="existing">Existing folder on this host</MenuItem>
-          <MenuItem value="create">New managed folder</MenuItem>
+          <MenuItem value="none">Private Empty Workspace</MenuItem>
+          <MenuItem value="existing">Existing Folder on This Host</MenuItem>
+          <MenuItem value="create">New Managed Folder</MenuItem>
         </Select></FormControl>
         {mode === "none" ? <Alert severity="info">Ponderosa will create a private empty workspace. You can connect a different folder later.</Alert> : null}
         {mode === "existing" ? <>
@@ -45,6 +45,6 @@ export function HostFolderPicker({ open, initialMode = "none", initialPath, init
         {mode === "create" ? <TextField autoFocus label="New folder name" value={folderName} onChange={(event) => setFolderName(event.target.value)} helperText={`Created inside ${managedRoot ?? "Ponderosa's managed workspace"}`} fullWidth /> : null}
       </Stack>
     </DialogContent>
-    <DialogActions><Button onClick={onClose}>Cancel</Button><Button variant="contained" disabled={!canChoose} onClick={() => onChoose(mode === "existing" ? { mode, path: chosenPath } : mode === "create" ? { mode, newFolderName: folderName.trim() } : { mode })}>Use this option</Button></DialogActions>
+    <DialogActions><Button onClick={onClose}>Cancel</Button><Button variant="contained" disabled={!canChoose} onClick={() => onChoose(mode === "existing" ? { mode, path: chosenPath } : mode === "create" ? { mode, newFolderName: folderName.trim() } : { mode })}>Use This Option</Button></DialogActions>
   </Dialog>;
 }

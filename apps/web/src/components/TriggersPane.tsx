@@ -73,7 +73,7 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
       <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
-      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>View Agent work</Button> : null}
+      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>View Agent Work</Button> : null}
     </Stack>
     {occurrence.lastError ? <Typography variant="caption" color="error" display="block">{occurrence.lastError}</Typography> : null}
     <Box component="details" sx={{ mt: 0.5 }}>
@@ -272,7 +272,7 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
         </CardContent>
         <CardActions sx={{ flexWrap: "wrap" }}>
           <FormControlLabel control={<Switch checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "On" : "Off"} />
-          <Button size="small" onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide history" : "History"}</Button>
+          <Button size="small" onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide History" : "History"}</Button>
           <Button size="small" onClick={() => openEditor(trigger)}>Edit</Button>
           {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => {
             const value = window.prompt("How many additional automatic Runs should this Trigger receive for the current period?", "5");
@@ -280,10 +280,10 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
             const additionalRuns = Number(value);
             if (!Number.isSafeInteger(additionalRuns) || additionalRuns < 1) return window.alert("Enter a positive whole number.");
             allowRuns.mutate({ trigger, additionalRuns });
-          }}>Allow more Runs</Button> : null}
+          }}>Allow More Runs</Button> : null}
           {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => {
             if (window.confirm("Rotate this webhook secret? Existing senders will stop working immediately.")) rotate.mutate(trigger);
-          }}>Rotate secret</Button> : null}
+          }}>Rotate Secret</Button> : null}
           <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} disabled={remove.isPending} onClick={() => {
             if (window.confirm(`Delete “${trigger.name}”? Pending occurrences will be cancelled.`)) remove.mutate(trigger);
           }}>Delete</Button>
@@ -313,9 +313,9 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
           <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
           <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
           <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl>
-          <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed webhook</MenuItem><MenuItem value="filesystem">Project folder changes</MenuItem></Select></FormControl>
+          <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
           {sourceKind === "schedule" ? <>
-            <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
+            <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
             {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
             {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
             {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
@@ -327,7 +327,7 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
           {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save changes" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button></DialogActions>
     </Dialog>
 
     <Dialog open={Boolean(secret)} onClose={() => setSecret(undefined)} fullWidth maxWidth="sm">
@@ -338,7 +338,7 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
         <TextField label="Signing secret" value={secret?.value ?? ""} InputProps={{ readOnly: true, endAdornment: <Button aria-label="Copy signing secret" onClick={() => secret && copy(secret.value)}><ContentCopyIcon /></Button> }} />
         <Typography variant="body2" color="text.secondary">Sign the exact raw JSON bytes as <code>timestamp.eventId.body</code>. Send <code>X-Ponderosa-Timestamp</code>, <code>X-Ponderosa-Event-Id</code>, and <code>X-Ponderosa-Signature: v1=&lt;hex&gt;</code>.</Typography>
       </Stack></DialogContent>
-      <DialogActions><Button variant="contained" onClick={() => setSecret(undefined)}>I saved it</Button></DialogActions>
+      <DialogActions><Button variant="contained" onClick={() => setSecret(undefined)}>I Saved It</Button></DialogActions>
     </Dialog>
   </Box>;
 }

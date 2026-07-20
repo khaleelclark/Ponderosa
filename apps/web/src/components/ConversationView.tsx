@@ -247,7 +247,7 @@ export function ConversationMessage({
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && onEdit ? <Tooltip title="Edit latest message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && onEdit ? <Tooltip title="Edit Latest Message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && message.authorAgentId ? (
           <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
             size="small"
@@ -972,14 +972,14 @@ export function ConversationView({
               {conversation.title}
             </Typography>
           </Box>
-          <Tooltip title="Agent work"><IconButton
+          <Tooltip title="Agent Work"><IconButton
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             aria-haspopup="dialog"
             aria-expanded={agentWorkOpen}
             aria-label="Open Agent work"
           ><TimelineIcon /></IconButton></Tooltip>
           <ChatOverflowMenu
-            label={`${activeView === "collaboration" ? "Team" : "Project"} chat actions`}
+            label={`${activeView === "collaboration" ? "Team" : "Project"} Chat Actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={[
@@ -1053,7 +1053,7 @@ export function ConversationView({
             <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
             <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
               {decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}
-              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something else"}</Button> : null}
+              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
             </Stack>
           </Alert>)}
 
@@ -1066,7 +1066,7 @@ export function ConversationView({
                 onClick={() => void loadOlderHistory()}
                 sx={{ alignSelf: "center", mb: 1 }}
               >
-                {loadingOlder ? "Loading…" : "Load older history"}
+                {loadingOlder ? "Loading…" : "Load Older History"}
               </Button>
             ) : null}
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
@@ -1155,7 +1155,7 @@ export function ConversationView({
           <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
             <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
             <Chip size="small" label={agents.length} />
-            <Tooltip title="Close agent roster">
+            <Tooltip title="Close Agent Roster">
               <IconButton aria-label="Close agent roster" onClick={() => setAgentsOpen(false)} sx={{ minWidth: 44, minHeight: 44 }}>
                 <CloseIcon />
               </IconButton>
@@ -1182,7 +1182,7 @@ export function ConversationView({
                       pl: agentRosterIndent(depth),
                     }}
                     secondaryAction={
-                      <Tooltip title="Delete agent">
+                      <Tooltip title="Delete Agent">
                         <IconButton
                           edge="end"
                           size="small"
@@ -1329,7 +1329,7 @@ export function ConversationView({
           <TextField autoFocus fullWidth multiline minRows={3} label="Message" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
           {correctMessage.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(correctMessage.error)}</Alert> : null}
         </DialogContent>
-        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save edit</Button></DialogActions>
+        <DialogActions><Button onClick={() => setEditingMessage(undefined)} disabled={correctMessage.isPending}>Cancel</Button><Button variant="contained" disabled={!correctionText.trim() || correctMessage.isPending} onClick={() => editingMessage && correctMessage.mutate(editingMessage)}>Save Edit</Button></DialogActions>
       </Dialog>
 
       <Dialog

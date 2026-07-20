@@ -170,10 +170,10 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
         <FormControl size="small" sx={{ minWidth: 150, mb: 2 }}>
           <InputLabel id={`${scope}-usage-range-label`}>Time range</InputLabel>
           <Select labelId={`${scope}-usage-range-label`} label="Time range" value={rangeKey} onChange={(event) => setRangeKey(event.target.value as typeof rangeKey)}>
-            <MenuItem value="24h">Last 24 hours</MenuItem>
-            <MenuItem value="7d">Last 7 days</MenuItem>
-            <MenuItem value="30d">Last 30 days</MenuItem>
-            <MenuItem value="all">All time</MenuItem>
+            <MenuItem value="24h">Last 24 Hours</MenuItem>
+            <MenuItem value="7d">Last 7 Days</MenuItem>
+            <MenuItem value="30d">Last 30 Days</MenuItem>
+            <MenuItem value="all">All Time</MenuItem>
           </Select>
         </FormControl>
         {usage.isError ? <Alert severity="error">Cost could not be loaded.</Alert> : !data ? <LinearProgress /> : <TokenUsageDetails data={data} />}

@@ -67,8 +67,8 @@ describe("workspace tab bar", () => {
     const releaseTabContainer = view.root.findByProps({ "data-tab-key": "release-tab" });
     expect(releaseTabContainer.props.onContextMenu).toEqual(expect.any(Function));
     expect(releaseTabContainer.props.sx.borderRadius).toBe(2);
-    expect(releaseTabContainer.props.sx.minWidth).toBe(38);
-    expect(releaseTabContainer.props.sx.flex).toBe("1 1 200px");
+    expect(releaseTabContainer.props.sx.minWidth).toEqual({ xs: 132, md: 140 });
+    expect(releaseTabContainer.props.sx.flex).toBe("0 1 220px");
     const tabStrip = view.root.findByProps({ className: "workspace-tab-strip" });
     expect(tabStrip.props.sx.overflowX).toBe("auto");
     expect(tabStrip.props.sx.scrollbarWidth).toBe("none");
@@ -98,7 +98,7 @@ describe("workspace tab bar", () => {
   it("visibly presents an inactive close control for native and MUI focus-visible states", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const tabs = openWorkspaceTab(
-      openWorkspaceTab([], { kind: "home" }, 1, "inactive-tab"),
+      openWorkspaceTab([], { kind: "projects" }, 1, "inactive-tab"),
       { kind: "allChat" }, 2, "active-tab",
     );
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
@@ -115,7 +115,7 @@ describe("workspace tab bar", () => {
 
     const inactiveClose = view.root.findByProps({ "aria-label": "Close Projects" });
     expect(inactiveClose.props.disabled).toBe(false);
-    expect(inactiveClose.props.sx.opacity).toBe(0);
+    expect(inactiveClose.props.sx.opacity).toEqual({ xs: 0.45, md: 0 });
     expect(inactiveClose.props.sx["&:focus-visible, &.Mui-focusVisible"]).toEqual({
       color: "text.primary",
       opacity: 1,
@@ -127,7 +127,7 @@ describe("workspace tab bar", () => {
   it("opens keyboard tab actions that move a tab without changing its persisted identity", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const tabs = openWorkspaceTab(
-      openWorkspaceTab(openWorkspaceTab([], { kind: "home" }, 1, "home"), { kind: "allChat" }, 2, "chat"),
+      openWorkspaceTab(openWorkspaceTab([], { kind: "projects" }, 1, "projects"), { kind: "allChat" }, 2, "chat"),
       { kind: "allAgents" }, 3, "agents",
     );
     const onReorder = vi.fn();
@@ -148,8 +148,8 @@ describe("workspace tab bar", () => {
     const menuKey = { key: "ContextMenu", shiftKey: false, preventDefault: vi.fn(), currentTarget: {} };
     act(() => chatTab.props.onKeyDown(menuKey));
     expect(menuKey.preventDefault).toHaveBeenCalledOnce();
-    const moveLeft = view.root.findAll((node) => node.props.children === "Move left")[0]!;
-    const moveRight = view.root.findAll((node) => node.props.children === "Move right")[0]!;
+    const moveLeft = view.root.findAll((node) => node.props.children === "Move Left")[0]!;
+    const moveRight = view.root.findAll((node) => node.props.children === "Move Right")[0]!;
     expect(moveLeft.props.disabled).toBe(false);
     expect(moveRight.props.disabled).toBe(false);
 

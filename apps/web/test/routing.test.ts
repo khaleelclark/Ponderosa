@@ -24,12 +24,14 @@ describe("mobile-critical durable navigation", () => {
 
   it("falls back safely for partial or unrelated paths", () => {
     expect(parseRoute("/projects/")).toEqual({ kind: "projects" });
-    expect(parseRoute("/unrelated/path")).toEqual({ kind: "home" });
+    expect(parseRoute("/")).toEqual({ kind: "allChat" });
+    expect(parseRoute("/unrelated/path")).toEqual({ kind: "allChat" });
   });
 
   it("keeps global list routes distinct from project-scoped detail routes", () => {
     expect(routeToPath({ kind: "projects" })).toBe("/projects");
-    expect(routeToPath({ kind: "allChat" })).toBe("/chats");
+    expect(routeToPath({ kind: "allChat" })).toBe("/");
+    expect(parseRoute("/chats")).toEqual({ kind: "allChat" });
     expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
     expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
     expect(routeToPath({ kind: "wiki", articleId: "project chat" })).toBe("/wiki/project%20chat");

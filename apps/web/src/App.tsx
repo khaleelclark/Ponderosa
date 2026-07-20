@@ -250,7 +250,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
+    if (route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
@@ -339,7 +339,7 @@ export default function App({
       setDeleteConfirmationOpen(false);
       setProjectSettingsOpen(false);
       if (next) { saveLastProjectId(next.id); navigate({ kind: "project", projectId: next.id }); }
-      else navigate({ kind: "home" });
+      else navigate({ kind: "allChat" });
     },
   });
 
@@ -396,7 +396,7 @@ export default function App({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  const goHome = (next: Route) => {
+  const navigateWorkspace = (next: Route) => {
     setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, next));
     navigate(next);
   };
@@ -408,7 +408,7 @@ export default function App({
     navigate(tab.route);
   };
   const createWorkspaceView = () => {
-    const tab = createWorkspaceTab({ kind: "home" });
+    const tab = createWorkspaceTab({ kind: "allChat" });
     setWorkspaceTabs((current) => openWorkspaceTab(current, tab.route, tab.lastActivatedAt, tab.key));
     setActiveWorkspaceTabKey(tab.key);
     navigate(tab.route);
@@ -531,8 +531,8 @@ export default function App({
     >
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
-          <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.5 }}><MenuIcon /></IconButton>
-          <Box component="img" src={appIconSource} alt="" sx={{ width: 28, height: 28, mr: 1, borderRadius: 1, objectFit: "contain" }} />
+          <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
+          <Box component="img" src={appIconSource} alt="" sx={{ display: { xs: "none", sm: "block" }, width: 28, height: 28, mr: 1, borderRadius: 1, objectFit: "contain" }} />
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
@@ -558,10 +558,10 @@ export default function App({
           >
             Search <Box component="kbd" sx={{ ml: 2, px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘K" : "Ctrl K"}</Box>
           </Button>
-          <Tooltip title="Search chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" } }}><SearchIcon /></IconButton></Tooltip>
-          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
-          <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()}><LanguageIcon /></IconButton></span></Tooltip>
-          <Tooltip title="New project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
+          <Tooltip title="Search Chats"><IconButton aria-label="Search all chats" onClick={() => setGlobalSearchOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, minWidth: 44, minHeight: 44 }}><SearchIcon /></IconButton></Tooltip>
+          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
+          <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
@@ -577,7 +577,7 @@ export default function App({
             preferences={preferences}
             route={route}
             notifications={notificationsQuery.data ?? []}
-            onNavigate={goHome}
+            onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRoute}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={openProjectSettings}
@@ -595,7 +595,7 @@ export default function App({
             onWidthChange={(width) => setSidebarPresentation((current) => ({ ...current, width }))}
           />
         </Box>
-      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
+      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         <WorkspaceTabs
           tabs={workspaceTabs}
           projects={projects}
@@ -609,7 +609,7 @@ export default function App({
         />
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {route.kind === "wiki" ? (
-          <WikiView articleId={route.articleId} navigate={goHome} />
+          <WikiView articleId={route.articleId} navigate={navigateWorkspace} />
         ) : projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
             <Alert
@@ -636,16 +636,16 @@ export default function App({
               <Box component="img" src={appIconSource} alt="" sx={{ width: 56, height: 56, borderRadius: 2, objectFit: "contain" }} />
               <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
               <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New project</Button>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New Project</Button>
             </Stack>
           </Box>
         ) : route.kind === "allChat" ? (
-          <AllChatView onNavigate={goHome} />
-        ) : route.kind === "projects" || route.kind === "home" || route.kind === "allAgents" ? (
+          <AllChatView onNavigate={navigateWorkspace} />
+        ) : route.kind === "projects" || route.kind === "allAgents" ? (
           <AllProjectsView
             projects={projects}
             preferences={preferences}
-            onNavigate={goHome}
+            onNavigate={navigateWorkspace}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
@@ -656,7 +656,7 @@ export default function App({
             project={projects.find((project) => project.id === selectedProjectId)!}
             route={route}
             engines={engines}
-            navigate={goHome}
+            navigate={navigateWorkspace}
             browserRequest={projectBrowserRequest}
             onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
             openInNewTab={openWorkspaceRoute}
@@ -669,7 +669,7 @@ export default function App({
       </Box>
       </Box>
 
-      <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} PaperProps={{ sx: { width: "min(88vw, 360px)" } }}>
+      <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} PaperProps={{ sx: { width: "min(100vw, 390px)", maxWidth: "100vw", height: "100dvh", overflow: "hidden" } }}>
         <WorkspaceSidebar
           drawer
           projects={projects}
@@ -677,7 +677,7 @@ export default function App({
           preferences={preferences}
           route={route}
           notifications={notificationsQuery.data ?? []}
-          onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
+          onNavigate={(next) => { setMobileNavOpen(false); navigateWorkspace(next); }}
           onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
@@ -784,15 +784,15 @@ export default function App({
             />
             <Box><Typography variant="subtitle2">Default AI runtime</Typography><Typography variant="body2" color="text.secondary">Used when a new chat or Agent does not choose its own provider, model, or reasoning level. Every chat can override these defaults.</Typography></Box>
             <FormControl fullWidth><InputLabel id="project-default-engine-label">Default AI provider</InputLabel><Select labelId="project-default-engine-label" label="Default AI provider" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
-              {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — unavailable" : " — not signed in"}</MenuItem>)}
+              {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — Unavailable" : " — Not Signed In"}</MenuItem>)}
             </Select></FormControl>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth><InputLabel id="project-default-model-label">Default model</InputLabel><Select labelId="project-default-model-label" label="Default model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
-                <MenuItem value="">Automatic default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
+                <MenuItem value="">Automatic Default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
                 {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
               </Select></FormControl>
               <FormControl fullWidth><InputLabel id="project-default-effort-label">Default reasoning</InputLabel><Select labelId="project-default-effort-label" label="Default reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
-                <MenuItem value="">Automatic default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
+                <MenuItem value="">Automatic Default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
                 {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
               </Select></FormControl>
             </Stack>
@@ -807,13 +807,13 @@ export default function App({
                   if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
                   recheckEngine.mutate(engine.id);
                 }}
-              >{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test access"}</Button>}
+              >{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test Access"}</Button>}
             >
               {engine.displayName} is configured but unavailable. {engine.availabilityDetail}
             </Alert>)}
             {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
             <Box><Typography variant="subtitle2">Working folder</Typography><Typography variant="body2" color="text.secondary">{projectFolderMode === "existing" ? projectPath || "No existing folder selected" : projectFolderMode === "create" ? `New managed folder: ${projectFolderName || "not named"}` : "Private empty workspace"}</Typography></Box>
-            <Button variant="outlined" startIcon={<FolderOutlinedIcon />} onClick={() => setFolderPickerOpen(true)}>Choose working folder…</Button>
+            <Button variant="outlined" startIcon={<FolderOutlinedIcon />} onClick={() => setFolderPickerOpen(true)}>Choose Working Folder…</Button>
             {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
           </Stack>
         </DialogContent>
@@ -861,11 +861,11 @@ export default function App({
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Typography variant="subtitle2">Appearance</Typography>
-            <Button variant="outlined" onClick={onToggleColorMode}>Use {colorMode === "dark" ? "light" : "dark"} mode</Button>
+            <Button variant="outlined" onClick={onToggleColorMode}>Use {colorMode === "dark" ? "Light" : "Dark"} Mode</Button>
             <FormControl fullWidth>
               <InputLabel id="font-preference-label">Font</InputLabel>
               <Select labelId="font-preference-label" label="Font" value={preferences.fontFamily} onChange={(event) => savePreferences({ fontFamily: event.target.value as typeof preferences.fontFamily })}>
-                <MenuItem value="inter">Inter</MenuItem><MenuItem value="system">System</MenuItem><MenuItem value="sans">Classic sans</MenuItem>
+                <MenuItem value="inter">Inter</MenuItem><MenuItem value="system">System</MenuItem><MenuItem value="sans">Classic Sans</MenuItem>
               </Select>
             </FormControl>
             <Typography variant="subtitle2">Notifications</Typography>
@@ -882,14 +882,14 @@ export default function App({
                 setPushBusy(true);
                 void syncWebPush(true).then(setPushState)
                   .finally(() => setPushBusy(false));
-              }}>{pushState.kind === "subscription_failed" ? "Retry browser push" : "Enable browser push"}</Button>
+              }}>{pushState.kind === "subscription_failed" ? "Retry Browser Push" : "Enable Browser Push"}</Button>
             ) : null}
             {pushState.kind === "active" ? (
               <Button color="inherit" disabled={pushBusy} onClick={() => {
                 setPushBusy(true);
                 void disableWebPush().then(setPushState)
                   .finally(() => setPushBusy(false));
-              }}>Disable on this device</Button>
+              }}>Disable on This Device</Button>
             ) : null}
             <RuntimeSettings value={maxConcurrentAgentRunsDraft} onChange={setMaxConcurrentAgentRunsDraft} />
             <Typography variant="subtitle2">AI providers</Typography>
@@ -924,7 +924,7 @@ export default function App({
             maxConcurrentAgentRuns: parseAgentRunConcurrencyLimit(maxConcurrentAgentRunsDraft)!,
           });
           setNotificationSettingsOpen(false);
-        }}>Save settings</Button></DialogActions>
+        }}>Save Settings</Button></DialogActions>
       </Dialog>
 
       <Dialog open={operatorProfileOpen} onClose={() => setOperatorProfileOpen(false)} fullWidth maxWidth="xs">
@@ -942,7 +942,7 @@ export default function App({
           <Button variant="contained" disabled={!profileNameDraft.trim() || !/^[a-z][a-z0-9_-]{1,31}$/.test(profileHandleDraft) || ["broadcast", "everyone", "user"].includes(profileHandleDraft)} onClick={() => {
             savePreferences({ profile: { displayName: profileNameDraft.trim(), handle: profileHandleDraft, avatarId: profileAvatarDraft } });
             setOperatorProfileOpen(false);
-          }}>Save profile</Button>
+          }}>Save Profile</Button>
         </DialogActions>
       </Dialog>
 
@@ -952,23 +952,23 @@ export default function App({
           <FormControl fullWidth><InputLabel id="settings-project-engine-label">Default engine</InputLabel><Select labelId="settings-project-engine-label" label="Default engine" value={settingsProjectDefaultEngine} onChange={(event) => { setSettingsProjectDefaultEngine(event.target.value); setSettingsProjectDefaultModel(""); setSettingsProjectDefaultEffort(""); }}>{engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</Select></FormControl>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
             <FormControl fullWidth><InputLabel id="settings-project-model-label">Project model</InputLabel><Select labelId="settings-project-model-label" label="Project model" value={settingsProjectDefaultModel} onChange={(event) => { setSettingsProjectDefaultModel(event.target.value); setSettingsProjectDefaultEffort(""); }}>
-              <MenuItem value="">Use workspace setting — {settingsEngine?.models.find((option) => option.id === settingsInherited.model)?.label ?? settingsInherited.model}</MenuItem>
+              <MenuItem value="">Use Workspace Setting — {settingsEngine?.models.find((option) => option.id === settingsInherited.model)?.label ?? settingsInherited.model}</MenuItem>
               {(settingsEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
             </Select></FormControl>
             <FormControl fullWidth><InputLabel id="settings-project-effort-label">Project effort</InputLabel><Select labelId="settings-project-effort-label" label="Project effort" value={settingsProjectDefaultEffort} onChange={(event) => setSettingsProjectDefaultEffort(event.target.value)}>
-              <MenuItem value="">Use workspace setting — {settingsEfforts.find((option) => option.id === settingsInherited.effort)?.label ?? settingsInherited.effort}</MenuItem>
+              <MenuItem value="">Use Workspace Setting — {settingsEfforts.find((option) => option.id === settingsInherited.effort)?.label ?? settingsInherited.effort}</MenuItem>
               {settingsEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
             </Select></FormControl>
           </Stack>
           <TextField label="Project master rules" value={projectInstructions} onChange={(event) => setProjectInstructions(event.target.value)} multiline minRows={5} helperText="These rules apply after global rules to every Agent working in this Project." fullWidth />
           {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
-          <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete project permanently</Button>
+          <Button color="error" variant="outlined" onClick={() => setDeleteConfirmationOpen(true)}>Delete Project Permanently</Button>
         </Stack></DialogContent><DialogActions><Button onClick={() => setProjectSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={!renamedProjectLabel.trim() || updateProject.isPending} onClick={() => updateProject.mutate()}>Save</Button></DialogActions>
       </Dialog>
 
       <Dialog open={deleteConfirmationOpen} onClose={() => setDeleteConfirmationOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Delete this project?</DialogTitle><DialogContent><Alert severity="warning">This permanently deletes its Project chats, agents, runs, work items, and files &amp; results. The working folder and its source files are not deleted.</Alert>{deleteProject.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProject.error)}</Alert> : null}</DialogContent>
-        <DialogActions><Button onClick={() => setDeleteConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteProject.isPending} onClick={() => deleteProject.mutate()}>Delete permanently</Button></DialogActions>
+        <DialogActions><Button onClick={() => setDeleteConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteProject.isPending} onClick={() => deleteProject.mutate()}>Delete Permanently</Button></DialogActions>
       </Dialog>
     </Box>
     </ProjectBrowserContext.Provider>

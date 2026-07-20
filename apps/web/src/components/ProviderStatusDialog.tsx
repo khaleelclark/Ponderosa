@@ -46,13 +46,13 @@ export function ProviderStatusDialog({
               {providerUsageSummaryLabel(engine.id, usage, usageLoading)}
             </Typography>
             {engineCanTestAccess(engine) ? <Button size="small" sx={{ mt: 1 }} disabled={Boolean(recheckingEngineId)} onClick={() => onTestAccess(engine)}>
-              {recheckingEngineId === engine.id ? "Testing…" : "Test access"}
+              {recheckingEngineId === engine.id ? "Testing…" : "Test Access"}
             </Button> : null}
           </Box>;
         })}
         {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
     </DialogContent>
-    <DialogActions><Button onClick={onOpenSettings}>Provider settings</Button><Button onClick={onClose}>Close</Button></DialogActions>
+    <DialogActions><Button onClick={onOpenSettings}>Provider Settings</Button><Button onClick={onClose}>Close</Button></DialogActions>
   </Dialog>;
 }

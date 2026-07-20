@@ -53,7 +53,7 @@ describe("message delivery retry", () => {
     expect(JSON.stringify(view.toJSON())).toContain("may have reached the provider");
     expect(retry).not.toHaveBeenCalled();
 
-    await act(async () => { await buttonNamed("Retry anyway").props.onClick(); });
+    await act(async () => { await buttonNamed("Retry Anyway").props.onClick(); });
     expect(retry).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledWith("project-a", "uncertain-activation", {
       idempotencyKey: "operator-delivery-retry:uncertain-activation",

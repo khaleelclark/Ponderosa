@@ -45,17 +45,17 @@ describe("persistent user-owned workspace tabs", () => {
 
   it("removes deleted projects but preserves global tabs and a required first tab", () => {
     const tabs = openWorkspaceTab(
-      openWorkspaceTab([], { kind: "home" }, 1, "home"),
+      openWorkspaceTab([], { kind: "allChat" }, 1, "all-chat"),
       { kind: "agent", projectId: "beta", agentId: "two" }, 2, "beta",
     );
-    expect(removeProjectWorkspaceTabs(tabs, new Set()).map((tab) => tab.key)).toEqual(["home"]);
+    expect(removeProjectWorkspaceTabs(tabs, new Set()).map((tab) => tab.key)).toEqual(["all-chat"]);
     expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())).toHaveLength(1);
-    expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())[0]?.route).toEqual({ kind: "home" });
+    expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())[0]?.route).toEqual({ kind: "allChat" });
   });
 
   it("reorders tabs without changing their identities, routes, or custom titles", () => {
     const tabs = renameWorkspaceTab([
-      { key: "a", route: { kind: "home" }, lastActivatedAt: 1 },
+      { key: "a", route: { kind: "allChat" }, lastActivatedAt: 1 },
       { key: "b", route: { kind: "agent", projectId: "beta", agentId: "two" }, lastActivatedAt: 2 },
       { key: "c", route: { kind: "project", projectId: "gamma" }, lastActivatedAt: 3 },
     ], "a", "My start page");
@@ -64,5 +64,17 @@ describe("persistent user-owned workspace tabs", () => {
     expect(reordered.find((tab) => tab.key === "a")?.title).toBe("My start page");
     expect(reorderWorkspaceTabs(reordered, "missing", "b")).toBe(reordered);
     expect(restoreWorkspaceTabSession(serializeWorkspaceTabs(reordered, "a"))).toEqual({ tabs: reordered, activeKey: "a" });
+  });
+
+  it("migrates saved Home tabs to All Chat without changing tab identity or user titles", () => {
+    const restored = restoreWorkspaceTabSession(JSON.stringify({
+      version: 2,
+      activeKey: "legacy-home",
+      tabs: [{ key: "legacy-home", route: { kind: "home" }, lastActivatedAt: 7, title: "My start page" }],
+    }));
+    expect(restored).toEqual({
+      activeKey: "legacy-home",
+      tabs: [{ key: "legacy-home", route: { kind: "allChat" }, lastActivatedAt: 7, title: "My start page" }],
+    });
   });
 });

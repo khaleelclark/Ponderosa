@@ -7,7 +7,6 @@ import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import InboxOutlinedIcon from "@mui/icons-material/InboxOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
@@ -319,7 +318,6 @@ export function WorkspaceSidebar({
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25, objectFit: "contain" }} /></Tooltip>
-      <RailButton label="Home" selected={sidebarSection === "navigation" && route.kind === "home"} onClick={() => showNavigation({ kind: "home" })}><HomeOutlinedIcon /></RailButton>
       <RailButton label="All Chat" selected={sidebarSection === "navigation" && route.kind === "allChat"} onClick={() => showNavigation({ kind: "allChat" })}><ChatBubbleOutlineIcon /></RailButton>
       <RailButton label="Projects" selected={!showingAgents && !showingTriggers && (showingProjects || route.kind === "projects" || insideProject)} onClick={openAllProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
@@ -331,7 +329,7 @@ export function WorkspaceSidebar({
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
       {!drawer && onCollapsedChange ? <RailButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}</RailButton> : null}
       <RailButton label="Settings" onClick={() => onOpenSettings?.()}><SettingsOutlinedIcon /></RailButton>
-      <Tooltip title="Operator profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42, borderRadius: "50%", bgcolor: "background.paper", color: "text.primary", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 750, boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}` }}>{operatorInitials(preferences.profile.displayName)}<Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
+      <Tooltip title="Operator Profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42, borderRadius: "50%", bgcolor: "background.paper", color: "text.primary", display: "grid", placeItems: "center", fontSize: 13, fontWeight: 750, boxShadow: (theme) => `inset 0 0 0 1px ${theme.palette.divider}` }}>{operatorInitials(preferences.profile.displayName)}<Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
     </Stack>
   </Box>;
 
@@ -339,7 +337,7 @@ export function WorkspaceSidebar({
   const starredProjectIds = new Set(preferences.starredProjectIds);
   const starred = projectList.filter((snapshot) => starredProjectIds.has(snapshot.project.id));
   const remaining = projectList.filter((snapshot) => !starredProjectIds.has(snapshot.project.id));
-  const sortLabel = preferences.projectSort === "alphabetical" ? "A–Z" : preferences.projectSort === "custom" ? "Custom" : "Recent activity";
+  const sortLabel = preferences.projectSort === "alphabetical" ? "A–Z" : preferences.projectSort === "custom" ? "Custom" : "Recent Activity";
   const toggleStar = (projectId: string) => onPreferences({
     starredProjectIds: starredProjectIds.has(projectId)
       ? preferences.starredProjectIds.filter((id) => id !== projectId)
@@ -360,7 +358,7 @@ export function WorkspaceSidebar({
       <Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>All projects</Typography><List disablePadding sx={{ mt: .5 }}>{remaining.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ alignItems: "center" }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ noWrap: true }} /><Typography variant="caption" color="text.secondary">{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton><Tooltip title={`Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`Star ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}><StarBorderRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box>
       {projectList.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No projects match “{filter.trim()}”.</Typography> : null}
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View all projects</Button><Button fullWidth color="inherit" aria-label="Sort projects" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setSortMenuAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{sortLabel}</Box></Typography></Button>{sortMenuAnchor ? <Menu anchorEl={sortMenuAnchor} open onClose={() => setSortMenuAnchor(undefined)}><MenuItem selected={preferences.projectSort === "last_used"} onClick={() => { onPreferences({ projectSort: "last_used" }); setSortMenuAnchor(undefined); }}>Recent activity</MenuItem><MenuItem selected={preferences.projectSort === "alphabetical"} onClick={() => { onPreferences({ projectSort: "alphabetical" }); setSortMenuAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={preferences.projectSort === "custom"} onClick={() => { onPreferences({ projectSort: "custom" }); setSortMenuAnchor(undefined); }}>Custom order</MenuItem></Menu> : null}</Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View All Projects</Button><Button fullWidth color="inherit" aria-label="Sort projects" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setSortMenuAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{sortLabel}</Box></Typography></Button>{sortMenuAnchor ? <Menu anchorEl={sortMenuAnchor} open onClose={() => setSortMenuAnchor(undefined)}><MenuItem selected={preferences.projectSort === "last_used"} onClick={() => { onPreferences({ projectSort: "last_used" }); setSortMenuAnchor(undefined); }}>Recent Activity</MenuItem><MenuItem selected={preferences.projectSort === "alphabetical"} onClick={() => { onPreferences({ projectSort: "alphabetical" }); setSortMenuAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={preferences.projectSort === "custom"} onClick={() => { onPreferences({ projectSort: "custom" }); setSortMenuAnchor(undefined); }}>Custom Order</MenuItem></Menu> : null}</Box>
   </Box>;
 
   const agentRows = workspaceAgents(snapshots).filter(({ agent, project }) => !normalizedFilter
@@ -400,7 +398,7 @@ export function WorkspaceSidebar({
       </ListItemButton>)}</List>
       {agentRows.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{filter.trim() ? `No agents match “${filter.trim()}”.` : "No active agents."}</Typography> : null}
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={showProjects} sx={{ justifyContent: "flex-start", color: "text.secondary" }}>Browse projects</Button></Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={showProjects} sx={{ justifyContent: "flex-start", color: "text.secondary" }}>Browse Projects</Button></Box>
   </Box>;
 
   const triggerDestinations = workspaceAgents(snapshots);
@@ -490,27 +488,32 @@ export function WorkspaceSidebar({
     </Box>
     <Box sx={{ boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}`, p: 1.5 }}>
       <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "agents" ? "page" : undefined} onClick={() => onNavigate({ kind: "agents", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agents", projectId: project.project.id } }); }} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "agents" ? "text.primary" : "text.secondary", bgcolor: route.kind === "agents" ? "action.selected" : "transparent" }}>Project Agents</Button>
-      <Button fullWidth color="inherit" aria-label="Open project browser" aria-current={route.kind === "browser" ? "page" : undefined} onClick={() => onNavigate({ kind: "browser", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "browser", projectId: project.project.id } }); }} startIcon={<LanguageIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "browser" ? "text.primary" : "text.secondary", bgcolor: route.kind === "browser" ? "action.selected" : "transparent" }}>Project browser</Button>
-      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.project.id } }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project overview</Button>
+      <Button fullWidth color="inherit" aria-label="Open project browser" aria-current={route.kind === "browser" ? "page" : undefined} onClick={() => onNavigate({ kind: "browser", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "browser", projectId: project.project.id } }); }} startIcon={<LanguageIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "browser" ? "text.primary" : "text.secondary", bgcolor: route.kind === "browser" ? "action.selected" : "transparent" }}>Project Browser</Button>
+      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.project.id } }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project Overview</Button>
     </Box>
   </Box> : null;
 
   const panel = showingAgents ? agentsPanel : showingTriggers ? triggersPanel : showingProjects ? projectsPanel : insideProject ? chatsPanel : projectsPanel;
+  const [resizing, setResizing] = useState(false);
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = width;
+    setResizing(true);
     const move = (next: PointerEvent) => onWidthChange(clampWorkspaceSidebarWidth(startWidth + next.clientX - startX));
     const stop = () => {
+      setResizing(false);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
   };
 
-  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden" }}>
+  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} data-sidebar-resizing={resizing ? "true" : "false"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, maxWidth: "100vw", height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden", transition: !drawer && !resizing ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)" : "none", "@media (prefers-reduced-motion: reduce)": { transition: "none" } }}>
     {rail}
     {collapsed && !drawer ? null : panel}
     {!drawer && !collapsed && onWidthChange ? <Box
@@ -524,13 +527,13 @@ export function WorkspaceSidebar({
         event.preventDefault();
         onWidthChange(clampWorkspaceSidebarWidth(width + (event.key === "ArrowRight" ? 16 : -16)));
       }}
-      sx={{ position: "absolute", zIndex: 2, insetBlock: 0, right: -3, width: 7, cursor: "col-resize", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }}
+      sx={{ position: "absolute", zIndex: 2, insetBlock: 0, right: 0, width: 12, cursor: "col-resize", touchAction: "none", "&::after": { content: '""', position: "absolute", insetBlock: 0, left: 5, width: 2, bgcolor: "transparent" }, "&:hover::after, &:focus-visible::after": { bgcolor: "primary.main" } }}
     /> : null}
     {menu ? <Menu anchorEl={menu.anchor} open onClose={() => setMenu(undefined)}>
       <MenuItem disabled={!onOpenInNewTab} onClick={() => {
         onOpenInNewTab?.(menu.route);
         setMenu(undefined);
-      }}>Open in new Ponderosa tab</MenuItem>
+      }}>Open in New Ponderosa Tab</MenuItem>
       {menu.conversation ? <MenuItem onClick={() => { onRenameConversation(menu.conversation!); setMenu(undefined); }}>Rename</MenuItem> : null}
       {menu.conversation ? <MenuItem sx={{ color: "error.main" }} onClick={() => { onDeleteConversation(menu.conversation!); setMenu(undefined); }}>Delete</MenuItem> : null}
     </Menu> : null}

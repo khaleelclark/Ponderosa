@@ -42,7 +42,7 @@ describe("provider status dialog", () => {
     expect(labels).toEqual(["Disabled", "Signed in", "Inactive"]);
     expect(JSON.stringify(view.toJSON())).toContain("Provider access is inactive while disabled by the operator.");
     expect(JSON.stringify(view.toJSON())).not.toContain("A previous access check failed.");
-    expect(view.root.findAllByType(Button).filter((button) => button.props.children === "Test access")).toHaveLength(0);
+    expect(view.root.findAllByType(Button).filter((button) => button.props.children === "Test Access")).toHaveLength(0);
 
     expect(onTestAccess).not.toHaveBeenCalled();
     view.unmount();
@@ -60,7 +60,7 @@ describe("provider status dialog", () => {
     />);
 
     expect(view.root.findAllByType(Chip).map((chip) => chip.props.label)).toEqual(["Enabled", "Signed in", "Needs attention"]);
-    const testButton = view.root.findAllByType(Button).find((button) => button.props.children === "Test access")!;
+    const testButton = view.root.findAllByType(Button).find((button) => button.props.children === "Test Access")!;
     act(() => testButton.props.onClick());
     expect(onTestAccess).toHaveBeenCalledWith(unavailable);
     view.unmount();
