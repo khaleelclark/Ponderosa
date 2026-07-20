@@ -128,6 +128,44 @@ describe("run-scoped browser sessions", () => {
     expect(manager.authorityStatus()).toMatchObject({ openings: 0, active: 0, pendingCleanup: 0, retainedFailures: 0 });
   });
 
+  it("refuses a replacement open until the original failed spawn handle is observed closed", async () => {
+    const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
+    roots.push(dataDir);
+    let failOriginalClose = true;
+    const originalHandle = {
+      close: vi.fn(async () => {
+        if (failOriginalClose) throw new Error("original browser process is still alive");
+      }),
+    };
+    const replacement = fakeDriver();
+    let factoryCalls = 0;
+    const manager = new BrowserSessionManager(dataDir, async (_sessionId, _onConsole, onSpawned) => {
+      factoryCalls += 1;
+      if (factoryCalls === 1) {
+        onSpawned?.(originalHandle);
+        throw new Error("simulated readiness failure");
+      }
+      return replacement;
+    }, () => undefined);
+    const scope: BrowserScope = { projectId: "project", agentId: "project-browser:project", runId: "project:project" };
+
+    await expect(manager.open(scope)).rejects.toThrow(/readiness and cleanup failed/);
+    await expect(manager.open(scope)).rejects.toThrow(/original browser process is still alive/);
+    expect(factoryCalls).toBe(1);
+    expect(originalHandle.close).toHaveBeenCalledTimes(2);
+    expect(manager.authorityStatus()).toMatchObject({
+      openings: 0, active: 0, pendingCleanup: 1, retainedFailures: 1,
+    });
+
+    failOriginalClose = false;
+    await expect(manager.open(scope)).resolves.toMatchObject({ status: "ready" });
+    expect(factoryCalls).toBe(2);
+    expect(originalHandle.close).toHaveBeenCalledTimes(3);
+    expect(manager.authorityStatus()).toMatchObject({
+      openings: 0, active: 1, pendingCleanup: 0, retainedFailures: 0,
+    });
+  });
+
   it("accepts only non-credentialed http(s) navigation", () => {
     expect(validateBrowserUrl("https://example.com/a")).toBe("https://example.com/a");
     expect(() => validateBrowserUrl("file:///etc/passwd")).toThrow(BrowserSessionError);

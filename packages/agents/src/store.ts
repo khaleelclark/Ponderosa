@@ -1395,8 +1395,20 @@ export class AgentStore {
     if (!current) return false;
     const agentIds = this.listAgents(id).map((agent) => agent.id);
     const canonicalDir = projectDir(this.dataDir, id);
-    const deletingDir = join(dirname(canonicalDir), `.${id}.deleting-${randomUUID()}`);
+    this.markProjectDeletionPending(id);
+    const pending = this.db.select().from(projectDeletionPending)
+      .where(eq(projectDeletionPending.projectId, id)).get();
+    const tombstoneName = pending?.tombstoneName ?? `.${id}.deleting-${randomUUID()}`;
+    if (tombstoneName.includes("/") || tombstoneName.includes("\\") ||
+        !tombstoneName.startsWith(`.${id}.deleting-`)) {
+      throw new Error("invalid Project deletion recovery journal");
+    }
+    this.db.update(projectDeletionPending).set({ tombstoneName })
+      .where(eq(projectDeletionPending.projectId, id)).run();
+    const parentDir = dirname(canonicalDir);
+    const deletingDir = join(parentDir, tombstoneName);
     renameSync(canonicalDir, deletingDir);
+    fsyncDirectory(parentDir);
     try {
       this.db.transaction(() => {
         beforeProjectionDelete?.(id);
@@ -1424,11 +1436,13 @@ export class AgentStore {
       });
     } catch (error) {
       renameSync(deletingDir, canonicalDir);
+      fsyncDirectory(parentDir);
       throw error;
     }
     // A crash before this cleanup leaves a hidden tombstone directory which
     // startup projection repair already discards rather than resurrecting.
     rmSync(deletingDir, { recursive: true, force: true });
+    fsyncDirectory(parentDir);
     this.communicationEventCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
@@ -4238,7 +4252,53 @@ export class AgentStore {
     });
   }
 
+  /** Recover the filesystem side of Project deletion before projection rebuild
+   * can discard hidden directories or prune quarantine rows. A journal row means
+   * the SQLite purge did not commit, so its exact rename is rolled back. Without
+   * a row, a tombstone is committed cleanup and must never be resurrected. */
+  private recoverProjectDeletionDirectories(): void {
+    const root = projectsDir(this.dataDir);
+    if (!existsSync(root)) return;
+    const pending = this.db.select().from(projectDeletionPending).all();
+    const journalNames = new Set<string>();
+    for (const row of pending) {
+      const prefix = `.${row.projectId}.deleting-`;
+      const candidates = readdirSync(root).filter((name) => name.startsWith(prefix));
+      const tombstoneName = row.tombstoneName ?? (candidates.length === 1 ? candidates[0] : undefined);
+      if (tombstoneName && (tombstoneName.includes("/") || tombstoneName.includes("\\") ||
+          !tombstoneName.startsWith(prefix))) {
+        throw new Error("invalid Project deletion recovery journal");
+      }
+      const canonical = projectDir(this.dataDir, row.projectId);
+      if (existsSync(canonical)) {
+        if (tombstoneName && existsSync(join(root, tombstoneName))) {
+          throw new Error(`Project ${row.projectId} has ambiguous deletion storage`);
+        }
+        if (tombstoneName) journalNames.add(tombstoneName);
+        continue;
+      }
+      if (!tombstoneName || !existsSync(join(root, tombstoneName))) {
+        throw new Error(`Project ${row.projectId} deletion quarantine has no recoverable canonical storage`);
+      }
+      renameSync(join(root, tombstoneName), canonical);
+      fsyncDirectory(root);
+      journalNames.add(tombstoneName);
+      if (!row.tombstoneName) {
+        this.db.update(projectDeletionPending).set({ tombstoneName })
+          .where(eq(projectDeletionPending.projectId, row.projectId)).run();
+      }
+    }
+    let removedCommitted = false;
+    for (const name of readdirSync(root)) {
+      if (!/^\..+\.deleting-.+$/.test(name) || journalNames.has(name)) continue;
+      rmSync(join(root, name), { recursive: true, force: true });
+      removedCommitted = true;
+    }
+    if (removedCommitted) fsyncDirectory(root);
+  }
+
   rebuildProjections(): void {
+    this.recoverProjectDeletionDirectories();
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM tool_output_projection`).run();
     this.db.delete(continuationHandoffs).run();

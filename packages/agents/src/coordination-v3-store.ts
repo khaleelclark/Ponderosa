@@ -3622,10 +3622,10 @@ export class CoordinationV3Store {
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE project_id = ? AND state IN ('pending', 'retry_pending', 'attached')
       `).run(now, projectId);
-      const projectTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions WHERE project_id = ?
-      `).all(projectId) as Array<{ id: string }>;
-      for (const trigger of projectTriggers) this.deleteTriggerDefinition(trigger.id, now);
+      // Trigger sources are fenced by the Project quarantine at the server
+      // boundary. Keep their definitions intact until purgeProject commits in
+      // the canonical Project-deletion transaction, so a failed cleanup retry
+      // cannot partially mutate user-authored automation.
     })();
   }
 

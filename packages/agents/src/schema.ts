@@ -21,6 +21,8 @@ export const projectDeletionPending = sqliteTable("project_deletion_pending", {
   projectId: text("project_id").primaryKey(),
   createdAt: text("created_at").notNull(),
   lastError: text("last_error"),
+  /** Exact hidden directory used across the filesystem/SQLite commit boundary. */
+  tombstoneName: text("tombstone_name"),
 });
 export const agentPresets = sqliteTable("agent_presets", {
   id: text("id").primaryKey(), projectId: text("project_id").notNull(), name: text("name").notNull(),

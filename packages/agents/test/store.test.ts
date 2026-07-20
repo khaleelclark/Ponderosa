@@ -1748,6 +1748,44 @@ describe("project lifecycle", () => {
     expect(store.listPendingProjectDeletions()).toEqual([]);
   });
 
+  it("recovers a rename-before-purge crash and purges V3 state only on the successful retry", () => {
+    const project = store.createProject({ label: "Crash-safe deletion", hostPath: "/repo" });
+    const conversation = store.getConversation(project.lastConversationId!)!;
+    const agent = store.createAgent(project.id, {
+      title: "Trigger owner", engine: "codex", conversationId: conversation.id,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.createTriggerDefinition({
+      id: "deletion-crash-trigger", projectId: project.id, conversationId: conversation.id,
+      agentId: agent.id, name: "Retained until commit", instructions: "Run later",
+      sourceKind: "webhook", sourceConfig: { replayWindowSeconds: 300 }, enabled: false,
+    });
+    store.markProjectDeletionPending(project.id, "2026-07-20T01:00:00.000Z");
+    const tombstoneName = `.${project.id}.deleting-crash-window`;
+    store.sqlite.prepare(`UPDATE project_deletion_pending SET tombstone_name = ? WHERE project_id = ?`)
+      .run(tombstoneName, project.id);
+    renameSync(projectDir(dir, project.id), join(dir, "projects", tombstoneName));
+    const committedCleanup = join(dir, "projects", ".already-committed.deleting-cleanup");
+    mkdirSync(committedCleanup);
+    writeFileSync(join(committedCleanup, "stale"), "committed");
+    store.close();
+
+    store = new AgentStore(dir);
+    expect(existsSync(projectDir(dir, project.id))).toBe(true);
+    expect(existsSync(join(dir, "projects", tombstoneName))).toBe(false);
+    expect(existsSync(committedCleanup)).toBe(false);
+    expect(store.listPendingProjectDeletions()).toEqual([{
+      projectId: project.id, createdAt: "2026-07-20T01:00:00.000Z",
+    }]);
+    expect(new CoordinationV3Store(store.sqlite).getTriggerDefinition("deletion-crash-trigger")).toBeDefined();
+
+    const restartedCoordination = new CoordinationV3Store(store.sqlite);
+    expect(store.deleteProject(project.id, (projectId) => restartedCoordination.purgeProject(projectId))).toBe(true);
+    expect(store.listPendingProjectDeletions()).toEqual([]);
+    expect(restartedCoordination.getTriggerDefinition("deletion-crash-trigger")).toBeUndefined();
+    expect(existsSync(projectDir(dir, project.id))).toBe(false);
+  });
+
   it("permanently deletes one canonical project tree and all of its projections", () => {
     const removed = store.createProject({ label: "Remove", hostPath: "/remove" });
     const room = store.createConversation(removed.id, { title: "Room" });

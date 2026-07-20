@@ -2811,6 +2811,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId).map((agent) => agent.id)));
+  const rejectQuarantinedTriggerMutation = (
+    target: { projectId: string; agentId: string },
+    reply: FastifyReply,
+  ): boolean => {
+    if (!deletingProjectIds.has(target.projectId) && !deletingAgentIds.has(target.agentId)) return false;
+    void reply.code(409).send({ error: "Trigger owner deletion is in progress" });
+    return true;
+  };
   // A crashed daemon may leave scheduler Runs or Activations behind. Reapply
   // the durable Project deletion fence before scheduler leasing starts.
   for (const projectId of deletingProjectIds) coordinationV3.prepareProjectDeletion(projectId);
@@ -9572,6 +9580,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.post<{ Params: { id: string }; Body: unknown }>("/api/agents/:id/triggers", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
     if (!agent) return reply.code(404).send({ error: "agent not found" });
+    if (rejectQuarantinedTriggerMutation({ projectId: agent.projectId, agentId: agent.id }, reply)) return reply;
     try {
       const body = parseCreateTrigger(request.body);
       const normalized = normalizeTriggerSourceConfig(body.sourceKind, body.sourceConfig);
@@ -9601,6 +9610,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.patch<{ Params: { id: string }; Body: unknown }>("/api/triggers/:id", async (request, reply) => {
     const current = coordinationV3.getTriggerDefinition(request.params.id);
     if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    if (rejectQuarantinedTriggerMutation(current, reply)) return reply;
     try {
       const body = parseUpdateTrigger(request.body, current.sourceKind);
       const needsReschedule = body.sourceConfig !== undefined || (body.enabled === true && !current.enabled);
@@ -9627,6 +9637,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.delete<{ Params: { id: string } }>("/api/triggers/:id", async (request, reply) => {
     const current = coordinationV3.getTriggerDefinition(request.params.id);
     if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    if (rejectQuarantinedTriggerMutation(current, reply)) return reply;
     coordinationV3.deleteTriggerDefinition(current.id);
     await triggerSources.refresh();
     reconcileTriggerOperationalNotifications();
@@ -9637,6 +9648,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.post<{ Params: { id: string } }>("/api/triggers/:id/rotate-secret", async (request, reply) => {
     const current = coordinationV3.getTriggerDefinition(request.params.id);
     if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    if (rejectQuarantinedTriggerMutation(current, reply)) return reply;
     if (current.sourceKind !== "webhook") return reply.code(400).send({ error: "only webhook Triggers have signing secrets" });
     const secret = triggerSources.createWebhookSecret();
     const trigger = coordinationV3.updateTriggerDefinition(current.id, {
@@ -9648,6 +9660,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.post<{ Params: { id: string }; Body: { additionalRuns?: number } }>("/api/triggers/:id/allow-runs", async (request, reply) => {
+    const current = coordinationV3.getTriggerDefinition(request.params.id);
+    if (!current) return reply.code(404).send({ error: "Trigger not found" });
+    if (rejectQuarantinedTriggerMutation(current, reply)) return reply;
     try {
       const trigger = coordinationV3.allowTriggerRuns(request.params.id, request.body?.additionalRuns ?? 0);
       if (!trigger) return reply.code(404).send({ error: "Trigger not found" });
