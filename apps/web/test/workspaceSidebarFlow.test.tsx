@@ -75,7 +75,6 @@ describe("responsive workspace sidebar flow", () => {
     const rendered = JSON.stringify(view.toJSON());
     expect(view.root.findAll((node) => node.props["aria-label"] === "Home")).toHaveLength(0);
     expect(view.root.findByProps({ "aria-label": "All Chat" })).toBeTruthy();
-    expect(rendered).toContain("All Projects");
     expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
@@ -86,6 +85,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "projects" });
     expect(JSON.stringify(view.toJSON())).toContain("Search projects");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
+    expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
     act(() => view.root.findByProps({ children: "View All Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
@@ -130,7 +130,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onSearch).toHaveBeenCalledOnce();
     expect(desktop.root.findAllByType("kbd")).toHaveLength(1);
     const mobile = render(true);
-    expect(mobile.root.findByType("kbd").props.sx.display).toBe("none");
+    expect(mobile.root.find((node) => node.props.component === "kbd").props.sx.display).toBe("none");
     desktop.unmount();
     mobile.unmount();
     client.clear();
@@ -161,7 +161,7 @@ describe("responsive workspace sidebar flow", () => {
       onDeleteConversation={vi.fn()}
       onOpenProfile={onOpenProfile}
     /></QueryClientProvider>);
-    expect(JSON.stringify(view.toJSON())).toContain("KC");
+    expect(view.root.findByProps({ "aria-label": "Khaleel Clark avatar" })).toBeTruthy();
     act(() => view.root.findByProps({ "aria-label": "Open operator profile" }).props.onClick());
     expect(onOpenProfile).toHaveBeenCalledOnce();
     view.unmount();

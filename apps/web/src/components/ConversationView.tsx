@@ -1275,7 +1275,7 @@ export function ConversationView({
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady
-              ? "Describe a request — starts a new agent"
+              ? "Send a message"
               : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
