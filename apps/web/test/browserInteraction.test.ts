@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_FRAME_ACTIVE_INTERVAL_MS,
+  BROWSER_FRAME_ACTIVE_WINDOW_MS,
   BROWSER_FRAME_IDLE_INTERVAL_MS,
   browserFrameRefreshDelay,
   browserTouchScrollDelta,
@@ -64,7 +65,7 @@ describe("interactive browser input", () => {
     expect(timers.at(-1)).toMatchObject({ delay: BROWSER_FRAME_ACTIVE_INTERVAL_MS });
     expect(maximumActiveCaptures).toBe(1);
 
-    now += 2_001;
+    now += BROWSER_FRAME_ACTIVE_WINDOW_MS + 1;
     timers.at(-1)!.callback();
     releases.shift()!();
     await flush();

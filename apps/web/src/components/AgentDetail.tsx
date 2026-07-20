@@ -15,6 +15,8 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Box,
@@ -22,6 +24,7 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -73,7 +76,6 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { useMobileComposerAutoHide } from "../mobileChat";
 
 type AgentTab = AgentDetailView;
 
@@ -334,7 +336,7 @@ export function AgentDetail({
   const theme = useTheme();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
-  const { composerHidden, onChatScroll, revealComposer } = useMobileComposerAutoHide(mobileViewport);
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) => api.cancelQueuedAgentMessage(agentId, deliveryId, {
       idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
@@ -356,6 +358,7 @@ export function AgentDetail({
   });
 
   useEffect(() => {
+    setMobileHeaderCollapsed(false);
     if (initialView) {
       setTab(initialView);
       return;
@@ -370,7 +373,6 @@ export function AgentDetail({
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
-    revealComposer();
   }, [agentId, tab]);
 
   const detail = useMemo(() => {
@@ -805,7 +807,7 @@ export function AgentDetail({
     : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={onChatScroll} onReact={(message, emoji) => api.sendUserReaction({
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onReact={(message, emoji) => api.sendUserReaction({
       projectId: detail.agent.projectId,
       communicationEventId: message.communicationEventId!,
       emoji,
@@ -840,7 +842,16 @@ export function AgentDetail({
 
   return (
     <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto" }}>
-      <Box data-mobile-chat-header-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+        <Box sx={{ display: { xs: "flex", sm: "none" }, justifyContent: "flex-end", minHeight: 36 }}>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Agent Header" : "Minimize Agent Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
+        </Box>
+        <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}>
         <Stack
           direction="row"
           spacing={1}
@@ -963,8 +974,8 @@ export function AgentDetail({
                 {detail.state.branch ?? "No branch"}{detail.state.commit ? ` · ${detail.state.commit}` : ""}
               </Typography>
               <Divider flexItem />
-              <Box>
-                <Typography variant="caption" color="text.secondary">Organization permissions</Typography>
+              <Stack spacing={1.25} sx={{ py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">Organization Permissions</Typography>
                 <FormControlLabel
                   control={<Switch
                     size="small"
@@ -977,7 +988,7 @@ export function AgentDetail({
                   />}
                   label={<Typography variant="body2">Allow automatic descendant deletion</Typography>}
                 />
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75, pb: 0.5, lineHeight: 1.45 }}>
                   This Agent may cancel active work and permanently delete branches beneath it without another Decision.
                 </Typography>
                 <FormControlLabel
@@ -992,11 +1003,11 @@ export function AgentDetail({
                   />}
                   label={<Typography variant="body2">Allow automatic descendant reorganization</Typography>}
                 />
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75 }}>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ pl: 6, mt: -0.75, pb: 0.5, lineHeight: 1.45 }}>
                   This Agent may rearrange reporting lines inside its subtree, but cannot detach or promote descendants.
                 </Typography>
                 {updateManagementPermissions.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateManagementPermissions.error)}</Alert> : null}
-              </Box>
+              </Stack>
               <Divider flexItem />
               <Typography variant="caption" color="text.secondary">
                 {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
@@ -1066,6 +1077,7 @@ export function AgentDetail({
           />
         </Stack>
         {running ? <LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /> : null}
+        </Collapse>
       </Box>
 
       <Box sx={{ minWidth: 0 }}>
@@ -1090,7 +1102,7 @@ export function AgentDetail({
         {panes[tab]}
       </Box>
 
-      {tab === "chat" ? <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-composer" sx={{ minWidth: 0 }}>
+      {tab === "chat" ? <Box className="mobile-chat-chrome mobile-chat-composer" sx={{ minWidth: 0 }}>
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {sendMessage.isError || cancelRun.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>

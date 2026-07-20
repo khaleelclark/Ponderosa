@@ -9,6 +9,7 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
   CircularProgress,
   Dialog,
@@ -79,6 +80,13 @@ export function projectFileCategory(artifact: ArtifactDto): Exclude<ProjectFileC
     if (extensions.has(extension)) return category;
   }
   return "other";
+}
+
+export function matchesProjectFileCategories(
+  artifact: ArtifactDto,
+  selected: readonly Exclude<ProjectFileCategory, "all">[],
+): boolean {
+  return selected.length === 0 || selected.includes(projectFileCategory(artifact));
 }
 
 export function createdFileUnifiedDiff(path: string, content: string): string {
@@ -201,7 +209,7 @@ export function ProjectArtifactsView({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
-  const [fileCategory, setFileCategory] = useState<ProjectFileCategory>("all");
+  const [fileCategories, setFileCategories] = useState<Array<Exclude<ProjectFileCategory, "all">>>([]);
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -209,7 +217,7 @@ export function ProjectArtifactsView({
   useEffect(() => {
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
-    setFileCategory("all");
+    setFileCategories([]);
   }, [projectId]);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
@@ -237,7 +245,7 @@ export function ProjectArtifactsView({
       })).sort((left, right) => right.artifact.createdAt.localeCompare(left.artifact.createdAt));
   }, [agents, olderArtifacts?.items, projectArtifacts.data?.items]);
   const filtered = useMemo(() => records.filter(({ agent, artifact }) => {
-    if (fileCategory !== "all" && projectArtifactGroup(artifact.kind) === "Modified & Created Files" && projectFileCategory(artifact) !== fileCategory) return false;
+    if (projectArtifactGroup(artifact.kind) === "Modified & Created Files" && !matchesProjectFileCategories(artifact, fileCategories)) return false;
     return !normalizedFilter || [
       agent?.title,
       artifactDisplayLabel(artifact),
@@ -246,7 +254,7 @@ export function ProjectArtifactsView({
       artifact.summary,
       artifact.kind,
     ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter);
-  }), [fileCategory, records, normalizedFilter]);
+  }), [fileCategories, records, normalizedFilter]);
   const fileCategoryOptions = useMemo(() => {
     const counts = new Map<ProjectFileCategory, number>(PROJECT_FILE_CATEGORIES.map(({ value }) => [value, 0]));
     const files = records.filter(({ artifact }) => projectArtifactGroup(artifact.kind) === "Modified & Created Files");
@@ -296,20 +304,30 @@ export function ProjectArtifactsView({
           sx={{ width: { xs: "100%", sm: 420 } }}
         />
         <FormControl size="small" sx={{ minWidth: 180, width: { xs: "100%", sm: "auto" } }}>
-          <InputLabel id="project-file-category-label">File Type</InputLabel>
+          <InputLabel id="project-file-category-label">File Types</InputLabel>
           <Select
             labelId="project-file-category-label"
-            label="File Type"
-            value={fileCategory}
-            onChange={(event: SelectChangeEvent<ProjectFileCategory>) => setFileCategory(event.target.value as ProjectFileCategory)}
+            label="File Types"
+            multiple
+            value={fileCategories}
+            onChange={(event: SelectChangeEvent<Array<Exclude<ProjectFileCategory, "all">>>) => {
+              const value = event.target.value;
+              setFileCategories(typeof value === "string"
+                ? value.split(",") as Array<Exclude<ProjectFileCategory, "all">>
+                : value);
+            }}
             inputProps={{ "aria-label": "Filter project files by type" }}
             sx={{ minHeight: { xs: 44, sm: 40 } }}
-            renderValue={(value) => {
-              const option = fileCategoryOptions.find((candidate) => candidate.value === value);
-              return option ? `${option.label} (${option.count})` : "All";
+            renderValue={(values) => {
+              if (values.length === 0) return `All (${fileCategoryOptions.find((option) => option.value === "all")?.count ?? 0})`;
+              if (values.length <= 2) return values.map((value) => fileCategoryOptions.find((candidate) => candidate.value === value)?.label ?? value).join(", ");
+              return `${values.length} File Types`;
             }}
           >
-            {fileCategoryOptions.map((option) => <MenuItem key={option.value} value={option.value}>{option.label} ({option.count})</MenuItem>)}
+            {fileCategoryOptions.filter((option) => option.value !== "all").map((option) => <MenuItem key={option.value} value={option.value}>
+              <Checkbox checked={fileCategories.includes(option.value as Exclude<ProjectFileCategory, "all">)} />
+              {option.label} ({option.count})
+            </MenuItem>)}
           </Select>
         </FormControl>
       </Stack>

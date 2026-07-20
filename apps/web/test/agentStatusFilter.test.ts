@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { AgentDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import type { AgentStatus } from "../src/agents";
-import { agentStatusFilterOptions, STATUS_FILTERS } from "../src/components/AgentsTab";
+import { agentStatusFilterOptions, matchesAgentStatusFilters, STATUS_FILTERS } from "../src/components/AgentsTab";
 
 const source = readFileSync(new URL("../src/components/AgentsTab.tsx", import.meta.url), "utf8");
 
@@ -39,6 +39,14 @@ describe("agent status filter", () => {
     ]);
     expect(source).toContain('labelId="agents-status-filter-label"');
     expect(source).toContain('aria-label": "Filter agents by status"');
+    expect(source).toContain("multiple");
     expect(source).not.toContain("ToggleButtonGroup");
+  });
+
+  it("matches any selected status while keeping an empty selection equivalent to all", () => {
+    expect(matchesAgentStatusFilters(agent("one"), "running", [])).toBe(true);
+    expect(matchesAgentStatusFilters(agent("one"), "running", ["running", "waiting"])).toBe(true);
+    expect(matchesAgentStatusFilters(agent("one"), "blocked", ["running", "waiting"])).toBe(false);
+    expect(matchesAgentStatusFilters(agent("one", false), "idle", ["unassigned", "running"])).toBe(true);
   });
 });

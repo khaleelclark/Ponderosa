@@ -128,50 +128,15 @@ html {
     margin-top: 2px;
   }
 
-  /* Chat chrome follows scroll direction without abruptly adding/removing grid
-     rows. A bounded max-height lets the layout interpolate while opacity and a
-     small translation make the movement legible. */
   .mobile-chat-chrome {
     display: block !important;
     overflow: hidden;
-    opacity: 1;
-    visibility: visible;
-    transition: max-height 180ms ease, opacity 140ms ease, transform 180ms ease, padding 180ms ease, border-width 180ms ease, visibility 0s linear;
   }
 
-  .mobile-chat-header {
-    max-height: 12rem;
-    transform: translateY(0);
-  }
-
-  .mobile-chat-composer,
-  [data-mobile-composer-hidden] {
+  .mobile-chat-composer {
     display: block !important;
     max-height: 100dvh;
     overflow: hidden;
-    transform: translateY(0);
-    transition: max-height 180ms ease, opacity 140ms ease, transform 180ms ease, padding 180ms ease, border-width 180ms ease, visibility 0s linear;
-  }
-
-  [data-mobile-chat-header-hidden="true"],
-  [data-mobile-composer-hidden="true"] {
-    max-height: 0;
-    opacity: 0;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-    border-top-width: 0 !important;
-    border-bottom-width: 0 !important;
-    pointer-events: none;
-    visibility: hidden;
-    transition: max-height 180ms ease, opacity 140ms ease, transform 180ms ease, padding 180ms ease, border-width 180ms ease, visibility 0s linear 180ms;
-  }
-
-  [data-mobile-chat-header-hidden="true"] {
-    transform: translateY(-0.375rem);
-  }
-
-  [data-mobile-composer-hidden="true"] {
-    transform: translateY(0.375rem);
   }
 }
 

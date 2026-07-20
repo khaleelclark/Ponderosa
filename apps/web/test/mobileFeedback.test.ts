@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { mobileComposerHiddenAfterScroll, mobileOperationalStatus } from "../src/mobileChat";
+import { mobileOperationalStatus } from "../src/mobileChat";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
@@ -11,20 +11,12 @@ const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx"
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 
 describe("mobile feedback slice", () => {
-  it("hides on upward chat movement and restores on downward movement or at the bottom", () => {
-    expect(mobileComposerHiddenAfterScroll({ previousTop: 400, currentTop: 380, hidden: false, nearBottom: false })).toBe(true);
-    expect(mobileComposerHiddenAfterScroll({ previousTop: 380, currentTop: 400, hidden: true, nearBottom: false })).toBe(false);
-    expect(mobileComposerHiddenAfterScroll({ previousTop: 400, currentTop: 399, hidden: true, nearBottom: false })).toBe(true);
-    expect(mobileComposerHiddenAfterScroll({ previousTop: 400, currentTop: 350, hidden: true, nearBottom: true })).toBe(false);
-  });
-
-  it("wires the shared composer behavior to every composing chat surface", () => {
-    expect(agentDetail).toContain("onScrollPositionChange={onChatScroll}");
-    expect(agentDetail).toContain("data-mobile-composer-hidden");
-    expect(conversation).toContain("onChatScroll(chatScrollRef.current");
-    expect(conversation).toContain("data-mobile-composer-hidden");
-    expect(allChat).toContain("onChatScroll(scrollRef.current");
-    expect(allChat).toContain("data-mobile-composer-hidden");
+  it("keeps every mobile composer mounted at the bottom while scrolling", () => {
+    expect(agentDetail).not.toContain("data-mobile-composer-hidden");
+    expect(conversation).not.toContain("data-mobile-composer-hidden");
+    expect(allChat).not.toContain("data-mobile-composer-hidden");
+    expect(allChat).toContain('height: "100%"');
+    expect(conversation).toContain('height: "100%"');
   });
 
   it("keeps message timestamps hidden until a message reveals the compact mobile row", () => {
@@ -35,14 +27,15 @@ describe("mobile feedback slice", () => {
     expect(timestamps.indexOf("data-mobile-message-timestamp")).toBeLessThan(timestamps.indexOf("chat-message-action-buttons"));
   });
 
-  it("animates the mobile composer and chat header from the same scroll-direction state", () => {
-    expect(agentDetail).toContain('data-mobile-chat-header-hidden={composerHidden ? "true" : "false"}');
-    expect(conversation).toContain('data-mobile-chat-header-hidden={composerHidden ? "true" : "false"}');
+  it("gives mobile chat headers an explicit animated minimize control", () => {
+    expect(agentDetail).toContain('aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}');
+    expect(conversation).toContain('aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}');
+    expect(agentDetail).toContain("<Collapse in={!mobileHeaderCollapsed || !mobileViewport}");
+    expect(conversation).toContain("<Collapse in={!mobileHeaderCollapsed || !mobileRoster}");
     expect(agentDetail).toContain('className="mobile-chat-chrome mobile-chat-composer"');
     expect(conversation).toContain('className="mobile-chat-chrome mobile-chat-composer"');
-    expect(globalCss).toContain("transition: max-height 180ms ease, opacity 140ms ease, transform 180ms ease");
-    expect(globalCss).toContain('[data-mobile-chat-header-hidden="true"]');
-    expect(globalCss).toContain('[data-mobile-composer-hidden="true"]');
+    expect(globalCss).not.toContain('[data-mobile-chat-header-hidden="true"]');
+    expect(globalCss).not.toContain('[data-mobile-composer-hidden="true"]');
     expect(globalCss).toContain("@media (prefers-reduced-motion: reduce)");
   });
 

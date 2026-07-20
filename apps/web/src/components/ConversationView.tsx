@@ -9,6 +9,8 @@ import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import CloseIcon from "@mui/icons-material/Close";
+import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Avatar,
@@ -17,6 +19,7 @@ import {
   ButtonBase,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -107,7 +110,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
-import { mobileOperationalStatus, useMobileComposerAutoHide } from "../mobileChat";
+import { mobileOperationalStatus } from "../mobileChat";
 
 export function ConversationMessage({
   message,
@@ -164,10 +167,18 @@ export function ConversationMessage({
       sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+        {!fromManager ? <Tooltip title={`Open ${senderName}`}><ButtonBase
+          aria-label={`Open agent ${senderName} from profile image`}
+          onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
+          sx={{ borderRadius: "50%", flex: "0 0 auto" }}
+        ><Avatar sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar></ButtonBase></Tooltip> : null}
         <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
-            <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
+            <ButtonBase
+              aria-label={`Open agent ${senderName} from name`}
+              onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
+              sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
+            ><MessageSenderLabel name={senderName} /></ButtonBase>
             <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
           </Stack> : null}
           {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
@@ -390,9 +401,10 @@ export function ConversationView({
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
-  const { composerHidden, onChatScroll, revealComposer } = useMobileComposerAutoHide(mobileRoster);
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
 
   useEffect(() => {
+    setMobileHeaderCollapsed(false);
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
@@ -402,7 +414,6 @@ export function ConversationView({
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `conversation.${conversationId}`), activeView);
-    revealComposer();
   }, [activeView, conversationId]);
 
   const conversation = detailQuery.data?.conversation;
@@ -965,8 +976,17 @@ export function ConversationView({
   /> : null;
 
   return (
-    <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <Box data-mobile-chat-header-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.75, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+    <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
+        <Box sx={{ display: { xs: "flex", sm: "none" }, justifyContent: "flex-end", minHeight: 36 }}>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
+        </Box>
+        <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack
           direction="row"
           spacing={0.5}
@@ -1022,6 +1042,7 @@ export function ConversationView({
           <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
           <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => setAgentsOpen(true)} aria-haspopup="dialog" aria-expanded={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ px: 1.5, color: "text.secondary" }}>Agents</Button>
         </Stack>
+        </Collapse>
       </Box>
 
       <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
@@ -1036,7 +1057,6 @@ export function ConversationView({
             if (chatScrollRef.current) {
               shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
               setShowScrollToLatest(!shouldFollowNewMessages.current);
-              onChatScroll(chatScrollRef.current, shouldFollowNewMessages.current);
               writeChatState(
                 chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
                 String(chatScrollRef.current.scrollTop),
@@ -1145,7 +1165,6 @@ export function ConversationView({
             shouldFollowNewMessages.current = true;
             scrollChatToBottom(chatScrollRef.current);
             setShowScrollToLatest(false);
-            revealComposer();
           }}
         />
       </Box>
@@ -1243,7 +1262,7 @@ export function ConversationView({
         onClose={() => setAgentWorkOpen(false)}
       />
 
-      <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} className="mobile-chat-chrome mobile-chat-composer">
+      <Box className="mobile-chat-chrome mobile-chat-composer">
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (

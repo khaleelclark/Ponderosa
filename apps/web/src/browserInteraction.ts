@@ -5,9 +5,9 @@ export interface BrowserScrollInput {
 }
 
 const MAX_BROWSER_SCROLL_DELTA = 4_000;
-export const BROWSER_FRAME_ACTIVE_INTERVAL_MS = 120;
-export const BROWSER_FRAME_IDLE_INTERVAL_MS = 1_500;
-export const BROWSER_FRAME_ACTIVE_WINDOW_MS = 2_000;
+export const BROWSER_FRAME_ACTIVE_INTERVAL_MS = 75;
+export const BROWSER_FRAME_IDLE_INTERVAL_MS = 750;
+export const BROWSER_FRAME_ACTIVE_WINDOW_MS = 3_000;
 
 function clampScrollDelta(value: number): number {
   return Math.max(-MAX_BROWSER_SCROLL_DELTA, Math.min(MAX_BROWSER_SCROLL_DELTA, value));

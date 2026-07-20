@@ -1,7 +1,6 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
   Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography,
-  useMediaQuery, useTheme,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,7 +10,6 @@ import { useAllChat } from "../hooks/queries";
 import type { Route } from "../routing";
 import { Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./panes";
 import { MessageTimestamp } from "./MessageTimestamp";
-import { useMobileComposerAutoHide } from "../mobileChat";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -65,9 +63,6 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   const followLatest = useRef(true);
   const restoreDistance = useRef<number>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
-  const theme = useTheme();
-  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
-  const { composerHidden, onChatScroll, revealComposer } = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
@@ -132,7 +127,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     }
   }, [layoutKey]);
 
-  return <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
+  return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography variant="h5" component="h1" fontWeight={800}>All Chat</Typography>
@@ -146,7 +141,6 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       if (!scrollRef.current) return;
       followLatest.current = isChatNearBottom(scrollRef.current);
       setShowScrollToLatest(!followLatest.current);
-      onChatScroll(scrollRef.current, followLatest.current);
     }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
@@ -214,11 +208,10 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       followLatest.current = true;
       scrollChatToBottom(scrollRef.current);
       setShowScrollToLatest(false);
-      revealComposer();
     }} />
     </Box>
 
-    <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} sx={{ display: composerHidden ? { xs: "none", sm: "block" } : "block", borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}>
+    <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}>
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
           : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>

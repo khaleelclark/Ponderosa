@@ -30,6 +30,10 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   return <FolderOutlinedIcon fontSize="small" />;
 }
 
+export function newTabShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘T" | "Ctrl T" {
+  return /Mac|iPhone|iPad/iu.test(platform) ? "⌘T" : "Ctrl T";
+}
+
 export function WorkspaceTabs({
   tabs, projects, activeKey, onActivate, onCreate, onClose, onCloseOthers, onRename, onReorder,
 }: {
@@ -172,7 +176,7 @@ export function WorkspaceTabs({
         </Box>;
       })}
     </Stack>
-    <Tooltip title="New Tab (⌘T)"><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: { xs: 44, md: 36 }, height: { xs: 44, md: 36 }, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
+    <Tooltip title={`New Tab (${newTabShortcutLabel()})`}><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: { xs: 44, md: 36 }, height: { xs: 44, md: 36 }, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
     <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
       {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project" /> : <TokenUsageButton scope="overall" label="Overall" />}
     </Box>

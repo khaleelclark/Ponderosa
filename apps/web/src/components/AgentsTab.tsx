@@ -39,7 +39,7 @@ import {
   type AgentStatus,
 } from "../agents";
 
-export type StatusFilter = "all" | AgentStatus | "unassigned";
+export type StatusFilter = AgentStatus | "unassigned";
 
 export const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
   { value: "running", label: "Running" },
@@ -57,7 +57,7 @@ export const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unass
 export function agentStatusFilterOptions(
   agents: AgentDto[],
   statusByAgentId: ReadonlyMap<string, AgentStatus>,
-): Array<{ value: StatusFilter; label: string; count: number }> {
+): Array<{ value: StatusFilter | "all"; label: string; count: number }> {
   const counts = agents.reduce(
     (result, agent) => {
       result.status[statusByAgentId.get(agent.id) ?? "idle"] += 1;
@@ -74,6 +74,17 @@ export function agentStatusFilterOptions(
     ...STATUS_FILTERS.map((option) => ({ ...option, count: counts.status[option.value] })),
     { value: "unassigned", label: "Unassigned", count: counts.unassigned },
   ];
+}
+
+export function matchesAgentStatusFilters(
+  agent: Pick<AgentDto, "conversationIds">,
+  status: AgentStatus,
+  selected: readonly StatusFilter[],
+): boolean {
+  if (selected.length === 0) return true;
+  return selected.some((filter) => filter === "unassigned"
+    ? agent.conversationIds.length === 0
+    : status === filter);
 }
 
 export function AgentsTab({
@@ -98,7 +109,7 @@ export function AgentsTab({
   onNewAgent(managerAgentId?: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
@@ -123,12 +134,7 @@ export function AgentsTab({
 
   const filtered = orderedAgentOrganization(agents).filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
-    if (statusFilter === "unassigned" && agent.conversationIds.length > 0) {
-      return false;
-    }
-    if (statusFilter !== "all" && statusFilter !== "unassigned" && status !== statusFilter) {
-      return false;
-    }
+    if (!matchesAgentStatusFilters(agent, status, statusFilters)) return false;
     if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
       return false;
     }
@@ -215,16 +221,22 @@ export function AgentsTab({
           <Select
             labelId="agents-status-filter-label"
             label="Status"
-            value={statusFilter}
-            onChange={(event: SelectChangeEvent<StatusFilter>) => setStatusFilter(event.target.value as StatusFilter)}
+            multiple
+            value={statusFilters}
+            onChange={(event: SelectChangeEvent<StatusFilter[]>) => {
+              const value = event.target.value;
+              setStatusFilters(typeof value === "string" ? value.split(",") as StatusFilter[] : value);
+            }}
             inputProps={{ "aria-label": "Filter agents by status" }}
             sx={{ minHeight: { xs: 44, sm: 40 } }}
-            renderValue={(value) => {
-              const option = statusOptions.find((candidate) => candidate.value === value);
-              return option ? `${option.label} (${option.count})` : "All";
+            renderValue={(values) => {
+              if (values.length === 0) return `All (${agents.length})`;
+              if (values.length <= 2) return values.map((value) => statusOptions.find((candidate) => candidate.value === value)?.label ?? value).join(", ");
+              return `${values.length} Statuses`;
             }}
           >
-            {statusOptions.map((option) => <MenuItem key={option.value} value={option.value}>
+            {statusOptions.filter((option) => option.value !== "all").map((option) => <MenuItem key={option.value} value={option.value}>
+              <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />
               {option.label} ({option.count})
             </MenuItem>)}
           </Select>
@@ -253,12 +265,12 @@ export function AgentsTab({
           <Alert
             severity="info"
             action={
-              statusFilter !== "all" || masterFilter !== "all" || search ? (
+              statusFilters.length > 0 || masterFilter !== "all" || search ? (
                 <Button
                   color="inherit"
                   size="small"
                   onClick={() => {
-                    setStatusFilter("all");
+                    setStatusFilters([]);
                     setMasterFilter("all");
                     setSearch("");
                   }}

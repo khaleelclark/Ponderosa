@@ -8,6 +8,7 @@ import { copyText } from "../src/clipboard";
 import {
   createdFileUnifiedDiff,
   isTextArtifactPreview,
+  matchesProjectFileCategories,
   projectArtifactGroup,
   projectFileCategory,
   ProjectArtifactsView,
@@ -46,6 +47,9 @@ describe("project artifacts view", () => {
     expect(projectFileCategory(artifact("screens/hero.avif"))).toBe("images");
     expect(projectFileCategory(artifact("bundles/release.zip"))).toBe("archives");
     expect(projectFileCategory(artifact("output/README"))).toBe("other");
+    expect(matchesProjectFileCategories(artifact("src/App.TSX"), [])).toBe(true);
+    expect(matchesProjectFileCategories(artifact("src/App.TSX"), ["code", "documents"])).toBe(true);
+    expect(matchesProjectFileCategories(artifact("src/App.TSX"), ["images", "documents"])).toBe(false);
     expect(createdFileUnifiedDiff("src/new.ts", "const value = 1;\n")).toContain("--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1,1 @@\n+const value = 1;");
     expect(recordedArtifactDiff({ ...artifact("diff.patch"), kind: "diff", summary: "edit src/a.ts" }, "@@ -1 +1 @@\n-old\n+new")).toContain("+new");
     expect(recordedArtifactDiff({ ...artifact("diff.patch"), kind: "diff", summary: "edit src/a.ts" }, "raw current file body")).toBeUndefined();

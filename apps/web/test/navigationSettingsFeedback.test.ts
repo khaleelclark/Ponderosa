@@ -23,6 +23,8 @@ describe("navigation and settings feedback", () => {
     expect(sidebar).toContain('aria-label={drawer ? "Search all chats"');
     expect(globalSearch).toContain('display: { xs: "none", md: "inline-flex" }');
     expect(globalSearch).toContain('aria-label="Escape"');
+    expect(globalSearch).not.toContain("Navigate</Typography>");
+    expect(globalSearch).not.toContain("Open in new tab</Typography>");
   });
 
   it("allows Project titles and Wiki content to consume their available width", () => {

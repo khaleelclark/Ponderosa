@@ -296,7 +296,6 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
       {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>You’re all caught up.</Typography> : null}
       {search.data?.truncated ? <Alert severity="info" sx={{ mt: 1 }}>Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert> : null}
-      <Stack direction="row" spacing={2} sx={{ mt: 2, pt: 1.25, borderTop: 1, borderColor: "divider", color: "text.secondary" }}><Typography variant="caption">↑↓ Navigate</Typography><Typography variant="caption">↵ Open</Typography><Typography variant="caption">⌘↵ Open in new tab</Typography></Stack>
     </DialogContent>
   </Dialog>;
 }
