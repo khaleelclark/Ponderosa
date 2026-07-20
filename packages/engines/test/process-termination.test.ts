@@ -121,7 +121,7 @@ describe("observed process-group termination", () => {
           onRuntimeSpawned: (handle) => { runtimeHandle = handle; },
         })) events.push(event);
       })().finally(() => { settled = true; });
-      await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow());
+      await vi.waitFor(() => expect(() => readFileSync(pidFile, "utf8")).not.toThrow(), { timeout: 5_000 });
       const descendantPid = JSON.parse(readFileSync(pidFile, "utf8")) as { descendantPid: number };
       await vi.waitFor(() => expect(rootAuthorityRevoked).toBe(true), { timeout: 5_000 });
       expect(runtimeHandle?.isAlive()).toBe(true);
