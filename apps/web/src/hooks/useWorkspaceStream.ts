@@ -88,6 +88,14 @@ export function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): bo
   return event.type === "conversation_changed" || event.type === "notification_changed";
 }
 
+/** All Chat is a canonical communication projection. Refresh it only for
+ * workspace events that can add or change one of its communication rows. */
+export function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
+  return event.type === "conversation_changed"
+    || event.type === "message_delivery_changed"
+    || (event.type === "agent_event" && event.category === "message");
+}
+
 export function workspaceReconnectRequiresRefresh(
   cursor: number,
   previousInstance: string | null,
@@ -184,6 +192,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
       void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
       void queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
       void queryClient.invalidateQueries({ queryKey: ["triggers"] });
       void queryClient.invalidateQueries({ queryKey: ["trigger-occurrences"] });
       void queryClient.invalidateQueries({ queryKey: ["agent-work"] });
@@ -196,6 +205,7 @@ export function useWorkspaceStream(): void {
       window.localStorage.setItem(CURSOR_KEY, String(envelope.id));
       const event = envelope.event;
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
       if (event.type === "preferences_updated") queryClient.setQueryData(["workspace-preferences"], event.preferences);
       else if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: ["projects"] });
       else if (event.type === "conversation_changed") {

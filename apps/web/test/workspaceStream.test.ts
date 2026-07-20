@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { WorkspaceEvent } from "@ponderosa/core";
-import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesAllChat, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
 
 afterEach(() => vi.useRealTimers());
 
@@ -190,5 +190,49 @@ describe("workspace stream cursor recovery", () => {
       instanceId: "new-instance",
       reset: false,
     })).toBe(true);
+  });
+
+  it("refreshes All Chat for Project communication and agent-only message audit events", () => {
+    expect(workspaceEventInvalidatesAllChat({
+      type: "conversation_changed",
+      projectId: "project",
+      conversationId: "chat",
+      action: "message",
+    })).toBe(true);
+    expect(workspaceEventInvalidatesAllChat({
+      type: "message_delivery_changed",
+      projectId: "project",
+      agentId: "agent",
+    })).toBe(true);
+    expect(workspaceEventInvalidatesAllChat({
+      type: "agent_event",
+      projectId: "project",
+      agentId: "agent",
+      conversationIds: [],
+      seq: 12,
+      eventType: "communication",
+      category: "message",
+    })).toBe(true);
+  });
+
+  it("does not refresh All Chat for unrelated execution telemetry", () => {
+    expect(workspaceEventInvalidatesAllChat({
+      type: "agent_event",
+      projectId: "project",
+      agentId: "agent",
+      conversationIds: ["chat"],
+      seq: 13,
+      eventType: "file_change",
+      category: "file",
+      executionId: "run",
+    })).toBe(false);
+    expect(workspaceEventInvalidatesAllChat({
+      type: "usage_changed",
+      projectId: "project",
+      agentId: "agent",
+      conversationIds: ["chat"],
+      seq: 14,
+      executionId: "run",
+    })).toBe(false);
   });
 });

@@ -1541,13 +1541,14 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
     refetchInterval: running ? 1_500 : false,
   });
   const selectedChange = changes.find((change) => change.path === selectedPath);
+  const selectedProvenanceSummary = selectedPath ? provenance.get(selectedPath) : undefined;
   const selectedProvenanceQuery = useQuery({
-    queryKey: ["changed-file", agentId, selectedPath],
+    queryKey: ["changed-file", agentId, selectedPath, selectedProvenanceSummary?.lastSeq],
     queryFn: () => api.getChangedFileDetail(agentId!, selectedPath!),
     enabled: Boolean(agentId && selectedPath),
     staleTime: Infinity,
   });
-  const selectedProvenance = selectedProvenanceQuery.data ?? (selectedPath ? provenance.get(selectedPath) : undefined);
+  const selectedProvenance = selectedProvenanceQuery.data ?? selectedProvenanceSummary;
 
   return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
@@ -1617,11 +1618,12 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
 function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFileDto }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const detail = useQuery({
-    queryKey: ["changed-file", agentId, file.path],
+    queryKey: ["changed-file", agentId, file.path, file.lastSeq],
     queryFn: () => api.getChangedFileDetail(agentId, file.path),
     enabled: expanded,
     staleTime: Infinity,
   });
+  const current = detail.data ?? file;
   return <Paper variant="outlined" sx={{ p: 1.25 }}>
     <Button
       fullWidth
@@ -1636,7 +1638,7 @@ function ChangedFileEntry({ agentId, file }: { agentId: string; file: ChangedFil
       </Stack>
     </Button>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-      Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"}
+      Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
     {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
       : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
