@@ -154,6 +154,7 @@ export function WorkspaceTabs({
             sx={{
               width: 28, minWidth: 28, height: 28, alignSelf: "center", mr: 0.25, color: "text.secondary",
               opacity: selected ? 0.75 : 0, "&:hover": { color: "text.primary", opacity: 1 },
+              "&:focus-visible, &.Mui-focusVisible": { color: "text.primary", opacity: 1 },
               "@container (max-width: 86px)": { display: "none" },
             }}
           ><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
