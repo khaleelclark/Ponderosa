@@ -26,6 +26,7 @@ export type Route =
   | { kind: "allAgents" }
   | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string }
+  | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
   | { kind: "agents"; projectId: string }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus }
@@ -53,6 +54,10 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "home" };
   }
   const projectId = decodeURIComponent(parts[1]);
+  if (parts[2] === "agents" && parts[3] && parts[4] === "runs" && parts[5] && parts[6] === "browser") {
+    return { kind: "browser", projectId, agentId: decodeURIComponent(parts[3]), runId: decodeURIComponent(parts[5]) };
+  }
+  if (parts[2] === "browser") return { kind: "browser", projectId };
   if (parts[2] === "chats" && parts[3]) {
     return {
       kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),
@@ -88,6 +93,10 @@ export function routeToPath(route: Route): string {
       return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
+    case "browser":
+      return route.agentId && route.runId
+        ? `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}/runs/${encodeURIComponent(route.runId)}/browser`
+        : `/projects/${encodeURIComponent(route.projectId)}/browser`;
     case "conversation": {
       const query = new URLSearchParams();
       if (route.focusMessageId) query.set("message", route.focusMessageId);

@@ -35,14 +35,18 @@ export function BrowserPanel({
   projectId,
   agentId,
   runId,
+  standalone = false,
+  onOpenInTab,
 }: {
   projectId: string;
   agentId: string;
   runId?: string;
+  standalone?: boolean;
+  onOpenInTab?(): void;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const queryKey = ["browser-session", projectId, agentId, runId] as const;
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(standalone);
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
   const [typeText, setTypeText] = useState("");
@@ -61,10 +65,6 @@ export function BrowserPanel({
   const update = (next: BrowserSessionDto): void => {
     queryClient.setQueryData(queryKey, next);
   };
-  const open = useMutation({
-    mutationFn: () => api.openBrowserSession(projectId, agentId, runId!),
-    onSuccess: (next) => { update(next); setExpanded(true); },
-  });
   const reconnect = useMutation({
     mutationFn: () => api.reconnectBrowserSession(projectId, agentId, runId!),
     onSuccess: update,
@@ -124,14 +124,27 @@ export function BrowserPanel({
     };
   }, [agentId, expanded, projectId, runId, session?.id, session?.status]);
 
-  if (!runId && !session) return null;
-  const mutationError = open.error ?? reconnect.error ?? close.error ?? control.error ?? input.error;
+  if (!runId || !session || missing || session.status === "closed") {
+    return standalone
+      ? <Alert severity="info" sx={{ m: 2 }}>This Run’s interactive browser is no longer active.</Alert>
+      : null;
+  }
+  const mutationError = reconnect.error ?? close.error ?? control.error ?? input.error;
   const ready = session?.status === "ready";
   const operatorControl = ready && session.controlOwner === "operator";
 
   const sendInput = (request: UnfencedBrowserInput): void => {
     if (operatorControl && !input.isPending) input.mutate(request);
   };
+
+  if (!standalone) return <Paper component="section" aria-label="Interactive browser in use" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1, sm: 1.5 }, py: .75, minWidth: 0 }}>
+      <LanguageIcon color={ready ? "primary" : "disabled"} fontSize="small" />
+      <Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="subtitle2" noWrap>Interactive browser in use</Typography><Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>{session.url ?? session.status}</Typography></Box>
+      <Chip size="small" color={operatorControl ? "warning" : ready ? "info" : "default"} variant="outlined" label={ready ? browserControlLabel(session) : session.status} />
+      <Button size="small" variant="outlined" onClick={onOpenInTab}>Open tab</Button>
+    </Stack>
+  </Paper>;
 
   return (
     <Paper component="section" aria-label="Interactive browser" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
@@ -149,12 +162,7 @@ export function BrowserPanel({
           variant="outlined"
           label={ready ? browserControlLabel(session) : session.status}
         /> : null}
-        {!session || missing || session.status === "closed" ? (
-          <Button size="small" variant="outlined" disabled={!runId || open.isPending} onClick={() => open.mutate()}>
-            {open.isPending ? "Opening…" : "Open"}
-          </Button>
-        ) : (
-          <>
+        <>
             <Button size="small" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
               {expanded ? "Collapse" : "Open"}
             </Button>
@@ -164,8 +172,7 @@ export function BrowserPanel({
             <Tooltip title="Close browser session">
               <span><IconButton size="small" aria-label="Close browser" disabled={close.isPending} onClick={() => close.mutate()}><CloseIcon fontSize="small" /></IconButton></span>
             </Tooltip>
-          </>
-        )}
+        </>
       </Stack>
 
       {expanded && session ? (

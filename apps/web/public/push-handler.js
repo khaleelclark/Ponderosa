@@ -5,12 +5,12 @@ self.addEventListener("push", (event) => {
   event.waitUntil((async () => {
     if (payload.conversationId) {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-      const encodedConversationId = encodeURIComponent(payload.conversationId);
       const alreadyOpen = windows.some((client) => {
         if (client.visibilityState !== "visible") return false;
-        const path = new URL(client.url).pathname;
-        return path.includes(`/chats/${encodedConversationId}`)
-          || path.includes(`/conversations/${encodedConversationId}`);
+        const parts = new URL(client.url).pathname.split("/").filter(Boolean).map(decodeURIComponent);
+        const projectMatches = !payload.projectId || (parts[0] === "projects" && parts[1] === payload.projectId);
+        const conversationIndex = parts.findIndex((part) => part === "chats" || part === "conversations");
+        return projectMatches && conversationIndex >= 0 && parts[conversationIndex + 1] === payload.conversationId;
       });
       if (alreadyOpen) return;
     }
@@ -44,9 +44,12 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const target = new URL(event.notification.data?.url || "/", self.location.origin).href;
   event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
-    const existing = clients.find((client) => new URL(client.url).origin === self.location.origin);
+    const sameOrigin = clients.filter((client) => new URL(client.url).origin === self.location.origin);
+    const exact = sameOrigin.find((client) => new URL(client.url).href === target);
+    if (exact) return exact.focus();
+    const existing = sameOrigin.find((client) => client.visibilityState === "visible") || sameOrigin[0];
     if (existing) {
-      existing.navigate(target);
+      existing.postMessage({ type: "ponderosa:open-route", url: target });
       return existing.focus();
     }
     return self.clients.openWindow(target);

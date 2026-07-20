@@ -968,6 +968,7 @@ export function ConversationView({
           sx={{ alignItems: "center", minWidth: 0 }}
         >
           <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
             <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>

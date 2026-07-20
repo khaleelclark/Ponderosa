@@ -38,6 +38,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
   MenuItem,
   MenuList,
   Paper,
@@ -1407,7 +1408,7 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
   focusId?: string;
 }): JSX.Element {
   const groups = groupActivityByExecution(activity);
-  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent activity">
+  return <Stack spacing={1} className="ponderosa-scroll" sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overflowX: "hidden" }} aria-label="Agent activity">
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
       <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
@@ -1599,7 +1600,7 @@ export function WorkspaceReviewPane({ projectId, files, running, initialPath }: 
                       : <Alert severity="info">The current file cannot be displayed. It may be deleted, binary, or above the safe viewer limit.</Alert>)
                     : review.data?.diff ? <>
                       {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}
-                      <SyntaxHighlighter language="diff" style={oneLight} PreTag="div" customStyle={{ margin: 0 }}>{review.data.diff}</SyntaxHighlighter>
+                      <UnifiedDiffViewer diff={review.data.diff} />
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>
             </Box>}
@@ -1629,7 +1630,7 @@ export function ChangedFilesPane({ files }: { files: ChangedFileDto[] }): JSX.El
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
           Last changed {new Date(file.lastChangedAt).toLocaleString()} · {file.executionIds.length} run{file.executionIds.length === 1 ? "" : "s"}
         </Typography>
-        {file.diff ? <Box sx={{ mt: 1, overflow: "auto" }}><SyntaxHighlighter language="diff" style={oneLight} PreTag="div">{file.diff}</SyntaxHighlighter></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
+        {file.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={file.diff} /></Box> : <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>The engine did not provide a diff for this canonical event. Open Review for the current Git working-tree diff.</Typography>}
       </Paper>)}
   </Stack>;
 }
@@ -1639,6 +1640,37 @@ export { unifiedDiffLineTotals } from "@ponderosa/core";
 export function languageForPath(filePath: string): string {
   const extension = filePath.split(".").at(-1)?.toLocaleLowerCase();
   return ({ ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", json: "json", css: "css", html: "html", md: "markdown", py: "python", rs: "rust", go: "go", sh: "bash", yml: "yaml", yaml: "yaml" } as Record<string, string>)[extension ?? ""] ?? "text";
+}
+
+export function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
+  if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
+  if (line.startsWith("-") && !line.startsWith("---")) return "deletion";
+  return "neutral";
+}
+
+/** A small shared diff renderer with full-line change highlighting. */
+export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
+  return <Box
+    component="pre"
+    aria-label="Unified diff"
+    sx={{ m: 0, py: 0.75, overflowX: "auto", bgcolor: "background.paper", fontFamily: "monospace", fontSize: 12.5, lineHeight: 1.55 }}
+  >
+    {diff.split("\n").map((line, index) => {
+      const kind = diffLineKind(line);
+      return <Box
+        component="span"
+        key={`${index}:${line.slice(0, 24)}`}
+        data-diff-line-kind={kind}
+        sx={{
+          display: "block",
+          minWidth: "max-content",
+          px: 1,
+          color: kind === "addition" ? "success.dark" : kind === "deletion" ? "error.dark" : "text.primary",
+          bgcolor: kind === "addition" ? "rgba(46, 160, 67, 0.16)" : kind === "deletion" ? "rgba(248, 81, 73, 0.16)" : "transparent",
+        }}
+      >{line || " "}</Box>;
+    })}
+  </Box>;
 }
 
 function MarkdownViewer({ content }: { content: string }): JSX.Element {
@@ -1761,9 +1793,7 @@ function ArtifactViewer({
         {content.contentType === "markdown" ? (
           <MarkdownViewer content={content.content} />
         ) : (
-          <SyntaxHighlighter language="diff" style={oneLight} PreTag="div">
-            {content.content}
-          </SyntaxHighlighter>
+          <UnifiedDiffViewer diff={content.content} />
         )}
       </Paper>
     </Box>
@@ -1790,6 +1820,8 @@ export function ArtifactsPane({
   agentTitle,
   timeline,
   initialArtifactId,
+  onSelectArtifact,
+  onOpenArtifactInNewTab,
   onOpenRun,
 }: {
   artifacts: ArtifactDto[];
@@ -1797,6 +1829,8 @@ export function ArtifactsPane({
   agentTitle: string;
   timeline: ExecutionItem[];
   initialArtifactId?: string;
+  onSelectArtifact?(artifactId: string): void;
+  onOpenArtifactInNewTab?(artifactId: string): void;
   onOpenRun(runId: string): void;
 }): JSX.Element {
   const orderedArtifacts = [...artifacts].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
@@ -1806,6 +1840,7 @@ export function ArtifactsPane({
       : orderedArtifacts[0]?.id,
   );
   const [filter, setFilter] = useState("");
+  const [artifactMenu, setArtifactMenu] = useState<{ anchor: HTMLElement; artifactId: string }>();
 
   useEffect(() => {
     if (initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)) {
@@ -1875,7 +1910,11 @@ export function ArtifactsPane({
                   id={telemetryElementId("artifacts", artifact.id)}
                   tabIndex={initialArtifactId === artifact.id ? -1 : undefined}
                   selected={selected}
-                  onClick={() => setSelectedArtifactId(artifact.id)}
+                  onClick={() => {
+                    setSelectedArtifactId(artifact.id);
+                    onSelectArtifact?.(artifact.id);
+                  }}
+                  onContextMenu={(event) => { event.preventDefault(); setArtifactMenu({ anchor: event.currentTarget, artifactId: artifact.id }); }}
                   aria-current={selected ? "true" : undefined}
                   sx={{ borderRadius: 1.5, mb: 0.25, alignItems: "flex-start", px: 1, py: 0.75 }}
                 >
@@ -1896,6 +1935,7 @@ export function ArtifactsPane({
         <ArtifactViewer artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
         </Box>
       </Box>
+      {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
     </Box>
   );
 }

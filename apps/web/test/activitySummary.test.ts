@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatActivitySpan, groupActivityByExecution, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
+import { diffLineKind, formatActivitySpan, groupActivityByExecution, summarizeActivityText, unifiedDiffLineTotals } from "../src/components/panes";
 
 describe("activity summaries", () => {
   it("collapses multiline output and bounds large payloads", () => {
@@ -26,5 +26,9 @@ describe("activity summaries", () => {
       "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1,2 @@\n-old\n+new\n+added",
     )).toEqual({ additions: 2, deletions: 1 });
     expect(unifiedDiffLineTotals("diff --git a/image.png b/image.png")).toBeUndefined();
+    expect(diffLineKind("+added")).toBe("addition");
+    expect(diffLineKind("-removed")).toBe("deletion");
+    expect(diffLineKind("+++ b/file.ts")).toBe("neutral");
+    expect(diffLineKind("--- a/file.ts")).toBe("neutral");
   });
 });

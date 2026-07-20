@@ -17,6 +17,9 @@ import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, typ
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { BrowserPanel } from "./BrowserPanel";
+import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
+import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./panes";
 
 interface AgentDialogState {
@@ -46,6 +49,8 @@ export function ProjectShell({
   route,
   engines,
   navigate,
+  browserRequest,
+  openInNewTab,
   onResourceDeleted,
 }: {
   projectId: string;
@@ -53,6 +58,8 @@ export function ProjectShell({
   route: Route;
   engines: EngineDto[];
   navigate(route: Route, options?: { replace?: boolean }): void;
+  browserRequest?: ProjectBrowserRequest;
+  openInNewTab?(route: Route): void;
   onResourceDeleted?(route: Route): void;
 }): JSX.Element {
   const theme = useTheme();
@@ -164,18 +171,14 @@ export function ProjectShell({
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
     if (file.artifactId) {
-      writeChatState(chatStateKey("view", `agent.${agentId}`), "artifacts");
-      writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
-      navigate({ kind: "agent", projectId, agentId });
+      navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: file.artifactId } });
     } else {
       navigate({ kind: "review", projectId, agentId, path: file.path });
     }
   };
 
   const openProjectArtifact = (agentId: string, artifactId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "artifacts");
-    writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), artifactId);
-    navigate({ kind: "agent", projectId, agentId });
+    navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } });
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
@@ -270,6 +273,10 @@ export function ProjectShell({
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenBroadcast={(conversationId, communicationEventId) => navigate({ kind: "conversation", projectId, conversationId, focusMessageId: communicationEventId })}
         onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
+        onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
+        onOpenArtifactInNewTab={(artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId: route.agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
+        onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
+        onOpenBrowser={(runId) => navigate({ kind: "browser", projectId, agentId: route.agentId, runId })}
         onNewSubagent={openNewSubagent}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "agent", projectId, agentId: route.agentId });
@@ -277,6 +284,10 @@ export function ProjectShell({
         }}
       />
     );
+  } else if (route.kind === "browser") {
+    main = route.agentId && route.runId
+      ? <BrowserPanel projectId={projectId} agentId={route.agentId} runId={route.runId} standalone />
+      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onClose={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "agents") {
     main = (
       <AgentsTab
@@ -287,6 +298,7 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
           : setAgentDialog({ open: true, defaultName: suggestedName() })}
@@ -304,6 +316,7 @@ export function ProjectShell({
         agents={agents}
         healthByAgentId={healthByAgentId}
         onOpenArtifact={openProjectArtifact}
+        onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenRun={(agentId, runId) => navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "runs", id: runId } })}
         onOpenAgentWork={() => setProjectAgentWorkOpen(true)}
       />

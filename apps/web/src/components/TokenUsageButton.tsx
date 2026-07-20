@@ -1,4 +1,4 @@
-import PaidOutlinedIcon from "@mui/icons-material/PaidOutlined";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, FormControl, IconButton, InputLabel, LinearProgress, MenuItem, Select, Stack, Tooltip, Typography } from "@mui/material";
 import type { ProjectedApiCostComponentsDto, TokenUsageRangeDto, TokenUsageScope, TokenUsageSummaryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
@@ -45,6 +45,15 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
   const cost = data.projectedApiCost;
   const hasPricedRuns = Boolean(cost?.pricedRuns);
   const isPartialEstimate = Boolean(cost?.pricedRuns && cost.unpricedRuns);
+  const providerUsage = [...(data.breakdown ?? []).reduce((providers, item) => {
+    const current = providers.get(item.engine) ?? { engine: item.engine, runs: 0, reportedRuns: 0, totalTokens: 0, models: new Set<string>() };
+    current.runs += item.runs;
+    current.reportedRuns += item.runs - item.unpricedRuns;
+    current.totalTokens += item.usage.totalTokens ?? 0;
+    if (item.model) current.models.add(item.model);
+    providers.set(item.engine, current);
+    return providers;
+  }, new Map<string, { engine: string; runs: number; reportedRuns: number; totalTokens: number; models: Set<string> }>()).values()];
   return <Stack spacing={2}>
     <Box>
       <Typography variant="subtitle2" sx={{ mb: 1 }}>Token usage</Typography>
@@ -54,6 +63,16 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
           <Typography variant="body2">{(data.metricAvailability?.[key] ?? (data[key] === undefined ? "unavailable" : "available")) === "available" ? formatTokens(data[key]) : "Unavailable"}</Typography>
         </Box>)}
       </Stack>
+    </Box>
+    <Box>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>Usage by provider</Typography>
+      {providerUsage.length ? <Stack spacing={1}>
+        {providerUsage.map((provider) => <Stack key={provider.engine} direction="row" spacing={2} sx={{ alignItems: "baseline", justifyContent: "space-between" }}>
+          <Box><Typography variant="body2" sx={{ textTransform: "capitalize", fontWeight: 700 }}>{provider.engine}</Typography><Typography variant="caption" color="text.secondary">{provider.models.size ? [...provider.models].join(", ") : "Runtime default"} · provider-reported telemetry</Typography></Box>
+          <Box sx={{ textAlign: "right" }}><Typography variant="body2">{formatTokens(provider.totalTokens)} tokens</Typography><Typography variant="caption" color="text.secondary">{provider.runs} finalized run{provider.runs === 1 ? "" : "s"}</Typography></Box>
+        </Stack>)}
+      </Stack> : <Typography variant="body2" color="text.secondary">No provider has reported usage in this range.</Typography>}
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>Ponderosa does not read subscription quotas, invoices, or provider account usage.</Typography>
     </Box>
     {cost && hasPricedRuns ? <>
       <Box>
@@ -120,23 +139,24 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
   });
   const data = usage.data;
   const costLabel = costSummaryLabel(data);
+  const usageLabel = data?.reportedRuns ? `${formatTokens(data.totalTokens)} tokens` : "Usage";
   return <>
-    {compact ? <Tooltip title={`${label} projected cost · ${costLabel}`}>
-      <IconButton onClick={() => setOpen(true)} aria-label={`${label} projected cost`} sx={{ minWidth: 44, minHeight: 44 }}>
-        <PaidOutlinedIcon />
+    {compact ? <Tooltip title={`${label} usage · ${usageLabel} · ${costLabel}`}>
+      <IconButton onClick={() => setOpen(true)} aria-label={`${label} usage`} sx={{ minWidth: 44, minHeight: 44 }}>
+        <DataUsageOutlinedIcon />
       </IconButton>
     </Tooltip> : <Button
         size="small"
         variant="outlined"
-        startIcon={<PaidOutlinedIcon />}
+        startIcon={<DataUsageOutlinedIcon />}
         onClick={() => setOpen(true)}
-        aria-label={`${label} projected cost`}
+        aria-label={`${label} usage`}
         sx={{ whiteSpace: "nowrap", minHeight: 36 }}
       >
-        {costLabel}
+        {usageLabel}
       </Button>}
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="md" aria-labelledby={`${scope}-usage-title`} PaperProps={{ sx: { width: { xs: "calc(100% - 16px)", sm: 720 }, maxHeight: "calc(100dvh - 16px)", m: { xs: 1, sm: 4 } } }}>
-      <DialogTitle id={`${scope}-usage-title`}>{label} cost</DialogTitle>
+      <DialogTitle id={`${scope}-usage-title`}>{label} usage</DialogTitle>
       <DialogContent>
         <FormControl size="small" sx={{ minWidth: 150, mb: 2 }}>
           <InputLabel id={`${scope}-usage-range-label`}>Time range</InputLabel>

@@ -3,11 +3,12 @@ import { describe, expect, it } from "vitest";
 import { costSummaryLabel, formatTokens, formatUsd, TokenUsageDetails } from "../src/components/TokenUsageButton";
 
 describe("token usage UI", () => {
-  it("leads with cost, separates cached and new input, and makes coverage explicit", () => {
+  it("leads with provider usage, separates cached and new input, and makes coverage explicit", () => {
     const html = renderToStaticMarkup(<TokenUsageDetails data={{
       scope: "project", scopeId: "project-1",
       inputTokens: 12_000, cachedInputTokens: 4_000, cacheWriteInputTokens: 1_000, outputTokens: 3_000, reasoningOutputTokens: 800, totalTokens: 15_000,
       finalizedRuns: 4, reportedRuns: 3, unreportedRuns: 1, coverage: 0.75,
+      breakdown: [{ projectId: "project-1", agentId: "agent-1", agentTitle: "Builder", engine: "codex", model: "gpt-5.6-luna", runs: 3, unpricedRuns: 0, usage: { totalTokens: 15_000 } }],
       wakeCauses: [{ cause: "coordination_outcome", runs: 3, activations: 4 }, { cause: "trigger_occurrence", runs: 1, activations: 1 }],
       projectedApiCost: {
         currency: "USD", usd: 0.25, basis: "api_list_price_proxy", catalogVersion: "2026-07-13", pricedRuns: 3, unpricedRuns: 1, coverage: 0.75,
@@ -19,6 +20,8 @@ describe("token usage UI", () => {
       },
     }} />);
     expect(html).not.toContain("provider-measured tokens processed");
+    expect(html).toContain("Usage by provider");
+    expect(html).toContain("Ponderosa does not read subscription quotas");
     expect(html).toContain("Cost by token type");
     expect(html).toContain("New input");
     expect(html).toContain("Cached input");

@@ -1,6 +1,7 @@
 import type { AgentDto, AgentHealthDto, ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { clampSidebarWidth, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_RAIL_WIDTH } from "../src/components/WorkspaceSidebar";
+import { restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "../src/workspaceSidebarState";
 import { hasUnreadConversationNotifications, projectContextLabel, workspaceAgents, workspaceChats, workspaceCounts, type WorkspaceProjectSnapshot } from "../src/workspaceNavigation";
 
 const project = (id: string, label: string): ProjectDto => ({
@@ -50,6 +51,9 @@ describe("multi-project workspace navigation model", () => {
     expect(clampSidebarWidth(100)).toBe(SIDEBAR_MIN_WIDTH);
     expect(clampSidebarWidth(999)).toBe(SIDEBAR_MAX_WIDTH);
     expect(clampSidebarWidth(311.6)).toBe(SIDEBAR_MIN_WIDTH);
+    expect(restoreWorkspaceSidebarState(null)).toEqual({ collapsed: false, width: 390 });
+    expect(restoreWorkspaceSidebarState(serializeWorkspaceSidebarState({ collapsed: true, width: 9999 }))).toEqual({ collapsed: true, width: 520 });
+    expect(restoreWorkspaceSidebarState("not json")).toEqual({ collapsed: false, width: 390 });
   });
 
   it("detects unread notifications for the currently open Project chat", () => {

@@ -130,7 +130,7 @@ export function AgentWorkInspector({
     anchor="right"
     open={open}
     onClose={onClose}
-    PaperProps={{ sx: { width: { xs: "100%", sm: 520 }, maxWidth: "100%" } }}
+    PaperProps={{ sx: { width: { xs: "100%", sm: 560 }, maxWidth: "100%", overflow: "hidden" } }}
   >
     <Stack sx={{ height: "100%", minHeight: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
@@ -147,7 +147,7 @@ export function AgentWorkInspector({
         <Chip size="small" variant="outlined" label={`${stateCounts.finished} finished`} />
         {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Agent work" /> : null}
       </Stack>
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: "auto", p: 1.5 }}>
+      <Box className="ponderosa-scroll" sx={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: 1.5 }}>
         {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading Agent work…</Typography></Stack> : null}
         {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Agent work could not be loaded."}</Alert> : null}
         {query.data?.truncated ? <Alert severity="info" sx={{ mb: 1 }}>
@@ -166,28 +166,27 @@ export function AgentWorkInspector({
               data-agent-work-trace={trace.id}
               sx={{ borderRadius: "8px !important", "&:before": { display: "none" } }}
             >
-              <AccordionSummary>
+              <AccordionSummary sx={{ minWidth: 0, "& .MuiAccordionSummary-content": { minWidth: 0 } }}>
                 <Box sx={{ width: "100%", minWidth: 0 }}>
-                  <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                    <Chip size="small" color={trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"} label={trace.state === "attention" ? "Attention" : trace.state === "active" ? "Active" : "Finished"} />
-                    <Typography variant="subtitle2" noWrap sx={{ flex: 1 }}>{trace.title}</Typography>
-                    <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>
-                  </Stack>
-                  <Typography variant="caption" color="text.secondary">{trace.summary}</Typography>
+                  <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr)", columnGap: 1, rowGap: 0.35, alignItems: "start" }}>
+                    <Chip size="small" sx={{ gridRow: "1 / span 2" }} color={trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"} label={trace.state === "attention" ? "Attention" : trace.state === "active" ? "Active" : "Finished"} />
+                    <Typography variant="subtitle2" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{trace.title}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{trace.summary} · {new Date(trace.updatedAt).toLocaleString()}</Typography>
+                  </Box>
                 </Box>
               </AccordionSummary>
               <AccordionDetails sx={{ pt: 0 }}>
                 <Stack spacing={0} sx={{ borderLeft: 2, borderColor: "divider", ml: 1 }}>
                   {traceItems.map((item) => {
                     const focused = itemMatchesFocus(item, focus?.id);
-                    return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} data-agent-work-item={item.id} sx={{ position: "relative", ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
+                    return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} data-agent-work-item={item.id} sx={{ position: "relative", minWidth: 0, ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
                       <Box sx={{ position: "absolute", width: 10, height: 10, borderRadius: "50%", bgcolor: "text.secondary", left: -21, top: 18 }} />
-                      <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+                      <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto", gap: 0.75, alignItems: "start" }}>
                         <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
-                        <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
+                        <Typography variant="subtitle2" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
                         <Chip size="small" label={item.state.replaceAll("_", " ")} />
-                      </Stack>
-                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75 }}>{item.summary}</Typography>
+                      </Box>
+                      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
                       <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
                       <AgentWorkTechnicalDetails projectId={projectId} conversationId={conversationId} item={item} />
                     </Box>;

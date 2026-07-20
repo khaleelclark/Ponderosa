@@ -30,6 +30,8 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
   if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
   if (candidate.kind === "project" || candidate.kind === "agents") return true;
+  if (candidate.kind === "browser") return (candidate.agentId === undefined && candidate.runId === undefined)
+    || (typeof candidate.agentId === "string" && Boolean(candidate.agentId) && typeof candidate.runId === "string" && Boolean(candidate.runId));
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
   if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId);
   if (candidate.kind === "review") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
@@ -46,6 +48,7 @@ export function workspaceTabKey(route: Route): string {
     case "allAgents": return "all-agents";
     case "wiki": return `wiki:${route.articleId ?? "home"}`;
     case "project": return `project:${route.projectId}`;
+    case "browser": return `browser:${route.projectId}:${route.agentId ?? "project"}:${route.runId ?? "persistent"}`;
     case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;
     case "agents": return `agents:${route.projectId}`;
     case "agent": return `agent:${route.projectId}:${route.agentId}`;

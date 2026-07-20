@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
@@ -12,6 +13,7 @@ import {
   FormControl,
   IconButton,
   InputLabel,
+  Menu,
   MenuItem,
   Paper,
   Select,
@@ -39,7 +41,20 @@ import {
   type AgentStatus,
 } from "../agents";
 
-type StatusFilter = "all" | "running" | "waiting" | "idle" | "unassigned";
+type StatusFilter = "all" | AgentStatus | "unassigned";
+
+const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
+  { value: "running", label: "Running" },
+  { value: "waiting", label: "Waiting" },
+  { value: "blocked", label: "Blocked" },
+  { value: "stalled", label: "Stalled" },
+  { value: "interrupted", label: "Interrupted" },
+  { value: "compacting", label: "Compacting" },
+  { value: "failed", label: "Failed" },
+  { value: "cancelled", label: "Cancelled" },
+  { value: "completed", label: "Completed" },
+  { value: "idle", label: "Idle" },
+];
 
 export function AgentsTab({
   agents,
@@ -49,6 +64,7 @@ export function AgentsTab({
   statusByAgentId,
   healthByAgentId,
   onOpenAgent,
+  onOpenAgentInNewTab,
   onNewAgent,
 }: {
   agents: AgentDto[];
@@ -58,6 +74,7 @@ export function AgentsTab({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
+  onOpenAgentInNewTab?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -71,6 +88,7 @@ export function AgentsTab({
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [agentMenu, setAgentMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
 
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
@@ -88,13 +106,7 @@ export function AgentsTab({
     if (statusFilter === "unassigned" && agent.conversationIds.length > 0) {
       return false;
     }
-    if (statusFilter === "running" && status !== "running") {
-      return false;
-    }
-    if (statusFilter === "waiting" && status !== "waiting") {
-      return false;
-    }
-    if (statusFilter === "idle" && status !== "idle") {
+    if (statusFilter !== "all" && statusFilter !== "unassigned" && status !== statusFilter) {
       return false;
     }
     if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
@@ -163,7 +175,7 @@ export function AgentsTab({
           <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete selected ({selectedAgentIds.size})</Button>
           <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel selection</Button>
         </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select agents</Button>}
-        <Button variant="outlined" size="small" onClick={() => setImportOpen(true)}>Import Agent or organization</Button>
+        <Button variant="outlined" size="small" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)}>Import Agent or organization</Button>
         <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
           New Agent
         </Button>
@@ -212,9 +224,9 @@ export function AgentsTab({
             sx={{ "& .MuiToggleButton-root": { minHeight: 44 } }}
           >
             <ToggleButton value="all">All</ToggleButton>
-            <ToggleButton value="running">Running</ToggleButton>
-            <ToggleButton value="waiting">Waiting</ToggleButton>
-            <ToggleButton value="idle">Idle</ToggleButton>
+            {STATUS_FILTERS.map((option) => <ToggleButton key={option.value} value={option.value}>
+              {option.label}{statusCounts[option.value] ? ` (${statusCounts[option.value]})` : ""}
+            </ToggleButton>)}
             <ToggleButton value="unassigned">Unassigned</ToggleButton>
           </ToggleButtonGroup>
         </Box>
@@ -281,6 +293,7 @@ export function AgentsTab({
                   /> : null}
                   <ButtonBase
                     onClick={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
+                    onContextMenu={(event) => { if (selectionMode) return; event.preventDefault(); setAgentMenu({ anchor: event.currentTarget, agentId: agent.id }); }}
                     aria-label={`Open agent ${agent.title}`}
                     sx={{ flex: 1, minWidth: 0, p: 1.5, display: "block", textAlign: "left" }}
                   >
@@ -364,6 +377,7 @@ export function AgentsTab({
         onClose={() => setPendingDelete(undefined)}
         onDeleted={() => setPendingDelete(undefined)}
       />
+      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}><MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
       <AgentDeletionDialog
         open={deleteSelectedOpen}
         projectId={projectId}

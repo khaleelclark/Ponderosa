@@ -9,6 +9,8 @@ describe("mobile-critical durable navigation", () => {
     { kind: "wiki" },
     { kind: "wiki", articleId: "communication-scopes" },
     { kind: "project", projectId: "project / one" },
+    { kind: "browser", projectId: "project / one" },
+    { kind: "browser", projectId: "project / one", agentId: "agent #1", runId: "run / 1" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room", focusMessageId: "event #1", channel: "collaboration" },
