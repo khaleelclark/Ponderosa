@@ -17,10 +17,10 @@ describe("navigation and settings feedback", () => {
   it("keeps keyboard helpers out of local Project-chat search and mobile navigation", () => {
     const projectSearch = sidebar.slice(sidebar.indexOf('placeholder="Search Project Chats"'), sidebar.indexOf("New Project Chat"));
     expect(projectSearch).not.toContain("component=\"kbd\"");
-    expect(sidebar).toContain('display: drawer ? "none" : "inline-flex"');
-    expect(sidebar).toContain("globalSearchShortcutLabel()");
+    expect(sidebar).toContain('<SearchIcon /></RailButton>');
     expect(sidebar).toContain("globalSearchShortcutAccessibleLabel()");
-    expect(sidebar).toContain('aria-label={drawer ? "Search all chats"');
+    expect(sidebar).not.toContain('component="kbd"');
+    expect(sidebar).not.toContain("Search All Chats</Box>");
     expect(globalSearch).toContain('display: { xs: "none", md: "inline-flex" }');
     expect(globalSearch).toContain('aria-label="Escape"');
     expect(globalSearch).not.toContain("Navigate</Typography>");

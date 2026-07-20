@@ -62,6 +62,7 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { shouldHideMobileComposer } from "../mobileChat";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -402,9 +403,11 @@ export function ConversationView({
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
   const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
+  const [mobileComposerHidden, setMobileComposerHidden] = useState(false);
 
   useEffect(() => {
     setMobileHeaderCollapsed(false);
+    setMobileComposerHidden(false);
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
@@ -542,14 +545,17 @@ export function ConversationView({
         chatScrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
         setShowScrollToLatest(!shouldFollowNewMessages.current);
+        setMobileComposerHidden(shouldHideMobileComposer(mobileRoster, shouldFollowNewMessages.current));
         return;
       }
       shouldFollowNewMessages.current = true;
       setShowScrollToLatest(false);
+      setMobileComposerHidden(false);
     }
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
       setShowScrollToLatest(false);
+      setMobileComposerHidden(false);
     }
   }, [conversationId, activeView, messageLayoutKey, collaborationLayoutKey, operationalLayoutKey]);
 
@@ -978,33 +984,32 @@ export function ConversationView({
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <Box className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
-        <Box sx={{ display: { xs: "flex", sm: "none" }, justifyContent: "flex-end", minHeight: 36 }}>
-          <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
-            size="small"
-            aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
-            onClick={() => setMobileHeaderCollapsed((current) => !current)}
-            sx={{ minWidth: 36, minHeight: 36 }}
-          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
-        </Box>
-        <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack
           direction="row"
           spacing={0.5}
           useFlexGap
           sx={{ alignItems: "center", minWidth: 0 }}
         >
-          <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180} sx={{ minWidth: 0, flex: 1 }}>
+          <Box sx={{ minWidth: 0 }}>
             <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
             <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
           </Box>
+          </Collapse>
           <Tooltip title="Agent Work"><IconButton
             onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
             aria-haspopup="dialog"
             aria-expanded={agentWorkOpen}
             aria-label="Open Agent work"
           ><TimelineIcon /></IconButton></Tooltip>
+          <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
+            size="small"
+            aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
+            onClick={() => setMobileHeaderCollapsed((current) => !current)}
+            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
+          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team" : "Project"} Chat Actions`}
             transcriptMarkdown={transcriptMarkdown}
@@ -1037,6 +1042,7 @@ export function ConversationView({
             ]}
           />
         </Stack>
+        <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "text.primary" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
           <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
@@ -1057,6 +1063,7 @@ export function ConversationView({
             if (chatScrollRef.current) {
               shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
               setShowScrollToLatest(!shouldFollowNewMessages.current);
+              setMobileComposerHidden(shouldHideMobileComposer(mobileRoster, shouldFollowNewMessages.current));
               writeChatState(
                 chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
                 String(chatScrollRef.current.scrollTop),
@@ -1165,6 +1172,7 @@ export function ConversationView({
             shouldFollowNewMessages.current = true;
             scrollChatToBottom(chatScrollRef.current);
             setShowScrollToLatest(false);
+            setMobileComposerHidden(false);
           }}
         />
       </Box>
@@ -1262,7 +1270,20 @@ export function ConversationView({
         onClose={() => setAgentWorkOpen(false)}
       />
 
-      <Box className="mobile-chat-chrome mobile-chat-composer">
+      <Box
+        className="mobile-chat-chrome mobile-chat-composer"
+        data-mobile-composer-hidden={mobileComposerHidden ? "true" : "false"}
+        onTransitionEnd={(event) => {
+          if (
+            event.currentTarget !== event.target
+            || event.propertyName !== "max-height"
+            || mobileComposerHidden
+            || !chatScrollRef.current
+            || !shouldFollowNewMessages.current
+          ) return;
+          scrollChatToBottom(chatScrollRef.current);
+        }}
+      >
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (

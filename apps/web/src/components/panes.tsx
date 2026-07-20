@@ -553,9 +553,9 @@ function fencedCodeLanguage(children: ReactNode): string {
   return "text";
 }
 
-function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
+export function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
-  const resetTimer = useRef<number>();
+  const resetTimer = useRef<ReturnType<typeof setTimeout>>();
   const theme = useTheme();
   const code = codeBlockText(children).replace(/\n$/, "");
   const language = fencedCodeLanguage(children);
@@ -564,7 +564,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   useEffect(
     () => () => {
       if (resetTimer.current !== undefined) {
-        window.clearTimeout(resetTimer.current);
+        globalThis.clearTimeout(resetTimer.current);
       }
     },
     [],
@@ -578,9 +578,9 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
       setCopyState("error");
     }
     if (resetTimer.current !== undefined) {
-      window.clearTimeout(resetTimer.current);
+      globalThis.clearTimeout(resetTimer.current);
     }
-    resetTimer.current = window.setTimeout(() => setCopyState("idle"), 2000);
+    resetTimer.current = globalThis.setTimeout(() => setCopyState("idle"), 2000);
   }
 
   const label =
@@ -855,6 +855,7 @@ export function ChatPane({
   onReact,
   onReply,
   onScrollPositionChange,
+  viewportLayoutRevision,
   previewScope,
   scrollStorageKey,
   operatorProfile,
@@ -871,6 +872,7 @@ export function ChatPane({
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
+  viewportLayoutRevision?: number;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
@@ -898,14 +900,16 @@ export function ChatPane({
         scrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
         setShowScrollToLatest(!shouldFollowNewMessages.current);
+        onScrollPositionChange?.(scrollRef.current, shouldFollowNewMessages.current);
         return;
       }
     }
     if (shouldFollowNewMessages.current) {
       scrollChatToBottom(scrollRef.current);
       setShowScrollToLatest(false);
+      onScrollPositionChange?.(scrollRef.current, true);
     }
-  }, [messageLayoutKey, scrollStorageKey]);
+  }, [messageLayoutKey, scrollStorageKey, viewportLayoutRevision]);
 
   return (
     <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0 }}>
@@ -1051,6 +1055,7 @@ export function ChatPane({
         shouldFollowNewMessages.current = true;
         scrollChatToBottom(scrollRef.current);
         setShowScrollToLatest(false);
+        onScrollPositionChange?.(scrollRef.current, true);
       }}
     />
     </Box>

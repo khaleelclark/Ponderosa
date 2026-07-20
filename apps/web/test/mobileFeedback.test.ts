@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { mobileOperationalStatus } from "../src/mobileChat";
+import { mobileOperationalStatus, shouldHideMobileComposer } from "../src/mobileChat";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
@@ -11,10 +11,13 @@ const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx"
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 
 describe("mobile feedback slice", () => {
-  it("keeps every mobile composer mounted at the bottom while scrolling", () => {
-    expect(agentDetail).not.toContain("data-mobile-composer-hidden");
-    expect(conversation).not.toContain("data-mobile-composer-hidden");
-    expect(allChat).not.toContain("data-mobile-composer-hidden");
+  it("anchors composers at the bottom and hides them only when a phone chat is away from latest", () => {
+    expect(shouldHideMobileComposer(true, false)).toBe(true);
+    expect(shouldHideMobileComposer(true, true)).toBe(false);
+    expect(shouldHideMobileComposer(false, false)).toBe(false);
+    expect(agentDetail).toContain("data-mobile-composer-hidden");
+    expect(conversation).toContain("data-mobile-composer-hidden");
+    expect(allChat).toContain("data-mobile-composer-hidden");
     expect(allChat).toContain('height: "100%"');
     expect(conversation).toContain('height: "100%"');
   });
@@ -35,8 +38,12 @@ describe("mobile feedback slice", () => {
     expect(agentDetail).toContain('className="mobile-chat-chrome mobile-chat-composer"');
     expect(conversation).toContain('className="mobile-chat-chrome mobile-chat-composer"');
     expect(globalCss).not.toContain('[data-mobile-chat-header-hidden="true"]');
-    expect(globalCss).not.toContain('[data-mobile-composer-hidden="true"]');
+    expect(globalCss).toContain('[data-mobile-composer-hidden="true"]');
+    expect(globalCss).toContain("transition: max-height 180ms");
     expect(globalCss).toContain("@media (prefers-reduced-motion: reduce)");
+    const projectHeader = conversation.slice(conversation.indexOf('className="mobile-chat-chrome mobile-chat-header"'), conversation.indexOf('className="chat-scroll-region"'));
+    expect(projectHeader.indexOf('aria-label="Open Agent work"')).toBeLessThan(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"'));
+    expect(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"')).toBeLessThan(projectHeader.indexOf("<ChatOverflowMenu"));
   });
 
   it("keeps operational rows actionable while mobile copy omits agent identity", () => {

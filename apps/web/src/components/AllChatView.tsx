@@ -1,6 +1,6 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
-  Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography,
+  Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +10,7 @@ import { useAllChat } from "../hooks/queries";
 import type { Route } from "../routing";
 import { Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./panes";
 import { MessageTimestamp } from "./MessageTimestamp";
+import { shouldHideMobileComposer } from "../mobileChat";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -63,6 +64,9 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   const followLatest = useRef(true);
   const restoreDistance = useRef<number>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [mobileComposerHidden, setMobileComposerHidden] = useState(false);
+  const theme = useTheme();
+  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
@@ -124,6 +128,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       scrollChatToBottom(element);
       firstLayout.current = false;
       setShowScrollToLatest(false);
+      setMobileComposerHidden(false);
     }
   }, [layoutKey]);
 
@@ -141,6 +146,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       if (!scrollRef.current) return;
       followLatest.current = isChatNearBottom(scrollRef.current);
       setShowScrollToLatest(!followLatest.current);
+      setMobileComposerHidden(shouldHideMobileComposer(mobileViewport, followLatest.current));
     }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
@@ -208,10 +214,25 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       followLatest.current = true;
       scrollChatToBottom(scrollRef.current);
       setShowScrollToLatest(false);
+      setMobileComposerHidden(false);
     }} />
     </Box>
 
-    <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}>
+    <Box
+      className="mobile-chat-chrome mobile-chat-composer"
+      data-mobile-composer-hidden={mobileComposerHidden ? "true" : "false"}
+      onTransitionEnd={(event) => {
+        if (
+          event.currentTarget !== event.target
+          || event.propertyName !== "max-height"
+          || mobileComposerHidden
+          || !scrollRef.current
+          || !followLatest.current
+        ) return;
+        scrollChatToBottom(scrollRef.current);
+      }}
+      sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}
+    >
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
           : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>

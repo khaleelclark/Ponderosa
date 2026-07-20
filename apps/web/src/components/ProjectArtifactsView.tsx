@@ -38,7 +38,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { copyText } from "../clipboard";
-import { artifactDisplayLabel, UnifiedDiffViewer } from "./panes";
+import { artifactDisplayLabel, CopyableCodeBlock, UnifiedDiffViewer } from "./panes";
 import { ProjectOverview } from "./ProjectOverview";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
@@ -416,7 +416,9 @@ export function ProjectArtifactsView({
           })() : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
           <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project Scope"} />
         </Stack> : null}
-        {previewArtifact?.kind === "diff" ? <RecordedDiffPreview
+        {previewArtifact?.kind === "log" && previewArtifact.summary ? <CopyableCodeBlock>
+          <code className="language-bash">{previewArtifact.summary}</code>
+        </CopyableCodeBlock> : previewArtifact?.kind === "diff" ? <RecordedDiffPreview
           key={previewArtifact.id}
           artifact={previewArtifact}
           agent={agents.find((candidate) => candidate.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))}

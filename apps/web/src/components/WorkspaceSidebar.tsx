@@ -333,10 +333,10 @@ export function WorkspaceSidebar({
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Inbox" badge={counts.unread || undefined} badgeColor="error" onClick={() => onOpenNotifications?.()}><InboxOutlinedIcon /></RailButton>
       <RailButton label="Wiki" selected={sidebarSection === "navigation" && route.kind === "wiki"} onClick={() => showNavigation({ kind: "wiki" })}><MenuBookOutlinedIcon /></RailButton>
+      <RailButton label={drawer ? "Search All Chats" : `Search All Chats (${globalSearchShortcutAccessibleLabel()})`} onClick={() => onSearch?.()}><SearchIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
-      {collapsed && !drawer ? <RailButton label={`Search All Chats (${globalSearchShortcutAccessibleLabel()})`} onClick={() => onSearch?.()}><SearchIcon /></RailButton> : null}
       {!drawer && onCollapsedChange ? <RailButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}</RailButton> : null}
       <RailButton label="Settings" onClick={() => onOpenSettings?.()}><SettingsOutlinedIcon /></RailButton>
       <Tooltip title="Operator Profile" placement="right"><IconButton aria-label="Open operator profile" onClick={() => onOpenProfile?.()} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0 }}><Box sx={{ position: "relative", width: 42, height: 42 }}><OperatorAvatar profile={preferences.profile} size={42} fallback={operatorInitials(preferences.profile.displayName)} /><Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
@@ -501,15 +501,6 @@ export function WorkspaceSidebar({
   </Box> : null;
 
   const panel = showingAgents ? agentsPanel : showingTriggers ? triggersPanel : showingProjects ? projectsPanel : insideProject ? chatsPanel : projectsPanel;
-  const panelWithSearch = <Box sx={{ minWidth: 0, minHeight: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr) auto" }}>
-    {panel}
-    <Box sx={{ px: 1.5, py: 1, borderTop: 1, borderColor: "divider", bgcolor: sidebarSurface }}>
-      <Button fullWidth color="inherit" startIcon={<SearchIcon />} onClick={() => onSearch?.()} aria-label={drawer ? "Search all chats" : `Search all chats, ${globalSearchShortcutAccessibleLabel()}`} sx={{ minHeight: 44, justifyContent: "space-between", color: "text.secondary" }}>
-        <Box component="span">Search All Chats</Box>
-        <Box component="kbd" aria-label={globalSearchShortcutAccessibleLabel()} sx={{ display: drawer ? "none" : "inline-flex", px: .75, py: .15, border: 1, borderColor: "divider", borderRadius: .75, fontSize: 11, fontFamily: "inherit" }}>{globalSearchShortcutLabel()}</Box>
-      </Button>
-    </Box>
-  </Box>;
   const [resizing, setResizing] = useState(false);
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;
@@ -531,7 +522,7 @@ export function WorkspaceSidebar({
 
   return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} data-sidebar-resizing={resizing ? "true" : "false"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, maxWidth: "100vw", height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden", transition: !drawer && !resizing ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)" : "none", "@media (prefers-reduced-motion: reduce)": { transition: "none" } }}>
     {rail}
-    {collapsed && !drawer ? null : panelWithSearch}
+    {collapsed && !drawer ? null : panel}
     {!drawer && !collapsed && onWidthChange ? <Box
       role="separator"
       aria-label="Resize sidebar"

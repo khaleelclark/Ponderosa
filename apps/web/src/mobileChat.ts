@@ -5,3 +5,8 @@ export function mobileOperationalStatus(state: string): string {
   if (["failed", "blocked", "cancelled", "expired", "outcome_unknown"].includes(state)) return "⚠️ Needs attention";
   return `• ${state.replaceAll("_", " ")}`;
 }
+
+/** Keep desktop composers stable while reclaiming scarce phone viewport space. */
+export function shouldHideMobileComposer(mobileViewport: boolean, nearBottom: boolean): boolean {
+  return mobileViewport && !nearBottom;
+}

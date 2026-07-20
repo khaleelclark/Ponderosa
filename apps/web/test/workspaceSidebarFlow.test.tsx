@@ -109,7 +109,7 @@ describe("responsive workspace sidebar flow", () => {
     client.clear();
   });
 
-  it("puts the OS-correct global search helper in the desktop sidebar footer and hides it in the mobile drawer", () => {
+  it("puts global search in its own sidebar icon with an OS-aware accessible shortcut", () => {
     expect(globalSearchShortcutLabel("MacIntel")).toBe("⌘K");
     expect(globalSearchShortcutLabel("Win32")).toBe("Ctrl K");
     expect(globalSearchShortcutAccessibleLabel("MacIntel")).toBe("Command K");
@@ -127,14 +127,13 @@ describe("responsive workspace sidebar flow", () => {
       onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={onSearch}
     /></QueryClientProvider>);
     const desktop = render();
-    const search = desktop.root.findByProps({ "aria-label": `Search all chats, ${globalSearchShortcutAccessibleLabel()}` });
+    const search = desktop.root.findByProps({ "aria-label": `Search All Chats (${globalSearchShortcutAccessibleLabel()})` });
     act(() => search.props.onClick());
     expect(onSearch).toHaveBeenCalledOnce();
-    expect(desktop.root.findAllByType("kbd")).toHaveLength(1);
-    expect(desktop.root.findByType("kbd").props["aria-label"]).toBe(globalSearchShortcutAccessibleLabel());
+    expect(desktop.root.findAllByType("kbd")).toHaveLength(0);
     const mobile = render(true);
-    expect(mobile.root.findByProps({ "aria-label": "Search all chats" })).toBeTruthy();
-    expect(mobile.root.find((node) => node.props.component === "kbd").props.sx.display).toBe("none");
+    expect(mobile.root.findByProps({ "aria-label": "Search All Chats" })).toBeTruthy();
+    expect(mobile.root.findAllByType("kbd")).toHaveLength(0);
     desktop.unmount();
     mobile.unmount();
     client.clear();

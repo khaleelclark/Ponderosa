@@ -82,7 +82,7 @@ describe("project artifacts view", () => {
       id: "project-1", label: "Ponderosa", hostPath: "/repo", defaultEngine: "codex", createdAt: "2026-07-17T10:00:00.000Z",
       instructions: "Ship a durable Agent organization.",
     } satisfies ProjectDto;
-    const command = { ...artifact, id: "command-1", kind: "log", path: "events/command.md", summary: "pnpm test" } satisfies ArtifactDto;
+    const command = { ...artifact, id: "command-1", kind: "log", path: "events/command.md", summary: "pnpm test", previewUrl: "/api/projects/project-1/artifacts/command-1/preview" } satisfies ArtifactDto;
     const changedFile = { ...artifact, id: "diff-1", kind: "diff", path: "diffs/src-app-ts.diff", sourcePath: "src/app.ts", summary: "edit src/app.ts" } satisfies ArtifactDto;
     const testResult = { ...artifact, id: "test-1", kind: "test_report", path: "results/web-tests.md", summary: "Web tests passed" } satisfies ArtifactDto;
     const download = {
@@ -139,6 +139,9 @@ describe("project artifacts view", () => {
     vi.mocked(copyText).mockRejectedValueOnce(new Error("clipboard denied"));
     await act(async () => view.root.findByProps({ "aria-label": "Copy command" }).props.onClick({ preventDefault: vi.fn(), stopPropagation: vi.fn() }));
     expect(view.root.findByProps({ "aria-live": "polite" }).props.children).toBe("Copy command failed");
+    act(() => view.root.findByProps({ "aria-label": "Open Command · pnpm test from Cabrillo" }).props.onClick());
+    await act(async () => view.root.findByProps({ "aria-label": "Copy code" }).props.onClick());
+    expect(copyText).toHaveBeenLastCalledWith("pnpm test");
     act(() => view.root.findByProps({ "aria-label": "Open Accessibility audit from Cabrillo" }).props.onClick());
     expect(onOpenArtifact).toHaveBeenCalledWith(agent.id, artifact.id);
     const previewButton = view.root.findByProps({ "aria-label": "Preview Final report.pdf" });
