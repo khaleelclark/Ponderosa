@@ -76,7 +76,7 @@ export function ProjectShell({
   const reviewAgentQuery = useAgent(route.kind === "review" ? route.agentId : undefined);
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
-    const discovered = await api.getEngineCapabilities(projectId, context);
+    const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
     queryClient.setQueryData(["engine-capabilities", projectId], discovered);
     return discovered;
   }, [projectId, queryClient]);

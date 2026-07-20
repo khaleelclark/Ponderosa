@@ -8445,22 +8445,35 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("rediscovers inherited engine capabilities and reports newly available skills", async () => {
+  it("single-flights and caches inherited engine capability discovery until an explicit refresh", async () => {
     let discoveries = 0;
+    let releaseFirst!: () => void;
+    const firstDiscovery = new Promise<void>((resolve) => { releaseFirst = resolve; });
     Object.assign(adapter, { capabilities: async () => {
       discoveries += 1;
+      if (discoveries === 1) await firstDiscovery;
       const skill = { id: `skill:review-${discoveries}`, kind: "skill" as const, label: `review-${discoveries}`, description: "Review changes", status: "available" as const, insertText: `$review-${discoveries} ` };
       return { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [skill] };
     } });
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Capabilities", hostPath: repoDir });
 
-    const first = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
-    const second = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    const firstPending = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    const secondPending = app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    await vi.waitFor(() => expect(discoveries).toBe(1));
+    releaseFirst();
+    const [first, second] = await Promise.all([firstPending, secondPending]);
+    const cached = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    const refreshed = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-capabilities?refresh=true`,
+    });
 
     expect(first.statusCode).toBe(200);
     expect(first.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-1");
-    expect(second.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-2");
+    expect(second.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-1");
+    expect(cached.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-1");
+    expect(refreshed.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("review-2");
     expect(discoveries).toBe(2);
     await app.close();
   });

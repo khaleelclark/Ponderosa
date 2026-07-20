@@ -136,6 +136,19 @@ afterEach(() => {
 });
 
 describe("Project composer runtime capability refresh", () => {
+  it("marks an explicit capability refresh so the server bypasses its discovery cache", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getEngineCapabilities(projectId, { engineId: runtimeId, refresh: true });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("engineId=runtime-selected");
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("refresh=true");
+  });
+
   it("refreshes selected-runtime capabilities while Team chat remains read-only", async () => {
     const values = new Map<string, string>();
     values.set(chatStateKey("view", `conversation.${conversationId}`), "main");

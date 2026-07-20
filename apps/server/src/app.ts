@@ -2407,7 +2407,82 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ...status,
     };
   };
-  const engineCapabilityFingerprints = new Map<string, string>();
+  const engineCapabilityCacheTtlMs = 60_000;
+  const engineCapabilityCache = new Map<string, {
+    projectId: string;
+    engineId: string;
+    expiresAt: number;
+    value: EngineCapabilities;
+  }>();
+  const engineCapabilityDiscoveries = new Map<string, {
+    generation: number;
+    promise: Promise<EngineCapabilities>;
+  }>();
+  const engineCapabilityDiscoveryOperations = new Set<Promise<EngineCapabilities>>();
+  const engineCapabilityGenerations = new Map<string, number>();
+  const engineCapabilityScopeKey = (projectId: string, engineId: string): string =>
+    `${projectId}\0${engineId}`;
+  const invalidateEngineCapabilities = (projectId: string, engineId: string): void => {
+    const scopeKey = engineCapabilityScopeKey(projectId, engineId);
+    engineCapabilityGenerations.set(scopeKey, (engineCapabilityGenerations.get(scopeKey) ?? 0) + 1);
+    for (const [key, entry] of engineCapabilityCache) {
+      if (entry.projectId === projectId && entry.engineId === engineId) engineCapabilityCache.delete(key);
+    }
+  };
+  const reportRuntimeCapabilitiesChanged = (projectId: string, engineId: string): void => {
+    invalidateEngineCapabilities(projectId, engineId);
+    appendWorkspace({ type: "runtime_capabilities_changed", projectId, engineId });
+  };
+  const discoverEngineCapabilities = (
+    projectId: string,
+    hostPath: string,
+    adapter: Adapter,
+    model: string | undefined,
+    forceRefresh: boolean,
+  ): Promise<EngineCapabilities> => {
+    if (!adapter.capabilities) {
+      return Promise.resolve({
+        steering: false,
+        persistentSessions: false,
+        commands: [],
+        mcpServers: [],
+        composerCapabilities: [],
+      });
+    }
+    const scopeKey = engineCapabilityScopeKey(projectId, adapter.id);
+    const generation = engineCapabilityGenerations.get(scopeKey) ?? 0;
+    const key = `${projectId}\0${hostPath}\0${adapter.id}\0${model ?? "default"}`;
+    const running = engineCapabilityDiscoveries.get(key);
+    // A cache invalidation may make this result ineligible for storage, but it
+    // must not create a second provider process beside discovery already in
+    // progress. The next request can refresh after this operation settles.
+    if (running) return running.promise;
+    const cached = engineCapabilityCache.get(key);
+    if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
+    if (cached) engineCapabilityCache.delete(key);
+
+    const promise = Promise.resolve()
+      .then(() => adapter.capabilities!(hostPath, { ...(model ? { model } : {}) }))
+      .then((value) => {
+        if ((engineCapabilityGenerations.get(scopeKey) ?? 0) === generation) {
+          engineCapabilityCache.set(key, {
+            projectId,
+            engineId: adapter.id,
+            expiresAt: Date.now() + engineCapabilityCacheTtlMs,
+            value,
+          });
+        }
+        return value;
+      });
+    const discovery = { generation, promise };
+    engineCapabilityDiscoveries.set(key, discovery);
+    engineCapabilityDiscoveryOperations.add(promise);
+    void promise.finally(() => {
+      engineCapabilityDiscoveryOperations.delete(promise);
+      if (engineCapabilityDiscoveries.get(key) === discovery) engineCapabilityDiscoveries.delete(key);
+    }).catch(() => undefined);
+    return promise;
+  };
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const browserSessions = new BrowserSessionManager(
     opts.dataDir,
@@ -4793,6 +4868,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ...runBrowserClosures,
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
+      Promise.allSettled([...engineCapabilityDiscoveryOperations]).then((results) => {
+        const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length) throw new AggregateError(failures, "Engine capability discovery did not settle during shutdown");
+      }),
       Promise.resolve().then(() => opts.shutdownFaults?.backgroundCleanup?.()),
     ]);
     // Provider authority revocation is an independent barrier. No earlier
@@ -7496,7 +7575,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       contextCursors.deleteAgents(agentIds);
       store.deleteProject(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       appendWorkspace({ type: "project_changed", projectId: project.id, action: "deleted" });
-      engineCapabilityFingerprints.clear();
+      for (const { adapter } of engines.values()) invalidateEngineCapabilities(project.id, adapter.id);
       deleted = true;
       try { resolveOperationalNotification(`project-deletion:${project.id}`); }
       catch { /* completed deletion remains authoritative */ }
@@ -10980,11 +11059,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               },
               onRuntimeSpawned,
               onRuntimeRootExit: () => persistentRootExited(agent.id, identity),
-              onCapabilitiesChanged: () => appendWorkspace({
-                type: "runtime_capabilities_changed",
-                projectId: project.id,
-                engineId: engine.adapter.id,
-              }),
+              onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
               signal: controller.signal,
             });
             return {
@@ -12111,7 +12186,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         });
       }
       await runtime.session.invokeCommand(name, argumentsText);
-      appendWorkspace({ type: "runtime_capabilities_changed", projectId: agent.projectId, engineId: agent.activeEngine });
+      reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
       return { invoked: true, name, catalogVersion: catalog.catalogVersion };
     },
   );
@@ -12640,7 +12715,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return engineDto(registration);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { engineId?: string; model?: string; agentId?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { engineId?: string; model?: string; agentId?: string; refresh?: string } }>(
     "/api/projects/:id/engine-capabilities",
     async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
       const project = store.getProject(request.params.id);
@@ -12652,6 +12727,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (request.query.engineId && !engines.has(request.query.engineId)) {
         return reply.code(400).send({ error: "unknown engine" });
       }
+      const forceRefresh = request.query.refresh === "true" || request.query.refresh === "1";
       return Promise.all([...engines.values()].map(async ({ adapter }) => {
         const selectedModel = adapter.id === request.query.engineId || adapter.id === scopedAgent?.activeEngine
           ? request.query.model?.trim() || undefined
@@ -12659,20 +12735,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const liveSession = scopedAgent?.activeEngine === adapter.id
           ? activeRuns.get(scopedAgent.id)?.runtimeSession ?? reusableRuntime(scopedAgent.id)?.session
           : undefined;
-        const capabilities = await Promise.resolve(liveSession?.capabilities
-          ? liveSession.capabilities()
-          : adapter.capabilities
-          ? adapter.capabilities(project.hostPath, { ...(selectedModel ? { model: selectedModel } : {}) })
-          : { steering: false, persistentSessions: false, commands: [], mcpServers: [], composerCapabilities: [] });
-        const key = `${project.id}\0${project.hostPath}\0${adapter.id}\0${scopedAgent?.id ?? "project"}\0${selectedModel ?? "default"}`;
-        const value = { engineId: adapter.id, ...capabilities };
-        const fingerprint = JSON.stringify(value);
-        const previous = engineCapabilityFingerprints.get(key);
-        engineCapabilityFingerprints.set(key, fingerprint);
-        if (previous !== undefined && previous !== fingerprint) {
-          appendWorkspace({ type: "runtime_capabilities_changed", projectId: project.id, engineId: adapter.id });
-        }
-        return value;
+        const capabilities = liveSession?.capabilities
+          ? await liveSession.capabilities()
+          : await discoverEngineCapabilities(
+            project.id,
+            project.hostPath,
+            adapter,
+            selectedModel,
+            forceRefresh,
+          );
+        return { engineId: adapter.id, ...capabilities };
       }));
     },
   );
