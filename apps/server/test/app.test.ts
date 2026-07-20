@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 
@@ -9708,6 +9708,45 @@ describe("V3.3 Decisions, management, and portability", () => {
     )).toBe(
       "ponderosa://artifact/b ponderosa://artifact/c ponderosa://artifact/a.b ponderosa://artifact/a:b ponderosa://artifact/a-b ponderosa://artifact/a_b ponderosa://artifact/b文 文a🙂",
     );
+  });
+
+  it("collects a 256-character artifact ID but rejects every 257-character ASCII continuation", () => {
+    const maximumId = "a".repeat(256);
+    const overlongIds = ["Z", ".", ":", "_", "-"]
+      .map((continuation) => `${maximumId}${continuation}`);
+    const text = [
+      `ponderosa://artifact/${maximumId}`,
+      ...overlongIds.map((id) => `ponderosa://artifact/${id}`),
+      "ponderosa://artifact/short.",
+      "ponderosa://artifact/short:",
+      "ponderosa://artifact/short\u6587",
+    ].join(" ");
+
+    expect([...collectReachableArtifactIds(text)]).toEqual([maximumId, "short"]);
+  });
+
+  it("rewrites a 256-character artifact ID but leaves every 257-character ASCII continuation untouched", () => {
+    const maximumId = "a".repeat(256);
+    const overlongReferences = ["Z", ".", ":", "_", "-"]
+      .map((continuation) => `ponderosa://artifact/${maximumId}${continuation}`);
+    const input = [
+      `ponderosa://artifact/${maximumId}`,
+      ...overlongReferences,
+      "ponderosa://artifact/short.",
+      "ponderosa://artifact/short:",
+      "ponderosa://artifact/short\u6587",
+    ].join(" ");
+
+    expect(rewritePortableArtifactReferences(input, new Map([
+      [maximumId, "maximum-remapped"],
+      ["short", "short-remapped"],
+    ]))).toBe([
+      "ponderosa://artifact/maximum-remapped",
+      ...overlongReferences,
+      "ponderosa://artifact/short-remapped.",
+      "ponderosa://artifact/short-remapped:",
+      "ponderosa://artifact/short-remapped\u6587",
+    ].join(" "));
   });
 
   it("rewrites only canonical artifact tokens after a one-character import collision", async () => {

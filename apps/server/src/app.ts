@@ -323,11 +323,30 @@ const CANONICAL_ARTIFACT_REFERENCE = new RegExp(
   `ponderosa:\\/\\/artifact\\/(${CANONICAL_ARTIFACT_ID_SOURCE})`,
   "gu",
 );
+const CANONICAL_ARTIFACT_ID_CHARACTER = /[A-Za-z0-9._:-]/u;
 
-function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
+function canonicalArtifactReferenceMatches(text: string): Array<{
+  reference: string;
+  artifactId: string;
+  index: number;
+}> {
+  const matches: Array<{ reference: string; artifactId: string; index: number }> = [];
+  for (const match of text.matchAll(CANONICAL_ARTIFACT_REFERENCE)) {
+    const reference = match[0];
+    const artifactId = match[1]!;
+    const index = match.index!;
+    const followingCharacter = text[index + reference.length];
+    if (artifactId.length === 256 && followingCharacter !== undefined &&
+        CANONICAL_ARTIFACT_ID_CHARACTER.test(followingCharacter)) continue;
+    matches.push({ reference, artifactId, index });
+  }
+  return matches;
+}
+
+export function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
   if (typeof value === "string") {
-    for (const match of value.matchAll(CANONICAL_ARTIFACT_REFERENCE)) {
-      found.add(match[1]!);
+    for (const match of canonicalArtifactReferenceMatches(value)) {
+      found.add(match.artifactId);
     }
     return found;
   }
@@ -401,12 +420,17 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
 }
 
 export function rewritePortableArtifactReferences(text: string, artifactRefMap: ReadonlyMap<string, string>): string {
-  return text.replace(CANONICAL_ARTIFACT_REFERENCE, (reference, sourceId: string) => {
-    const destinationId = artifactRefMap.get(sourceId);
-    return destinationId && destinationId !== sourceId
+  let rewritten = "";
+  let copiedThrough = 0;
+  for (const match of canonicalArtifactReferenceMatches(text)) {
+    const destinationId = artifactRefMap.get(match.artifactId);
+    rewritten += text.slice(copiedThrough, match.index);
+    rewritten += destinationId && destinationId !== match.artifactId
       ? `ponderosa://artifact/${destinationId}`
-      : reference;
-  });
+      : match.reference;
+    copiedThrough = match.index + match.reference.length;
+  }
+  return rewritten + text.slice(copiedThrough);
 }
 
 function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
