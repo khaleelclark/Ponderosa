@@ -600,7 +600,7 @@ function normalizeProfile(input: unknown): WorkspacePreferencesDto["profile"] {
   const rawHandle = typeof value.handle === "string" ? value.handle.trim().replace(/^#/, "").toLowerCase() : "operator";
   const handle = /^[a-z][a-z0-9_-]{1,31}$/.test(rawHandle) && !["broadcast", "everyone", "user"].includes(rawHandle) ? rawHandle : "operator";
   const avatarId = typeof value.avatarId === "string" && (
-    /^[a-z0-9_-]{1,64}$/i.test(value.avatarId) || /^uploaded:(?:png|jpeg|webp):[a-f0-9]{64}$/u.test(value.avatarId)
+    /^[a-z0-9_-]{1,64}$/i.test(value.avatarId) || /^uploaded:(?:png|jpeg|webp|gif|avif):[a-f0-9]{64}$/u.test(value.avatarId)
   ) ? value.avatarId : "default-user";
   return { displayName, handle, avatarId };
 }

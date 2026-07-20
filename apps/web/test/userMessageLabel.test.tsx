@@ -75,7 +75,7 @@ describe("user message labels on chat surfaces", () => {
         agentMessage({ id: "second", seq: 2, text: "Second message" }),
       ]} />);
     });
-    const messages = view.root.findAll((node) => node.type === "article" && node.props.className === "chat-message");
+    const messages = view.root.findAll((node) => node.props.className === "chat-message");
     const mobileTimestamps = (root: typeof view.root) => root.findAll((node) => node.type === "div" && node.props["data-mobile-message-timestamp"] === true);
 
     expect(mobileTimestamps(view.root)).toHaveLength(0);

@@ -131,7 +131,7 @@ async function mountLiveViews(agentId: string, nextDetail: Promise<ChangedFileDe
     emit({ seq: 1, ts: firstChangedAt, replayed: true, event: { type: "session", sessionId: "session-1" } });
   });
   await act(async () => {
-    view.root.findByProps({ "aria-expanded": false }).props.onClick();
+    view.root.findByProps({ "aria-label": "Open recorded diff for src/live.ts" }).props.onClick();
   });
   await vi.waitFor(() => expect(renderedText(view.toJSON())).toContain("+first"));
   return { client, emit, getChangedFileDetail, view };

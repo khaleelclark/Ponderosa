@@ -170,6 +170,19 @@ describe("WorkspaceStore canonical replay", () => {
     expect(new WorkspaceStore(dir).getPreferences().profile.avatarId).toBe(avatarId);
   });
 
+  it("preserves every supported uploaded profile format across replay", () => {
+    const formats = ["png", "jpeg", "webp", "gif", "avif"];
+    for (const format of formats) {
+      const { dir, store } = fixture();
+      const avatarId = `uploaded:${format}:${"a".repeat(64)}`;
+      store.updatePreferences({
+        profile: { displayName: "Patrick", handle: "patrick", avatarId },
+      });
+      expect(store.getPreferences().profile.avatarId).toBe(avatarId);
+      expect(new WorkspaceStore(dir).getPreferences().profile.avatarId).toBe(avatarId);
+    }
+  });
+
   it("indexes bounded Decision pages and exact Run relationships across replay", () => {
     const { dir, store } = fixture();
     const decisions = Array.from({ length: 7 }, (_, index) => store.createDecision({

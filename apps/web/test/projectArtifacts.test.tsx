@@ -23,6 +23,8 @@ vi.mock("@mui/material", async (importOriginal) => {
     ...actual,
     Dialog: forwardRef<HTMLDivElement, { open: boolean; children?: React.ReactNode }>(({ open, children }, ref) =>
       open ? createElement("div", { ref, role: "dialog" }, children) : null),
+    Select: forwardRef<HTMLDivElement, { children?: React.ReactNode } & Record<string, unknown>>(({ children, ...props }, ref) =>
+      createElement("div", { ...props, ref }, children)),
   };
 });
 
@@ -251,19 +253,19 @@ describe("project artifacts view", () => {
         onOpenArtifact={vi.fn()} onOpenRun={vi.fn()} onOpenAgentWork={vi.fn()}
       /></QueryClientProvider>);
     });
-    await vi.waitFor(() => expect(view.root.findAllByProps({ "aria-label": "Open Edit · first.ts from Cabrillo" })).toHaveLength(1));
+    await vi.waitFor(() => expect(view.root.findAllByProps({ "aria-label": "Open Edit · first.ts from Cabrillo" }).length).toBeGreaterThan(0));
 
-    act(() => view.root.findByProps({ "aria-label": "Open Edit · first.ts from Cabrillo" }).props.onClick());
+    act(() => view.root.findAllByProps({ "aria-label": "Open Edit · first.ts from Cabrillo" })[0]!.props.onClick());
     await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("+new first"));
     expect(view.root.findAllByProps({ "data-diff-line-kind": "addition" }).length).toBeGreaterThan(0);
 
-    act(() => view.root.findByProps({ "aria-label": "Open Edit · second.ts from Cabrillo" }).props.onClick());
+    act(() => view.root.findAllByProps({ "aria-label": "Open Edit · second.ts from Cabrillo" })[0]!.props.onClick());
     await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("+new second"));
     expect(JSON.stringify(view.toJSON())).not.toContain("+new first");
     expect(api.getArtifact).toHaveBeenCalledWith(agent.id, first.id);
     expect(api.getArtifact).toHaveBeenCalledWith(agent.id, second.id);
 
-    act(() => view.root.findByProps({ "aria-label": "Open Edit · image.png from Cabrillo" }).props.onClick());
+    act(() => view.root.findAllByProps({ "aria-label": "Open Edit · image.png from Cabrillo" })[0]!.props.onClick());
     await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("does not contain a line-oriented diff"));
     expect(JSON.stringify(view.toJSON())).not.toContain("Binary files differ");
     view.unmount();

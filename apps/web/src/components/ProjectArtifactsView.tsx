@@ -263,7 +263,7 @@ export function ProjectArtifactsView({
   })).filter((group) => group.records.length > 0);
   const loading = projectArtifacts.isLoading;
 
-  return <Box sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
+  return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
       <ProjectOverview
         project={project}
