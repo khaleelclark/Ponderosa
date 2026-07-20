@@ -2453,7 +2453,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const generation = engineCapabilityGenerations.get(scopeKey) ?? 0;
     const key = `${projectId}\0${hostPath}\0${adapter.id}\0${model ?? "default"}`;
     const running = engineCapabilityDiscoveries.get(key);
-    if (running?.generation === generation) return running.promise;
+    // A cache invalidation may make this result ineligible for storage, but it
+    // must not create a second provider process beside discovery already in
+    // progress. The next request can refresh after this operation settles.
+    if (running) return running.promise;
     const cached = engineCapabilityCache.get(key);
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
     if (cached) engineCapabilityCache.delete(key);
