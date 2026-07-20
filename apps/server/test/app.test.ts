@@ -8416,6 +8416,77 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("drains provider text and terminal audit lifecycle after a terminal Request tool fences mutations", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const project = store.createProject({ label: "Terminal audit drain", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Audit drain" });
+    const requester = store.createAgent(project.id, {
+      title: "Requester", engine: "codex", conversationId: conversation.id,
+    });
+    const recipient = store.createAgent(project.id, {
+      title: "Recipient", engine: "codex", conversationId: conversation.id,
+    });
+    new CoordinationV3Store(store.sqlite).coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: `agent:${requester.id}`,
+      idempotencyKey: "terminal-audit-drain",
+      requests: [{
+        requestId: "terminal-audit-drain-request",
+        recipientAgentId: recipient.id,
+        payload: { text: "Complete the request, then finish the provider turn." },
+        lifetime: { kind: "indefinite" },
+      }],
+    });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    await app.ready();
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const completed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { text: "Canonical Request handoff." },
+    });
+    expect(completed.success, completed.text).toBe(true);
+    const schedulerRun = new CoordinationV3Store(store.sqlite).agentSnapshot(recipient.id).activeRun!;
+    expect(new CoordinationV3Store(store.sqlite).ownsRun(
+      schedulerRun.id,
+      schedulerRun.fencingToken,
+    )).toBe(false);
+    expect(new CoordinationV3Store(store.sqlite).ownsRunForCleanup(
+      schedulerRun.id,
+      schedulerRun.fencingToken,
+    )).toBe(true);
+
+    persistent.queues[0]!.push({ type: "text", delta: "Provider text emitted after the terminal tool." });
+    persistent.completeTurn(0);
+
+    await expect.poll(() => store.getRuns(recipient.id)[0]?.status).toBe("completed");
+    await expect.poll(() => (store.sqlite.prepare(
+      "SELECT status FROM scheduler_runs WHERE id = ?",
+    ).get(schedulerRun.id) as { status: string } | undefined)?.status).toBe("completed");
+    expect(store.getAgentDetail(recipient.id)?.runOutput).toContainEqual(expect.objectContaining({
+      executionId: schedulerRun.id,
+      text: "Provider text emitted after the terminal tool.",
+      completed: true,
+    }));
+    expect(store.readEvents(recipient.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "turn_done", executionId: schedulerRun.id,
+      }) }),
+      expect.objectContaining({ event: expect.objectContaining({
+        type: "agent_lifecycle", executionId: schedulerRun.id, status: "completed",
+      }) }),
+    ]));
+    await app.close();
+  });
+
   it("blocks cross-chat coordination until the user explicitly adds the recipient to that Team Chat", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];

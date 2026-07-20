@@ -145,6 +145,14 @@ Authorization is checked before reduction:
 - system only: `recipient_unavailable`, `expired`;
 - runtime supervisor/system or explicitly authorized user: `outcome_unknown`.
 
+Request cancellation remains actionable while recipient work can still be
+stopped: an active Request-caused Run receives a `steer_or_run` cancellation
+Activation, and unconsumed work retains its cancellation handling. The narrow
+passive exception is a recipient whose original Request Activation is already
+consumed, whose Request is `awaiting_answer`, and who has no Request-caused Run
+still active. Cancelling that clarification wait creates no cancellation-only
+recipient Run.
+
 Request deadlines and join deadlines are independent. A request deadline moves
 only that request to `expired`, reevaluates its joins, and activates a surviving
 requester only when action is needed. Expiring a join never expires its requests.

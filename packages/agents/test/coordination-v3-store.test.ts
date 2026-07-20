@@ -985,6 +985,121 @@ describe("CoordinationV3Store transactions", () => {
     ]);
   });
 
+  it("keeps cancellation passive when a consumed recipient waits only on clarification", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "passive-clarification-cancel",
+      requests: [{
+        requestId: "passive-clarification-request", recipientAgentId: recipientA, lifetime: indefinite,
+      }],
+    });
+    const recipientRun = store.leaseNextRun({ workerId: "recipient-worker", excludedAgentIds: [requesterId, recipientB] })!;
+    acknowledgeLease(recipientRun);
+    store.updateRequest({
+      requestId: "passive-clarification-request", updateId: "passive-question", kind: "question",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: {
+        runId: recipientRun.runId, agentId: recipientA, fencingToken: recipientRun.fencingToken,
+      },
+      payload: { text: "Which format?" },
+    });
+    store.completeRun(recipientRun.runId, recipientRun.fencingToken);
+    expect(opened.client.prepare(`
+      SELECT activation.state
+      FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE source.source_kind = 'request' AND source.source_id = 'passive-clarification-request'
+        AND activation.kind = 'coordination_request'
+    `).get()).toEqual({ state: "consumed" });
+
+    const requesterRun = store.leaseNextRun({ workerId: "requester-worker", excludedAgentIds: [recipientA, recipientB] })!;
+    acknowledgeLease(requesterRun);
+    expect(requesterRun.activations).toEqual([
+      expect.objectContaining({ kind: "coordination_question" }),
+    ]);
+    store.updateRequest({
+      requestId: "passive-clarification-request", updateId: "passive-cancel", kind: "cancelled",
+      actor: { kind: "agent", id: requesterId },
+      runAuthorization: {
+        runId: requesterRun.runId, agentId: requesterId, fencingToken: requesterRun.fencingToken,
+      },
+      payload: { reason: "request no longer needed" },
+    });
+    expect(store.getRequest("passive-clarification-request")?.state).toBe("cancelled");
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_cancelled'
+    `).get(recipientA)).toEqual({ count: 0 });
+    expect(store.leaseNextRun({ workerId: "cancellation-only-check", excludedAgentIds: [requesterId, recipientB] }))
+      .toBeUndefined();
+  });
+
+  it("keeps cancellation actionable while clarification work is still attached", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "active-clarification-cancel",
+      requests: [{
+        requestId: "active-clarification-request", recipientAgentId: recipientA, lifetime: indefinite,
+      }],
+    });
+    const initialRecipientRun = store.leaseNextRun({ workerId: "initial-recipient-worker", excludedAgentIds: [requesterId, recipientB] })!;
+    acknowledgeLease(initialRecipientRun);
+    store.updateRequest({
+      requestId: "active-clarification-request", updateId: "active-question", kind: "question",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: {
+        runId: initialRecipientRun.runId, agentId: recipientA, fencingToken: initialRecipientRun.fencingToken,
+      },
+      payload: { text: "Which format?" },
+    });
+    store.completeRun(initialRecipientRun.runId, initialRecipientRun.fencingToken);
+
+    const requesterRun = store.leaseNextRun({ workerId: "requester-worker", excludedAgentIds: [recipientA, recipientB] })!;
+    acknowledgeLease(requesterRun);
+    store.updateRequest({
+      requestId: "active-clarification-request", updateId: "active-answer", kind: "answer",
+      actor: { kind: "agent", id: requesterId }, inReplyToUpdateId: "active-question",
+      runAuthorization: {
+        runId: requesterRun.runId, agentId: requesterId, fencingToken: requesterRun.fencingToken,
+      },
+      payload: { text: "Use Markdown." },
+    });
+    store.completeRun(requesterRun.runId, requesterRun.fencingToken);
+
+    const resumedRecipientRun = store.leaseNextRun({ workerId: "resumed-recipient-worker", excludedAgentIds: [requesterId, recipientB] })!;
+    acknowledgeLease(resumedRecipientRun);
+    expect(resumedRecipientRun.activations).toEqual([
+      expect.objectContaining({ kind: "coordination_answer" }),
+    ]);
+    store.updateRequest({
+      requestId: "active-clarification-request", updateId: "active-second-question", kind: "question",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: {
+        runId: resumedRecipientRun.runId, agentId: recipientA, fencingToken: resumedRecipientRun.fencingToken,
+      },
+      payload: { text: "Which Markdown dialect?" },
+    });
+    const runCountBeforeCancellation = opened.client.prepare(
+      "SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?",
+    ).get(recipientA);
+    store.updateRequest({
+      requestId: "active-clarification-request", updateId: "active-cancel", kind: "cancelled",
+      actor: { kind: "agent", id: requesterId }, payload: { reason: "stop now" },
+    });
+
+    const steering = store.leaseNextSteering({ workerId: "resumed-recipient-worker" })!;
+    expect(steering).toMatchObject({
+      runId: resumedRecipientRun.runId,
+      activations: [expect.objectContaining({ kind: "coordination_cancelled" })],
+    });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs WHERE agent_id = ?").get(recipientA))
+      .toEqual(runCountBeforeCancellation);
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM scheduler_runs
+      WHERE agent_id = ? AND status IN ('leased', 'running')
+    `).get(recipientA)).toEqual({ count: 1 });
+  });
+
   it("fences side effects after every resumed continuation is handed off while replay and cleanup remain valid", () => {
     store.coordinate({
       projectId, conversationId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,

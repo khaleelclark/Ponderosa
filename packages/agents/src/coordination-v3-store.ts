@@ -5437,6 +5437,43 @@ export class CoordinationV3Store {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents WHERE id = ? AND archived = 0`).get(agentId));
   }
 
+  /** A recipient whose request Activation is consumed and whose Request is
+   * awaiting an answer has no provider work left to stop. Cancelling that
+   * clarification wait is passive; attached or unconsumed work still receives
+   * the urgent control Activation used for steering/interruption. */
+  private isConsumedClarificationWait(request: RequestRow): boolean {
+    if (request.state !== "awaiting_answer") return false;
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1
+      FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id = activation.id
+      WHERE source.source_kind = 'request' AND source.source_id = ?
+        AND activation.agent_id = ?
+        AND activation.kind = 'coordination_request'
+        AND activation.state = 'consumed'
+        AND NOT EXISTS (
+          SELECT 1
+          FROM scheduler_runs active_run
+          JOIN scheduler_run_activations attached ON attached.run_id = active_run.id
+          JOIN activation_sources active_source ON active_source.activation_id = attached.activation_id
+          LEFT JOIN coordination_request_updates active_update
+            ON active_source.source_kind = 'request_update' AND active_update.id = active_source.source_id
+          WHERE active_run.agent_id = ? AND active_run.status IN ('leased', 'running')
+            AND (
+              (active_source.source_kind = 'request' AND active_source.source_id = ?)
+              OR active_update.request_id = ?
+            )
+        )
+      LIMIT 1
+    `).get(
+      request.id,
+      request.recipient_agent_id,
+      request.recipient_agent_id,
+      request.id,
+      request.id,
+    ));
+  }
+
   private getRequestRow(requestId: string): RequestRow {
     const row = this.sqlite.prepare(`SELECT * FROM coordination_requests WHERE id = ?`).get(requestId) as RequestRow | undefined;
     if (!row) throw new Error("request not found");
@@ -5491,11 +5528,13 @@ export class CoordinationV3Store {
       });
       return;
     }
+    if (kind === "cancelled" && this.isConsumedClarificationWait(request)) return;
     if ((kind === "cancelled" || kind === "superseded") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
         scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: `coordination_${kind}`, priority: PRIORITY.urgent,
+        ...(kind === "cancelled" ? { dispatchPolicy: "steer_or_run" as const } : {}),
         dedupeKey: `request:${request.id}:${kind}`,
         payload: { requestId: request.id, state: nextState, update: updatePayload ?? null },
         sourceKind: "request", sourceId: request.id, now,

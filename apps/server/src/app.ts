@@ -3275,7 +3275,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
 
     const run = activeRuns.get(agentId);
-    if (!run || run.persistentRuntimeIdentity !== identity || !ownsActiveRun(agentId, run)) return;
+    if (!run || run.persistentRuntimeIdentity !== identity || !ownsActiveRunForAuditDrain(agentId, run)) return;
     transitionRun(agentId, run, "cancelling");
     void closeRunBrowser(agentId, run, "persistent_provider_root_exited");
     closeLinkPreviewsForAgent(agentId, "persistent provider root exited");
@@ -3492,6 +3492,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return activeRuns.get(agentId) === run && ownsV3Run(run);
   }
 
+  /** Provider-facing mutations stop as soon as the scheduler fences side
+   * effects, while the host keeps this exact local Run long enough to persist
+   * provider events that were already emitted and its terminal audit record. */
+  function ownsActiveRunForAuditDrain(agentId: string, run: ActiveRun): boolean {
+    return activeRuns.get(agentId) === run && Boolean(
+      run.v3SchedulerRunId && run.v3FencingToken !== undefined &&
+      coordinationV3.ownsRunForCleanup(
+        run.v3SchedulerRunId,
+        run.v3FencingToken,
+        coordinationV3WorkerId,
+      ),
+    );
+  }
+
   function linkPreviewOwned(registration: LinkPreviewRegistration): boolean {
     const project = store.getProject(registration.projectId);
     const agent = store.getAgent(registration.agentId);
@@ -3602,14 +3616,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
 
   function transitionRun(agentId: string, run: ActiveRun, state: RuntimeOwnershipState): boolean {
-    if (!ownsV3Run(run)) return false;
+    if (!ownsActiveRunForAuditDrain(agentId, run)) return false;
     run.ownershipState = state;
     opts.runtimeEventFaults?.onOwnershipState?.({ agentId, runId: run.runId, generation: run.generation, state });
     return true;
   }
 
   function receiveRuntimeEvent(agentId: string, run: ActiveRun): boolean {
-    if (!ownsActiveRun(agentId, run) || run.ownershipState === "cancelling") return false;
+    if (!ownsActiveRunForAuditDrain(agentId, run) || run.ownershipState === "cancelling") return false;
     const at = new Date().toISOString();
     run.lastEventReceivedAt = at;
     return true;
@@ -3617,11 +3631,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   async function waitBeforeRuntimePersist(agentId: string, run: ActiveRun, event: AgentEvent): Promise<boolean> {
     await opts.runtimeEventFaults?.beforePersist?.({ agentId, runId: run.runId, generation: run.generation, event });
-    return ownsActiveRun(agentId, run) && run.ownershipState !== "cancelling";
+    return ownsActiveRunForAuditDrain(agentId, run) && run.ownershipState !== "cancelling";
   }
 
   function persistRuntimeEvent(agentId: string, run: ActiveRun, event: LogEvent): StoredLogEvent | undefined {
-    if (!ownsActiveRun(agentId, run) || run.ownershipState === "cancelling") return undefined;
+    if (!ownsActiveRunForAuditDrain(agentId, run) || run.ownershipState === "cancelling") return undefined;
     const canonicalEvent = normalizeRuntimeFileChange(agentId, run, event);
     const stored = store.appendEvent(agentId, canonicalEvent);
     const at = new Date().toISOString();
@@ -3753,7 +3767,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!run.runtimeSession) return;
     run.livenessTimer = setExecutionLeaseTimer(() => {
       run.livenessTimer = undefined;
-      if (closed || !ownsActiveRun(agentId, run)) return;
+      if (closed || !ownsActiveRunForAuditDrain(agentId, run)) return;
       let alive = false;
       try { alive = run.runtimeSession?.isAlive() === true; } catch { /* failed liveness checks do not renew */ }
       if (!alive) return;
@@ -3763,7 +3777,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
 
   function expireExecutionLease(agentId: string, run: ActiveRun): void {
-    if (closed || !ownsActiveRun(agentId, run)) return;
+    if (closed || !ownsActiveRunForAuditDrain(agentId, run)) return;
     const remaining = Date.parse(run.leaseExpiresAt) - executionLeaseNow();
     if (remaining > 0) {
       run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(agentId, run), remaining);
@@ -3809,7 +3823,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
 
   function renewExecutionLease(agentId: string, run: ActiveRun): boolean {
-    if (!ownsActiveRun(agentId, run)) return false;
+    if (!ownsActiveRunForAuditDrain(agentId, run)) return false;
     clearRunLeaseTimer(run);
     run.leaseExpiresAt = leaseExpiry();
     run.leaseTimer = setExecutionLeaseTimer(() => expireExecutionLease(agentId, run), executionLeaseMs);
@@ -12195,14 +12209,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             runError = "provider ended before prompt injection could be confirmed";
           }
         } catch (err) {
-          if (closed || controller.signal.aborted || !ownsActiveRun(agent.id, activeRun)) return;
+          if (closed || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
           schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
           if (schedulerCancelled) return;
           const message = err instanceof Error ? err.message : String(err);
           persistRuntimeEvent(agent.id, activeRun, { type: "error", message });
           runError = message;
         } finally {
-          const owned = ownsActiveRun(agent.id, activeRun);
+          const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
           schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
           const rolloverRequested = owned && scheduledSessionRollovers.delete(agent.id);
           const rolloverSucceeded = Boolean(rolloverRequested && !closed && !controller.signal.aborted && !schedulerCancelled && !runError);
