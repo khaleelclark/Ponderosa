@@ -4501,6 +4501,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
+    pluginTimeout: 120_000,
     logger: opts.logger === false ? false : {
       redact: {
         paths: ["req.headers.authorization", "req.headers.x-ponderosa-prompt-access"],
