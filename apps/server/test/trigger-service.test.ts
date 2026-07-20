@@ -245,9 +245,14 @@ describe("V3.2 Trigger sources", () => {
       mkdirSync(join(context.project.hostPath, "src"), { recursive: true });
       writeFileSync(join(context.project.hostPath, "src", "durable.ts"), "durable metadata only");
       const persistenceDeadline = Date.now() + 2_000;
-      while (context.coordination.listPendingFilesystemTriggerBursts().length === 0 && Date.now() < persistenceDeadline) {
+      const hasDurableFileEvent = () => context.coordination.listPendingFilesystemTriggerBursts().some(
+        (burst) => burst.triggerId === trigger.id
+          && burst.changes.some((change) => change.path === "src/durable.ts"),
+      );
+      while (!hasDurableFileEvent() && Date.now() < persistenceDeadline) {
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
+      expect(hasDurableFileEvent()).toBe(true);
       expect(context.coordination.listPendingFilesystemTriggerBursts()).toMatchObject([{
         triggerId: trigger.id,
         changes: expect.arrayContaining([{ path: "src/durable.ts", types: expect.any(Array) }]),
