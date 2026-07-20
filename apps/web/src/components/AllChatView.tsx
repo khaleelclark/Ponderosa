@@ -221,7 +221,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} sx={{ display: composerHidden ? { xs: "none", sm: "block" } : "block", borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}>
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
-          : replyUnavailable ? <Alert severity="info">{replyUnavailable}</Alert>
+          : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>
             : <Stack spacing={1}>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
               {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}
