@@ -159,6 +159,17 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.getNotification(notification.id)).toMatchObject({ status: "resolved", severity: "urgent" });
   });
 
+  it("preserves a managed uploaded profile picture across replay", () => {
+    const { dir, store } = fixture();
+    const avatarId = `uploaded:png:${"a".repeat(64)}`;
+    store.updatePreferences({
+      profile: { displayName: "Patrick", handle: "patrick", avatarId },
+    });
+
+    expect(store.getPreferences().profile.avatarId).toBe(avatarId);
+    expect(new WorkspaceStore(dir).getPreferences().profile.avatarId).toBe(avatarId);
+  });
+
   it("indexes bounded Decision pages and exact Run relationships across replay", () => {
     const { dir, store } = fixture();
     const decisions = Array.from({ length: 7 }, (_, index) => store.createDecision({
