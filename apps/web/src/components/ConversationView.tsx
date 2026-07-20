@@ -62,7 +62,7 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { shouldHideMobileComposer } from "../mobileChat";
+import { useMobileComposerAutoHide } from "../mobileChat";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -403,11 +403,11 @@ export function ConversationView({
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
   const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
-  const [mobileComposerHidden, setMobileComposerHidden] = useState(false);
+  const mobileComposer = useMobileComposerAutoHide(mobileRoster);
 
   useEffect(() => {
     setMobileHeaderCollapsed(false);
-    setMobileComposerHidden(false);
+    mobileComposer.reset();
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
@@ -545,17 +545,17 @@ export function ConversationView({
         chatScrollRef.current.scrollTop = saved;
         shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
         setShowScrollToLatest(!shouldFollowNewMessages.current);
-        setMobileComposerHidden(shouldHideMobileComposer(mobileRoster, shouldFollowNewMessages.current));
+        mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
         return;
       }
       shouldFollowNewMessages.current = true;
       setShowScrollToLatest(false);
-      setMobileComposerHidden(false);
+      mobileComposer.showAtLatest(chatScrollRef.current);
     }
     if (chatScrollRef.current && shouldFollowNewMessages.current) {
       scrollChatToBottom(chatScrollRef.current);
       setShowScrollToLatest(false);
-      setMobileComposerHidden(false);
+      mobileComposer.showAtLatest(chatScrollRef.current);
     }
   }, [conversationId, activeView, messageLayoutKey, collaborationLayoutKey, operationalLayoutKey]);
 
@@ -1063,7 +1063,7 @@ export function ConversationView({
             if (chatScrollRef.current) {
               shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
               setShowScrollToLatest(!shouldFollowNewMessages.current);
-              setMobileComposerHidden(shouldHideMobileComposer(mobileRoster, shouldFollowNewMessages.current));
+              mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
               writeChatState(
                 chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
                 String(chatScrollRef.current.scrollTop),
@@ -1172,7 +1172,7 @@ export function ConversationView({
             shouldFollowNewMessages.current = true;
             scrollChatToBottom(chatScrollRef.current);
             setShowScrollToLatest(false);
-            setMobileComposerHidden(false);
+            mobileComposer.showAtLatest(chatScrollRef.current);
           }}
         />
       </Box>
@@ -1272,16 +1272,13 @@ export function ConversationView({
 
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={mobileComposerHidden ? "true" : "false"}
+        data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
         onTransitionEnd={(event) => {
           if (
             event.currentTarget !== event.target
             || event.propertyName !== "max-height"
-            || mobileComposerHidden
-            || !chatScrollRef.current
-            || !shouldFollowNewMessages.current
           ) return;
-          scrollChatToBottom(chatScrollRef.current);
+          mobileComposer.finishTransition();
         }}
       >
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}

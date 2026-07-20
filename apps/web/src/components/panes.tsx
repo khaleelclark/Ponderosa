@@ -855,7 +855,6 @@ export function ChatPane({
   onReact,
   onReply,
   onScrollPositionChange,
-  viewportLayoutRevision,
   previewScope,
   scrollStorageKey,
   operatorProfile,
@@ -872,7 +871,6 @@ export function ChatPane({
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
-  viewportLayoutRevision?: number;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
@@ -909,7 +907,7 @@ export function ChatPane({
       setShowScrollToLatest(false);
       onScrollPositionChange?.(scrollRef.current, true);
     }
-  }, [messageLayoutKey, scrollStorageKey, viewportLayoutRevision]);
+  }, [messageLayoutKey, scrollStorageKey]);
 
   return (
     <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0 }}>
@@ -1850,21 +1848,7 @@ function MarkdownViewer({ content }: { content: string }): JSX.Element {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className ?? "");
-            if (match?.[1]) {
-              return (
-                <SyntaxHighlighter language={match[1]} style={oneLight} PreTag="div">
-                  {String(children).replace(/\n$/, "")}
-                </SyntaxHighlighter>
-              );
-            }
-            return (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            );
-          },
+          pre: ({ children }) => <CopyableCodeBlock>{children}</CopyableCodeBlock>,
         }}
       >
         {content}

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { mobileOperationalStatus, shouldHideMobileComposer } from "../src/mobileChat";
+import { mobileComposerScrollAction, mobileOperationalStatus } from "../src/mobileChat";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
@@ -12,14 +12,28 @@ const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "u
 
 describe("mobile feedback slice", () => {
   it("anchors composers at the bottom and hides them only when a phone chat is away from latest", () => {
-    expect(shouldHideMobileComposer(true, false)).toBe(true);
-    expect(shouldHideMobileComposer(true, true)).toBe(false);
-    expect(shouldHideMobileComposer(false, false)).toBe(false);
+    expect(mobileComposerScrollAction({
+      mobileViewport: true, hidden: false, initialized: true, transitionActive: false,
+      nearBottom: false, previousScrollTop: 500, scrollTop: 300,
+    })).toBe("hide");
+    expect(mobileComposerScrollAction({
+      mobileViewport: true, hidden: true, initialized: true, transitionActive: false,
+      nearBottom: true, previousScrollTop: 300, scrollTop: 700,
+    })).toBe("show");
+    expect(mobileComposerScrollAction({
+      mobileViewport: true, hidden: false, initialized: true, transitionActive: true,
+      nearBottom: false, previousScrollTop: 700, scrollTop: 650,
+    })).toBe("none");
+    expect(mobileComposerScrollAction({
+      mobileViewport: false, hidden: false, initialized: true, transitionActive: false,
+      nearBottom: false, previousScrollTop: 500, scrollTop: 300,
+    })).toBe("none");
     expect(agentDetail).toContain("data-mobile-composer-hidden");
     expect(conversation).toContain("data-mobile-composer-hidden");
     expect(allChat).toContain("data-mobile-composer-hidden");
     expect(allChat).toContain('height: "100%"');
     expect(conversation).toContain('height: "100%"');
+    expect(app).toContain('gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" }');
   });
 
   it("keeps message timestamps hidden until a message reveals the compact mobile row", () => {

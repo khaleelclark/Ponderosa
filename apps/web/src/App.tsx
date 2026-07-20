@@ -612,7 +612,7 @@ export default function App({
             onWidthChange={(width) => setSidebarPresentation((current) => ({ ...current, width }))}
           />
         </Box>
-      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
         {!mobileWorkspace ? <WorkspaceTabs
           tabs={workspaceTabs}
           projects={projects}
