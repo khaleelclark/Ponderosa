@@ -13,8 +13,8 @@ import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
-import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
-import { boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
+import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 
@@ -3740,6 +3740,12 @@ describe("server chunk F", () => {
     expect(bounded.at(-1)?.text.startsWith("79:")).toBe(true);
   });
 
+  it("clips seed and continuation history at Unicode code-point boundaries", () => {
+    const history = [{ role: "user" as const, text: "A😀B" }];
+    expect(boundedSeedHistory(history, 2, 1)).toEqual([{ role: "user", text: "😀B" }]);
+    expect(boundedContinuationHistory(history, 2, 1)).toEqual([{ role: "user", text: "A😀" }]);
+  });
+
   it("binds every runtime turn to one stable agent and execution identity", () => {
     const prompt = runtimeIdentityPrompt({ id: "agent-10", title: "Great Basin", projectId: "project-a" }, "execution-2");
     expect(prompt).toContain("your agent id: agent-10");
@@ -5390,6 +5396,86 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("persists the exact canonical fresh seed after a pre-sampling resume failure", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Truthful reseed", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Continuity" });
+    const agent = store.createAgent(project.id, { title: "Reader", engine: "codex", conversationId: conversation.id });
+    const privateMarker = `PRIVATE-SEED-MARKER ${"😀".repeat(10_050)}`;
+    let selfBroadcastEventId = "";
+    adapter.beforeResponse = async (opts) => {
+      const published = await app.inject({
+        method: "POST",
+        url: "/api/agent-messages",
+        headers: { authorization: `Bearer ${opts.environment!.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
+        payload: { intent: "broadcast", text: "SELF-BROADCAST-MARKER", idempotencyKey: "self-broadcast" },
+      });
+      expect(published.statusCode, published.body).toBe(200);
+      selfBroadcastEventId = published.json<{ eventId: string }>().eventId;
+    };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: { text: privateMarker, idempotencyKey: "private-seed" },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+
+    const firstRun = store.getRuns(agent.id)[0]!;
+    const retainedArtifactId = store.getProviderInput(firstRun.id)?.sourceManifest.artifactIds.find((id) =>
+      id.startsWith("text-"));
+    expect(retainedArtifactId).toMatch(/^text-/);
+    expect(store.resumeSessionState(agent.id)?.artifactIds).toContain(retainedArtifactId);
+    store.setImportedHistory(agent.id, "continuity-import", [{
+      role: "assistant", text: "IMPORTED-SEED-MARKER", createdAt: new Date().toISOString(),
+    }]);
+    const shared = appendBroadcast(store, project.id, conversation.id, "CURRENT-SHARED-MARKER");
+
+    adapter.mode = "resume_compaction_fail";
+    const secondPayload = { text: "SECOND-CURRENT-REQUEST", idempotencyKey: "resume-reseed" };
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: secondPayload,
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    const freshAttempt = adapter.seeds[1]!;
+    const actualFreshInput = renderSeedPrompt(freshAttempt.history, freshAttempt.prompt);
+    expect(actualFreshInput.match(/SELF-BROADCAST-MARKER/g)).toHaveLength(1);
+    expect(actualFreshInput).toContain(`Full message: ponderosa://artifact/${retainedArtifactId}`);
+    expect(actualFreshInput).toContain("IMPORTED-SEED-MARKER");
+    expect(actualFreshInput).toContain("CURRENT-SHARED-MARKER");
+    expect(actualFreshInput).toContain("SECOND-CURRENT-REQUEST");
+    expect(actualFreshInput).toContain(`ponderosa://artifact/${retainedArtifactId}`);
+    expect(actualFreshInput).toContain("[POLICY · SESSION SNAPSHOT | AUTHORITATIVE]");
+
+    const secondRun = store.getRuns(agent.id)[1]!;
+    const providerInput = store.getProviderInput(secondRun.id, true)!;
+    expect(providerInput.exactPrompt).toBe(actualFreshInput);
+    expect(providerInput.promptHash).toBe(createHash("sha256").update(actualFreshInput).digest("hex"));
+    expect(providerInput.sourceManifest.providerSessionDisposition).toBe("reseeded");
+    expect(providerInput.sourceManifest.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "policy", delivery: "submitted" }),
+      expect.objectContaining({ kind: "communication", ref: selfBroadcastEventId, delivery: "submitted" }),
+      expect.objectContaining({ kind: "communication", ref: shared.communicationEventId, delivery: "submitted" }),
+      expect.objectContaining({ kind: "artifact", ref: retainedArtifactId, delivery: "submitted" }),
+    ]));
+    expect(providerInput.sourceManifest.sources.filter((source) => source.ref === selfBroadcastEventId)).toHaveLength(1);
+    expect(providerInput.sourceManifest.sources.some((source) => source.delivery === "retained_session")).toBe(false);
+    expect((store.sqlite.prepare(`
+      SELECT context_disposition AS disposition FROM scheduler_runs WHERE id = ?
+    `).get(secondRun.id) as { disposition: string })).toEqual({ disposition: "reseeded" });
+    expect(store.getMessages(agent.id).filter((message) => message.communicationEventId === selfBroadcastEventId)).toHaveLength(1);
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: secondPayload,
+    })).statusCode).toBe(202);
+    expect(store.getRuns(agent.id)).toHaveLength(2);
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(0);
+    expect(adapter.continues).toHaveLength(1);
+    expect(adapter.seeds).toHaveLength(2);
+    await app.close();
+  });
+
   it("does not replay a failed resume after material side effects", async () => {
     const { app, agent } = await createProjectAndAgent();
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "first" } });
@@ -5553,6 +5639,33 @@ describe("server chunk F", () => {
 
     expect(adapter.seeds[1]?.prompt).toContain("Shared release context.");
     expect(adapter.seeds[1]?.prompt).toContain("#Aspen private assignment marker");
+    await app.close();
+  });
+
+  it("counts and clips astral room and reply context by Unicode code point", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Unicode context", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Astral room" });
+    const agent = store.createAgent(project.id, { title: "Counter", engine: "codex", conversationId: conversation.id });
+    const replyTarget = appendBroadcast(store, project.id, conversation.id, "😀".repeat(1_201));
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`,
+      payload: {
+        text: "Count safely",
+        sourceChannel: "main",
+        sourceConversationId: conversation.id,
+        replyToMessageId: replyTarget.id,
+      },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+
+    const prompt = adapter.seeds[0]!.prompt;
+    expect(prompt).toContain("Context injection accounting: room_messages=1; room_characters=1201");
+    const quote = prompt.match(/Replying specifically to this earlier message:\n> ([^\n]*)/)?.[1];
+    expect(quote).toBeTruthy();
+    expect([...(quote ?? "")]).toHaveLength(1_200);
+    expect([...(quote ?? "")].every((character) => character === "😀")).toBe(true);
     await app.close();
   });
 
