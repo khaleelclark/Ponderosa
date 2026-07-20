@@ -13,7 +13,8 @@ const app = createServer({
   dataDir: config.dataDir,
   engines: defaultEngineRegistrations(),
   webDist,
-  authToken: process.env.PONDEROSA_AUTH_TOKEN,
+  authToken: config.authToken,
+  networkSecurity: config.networkSecurity,
   buildRevision: process.env.PONDEROSA_BUILD_SHA,
   agentBaseUrl: process.env.PONDEROSA_AGENT_BASE_URL ?? `http://127.0.0.1:${config.port}`,
 });

@@ -1812,12 +1812,22 @@ export interface ReadinessCheckDto {
   detail: string;
 }
 
+export interface NetworkSecurityPostureDto {
+  mode: "loopback" | "authenticated" | "trusted_tailnet";
+  /** Exact configured listener host. Never contains credentials. */
+  bindHost: string;
+  authenticationRequired: boolean;
+  detail: string;
+  warning?: string;
+}
+
 /** GET /api/ready response. Readiness is allowed to be unavailable (HTTP 503). */
 export interface ReadinessDto {
   status: "ready" | "not_ready";
   service: "ponderosa";
   version: string;
   canAcceptWork: boolean;
+  networkSecurity: NetworkSecurityPostureDto;
   /** Durable API intake remains available while deployment draining pauses
    * provider leasing. */
   acceptingDurableIntake: boolean;

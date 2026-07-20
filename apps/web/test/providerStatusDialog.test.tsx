@@ -28,6 +28,29 @@ const disabledEngine: EngineDto = {
 };
 
 describe("provider status dialog", () => {
+  it("shows a prominent operator-access warning for trusted-tailnet mode", () => {
+    const view = create(<ProviderStatusDialog
+      open
+      engines={[]}
+      networkSecurity={{
+        mode: "trusted_tailnet",
+        bindHost: "100.100.101.102",
+        authenticationRequired: false,
+        detail: "The listener is restricted to one literal Tailscale address.",
+        warning: "Trusted-tailnet peers have full operator access to Ponderosa and its host-authority Agents.",
+      }}
+      onTestAccess={vi.fn()}
+      onOpenSettings={vi.fn()}
+      onClose={vi.fn()}
+    />);
+
+    const rendered = JSON.stringify(view.toJSON());
+    expect(rendered).toContain("Trusted Tailnet");
+    expect(rendered).toContain("Bound to 100.100.101.102");
+    expect(rendered).toContain("peers have full operator access");
+    view.unmount();
+  });
+
   it("renders an operator-disabled provider as inactive and withholds access testing", () => {
     const onTestAccess = vi.fn();
     const view = create(<ProviderStatusDialog

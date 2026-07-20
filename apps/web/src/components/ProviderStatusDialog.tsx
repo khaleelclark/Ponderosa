@@ -1,11 +1,14 @@
 import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
-import type { EngineDto, TokenUsageSummaryDto } from "@ponderosa/core";
+import type { EngineDto, NetworkSecurityPostureDto, TokenUsageSummaryDto } from "@ponderosa/core";
 import { engineCanTestAccess, engineStatusPresentation } from "../conversationEngine";
 import { providerUsageSummaryLabel } from "./TokenUsageButton";
 
 export function ProviderStatusDialog({
   open,
   engines,
+  networkSecurity,
+  networkSecurityLoading = false,
+  networkSecurityError,
   usage,
   usageLoading = false,
   recheckingEngineId,
@@ -16,6 +19,9 @@ export function ProviderStatusDialog({
 }: {
   open: boolean;
   engines: EngineDto[];
+  networkSecurity?: NetworkSecurityPostureDto;
+  networkSecurityLoading?: boolean;
+  networkSecurityError?: string;
   usage?: TokenUsageSummaryDto;
   usageLoading?: boolean;
   recheckingEngineId?: string;
@@ -28,6 +34,18 @@ export function ProviderStatusDialog({
     <DialogTitle>AI provider status</DialogTitle>
     <DialogContent>
       <Stack spacing={1.5} sx={{ pt: 1 }}>
+        <Box>
+          <Typography variant="subtitle1" fontWeight={750}>Network access</Typography>
+          {networkSecurity ? <Alert severity={networkSecurity.mode === "trusted_tailnet" ? "warning" : "success"} sx={{ mt: 1 }}>
+            <Typography variant="body2" fontWeight={700}>
+              {networkSecurity.mode === "trusted_tailnet" ? "Trusted Tailnet" : networkSecurity.mode === "authenticated" ? "Authenticated Listener" : "Loopback Only"}
+            </Typography>
+            <Typography variant="body2">{networkSecurity.detail} Bound to {networkSecurity.bindHost}.</Typography>
+            {networkSecurity.warning ? <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5 }}>{networkSecurity.warning}</Typography> : null}
+          </Alert> : networkSecurityLoading
+            ? <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Checking network security posture…</Typography>
+            : <Alert severity="error" sx={{ mt: 1 }}>{networkSecurityError ?? "Network security posture is unavailable."}</Alert>}
+        </Box>
         <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, operator availability, and runtime access. It cannot see subscription quotas or provider-account billing.</Typography>
         {engines.map((engine) => {
           const status = engineStatusPresentation(engine);

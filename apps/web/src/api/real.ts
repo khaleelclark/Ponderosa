@@ -71,6 +71,7 @@ import type {
   ProjectBrowserSessionDto,
   ProjectDto,
   ProjectEngineCapabilitiesDto,
+  ReadinessDto,
   ProjectFolderOptionsDto,
   PutConversationDraftRequest,
   QueuedConversationMessageDto,
@@ -115,7 +116,7 @@ import {
 
 const API_BASE = "";
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body != null && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
@@ -126,7 +127,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
 
-  if (!response.ok) {
+  if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
     let message = `${response.status} ${response.statusText}`;
     if (response.headers.get("content-type")?.includes("application/json")) {
       try {
@@ -489,6 +490,9 @@ export const realApi = {
   },
   listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");
+  },
+  getReadiness(): Promise<ReadinessDto> {
+    return requestJson<ReadinessDto>("/api/ready", undefined, [503]);
   },
   updateEngine(engineId: string, request: { enabled: boolean }): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}`, { method: "PATCH", body: JSON.stringify(request) });

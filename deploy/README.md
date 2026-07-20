@@ -11,8 +11,36 @@ sudo systemctl enable --now ponderosa
 ```
 
 Before installing the unit, update its `User`, `WorkingDirectory`, data directory,
-and `PATH` for the host. Reachability is a separate choice; the service does not
-depend on Tailscale.
+and `PATH` for the host.
+
+## Choose the network boundary explicitly
+
+Ponderosa defaults to `127.0.0.1:8787`. This is the recommended direct-host and
+authenticated-reverse-proxy boundary. A non-loopback listener fails startup
+unless one of these protections is configured:
+
+- Set `PONDEROSA_AUTH_TOKEN` to require `Authorization: Bearer …` on operator API
+  and application requests. Browser clients cannot safely store this shared
+  secret; use an authenticated reverse proxy that injects it, or use the token
+  only with a non-browser client. Never put it in SPA code or `localStorage`.
+- For an intentionally passwordless tailnet deployment, set
+  `PONDEROSA_TRUSTED_TAILNET=true` and bind `PONDEROSA_HOST` to one literal
+  Tailscale IPv4 address in `100.64.0.0/10` or IPv6 address in
+  `fd7a:115c:a1e0::/48`:
+
+  ```ini
+  Environment=PONDEROSA_HOST=100.100.101.102
+  Environment=PONDEROSA_TRUSTED_TAILNET=true
+  ```
+
+  Wildcard, DNS, ordinary LAN, and public addresses are rejected in this mode.
+  Every tailnet peer allowed to reach that address has full operator access,
+  including the ability to start host-authority Agents. Enforce Tailscale ACLs
+  accordingly.
+
+`GET /api/ready` reports the active `networkSecurity` posture without exposing
+credentials. The provider-status dialog shows the same posture and highlights
+the trusted-tailnet operator-access warning.
 
 ## Required Linux procfs capability
 

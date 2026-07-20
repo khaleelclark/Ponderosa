@@ -500,6 +500,8 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Validated production listener boundary. Tests embedding the server default safely to loopback. */
+  networkSecurity?: ReadinessDto["networkSecurity"];
   /** Deterministic test seam; production resolves and pins public DNS itself. */
   linkFaviconLoader?: (target: URL) => Promise<{ body: Buffer; mediaType: string }>;
   /** Deterministic limits for the opaque localhost-preview transport. */
@@ -1847,6 +1849,14 @@ export interface PonderosaServer extends FastifyInstance {
 }
 
 export function createServer(opts: CreateServerOptions): PonderosaServer {
+  const networkSecurity: ReadinessDto["networkSecurity"] = opts.networkSecurity ?? {
+    mode: opts.authToken ? "authenticated" : "loopback",
+    bindHost: "127.0.0.1",
+    authenticationRequired: Boolean(opts.authToken),
+    detail: opts.authToken
+      ? "Operator API access requires bearer authentication on this loopback listener."
+      : "Operator access is limited to clients on this host.",
+  };
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
     (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
@@ -7739,6 +7749,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       service: "ponderosa",
       version: "0.0.0",
       canAcceptWork,
+      networkSecurity,
       acceptingDurableIntake,
       leasingRuns,
       deploymentDrain: deploymentDrainSnapshot(),

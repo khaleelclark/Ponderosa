@@ -168,6 +168,12 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
+  const readinessQuery = useQuery({
+    queryKey: ["readiness"],
+    queryFn: () => api.getReadiness(),
+    enabled: engineStatusOpen,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, route));
@@ -845,6 +851,9 @@ export default function App({
       <ProviderStatusDialog
         open={engineStatusOpen}
         engines={engines}
+        networkSecurity={readinessQuery.data?.networkSecurity}
+        networkSecurityLoading={readinessQuery.isLoading}
+        networkSecurityError={readinessQuery.isError ? String(readinessQuery.error) : undefined}
         usage={providerUsageQuery.data}
         usageLoading={providerUsageQuery.isLoading}
         recheckingEngineId={recheckEngine.isPending ? recheckEngine.variables : undefined}
