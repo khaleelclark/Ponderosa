@@ -150,7 +150,7 @@ import {
 } from "@ponderosa/core";
 import { artifactContentPath, managedArtifactContentPath, managedArtifactsDir, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
-import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
+import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
@@ -317,9 +317,16 @@ function parseResultRef(ref: string): { kind: "activation" | "artifact"; id: str
   return match ? { kind: match[1] as "activation" | "artifact", id: match[2]! } : undefined;
 }
 
+const CANONICAL_ARTIFACT_ID_SOURCE = "[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?";
+const CANONICAL_ARTIFACT_ID = new RegExp(`^${CANONICAL_ARTIFACT_ID_SOURCE}$`, "u");
+const CANONICAL_ARTIFACT_REFERENCE = new RegExp(
+  `ponderosa:\\/\\/artifact\\/(${CANONICAL_ARTIFACT_ID_SOURCE})`,
+  "gu",
+);
+
 function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
   if (typeof value === "string") {
-    for (const match of value.matchAll(/ponderosa:\/\/artifact\/([A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?)/g)) {
+    for (const match of value.matchAll(CANONICAL_ARTIFACT_REFERENCE)) {
       found.add(match[1]!);
     }
     return found;
@@ -393,22 +400,13 @@ function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): s
   return undefined;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function rewritePortableArtifactReferences(text: string, artifactRefMap: ReadonlyMap<string, string>): string {
-  const rewrittenRefs = [...artifactRefMap]
-    .filter(([sourceId, destinationId]) => sourceId !== destinationId)
-    .map(([sourceId]) => sourceId)
-    .sort((left, right) => right.length - left.length);
-  if (!rewrittenRefs.length) return text;
-  const canonicalReference = new RegExp(
-    `ponderosa:\\/\\/artifact\\/(${rewrittenRefs.map(escapeRegExp).join("|")})(?=$|[^A-Za-z0-9_-])`,
-    "gu",
-  );
-  return text.replace(canonicalReference, (_reference, sourceId: string) =>
-    `ponderosa://artifact/${artifactRefMap.get(sourceId)!}`);
+export function rewritePortableArtifactReferences(text: string, artifactRefMap: ReadonlyMap<string, string>): string {
+  return text.replace(CANONICAL_ARTIFACT_REFERENCE, (reference, sourceId: string) => {
+    const destinationId = artifactRefMap.get(sourceId);
+    return destinationId && destinationId !== sourceId
+      ? `ponderosa://artifact/${destinationId}`
+      : reference;
+  });
 }
 
 function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
@@ -9688,155 +9686,290 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!project) return reply.code(404).send({ error: "project not found" });
     if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
     if (!conversation || conversation.projectId !== project.id) return reply.code(400).send({ error: "destination Project chat is required" });
-    if (body?.package?.schema !== "ponderosa.agent-package.v1" || !Array.isArray(body.package.agents) || body.package.agents.length < 1 || body.package.agents.length > 100) return reply.code(400).send({ error: "invalid Ponderosa Agent package" });
-    const topologyError = portableAgentTopologyError(body.package);
-    if (topologyError) return reply.code(400).send({ error: topologyError });
-    const invalidPermissions = body.package.agents.some((node) => {
-      const permissions = node.managementPermissions as unknown;
-      return !permissions || typeof permissions !== "object" || Array.isArray(permissions) ||
-        typeof (permissions as Record<string, unknown>).allowAutomaticDescendantDeletion !== "boolean" ||
-        typeof (permissions as Record<string, unknown>).allowAutomaticDescendantReorganization !== "boolean";
-    });
-    if (invalidPermissions) return reply.code(400).send({ error: "every imported Agent must declare exact boolean management permissions" });
-    const elevatedPermissions = body.package.agents.filter((node) =>
-      node.managementPermissions.allowAutomaticDescendantDeletion ||
-      node.managementPermissions.allowAutomaticDescendantReorganization);
-    if (elevatedPermissions.length > 0 && body.acknowledgeElevatedManagementPermissions !== true) {
-      return reply.code(409).send({
-        error: "explicit acknowledgement is required to import autonomous destructive management permissions",
-        elevatedAgentRefs: elevatedPermissions.map((node) => node.ref),
+    type PlannedTrigger = {
+      name: string;
+      instructions: string;
+      sourceKind: TriggerSourceKind;
+      sourceConfig: TriggerSourceConfig;
+      runBudget?: NonNullable<CreateTriggerRequest["runBudget"]>;
+      nextFireAt?: string;
+    };
+    type PlannedArtifact = NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]>[number] & {
+      data: Buffer;
+      destinationId: string;
+      managedPath: string;
+      createdAt: string;
+      summary?: string;
+      sha256?: string;
+    };
+    type PlannedNode = Omit<AgentPortablePackageDto["agents"][number], "artifacts" | "history" | "triggers"> & {
+      targetEngine: string;
+      model?: string;
+      effort?: string;
+      history: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
+      artifacts: PlannedArtifact[];
+      triggers: PlannedTrigger[];
+    };
+
+    let portablePackage: AgentPortablePackageDto;
+    let importNodes: PlannedNode[];
+    let importSourceLabel: string;
+    const artifactRefMap = new Map<string, string>();
+    try {
+      const packageRecord = triggerObject(body?.package, "Agent package");
+      exactTriggerFields(packageRecord, ["schema", "mode", "kind", "exportedAt", "sourceLabel", "sourceProjectInstructions", "rootRef", "agents"], "Agent package");
+      if (packageRecord.schema !== "ponderosa.agent-package.v1" ||
+          (packageRecord.mode !== "template" && packageRecord.mode !== "full") ||
+          !Array.isArray(packageRecord.agents) || packageRecord.agents.length < 1 || packageRecord.agents.length > 100) {
+        throw new Error("invalid Ponderosa Agent package");
+      }
+      if (typeof packageRecord.exportedAt !== "string" || !Number.isFinite(Date.parse(packageRecord.exportedAt)) ||
+          typeof packageRecord.sourceLabel !== "string" ||
+          (packageRecord.sourceProjectInstructions !== undefined && typeof packageRecord.sourceProjectInstructions !== "string")) {
+        throw new Error("Agent package metadata is invalid");
+      }
+      if (packageRecord.mode === "template" && packageRecord.sourceProjectInstructions !== undefined) {
+        throw new Error("template packages cannot contain full-mode Project context");
+      }
+      portablePackage = packageRecord as unknown as AgentPortablePackageDto;
+      importSourceLabel = portablePackage.sourceLabel.slice(0, 240);
+      const topologyError = portableAgentTopologyError(portablePackage);
+      if (topologyError) throw new Error(topologyError);
+
+      const elevatedAgentRefs: string[] = [];
+      const sourceEngines = new Set<string>();
+      for (const candidate of portablePackage.agents as unknown[]) {
+        const node = triggerObject(candidate, "Agent package node");
+        exactTriggerFields(node, ["ref", "title", "engine", "model", "effort", "initialInstructions", "managerRef", "managementPermissions", "history", "artifacts", "triggers"], "Agent package node");
+        if (typeof node.ref !== "string" || typeof node.title !== "string" || typeof node.engine !== "string" || !node.engine.trim() ||
+            (node.model !== undefined && typeof node.model !== "string") ||
+            (node.effort !== undefined && typeof node.effort !== "string") ||
+            (node.initialInstructions !== undefined && typeof node.initialInstructions !== "string")) {
+          throw new Error("every imported Agent must declare valid identity and runtime fields");
+        }
+        const permissions = triggerObject(node.managementPermissions, "managementPermissions");
+        exactTriggerFields(permissions, ["allowAutomaticDescendantDeletion", "allowAutomaticDescendantReorganization"], "managementPermissions");
+        if (typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
+            typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
+          throw new Error("every imported Agent must declare exact boolean management permissions");
+        }
+        if (permissions.allowAutomaticDescendantDeletion || permissions.allowAutomaticDescendantReorganization) elevatedAgentRefs.push(node.ref);
+        sourceEngines.add(node.engine);
+        if (portablePackage.mode === "template" && (node.history !== undefined || node.artifacts !== undefined || node.triggers !== undefined)) {
+          throw new Error("template packages cannot contain history, artifacts, or Triggers");
+        }
+        if (node.history !== undefined && !Array.isArray(node.history)) throw new Error("Agent history must be an array");
+        for (const messageCandidate of (node.history as unknown[] | undefined) ?? []) {
+          const message = triggerObject(messageCandidate, "history message");
+          exactTriggerFields(message, ["role", "text", "createdAt"], "history message");
+          if (!["user", "assistant", "system"].includes(String(message.role)) || typeof message.text !== "string" ||
+              (message.createdAt !== undefined && (typeof message.createdAt !== "string" || !Number.isFinite(Date.parse(message.createdAt))))) {
+            throw new Error("Agent history messages have an invalid shape");
+          }
+        }
+        if (node.artifacts !== undefined && !Array.isArray(node.artifacts)) throw new Error("Agent artifacts must be an array");
+        if (node.triggers !== undefined && !Array.isArray(node.triggers)) throw new Error("Agent Triggers must be an array");
+      }
+      if (elevatedAgentRefs.length > 0 && body.acknowledgeElevatedManagementPermissions !== true) {
+        return reply.code(409).send({
+          error: "explicit acknowledgement is required to import autonomous destructive management permissions",
+          elevatedAgentRefs,
+        });
+      }
+      const missingMappings = [...sourceEngines].filter((engine) => typeof body.engineMapping?.[engine] !== "string" || !body.engineMapping[engine]!.trim());
+      if (missingMappings.length) return reply.code(409).send({ error: "explicit engine mapping is required", requiredEngines: missingMappings });
+      for (const source of sourceEngines) {
+        const target = body.engineMapping[source]!.trim();
+        if (!engines.has(target)) throw new Error(`mapped engine is not configured: ${target}`);
+      }
+
+      let artifactBytes = 0;
+      const reservedDestinationIds = new Set<string>();
+      const artifactsByNode = new Map<string, PlannedArtifact[]>();
+      for (const node of portablePackage.agents) {
+        const plannedArtifacts: PlannedArtifact[] = [];
+        for (const artifactCandidate of node.artifacts ?? []) {
+          const artifact = triggerObject(artifactCandidate, "portable artifact");
+          exactTriggerFields(artifact, ["ref", "kind", "path", "summary", "createdAt", "mediaType", "visibility", "pinned", "sourcePath", "dataBase64"], "portable artifact");
+          if (typeof artifact.ref !== "string" || !CANONICAL_ARTIFACT_ID.test(artifact.ref) || artifactRefMap.has(artifact.ref)) {
+            throw new Error("artifact refs must be unique canonical identifiers");
+          }
+          if (!["diff", "test_report", "pr_summary", "log", "document", "screenshot", "generated_file"].includes(String(artifact.kind)) ||
+              typeof artifact.path !== "string" || !artifact.path || typeof artifact.createdAt !== "string" || !Number.isFinite(Date.parse(artifact.createdAt)) ||
+              typeof artifact.dataBase64 !== "string" ||
+              (artifact.summary !== undefined && typeof artifact.summary !== "string") ||
+              (artifact.mediaType !== undefined && typeof artifact.mediaType !== "string") ||
+              (artifact.visibility !== undefined && artifact.visibility !== "project" && artifact.visibility !== "published") ||
+              (artifact.pinned !== undefined && typeof artifact.pinned !== "boolean") ||
+              (artifact.sourcePath !== undefined && typeof artifact.sourcePath !== "string")) {
+            throw new Error(`artifact ${String(artifact.ref)} has an invalid shape`);
+          }
+          const data = Buffer.from(artifact.dataBase64, "base64");
+          if (data.toString("base64").replace(/=+$/u, "") !== artifact.dataBase64.replace(/=+$/u, "")) {
+            throw new Error(`artifact ${artifact.ref} has invalid data`);
+          }
+          artifactBytes += data.length;
+          if (artifactBytes > 64 * 1024 * 1024) return reply.code(413).send({ error: "portable Agent package artifacts exceed 64 MiB" });
+          let destinationId = artifact.ref;
+          if (store.getProjectArtifact(project.id, destinationId) || reservedDestinationIds.has(destinationId) ||
+              (artifact.kind === "generated_file" && !/^[A-Za-z0-9_-]{1,128}$/u.test(destinationId))) {
+            do destinationId = randomUUID();
+            while (store.getProjectArtifact(project.id, destinationId) || reservedDestinationIds.has(destinationId));
+          }
+          const extension = path.extname(artifact.path).toLowerCase().slice(0, 16);
+          const managedPath = `imported/${destinationId}${extension}`;
+          const createdAt = new Date(artifact.createdAt).toISOString();
+          const summary = artifact.kind === "generated_file" ? (artifact.summary ?? path.basename(artifact.path)) : artifact.summary;
+          const sha256 = artifact.kind === "generated_file" ? createHash("sha256").update(data).digest("hex") : undefined;
+          if (artifact.kind === "generated_file" && !generatedArtifactMetadataIsValid({
+            id: destinationId,
+            projectId: project.id,
+            agentId: project.id,
+            originAgentId: project.id,
+            kind: "generated_file",
+            path: managedPath,
+            ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+            summary: summary!,
+            createdAt,
+            mediaType: artifact.mediaType ?? "",
+            size: data.length,
+            sha256: sha256!,
+          })) throw new Error(`generated artifact ${artifact.ref} has invalid immutable metadata`);
+          artifactRefMap.set(artifact.ref, destinationId);
+          reservedDestinationIds.add(destinationId);
+          plannedArtifacts.push({
+            ...(artifactCandidate as PlannedArtifact), data, destinationId, managedPath, createdAt,
+            ...(summary ? { summary } : {}), ...(sha256 ? { sha256 } : {}),
+          });
+        }
+        artifactsByNode.set(node.ref, plannedArtifacts);
+      }
+
+      importNodes = portablePackage.agents.map((node) => {
+        const targetEngine = body.engineMapping[node.engine]!.trim();
+        const model = node.model?.trim() || undefined;
+        const effort = node.effort?.trim() || undefined;
+        const selectionError = runtimeSelectionError(engines.get(targetEngine)!.adapter, model, effort);
+        if (selectionError) throw new Error(`${node.title}: ${selectionError}`);
+        const history = [
+          ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: new Date(portablePackage.exportedAt).toISOString() }] : []),
+          ...(node.history ?? []).map((message) => ({
+            ...message,
+            ...(message.createdAt ? { createdAt: new Date(message.createdAt).toISOString() } : {}),
+          })),
+        ].map((message) => ({
+          ...message,
+          text: rewritePortableArtifactReferences(message.text, artifactRefMap).slice(0, 100_000),
+        }));
+        const triggers = (node.triggers ?? []).map((candidate): PlannedTrigger => {
+          const trigger = triggerObject(candidate, "portable Trigger");
+          exactTriggerFields(trigger, ["name", "instructions", "sourceKind", "sourceConfig", "enabled", "runBudget"], "portable Trigger");
+          const parsed = parseCreateTrigger({ ...trigger, conversationId: conversation.id });
+          if (candidate.enabled !== false) throw new Error("imported Triggers must be explicitly disabled");
+          if (!parsed.name.trim() || parsed.name.trim().length > 120 || !parsed.instructions.trim() || parsed.instructions.trim().length > 20_000) {
+            throw new Error("imported Trigger name or instructions exceed supported limits");
+          }
+          if (parsed.runBudget && (!Number.isSafeInteger(parsed.runBudget.limit) || parsed.runBudget.limit < 1 || parsed.runBudget.limit > 1_000_000)) {
+            throw new Error("Trigger Run budget limit must be an integer between 1 and 1000000");
+          }
+          const schedule = parsed.sourceKind === "schedule" ? parsed.sourceConfig as TriggerScheduleConfig : undefined;
+          const oneTime = schedule?.scheduleKind === "once";
+          const validationTime = oneTime ? new Date(Date.parse(schedule.at) - 1) : new Date();
+          const normalized = normalizeTriggerSourceConfig(parsed.sourceKind, parsed.sourceConfig, validationTime);
+          return {
+            name: parsed.name.trim(), instructions: parsed.instructions.trim(), sourceKind: parsed.sourceKind,
+            sourceConfig: normalized.config,
+            ...(parsed.runBudget ? { runBudget: parsed.runBudget } : {}),
+            ...(!oneTime && normalized.nextFireAt ? { nextFireAt: normalized.nextFireAt } : {}),
+          };
+        });
+        if (triggers.length > 100 || triggers.filter((trigger) => trigger.sourceKind === "filesystem").length > 25) {
+          throw new Error("imported Agent exceeds supported Trigger limits");
+        }
+        return {
+          ...node,
+          title: node.title.trim().slice(0, 80) || "Imported Agent",
+          targetEngine,
+          ...(model ? { model } : {}),
+          ...(effort ? { effort } : {}),
+          history,
+          artifacts: artifactsByNode.get(node.ref) ?? [],
+          triggers,
+        };
+      });
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid Ponderosa Agent package" });
+    }
+
+    // Every deterministic package, runtime, artifact, history, topology, and
+    // Trigger decision is complete above. No validation belongs after the first
+    // canonical mutation, and rejected plans therefore need no deletion-based rollback.
+    const created = new Map<string, AgentDto>();
+    for (const node of importNodes) {
+      if (deletingProjectIds.has(project.id)) throw new Error("Project deletion is already in progress");
+      const agent = store.createAgent(project.id, {
+        title: node.title,
+        engine: node.targetEngine,
+        conversationId: conversation.id,
+        ...(node.model ? { model: node.model } : {}),
+        ...(node.effort ? { effort: node.effort } : {}),
+        managementPermissions: node.managementPermissions,
+      });
+      created.set(node.ref, agent);
+      for (const artifact of node.artifacts) {
+        const destination = managedArtifactContentPath(opts.dataDir, project.id, artifact.destinationId);
+        await fs.mkdir(path.dirname(destination), { recursive: true });
+        const importedFile = await fs.open(destination, "wx", 0o600);
+        try {
+          await importedFile.writeFile(artifact.data);
+          await importedFile.sync();
+        } finally { await importedFile.close(); }
+        const catalogArtifact = {
+          id: artifact.destinationId,
+          projectId: project.id,
+          agentId: agent.id,
+          originAgentId: agent.id,
+          kind: artifact.kind,
+          path: artifact.managedPath,
+          ...(artifact.summary ? { summary: artifact.summary } : {}),
+          createdAt: artifact.createdAt,
+          ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
+          visibility: artifact.visibility ?? "project",
+          pinned: artifact.pinned ?? false,
+          ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
+          size: artifact.data.length,
+          ...(artifact.sha256 ? { sha256: artifact.sha256 } : {}),
+        };
+        if (catalogArtifact.kind === "generated_file") assets.registerGeneratedArtifact(catalogArtifact as RegisteredGeneratedArtifact);
+        store.recordProjectArtifact(catalogArtifact);
+      }
+      if (node.history.length) store.setImportedHistory(agent.id, importSourceLabel, node.history);
+    }
+    for (const node of importNodes) if (node.managerRef) {
+      store.updateAgentOrganization(created.get(node.ref)!.id, { managerAgentId: created.get(node.managerRef)!.id });
+    }
+    for (const node of importNodes) for (const importedTrigger of node.triggers) {
+      const agent = created.get(node.ref)!;
+      const webhookSecret = importedTrigger.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
+      coordinationV3.createTriggerDefinition({
+        projectId: project.id,
+        conversationId: conversation.id,
+        agentId: agent.id,
+        name: importedTrigger.name,
+        instructions: importedTrigger.instructions,
+        sourceKind: importedTrigger.sourceKind,
+        sourceConfig: importedTrigger.sourceConfig,
+        enabled: false,
+        runBudget: importedTrigger.runBudget,
+        nextFireAt: importedTrigger.nextFireAt,
+        secretCiphertext: webhookSecret?.ciphertext,
+        secretFingerprint: webhookSecret?.fingerprint,
       });
     }
-    const sourceEngines = [...new Set(body.package.agents.map((node) => node.engine))];
-    const missingMappings = sourceEngines.filter((engine) => typeof body.engineMapping?.[engine] !== "string");
-    if (missingMappings.length) return reply.code(409).send({ error: "explicit engine mapping is required", requiredEngines: missingMappings });
-    for (const source of sourceEngines) {
-      const target = body.engineMapping[source]!;
-      if (!engines.has(target)) return reply.code(400).send({ error: `mapped engine is not configured: ${target}` });
-    }
-    const portableArtifactData = new Map<string, Buffer>();
-    const artifactRefMap = new Map<string, string>();
-    let artifactBytes = 0;
-    for (const node of body.package.agents) for (const artifact of node.artifacts ?? []) {
-      if (!/^[A-Za-z0-9_-]{1,200}$/.test(artifact.ref) || artifactRefMap.has(artifact.ref)) return reply.code(400).send({ error: "artifact refs must be unique safe identifiers" });
-      let data: Buffer;
-      try {
-        data = Buffer.from(artifact.dataBase64, "base64");
-        if (data.toString("base64").replace(/=+$/, "") !== artifact.dataBase64.replace(/=+$/, "")) throw new Error("invalid base64");
-      } catch {
-        return reply.code(400).send({ error: `artifact ${artifact.ref} has invalid data` });
-      }
-      artifactBytes += data.length;
-      if (artifactBytes > 64 * 1024 * 1024) return reply.code(413).send({ error: "portable Agent package artifacts exceed 64 MiB" });
-      portableArtifactData.set(artifact.ref, data);
-      artifactRefMap.set(artifact.ref, store.getProjectArtifact(project.id, artifact.ref) ? randomUUID() : artifact.ref);
-    }
-    const created = new Map<string, AgentDto>();
-    try {
-      for (const node of body.package.agents) {
-        if (deletingProjectIds.has(project.id)) throw new Error("Project deletion is already in progress");
-        const targetEngine = body.engineMapping[node.engine]!;
-        const selectionError = runtimeSelectionError(engines.get(targetEngine)!.adapter, node.model, node.effort);
-        if (selectionError) throw new Error(`${node.title}: ${selectionError}`);
-        const agent = store.createAgent(project.id, {
-          title: node.title.trim().slice(0, 80) || "Imported Agent",
-          engine: targetEngine,
-          conversationId: conversation.id,
-          ...(node.model ? { model: node.model } : {}),
-          ...(node.effort ? { effort: node.effort } : {}),
-          managementPermissions: node.managementPermissions,
-        });
-        created.set(node.ref, agent);
-        for (const artifact of node.artifacts ?? []) {
-          const artifactId = artifactRefMap.get(artifact.ref)!;
-          const extension = path.extname(artifact.path).toLowerCase().slice(0, 16);
-          const managedPath = `imported/${artifactId}${extension}`;
-          const destination = managedArtifactContentPath(opts.dataDir, project.id, artifactId);
-          await fs.mkdir(path.dirname(destination), { recursive: true });
-          const importedFile = await fs.open(destination, "wx", 0o600);
-          try {
-            await importedFile.writeFile(portableArtifactData.get(artifact.ref)!);
-            await importedFile.sync();
-          } finally { await importedFile.close(); }
-          const createdAt = artifact.createdAt || body.package.exportedAt;
-          const artifactBody = portableArtifactData.get(artifact.ref)!;
-          const catalogArtifact = {
-            id: artifactId,
-            projectId: project.id,
-            agentId: agent.id,
-            originAgentId: agent.id,
-            kind: artifact.kind,
-            path: managedPath,
-            ...(artifact.kind === "generated_file"
-              ? { summary: artifact.summary ?? path.basename(artifact.path) }
-              : artifact.summary ? { summary: artifact.summary } : {}),
-            createdAt,
-            ...(artifact.mediaType ? { mediaType: artifact.mediaType } : {}),
-            visibility: artifact.visibility ?? "project",
-            pinned: artifact.pinned ?? false,
-            ...(artifact.sourcePath ? { sourcePath: artifact.sourcePath } : {}),
-            size: artifactBody.length,
-            ...(artifact.kind === "generated_file" ? {
-              sha256: createHash("sha256").update(artifactBody).digest("hex"),
-            } : {}),
-          };
-          if (catalogArtifact.kind === "generated_file") {
-            assets.registerGeneratedArtifact(catalogArtifact as RegisteredGeneratedArtifact);
-          }
-          store.recordProjectArtifact(catalogArtifact);
-        }
-        const importedHistory = [
-          ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: body.package.exportedAt }] : []),
-          ...(node.history ?? []),
-        ].map((message) => ({ ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap) }));
-        if (importedHistory.length) store.setImportedHistory(agent.id, body.package.sourceLabel, importedHistory);
-      }
-      for (const node of body.package.agents) if (node.managerRef) {
-        store.updateAgentOrganization(created.get(node.ref)!.id, { managerAgentId: created.get(node.managerRef)!.id });
-      }
-      if (body.package.mode === "full") for (const node of body.package.agents) for (const importedTrigger of node.triggers ?? []) {
-        const agent = created.get(node.ref)!;
-        const importedSchedule = importedTrigger.sourceKind === "schedule"
-          ? importedTrigger.sourceConfig as TriggerScheduleConfig
-          : undefined;
-        const importedOneTimeSchedule = importedSchedule?.scheduleKind === "once";
-        const importedValidationTime = importedOneTimeSchedule
-          ? new Date(Date.parse(importedSchedule.at) - 1)
-          : new Date();
-        const normalized = normalizeTriggerSourceConfig(
-          importedTrigger.sourceKind,
-          importedTrigger.sourceConfig,
-          importedValidationTime,
-        );
-        const webhookSecret = importedTrigger.sourceKind === "webhook" ? triggerSources.createWebhookSecret() : undefined;
-        coordinationV3.createTriggerDefinition({
-          projectId: project.id,
-          conversationId: conversation.id,
-          agentId: agent.id,
-          name: importedTrigger.name,
-          instructions: importedTrigger.instructions,
-          sourceKind: importedTrigger.sourceKind,
-          sourceConfig: normalized.config,
-          enabled: false,
-          runBudget: importedTrigger.runBudget,
-          nextFireAt: importedOneTimeSchedule ? undefined : normalized.nextFireAt,
-          secretCiphertext: webhookSecret?.ciphertext,
-          secretFingerprint: webhookSecret?.fingerprint,
-        });
-      }
-      await triggerSources.refresh();
-      appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
-      const response: ImportAgentPackageResponse = { rootAgentId: created.get(body.package.rootRef)!.id, agentIds: [...created.values()].map((agent) => agent.id) };
-      return reply.code(201).send(response);
-    } catch (error) {
-      for (const agent of created.values()) for (const artifact of store.getProjectArtifacts(project.id).filter((candidate) => candidate.originAgentId === agent.id)) {
-        store.deleteProjectArtifact(project.id, artifact.id, "Agent package import rolled back");
-        await fs.rm(managedArtifactContentPath(opts.dataDir, project.id, artifact.id), { force: true });
-      }
-      const roots = [...created.values()].filter((agent) => ![...created.values()].some((candidate) => candidate.id === agent.managerAgentId));
-      for (const root of roots) store.deleteAgent(root.id, (agentId) => coordinationV3.handleAgentDeletion(agentId));
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "Agent package import failed" });
-    }
+    await triggerSources.refresh();
+    appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
+    const response: ImportAgentPackageResponse = { rootAgentId: created.get(portablePackage.rootRef)!.id, agentIds: [...created.values()].map((agent) => agent.id) };
+    return reply.code(201).send(response);
   });
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {

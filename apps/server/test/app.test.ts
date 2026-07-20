@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath } from "@ponderosa/agents";
 import { ClaudeStreamSession, streamProcess } from "@ponderosa/engines";
-import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedSeedHistory, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 
@@ -35,11 +35,19 @@ function durableMutationState(store: AgentStore, dataDir: string, projectId: str
     `SELECT COUNT(*) AS count FROM ${table}${predicate ? ` WHERE ${predicate}` : ""}`,
   ).get() as { count: number }).count;
   const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  const projectCount = (table: string) => (store.sqlite.prepare(
+    `SELECT COUNT(*) AS count FROM ${table} WHERE project_id = ?`,
+  ).get(projectId) as { count: number }).count;
   try {
     const authorityCount = (table: string) => (authority.prepare(
       `SELECT COUNT(*) AS count FROM ${table}`,
     ).get() as { count: number }).count;
     return {
+      agents: projectCount("agents"),
+      deletionReceipts: projectCount("agent_deletion_receipts"),
+      deletionTombstones: projectCount("agent_deletion_tombstones"),
+      importedHistory: count("imported_history_messages"),
+      triggerDefinitions: projectCount("trigger_definitions"),
       communications: count("runtime_communications"),
       projectArtifacts: store.getProjectArtifacts(projectId).length,
       runtimeArtifacts: count("runtime_artifacts"),
@@ -55,6 +63,24 @@ function durableMutationState(store: AgentStore, dataDir: string, projectId: str
       generatedAuthorities: authorityCount("generated_artifact_authority"),
     };
   } finally { authority.close(); }
+}
+
+function importMutationState(store: AgentStore, dataDir: string, projectId: string) {
+  const projectEntries = (directory: string, relative = ""): string[] => {
+    if (!existsSync(directory)) return [];
+    return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+      const entryRelative = path.posix.join(relative, entry.name);
+      return entry.isDirectory()
+        ? [`directory:${entryRelative}`, ...projectEntries(path.join(directory, entry.name), entryRelative)]
+        : entry.isSymbolicLink()
+          ? [`symlink:${entryRelative}`]
+          : [`file:${entryRelative}:${createHash("sha256").update(readFileSync(path.join(directory, entry.name))).digest("hex")}`];
+    }).sort();
+  };
+  return {
+    durable: durableMutationState(store, dataDir, projectId),
+    projectEntries: projectEntries(path.join(dataDir, "projects", projectId)),
+  };
 }
 
 function activeRunCancellationPayload(store: AgentStore, agentId: string, idempotencyKey: string) {
@@ -9564,6 +9590,8 @@ describe("V3.3 Decisions, management, and portability", () => {
       agents,
     });
     const malformedPackages: AgentPortablePackageDto[] = [
+      portablePackage([node("root"), node("root", "root")]),
+      portablePackage([node("root"), node("child", "outside")]),
       portablePackage([node("root"), node("disconnected")]),
       portablePackage([node("root"), node("cycle-a", "cycle-b"), node("cycle-b", "cycle-a")]),
       portablePackage([node("root"), node("self", "self")]),
@@ -9571,7 +9599,7 @@ describe("V3.3 Decisions, management, and portability", () => {
       portablePackage([node("root")], "root", "organization"),
     ];
     const initialAgents = store.listAgents(project.id);
-    const initialMutationState = durableMutationState(store, dataDir, project.id);
+    const initialMutationState = importMutationState(store, dataDir, project.id);
     for (const candidate of malformedPackages) {
       const payload = {
         package: candidate,
@@ -9584,9 +9612,102 @@ describe("V3.3 Decisions, management, and portability", () => {
       expect(retry.statusCode, retry.body).toBe(400);
       expect(retry.body).toBe(first.body);
       expect(store.listAgents(project.id)).toEqual(initialAgents);
-      expect(durableMutationState(store, dataDir, project.id)).toEqual(initialMutationState);
+      expect(importMutationState(store, dataDir, project.id)).toEqual(initialMutationState);
     }
     await app.close();
+  });
+
+  it("rejects unsupported and mixed import modes before any durable mutation", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Mode validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const base = {
+      schema: "ponderosa.agent-package.v1",
+      kind: "agent",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "mode validation",
+      rootRef: "root",
+      agents: [{
+        ref: "root", title: "Imported", engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      }],
+    };
+    const candidates = [
+      { ...base, mode: "context" },
+      { ...base, mode: "future" },
+      { ...base, mode: "template", sourceProjectInstructions: "must not mix" },
+      { ...base, mode: "template", agents: [{ ...base.agents[0], history: [{ role: "user", text: "must not mix" }] }] },
+    ];
+    const initialState = importMutationState(store, dataDir, project.id);
+    for (const portablePackage of candidates) {
+      const response = await app.inject({
+        method: "POST", url: `/api/projects/${project.id}/import-agents`,
+        payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+      });
+      expect(response.statusCode, response.body).toBe(400);
+      expect(importMutationState(store, dataDir, project.id)).toEqual(initialState);
+    }
+    await app.close();
+  });
+
+  it("preflights every node and leaves identical retries residue-free", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Atomic import validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const permissions = {
+      allowAutomaticDescendantDeletion: true,
+      allowAutomaticDescendantReorganization: false,
+    };
+    const portablePackage = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "organization",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "late invalid model",
+      rootRef: "root",
+      agents: [{
+        ref: "root", title: "Would mutate first", engine: "codex", managementPermissions: permissions,
+        history: [{ role: "user", text: "Retrieve ponderosa://artifact/import-file" }],
+        artifacts: [{
+          ref: "import-file", kind: "document", path: "portable/import.md",
+          createdAt: "2026-07-20T00:00:00.000Z", dataBase64: Buffer.from("must never persist").toString("base64"),
+        }],
+        triggers: [{
+          name: "Would import", instructions: "Must never persist.", sourceKind: "webhook",
+          sourceConfig: { replayWindowSeconds: 300 }, enabled: false,
+        }],
+      }, {
+        ref: "invalid", managerRef: "root", title: "Invalid late node", engine: "codex",
+        model: "not-a-configured-model", managementPermissions: permissions,
+      }],
+    };
+    const initialState = importMutationState(store, dataDir, project.id);
+    const payload = {
+      package: portablePackage,
+      conversationId: destinationChat.id,
+      engineMapping: { codex: "codex" },
+      acknowledgeElevatedManagementPermissions: true,
+    };
+    const first = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+    const retry = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+    expect(first.statusCode, first.body).toBe(400);
+    expect(first.json()).toEqual({ error: "Invalid late node: model is not available for engine" });
+    expect(retry.body).toBe(first.body);
+    expect(importMutationState(store, dataDir, project.id)).toEqual(initialState);
+    await app.close();
+  });
+
+  it("rewrites canonical artifact references in one pass with the shared ID grammar", () => {
+    const remaps = new Map([["a", "b"], ["b", "c"]]);
+    expect(rewritePortableArtifactReferences(
+      "ponderosa://artifact/a ponderosa://artifact/b ponderosa://artifact/a.b ponderosa://artifact/a:b ponderosa://artifact/a-b ponderosa://artifact/a_b ponderosa://artifact/a文 文a🙂",
+      remaps,
+    )).toBe(
+      "ponderosa://artifact/b ponderosa://artifact/c ponderosa://artifact/a.b ponderosa://artifact/a:b ponderosa://artifact/a-b ponderosa://artifact/a_b ponderosa://artifact/b文 文a🙂",
+    );
   });
 
   it("rewrites only canonical artifact tokens after a one-character import collision", async () => {
@@ -9607,7 +9728,7 @@ describe("V3.3 Decisions, management, and portability", () => {
       pinned: false,
       size: 1,
     });
-    const originalText = "Use ponderosa://artifact/a; prose a, data-a, ponderosa://artifact/ab, and 文档a🙂 stay unchanged.";
+    const originalText = "Use ponderosa://artifact/a; prose a, data-a, ponderosa://artifact/ab, ponderosa://artifact/a.b, ponderosa://artifact/a:b, ponderosa://artifact/a-b, ponderosa://artifact/a_b, and 文档a🙂 stay unchanged.";
     const portablePackage: AgentPortablePackageDto = {
       schema: "ponderosa.agent-package.v1",
       mode: "full",
@@ -9630,7 +9751,13 @@ describe("V3.3 Decisions, management, and portability", () => {
           path: "portable/a.md",
           createdAt: "2026-07-20T00:00:00.000Z",
           dataBase64: Buffer.from("portable").toString("base64"),
-        }],
+        }, ...["a.b", "a:b", "a-b", "a_b"].map((ref) => ({
+          ref,
+          kind: "document" as const,
+          path: `portable/${ref}.md`,
+          createdAt: "2026-07-20T00:00:00.000Z",
+          dataBase64: Buffer.from(ref).toString("base64"),
+        }))],
       }],
     };
     const response = await app.inject({
@@ -9640,10 +9767,12 @@ describe("V3.3 Decisions, management, and portability", () => {
     });
     expect(response.statusCode, response.body).toBe(201);
     const importedAgentId = response.json<{ rootAgentId: string }>().rootAgentId;
-    const importedArtifact = store.getProjectArtifacts(project.id).find((artifact) => artifact.originAgentId === importedAgentId)!;
+    const importedArtifacts = store.getProjectArtifacts(project.id).filter((artifact) => artifact.originAgentId === importedAgentId);
+    expect(importedArtifacts.map((artifact) => artifact.id)).toEqual(expect.arrayContaining(["a.b", "a:b", "a-b", "a_b"]));
+    const importedArtifact = importedArtifacts.find((artifact) => !["a.b", "a:b", "a-b", "a_b"].includes(artifact.id))!;
     expect(importedArtifact.id).not.toBe("a");
     expect(store.getImportedHistory(importedAgentId)?.messages[0]?.text).toBe(
-      `Use ponderosa://artifact/${importedArtifact.id}; prose a, data-a, ponderosa://artifact/ab, and 文档a🙂 stay unchanged.`,
+      `Use ponderosa://artifact/${importedArtifact.id}; prose a, data-a, ponderosa://artifact/ab, ponderosa://artifact/a.b, ponderosa://artifact/a:b, ponderosa://artifact/a-b, ponderosa://artifact/a_b, and 文档a🙂 stay unchanged.`,
     );
     await app.close();
   });

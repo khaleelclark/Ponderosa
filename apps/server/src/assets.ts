@@ -118,7 +118,7 @@ function generatedArtifactIdentity(artifact: RegisteredGeneratedArtifact): Recor
   };
 }
 
-function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedArtifact): boolean {
+export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedArtifact): boolean {
   if (!OWNER_ID.test(artifact.id) || !OWNER_ID.test(artifact.projectId) ||
       !OWNER_ID.test(artifact.agentId) || !OWNER_ID.test(artifact.originAgentId) ||
       artifact.kind !== "generated_file" || !artifact.summary.trim() ||
