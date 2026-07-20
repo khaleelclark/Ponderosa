@@ -4,6 +4,7 @@ import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined
 import MenuIcon from "@mui/icons-material/Menu";
 import SearchIcon from "@mui/icons-material/Search";
 import LanguageIcon from "@mui/icons-material/Language";
+import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import {
   Alert,
   AppBar,
@@ -49,6 +50,7 @@ import { useEngines, useNotifications, useProjectFolders, useProjects, useWorksp
 import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
+  parseRoute,
   routeProjectId,
   saveLastProjectId,
   useRoute,
@@ -58,7 +60,6 @@ import type { ColorMode } from "./theme";
 import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled, type ProjectFolderMode } from "./projectLifecycle";
 import { closeReadPushNotifications, disableWebPush, inspectWebPush, subscribeWebPushChanges, syncWebPush, type WebPushState } from "./pushNotifications";
 import { ProjectBrowserContext, type ProjectBrowserRequest } from "./components/ProjectBrowserContext";
-import { ProjectBrowserDialog } from "./components/ProjectBrowserDialog";
 import { effortOptionsForModel, engineAvailabilityPresentation, engineIsAvailable, resolveRuntimeSelection } from "./conversationEngine";
 import {
   WORKSPACE_TABS_STORAGE_KEY,
@@ -75,6 +76,7 @@ import {
   serializeWorkspaceTabs,
 } from "./workspaceTabs";
 import { hasUnreadConversationNotifications } from "./workspaceNavigation";
+import { WORKSPACE_SIDEBAR_STORAGE_KEY, restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "./workspaceSidebarState";
 
 export default function App({
   colorMode,
@@ -101,6 +103,10 @@ export default function App({
   });
   const [workspaceTabs, setWorkspaceTabs] = useState(initialWorkspaceSession.tabs);
   const [activeWorkspaceTabKey, setActiveWorkspaceTabKey] = useState(initialWorkspaceSession.activeKey);
+  const [sidebarPresentation, setSidebarPresentation] = useState(() => {
+    try { return restoreWorkspaceSidebarState(window.localStorage.getItem(WORKSPACE_SIDEBAR_STORAGE_KEY)); }
+    catch { return restoreWorkspaceSidebarState(null); }
+  });
   const projectsQuery = useProjects();
   const enginesQuery = useEngines();
   const preferencesQuery = useWorkspacePreferences();
@@ -136,6 +142,7 @@ export default function App({
   const [profileHandleDraft, setProfileHandleDraft] = useState("operator");
   const [profileAvatarDraft, setProfileAvatarDraft] = useState("default-user");
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
+  const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [pushState, setPushState] = useState<WebPushState>({ kind: "permission_default", message: "Checking browser push status…" });
   const [pushBusy, setPushBusy] = useState(false);
   const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
@@ -150,7 +157,6 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
   const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
-  const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
@@ -167,6 +173,11 @@ export default function App({
       // Tabs remain available for this session when storage is unavailable.
     }
   }, [workspaceTabs, activeWorkspaceTabKey]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(WORKSPACE_SIDEBAR_STORAGE_KEY, serializeWorkspaceSidebarState(sidebarPresentation)); }
+    catch { /* Device-local presentation can remain in memory when storage is unavailable. */ }
+  }, [sidebarPresentation]);
 
   useEffect(() => {
     if (workspaceTabs.some((tab) => tab.key === activeWorkspaceTabKey)) return;
@@ -226,12 +237,6 @@ export default function App({
       ? routedProjectId
       : undefined;
 
-  const openProjectBrowser = (url?: string) => {
-    projectBrowserRequestId.current += 1;
-    setProjectBrowserRequest({ ...(url ? { url } : {}), requestId: projectBrowserRequestId.current });
-    setProjectBrowserOpen(true);
-  };
-
   // Land on a concrete project: honour the URL, else the last-used project, else
   // the first available. Uses replace so the initial redirect isn't a history step.
   useEffect(() => {
@@ -243,7 +248,7 @@ export default function App({
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
     // redirect back to the most recent chat.
-    if (["project", "conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
+    if (["project", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
     if (!target) return;
@@ -401,6 +406,28 @@ export default function App({
     setActiveWorkspaceTabKey(tab.key);
     navigate(tab.route);
   };
+  const openWorkspaceRoute = (next: Route) => {
+    const tab = createWorkspaceTab(next);
+    setWorkspaceTabs((current) => openWorkspaceTab(current, next, tab.lastActivatedAt, tab.key));
+    setActiveWorkspaceTabKey(tab.key);
+    navigate(next);
+  };
+  const openProjectBrowser = (url?: string) => {
+    if (!selectedProjectId) return;
+    projectBrowserRequestId.current += 1;
+    setProjectBrowserRequest({ ...(url ? { url } : {}), requestId: projectBrowserRequestId.current });
+    openWorkspaceRoute({ kind: "browser", projectId: selectedProjectId });
+  };
+  useEffect(() => {
+    const openNotificationRoute = (event: MessageEvent) => {
+      if (event.data?.type !== "ponderosa:open-route" || typeof event.data.url !== "string") return;
+      const target = new URL(event.data.url, window.location.origin);
+      if (target.origin !== window.location.origin) return;
+      openWorkspaceRoute(parseRoute(target.pathname, target.search));
+    };
+    navigator.serviceWorker?.addEventListener("message", openNotificationRoute);
+    return () => navigator.serviceWorker?.removeEventListener("message", openNotificationRoute);
+  }, [workspaceTabs, activeWorkspaceTabKey]);
   const closeWorkspaceView = (key: string) => {
     if (workspaceTabs.length <= 1) return;
     const nextActive = key === activeWorkspaceTabKey ? adjacentWorkspaceTab(workspaceTabs, key) : undefined;
@@ -502,7 +529,7 @@ export default function App({
           <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
             Ponderosa
           </Typography>
-          <Tooltip title={engineAvailability.detail} arrow enterTouchDelay={0}>
+          <Tooltip title={`${engineAvailability.label}. Click for provider details.`} arrow enterTouchDelay={0}>
             <Chip
               size="small"
               label={engineAvailability.label}
@@ -510,7 +537,8 @@ export default function App({
               variant="outlined"
               tabIndex={0}
               aria-label={`${engineAvailability.label}. ${engineAvailability.detail}`}
-              sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "help" }}
+              onClick={() => setEngineStatusOpen(true)}
+              sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "pointer" }}
             />
           </Tooltip>
           <Button
@@ -543,6 +571,7 @@ export default function App({
             route={route}
             notifications={notificationsQuery.data ?? []}
             onNavigate={goHome}
+            onOpenInNewTab={openWorkspaceRoute}
             onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
@@ -552,6 +581,11 @@ export default function App({
             onOpenNotifications={() => setNotificationPanelOpen(true)}
             onOpenSettings={openSettings}
             onOpenProfile={openOperatorProfile}
+            onOpenEngineStatus={() => setEngineStatusOpen(true)}
+            collapsed={sidebarPresentation.collapsed}
+            width={sidebarPresentation.width}
+            onCollapsedChange={(collapsed) => setSidebarPresentation((current) => ({ ...current, collapsed }))}
+            onWidthChange={(width) => setSidebarPresentation((current) => ({ ...current, width }))}
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: { xs: "minmax(0, 1fr)", md: "auto minmax(0, 1fr)" } }}>
@@ -616,6 +650,8 @@ export default function App({
             route={route}
             engines={engines}
             navigate={goHome}
+            browserRequest={projectBrowserRequest}
+            openInNewTab={openWorkspaceRoute}
             onResourceDeleted={removeWorkspaceView}
           />
         ) : (
@@ -634,6 +670,7 @@ export default function App({
           route={route}
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); goHome(next); }}
+          onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
           onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
           onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
           onPreferences={savePreferences}
@@ -643,6 +680,7 @@ export default function App({
           onOpenNotifications={() => { setMobileNavOpen(false); setNotificationPanelOpen(true); }}
           onOpenSettings={() => { setMobileNavOpen(false); openSettings(); }}
           onOpenProfile={() => { setMobileNavOpen(false); openOperatorProfile(); }}
+          onOpenEngineStatus={() => { setMobileNavOpen(false); setEngineStatusOpen(true); }}
         />
       </Drawer>
 
@@ -729,16 +767,17 @@ export default function App({
               autoFocus
               fullWidth
             />
-            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default engine</InputLabel><Select labelId="project-default-engine-label" label="Default engine" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
+            <Box><Typography variant="subtitle2">Default AI runtime</Typography><Typography variant="body2" color="text.secondary">Used when a new chat or Agent does not choose its own provider, model, or reasoning level. Every chat can override these defaults.</Typography></Box>
+            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default AI provider</InputLabel><Select labelId="project-default-engine-label" label="Default AI provider" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
               {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — unavailable" : " — not signed in"}</MenuItem>)}
             </Select></FormControl>
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-              <FormControl fullWidth><InputLabel id="project-default-model-label">Project model</InputLabel><Select labelId="project-default-model-label" label="Project model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
-                <MenuItem value="">Use workspace setting — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
+              <FormControl fullWidth><InputLabel id="project-default-model-label">Default model</InputLabel><Select labelId="project-default-model-label" label="Default model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
+                <MenuItem value="">Automatic default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
                 {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
               </Select></FormControl>
-              <FormControl fullWidth><InputLabel id="project-default-effort-label">Project effort</InputLabel><Select labelId="project-default-effort-label" label="Project effort" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
-                <MenuItem value="">Use workspace setting — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
+              <FormControl fullWidth><InputLabel id="project-default-effort-label">Default reasoning</InputLabel><Select labelId="project-default-effort-label" label="Default reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
+                <MenuItem value="">Automatic default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
                 {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
               </Select></FormControl>
             </Stack>
@@ -758,22 +797,8 @@ export default function App({
               {engine.displayName} is configured but unavailable. {engine.availabilityDetail}
             </Alert>)}
             {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
-            <FormControl fullWidth><InputLabel id="project-folder-mode-label">Working folder</InputLabel><Select labelId="project-folder-mode-label" label="Working folder" value={projectFolderMode} onChange={(event) => setProjectFolderMode(event.target.value as typeof projectFolderMode)}>
-              <MenuItem value="none">No folder yet — use a private empty workspace</MenuItem>
-              <MenuItem value="existing">Choose an existing folder</MenuItem>
-              <MenuItem value="create">Create a named empty folder</MenuItem>
-            </Select></FormControl>
-            {projectFolderMode === "none" ? <Typography variant="body2" color="text.secondary">
-              Ponderosa will create a private empty workspace now. You can use this project for chat and agents without choosing a folder.
-            </Typography> : null}
-            {projectFolderMode === "existing" ? <>
-              <FormControl fullWidth><InputLabel id="existing-project-folder-label">Registered or managed folder</InputLabel><Select labelId="existing-project-folder-label" label="Registered or managed folder" value={projectPath} onChange={(event) => setProjectPath(event.target.value)}>
-                {(projectFoldersQuery.data?.folders ?? []).map((folder) => <MenuItem key={folder.hostPath} value={folder.hostPath}>{folder.name} — {folder.hostPath}</MenuItem>)}
-              </Select></FormControl>
-              <TextField label="Or enter an existing absolute path" value={projectPath} onChange={(event) => setProjectPath(event.target.value)} placeholder="/Users/you/Projects/app" fullWidth />
-              <Button variant="outlined" onClick={() => setFolderPickerOpen(true)}>Browse folders on host…</Button>
-            </> : null}
-            {projectFolderMode === "create" ? <TextField label="New folder name" value={projectFolderName} onChange={(event) => setProjectFolderName(event.target.value)} helperText={`Created inside ${projectFoldersQuery.data?.managedRoot ?? "the managed workspace"}`} fullWidth /> : null}
+            <Box><Typography variant="subtitle2">Working folder</Typography><Typography variant="body2" color="text.secondary">{projectFolderMode === "existing" ? projectPath || "No existing folder selected" : projectFolderMode === "create" ? `New managed folder: ${projectFolderName || "not named"}` : "Private empty workspace"}</Typography></Box>
+            <Button variant="outlined" startIcon={<FolderOutlinedIcon />} onClick={() => setFolderPickerOpen(true)}>Choose working folder…</Button>
             {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
           </Stack>
         </DialogContent>
@@ -788,7 +813,12 @@ export default function App({
           </Button>
         </DialogActions>
       </Dialog>
-      <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(hostPath) => { setProjectPath(hostPath); setFolderPickerOpen(false); }} />
+      <HostFolderPicker open={folderPickerOpen} initialMode={projectFolderMode} initialPath={projectPath || undefined} initialFolderName={projectFolderName || undefined} managedRoot={projectFoldersQuery.data?.managedRoot} onClose={() => setFolderPickerOpen(false)} onChoose={(selection) => {
+        setProjectFolderMode(selection.mode);
+        setProjectPath(selection.path ?? "");
+        setProjectFolderName(selection.newFolderName ?? "");
+        setFolderPickerOpen(false);
+      }} />
       <NotificationPanel
         open={notificationPanelOpen}
         projects={projects}
@@ -797,6 +827,31 @@ export default function App({
         onNavigate={navigate}
         onOpenSettings={openSettings}
       />
+      <Dialog open={engineStatusOpen} onClose={() => setEngineStatusOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>AI provider status</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 1 }}>
+            <Typography variant="body2" color="text.secondary">Ponderosa reports local configuration, sign-in, operator availability, and runtime access. It cannot see subscription quotas or provider-account billing.</Typography>
+            {engines.map((engine) => <Box key={engine.id} sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
+              <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+                <Typography variant="subtitle1" fontWeight={750} sx={{ flex: 1 }}>{engine.displayName}</Typography>
+                <Chip size="small" label={engine.enabled === false ? "Disabled" : "Enabled"} color={engine.enabled === false ? "default" : "success"} variant="outlined" />
+                <Chip size="small" label={engine.authenticated ? "Signed in" : "Sign-in needed"} color={engine.authenticated ? "success" : "warning"} variant="outlined" />
+                <Chip size="small" label={engine.available ? "Ready" : "Needs attention"} color={engine.available ? "success" : "warning"} />
+              </Stack>
+              <Typography variant="body2" sx={{ mt: 1 }}>{engine.availabilityDetail ?? (engine.available ? "Runtime access is available." : "Runtime access is unavailable.")}</Typography>
+              {engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
+              {!engine.available && engine.authenticated ? <Button size="small" sx={{ mt: 1 }} disabled={recheckEngine.isPending} onClick={() => {
+                if (!window.confirm(`Test ${engine.displayName} access now? This sends one minimal subscription-backed request.`)) return;
+                recheckEngine.mutate(engine.id);
+              }}>{recheckEngine.isPending && recheckEngine.variables === engine.id ? "Testing…" : "Test access"}</Button> : null}
+            </Box>)}
+            {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions><Button onClick={() => { setEngineStatusOpen(false); openSettings(); }}>Provider settings</Button><Button onClick={() => setEngineStatusOpen(false)}>Close</Button></DialogActions>
+      </Dialog>
       <Dialog open={notificationSettingsOpen} onClose={() => setNotificationSettingsOpen(false)} fullWidth maxWidth="sm">
         <DialogTitle>Settings</DialogTitle>
         <DialogContent>
@@ -911,7 +966,6 @@ export default function App({
         <DialogTitle>Delete this project?</DialogTitle><DialogContent><Alert severity="warning">This permanently deletes its Project chats, agents, runs, work items, and files &amp; results. The working folder and its source files are not deleted.</Alert>{deleteProject.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProject.error)}</Alert> : null}</DialogContent>
         <DialogActions><Button onClick={() => setDeleteConfirmationOpen(false)}>Cancel</Button><Button color="error" variant="contained" disabled={deleteProject.isPending} onClick={() => deleteProject.mutate()}>Delete permanently</Button></DialogActions>
       </Dialog>
-      <ProjectBrowserDialog projectId={selectedProjectId} open={projectBrowserOpen} request={projectBrowserRequest} onClose={() => setProjectBrowserOpen(false)} />
     </Box>
     </ProjectBrowserContext.Provider>
   );

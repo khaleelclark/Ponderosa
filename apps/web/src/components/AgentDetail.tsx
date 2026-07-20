@@ -231,6 +231,10 @@ export function AgentDetail({
   onOpenAgent,
   onOpenBroadcast,
   onOpenMaster,
+  onOpenArtifact,
+  onOpenArtifactInNewTab,
+  onOpenReview,
+  onOpenBrowser,
   onNewSubagent,
   onDeleted,
 }: {
@@ -248,6 +252,10 @@ export function AgentDetail({
   onOpenAgent(agentId: string): void;
   onOpenBroadcast(conversationId: string, communicationEventId: string): void;
   onOpenMaster(conversationId: string): void;
+  onOpenArtifact(artifactId: string): void;
+  onOpenArtifactInNewTab(artifactId: string): void;
+  onOpenReview(path?: string): void;
+  onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
 }): JSX.Element {
@@ -759,10 +767,9 @@ export function AgentDetail({
       projectId={detail.agent.projectId}
       onOpenFile={(file: ResponseFileActivityDto) => {
         if (file.artifactId) {
-          writeChatState(chatStateKey("view", `agent.${agentId}.artifact`), file.artifactId);
-          setTab("artifacts");
+          onOpenArtifact(file.artifactId);
         } else {
-          setTab("changed_files");
+          onOpenReview(file.path);
         }
       }}
       onViewAll={() => setTab("review")}
@@ -771,7 +778,7 @@ export function AgentDetail({
     changed_files: <ChangedFilesPane files={detail.changedFiles} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} />,
     runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
     triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
   };
 
@@ -1002,7 +1009,7 @@ export function AgentDetail({
       </Box>
 
       <Box sx={{ minWidth: 0 }}>
-        <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} />
+        <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} onOpenInTab={() => runtimeActivity?.executionId && onOpenBrowser(runtimeActivity.executionId)} />
       </Box>
 
       <Tabs

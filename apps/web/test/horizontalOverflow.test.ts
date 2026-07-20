@@ -29,7 +29,7 @@ describe("horizontal overflow containment", () => {
   it("keeps hidden announcements, mobile controls, and long project lists inside their surfaces", () => {
     expect(copyMessageButton).toContain('width: "1px", height: "1px"');
     expect(panes).toContain('maxWidth: "100%", overflowX: "auto"');
-    expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : `clamp(${SIDEBAR_MIN_WIDTH}px, 27vw, ${SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH}px)`');
+    expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width');
     expect(workspaceSidebar).toContain('minHeight: 0, overflowY: "auto"');
   });
 

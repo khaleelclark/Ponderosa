@@ -1,14 +1,14 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import SendIcon from "@mui/icons-material/Send";
 import {
-  Alert, Box, Button, Chip, CircularProgress, Divider, Paper, Stack, TextField, Typography,
+  Alert, Box, Button, Chip, CircularProgress, Divider, Paper, Stack, Typography,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useAllChat } from "../hooks/queries";
 import type { Route } from "../routing";
+import { Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./panes";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -43,8 +43,12 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   const [older, setOlder] = useState<{ items: AllChatItemDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
-  const [text, setText] = useState("");
   const [notice, setNotice] = useState<string>();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const firstLayout = useRef(true);
+  const followLatest = useRef(true);
+  const restoreDistance = useRef<number>();
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
@@ -54,12 +58,11 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
   };
   const send = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (body: string) => {
       if (!selected?.directMessageAgent) throw new Error("Select a message tied to one exact Agent");
-      const body = text.trim();
-      if (!body) throw new Error("Message text is required");
+      if (!body.trim()) throw new Error("Message text is required");
       return api.sendMessage(selected.directMessageAgent.id, {
-        text: body,
+        text: body.trim(),
         replyToMessageId: selected.messageId,
         idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
         activeRunDelivery: "steer",
@@ -67,7 +70,6 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     },
     onSuccess: (_response, _variables) => {
       setNotice(`Direct message sent to ${selected?.directMessageAgent?.title ?? "Agent"}.`);
-      setText("");
       void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
       if (selected?.directMessageAgent) {
         void queryClient.invalidateQueries({ queryKey: ["agent", selected.directMessageAgent.id] });
@@ -78,6 +80,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     if (loadingOlder || !history.hasMore || !history.cursor) return;
     setLoadingOlder(true);
     try {
+      if (scrollRef.current) restoreDistance.current = scrollRef.current.scrollHeight - scrollRef.current.scrollTop;
       const page = await api.getAllChat(50, history.cursor);
       setOlder((current) => ({
         items: mergeAllChatItems(page.items, current?.items ?? [], query.data?.items ?? []),
@@ -88,6 +91,21 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       setLoadingOlder(false);
     }
   };
+  const layoutKey = items.map((item) => item.communicationEventId).join(":");
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    if (restoreDistance.current !== undefined) {
+      element.scrollTop = element.scrollHeight - restoreDistance.current;
+      restoreDistance.current = undefined;
+      return;
+    }
+    if (firstLayout.current || followLatest.current) {
+      scrollChatToBottom(element);
+      firstLayout.current = false;
+      setShowScrollToLatest(false);
+    }
+  }, [layoutKey]);
 
   return <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
@@ -98,7 +116,12 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       <Chip size="small" variant="outlined" label="View oriented" />
     </Stack>
 
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
+    <Box sx={{ minHeight: 0, position: "relative", overflow: "hidden" }}>
+    <Box ref={scrollRef} className="ponderosa-scroll" onScroll={() => {
+      if (!scrollRef.current) return;
+      followLatest.current = isChatNearBottom(scrollRef.current);
+      setShowScrollToLatest(!followLatest.current);
+    }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load older messages"}</Button></Stack> : null}
@@ -139,31 +162,33 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
         {!query.isLoading && !query.isError && items.length === 0 ? <Alert severity="info">No authored chat messages yet.</Alert> : null}
       </Stack>
     </Box>
+    <ScrollToLatestButton visible={showScrollToLatest} onClick={() => {
+      if (!scrollRef.current) return;
+      followLatest.current = true;
+      scrollChatToBottom(scrollRef.current);
+      setShowScrollToLatest(false);
+    }} />
+    </Box>
 
     <Box sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1.5, md: 2 } }}>
       <Box sx={{ maxWidth: 920, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
           : !selected.directMessageAgent ? <Alert severity="info">This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.</Alert>
             : <Stack spacing={1}>
-              <Typography variant="subtitle2">Direct message to {selected.directMessageAgent.title}</Typography>
-              <Typography variant="caption" color="text.secondary">Recipient is fixed by the selected source. This message is private and cannot be shared with the project from All Chat.</Typography>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
               {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "flex-end" } }}>
-                <TextField
-                  fullWidth multiline maxRows={6} minRows={2}
-                  label={`Message ${selected.directMessageAgent.title}`}
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  onKeyDown={(event) => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter" && text.trim() && !send.isPending) {
-                      event.preventDefault(); send.mutate();
-                    }
-                  }}
-                  inputProps={{ "aria-label": `Direct message to ${selected.directMessageAgent.title}` }}
-                />
-                <Button variant="contained" endIcon={<SendIcon />} disabled={!text.trim() || send.isPending} onClick={() => send.mutate()} sx={{ minWidth: 116 }}>{send.isPending ? "Sending…" : "Send DM"}</Button>
-              </Stack>
+              <Composer
+                disabled={send.isPending}
+                running={false}
+                attachmentsEnabled={false}
+                attachmentsUnavailableReason="All Chat sends a direct text reply to the selected Agent."
+                placeholder={`Message ${selected.directMessageAgent.title}`}
+                replyTo={{ text: selected.text }}
+                replyLabel={`Direct reply to ${selected.directMessageAgent.title}`}
+                draftStorageKey={`all-chat:${selected.communicationEventId}`}
+                guidance="Recipient is fixed by the selected source. This message is private and cannot be broadcast from All Chat."
+                onSend={(body) => send.mutateAsync(body)}
+              />
             </Stack>}
       </Box>
     </Box>

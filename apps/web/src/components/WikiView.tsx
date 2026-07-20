@@ -55,7 +55,6 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
             {results.data && results.data.results.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>No documentation matches “{normalizedSearch}”.</Typography> : null}
           </Paper> : null}
         </Box>
-        {index.data ? <Chip size="small" variant="outlined" label={`${index.data.totalArticles} articles · ${index.data.version.slice(0, 8)}`} /> : null}
       </Stack>
     </Paper>
 

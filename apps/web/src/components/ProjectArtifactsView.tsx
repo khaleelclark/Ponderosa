@@ -17,6 +17,8 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
+  MenuItem,
   Stack,
   TextField,
   Typography,
@@ -47,6 +49,7 @@ export function ProjectArtifactsView({
   agents,
   healthByAgentId,
   onOpenArtifact,
+  onOpenArtifactInNewTab,
   onOpenRun,
   onOpenAgentWork,
 }: {
@@ -55,6 +58,7 @@ export function ProjectArtifactsView({
   agents: AgentDto[];
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenArtifact(agentId: string, artifactId: string): void;
+  onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
   onOpenRun(agentId: string, runId: string): void;
   onOpenAgentWork(): void;
 }): JSX.Element {
@@ -63,6 +67,7 @@ export function ProjectArtifactsView({
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [artifactMenu, setArtifactMenu] = useState<{ anchor: HTMLElement; agentId: string; artifactId: string }>();
   useEffect(() => {
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
@@ -165,6 +170,11 @@ export function ProjectArtifactsView({
             <ListItemButton
               aria-label={`Open ${label} from ${owner}`}
               disabled={!canOpen}
+              onContextMenu={(event) => {
+                if (!agent) return;
+                event.preventDefault();
+                setArtifactMenu({ anchor: event.currentTarget, agentId: agent.id, artifactId: artifact.id });
+              }}
               onClick={() => {
                 if (artifact.previewUrl) setPreviewArtifact(artifact);
                 else if (agent) onOpenArtifact(agent.id, artifact.id);
@@ -190,6 +200,7 @@ export function ProjectArtifactsView({
         })}
       </List>
     </Stack>
+    {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.agentId, artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in new Ponderosa tab</MenuItem></Menu> : null}
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
       <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File preview"}</DialogTitle>
       <DialogContent sx={{ p: { xs: 1, sm: 2 }, bgcolor: "background.default" }}>

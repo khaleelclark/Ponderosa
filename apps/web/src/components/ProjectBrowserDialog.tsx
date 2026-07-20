@@ -17,12 +17,13 @@ type Input = BrowserOperatorInputRequest extends infer Item
   : never;
 
 export function ProjectBrowserDialog({
-  projectId, open, request, onClose,
+  projectId, open, request, onClose, embedded = false,
 }: {
   projectId?: string;
   open: boolean;
   request?: ProjectBrowserRequest;
   onClose(): void;
+  embedded?: boolean;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const queryKey = ["project-browser", projectId] as const;
@@ -136,13 +137,13 @@ export function ProjectBrowserDialog({
     openBrowser.reset(); navigate.reset(); reconnect.reset(); close.reset(); control.reset(); input.reset();
   }, [open]);
 
-  return <Dialog open={open} onClose={onClose} fullScreen maxWidth={false} aria-labelledby="project-browser-title">
+  const content = <>
     <DialogTitle id="project-browser-title">
       <Stack spacing={.25}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
           <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Project browser</Typography>
           {session ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
-          <Tooltip title="Close panel"><IconButton aria-label="Close Project browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip>
+          {!embedded ? <Tooltip title="Close panel"><IconButton aria-label="Close Project browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
         </Stack>
         <Typography variant="caption" color="text.secondary">Persistent across agent Runs until closed or the server restarts</Typography>
       </Stack>
@@ -179,5 +180,7 @@ export function ProjectBrowserDialog({
         {error ? <Alert severity="error">{String(error)}</Alert> : null}
       </Stack>
     </DialogContent>
-  </Dialog>;
+  </>;
+  if (embedded) return <Box aria-labelledby="project-browser-title" sx={{ minHeight: 0, minWidth: 0, height: "100%", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", overflow: "hidden" }}>{content}</Box>;
+  return <Dialog open={open} onClose={onClose} fullScreen maxWidth={false} aria-labelledby="project-browser-title">{content}</Dialog>;
 }
