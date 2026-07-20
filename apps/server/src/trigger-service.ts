@@ -136,13 +136,9 @@ export class TriggerSourceService {
   }
 
   async start(): Promise<void> {
+    if (this.stopping) return;
     this.started = true;
     await this.refresh();
-    if (!this.sourceAvailable()) return;
-    this.restorePendingFileBursts();
-    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
-    this.scheduleTimer.unref();
-    await this.processDueSchedules();
   }
 
   async stop(): Promise<void> {
@@ -169,6 +165,7 @@ export class TriggerSourceService {
   private async refreshNow(): Promise<void> {
     if (this.stopping) return;
     if (!this.sourceAvailable()) {
+      this.stopSchedulePolling();
       await this.deactivateFilesystemSources();
       return;
     }
@@ -261,6 +258,8 @@ export class TriggerSourceService {
       this.watchers.set(projectId, active);
     }
     this.restorePendingFileBursts();
+    this.ensureSchedulePolling();
+    await this.processDueSchedules();
   }
 
   /** Deterministic qualification seam; production CRUD does not wait for a
@@ -477,6 +476,18 @@ export class TriggerSourceService {
     clearTimeout(burst.quietTimer);
     clearTimeout(burst.maxTimer);
     this.bursts.delete(id);
+  }
+
+  private ensureSchedulePolling(): void {
+    if (this.scheduleTimer) return;
+    this.scheduleTimer = setInterval(() => { void this.processDueSchedules().catch(() => undefined); }, 1_000);
+    this.scheduleTimer.unref();
+  }
+
+  private stopSchedulePolling(): void {
+    if (!this.scheduleTimer) return;
+    clearInterval(this.scheduleTimer);
+    this.scheduleTimer = undefined;
   }
 
   private async deactivateFilesystemSources(): Promise<void> {

@@ -2683,6 +2683,33 @@ describe("interactive browser API", () => {
     await app.close();
   });
 
+  it("resolves a stale Project deletion notification from completed receipt truth on startup", async () => {
+    const first = createServer({
+      dataDir, store, engines, logger: false,
+      projectDeletionCleanupFaults: {
+        afterTombstoneRemoval: () => { throw new Error("simulated cleanup receipt interruption"); },
+      },
+    });
+    const project = store.createProject({ label: "Recovered deletion notice", hostPath: repoDir });
+    const deleted = await first.inject({ method: "DELETE", url: `/api/projects/${project.id}` });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(deleted.json()).toMatchObject({ deleted: true, cleanupPending: true });
+    expect((await first.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "open" }),
+      ]));
+    await first.close();
+
+    store = new AgentStore(dataDir);
+    expect(store.getProjectDeletionReceipt(project.id)).toMatchObject({ storageCleanupCompleted: true });
+    const restarted = createServer({ dataDir, store, engines, logger: false });
+    expect((await restarted.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ dedupeKey?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ dedupeKey: `project-deletion:${project.id}`, status: "resolved" }),
+      ]));
+    await restarted.close();
+  });
+
   it("replays a durable Project deletion receipt after the successful response is lost", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Lost deletion response", hostPath: repoDir });

@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "../src/trigger-service.js";
 import { TriggerSecretStore } from "../src/trigger-secrets.js";
@@ -186,6 +186,96 @@ describe("V3.2 Trigger sources", () => {
       await context.service.refresh();
       expect((context.service as unknown as { watchers: Map<string, unknown> }).watchers.size).toBe(0);
       expect(context.coordination.listPendingFilesystemTriggerBursts()).toEqual([]);
+    } finally {
+      await context.service.stop();
+      context.agents.close();
+    }
+  });
+
+  it("recovers one overdue schedule exactly once when source readiness becomes available", async () => {
+    const now = new Date("2026-07-16T12:00:01.000Z");
+    let sourceReady = false;
+    const context = setup(now, () => true, () => sourceReady);
+    try {
+      const trigger = context.coordination.createTriggerDefinition({
+        id: "readiness-schedule", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Recovered schedule", instructions: "Publish the recovered report",
+        sourceKind: "schedule",
+        sourceConfig: { scheduleKind: "once", at: "2026-07-16T12:00:00.000Z" },
+        nextFireAt: "2026-07-16T12:00:00.000Z",
+      });
+      await context.service.start();
+      expect((context.service as unknown as { scheduleTimer?: NodeJS.Timeout }).scheduleTimer).toBeUndefined();
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(0);
+
+      sourceReady = true;
+      await context.service.refresh();
+      const scheduleTimer = (context.service as unknown as { scheduleTimer?: NodeJS.Timeout }).scheduleTimer;
+      expect(scheduleTimer).toBeDefined();
+      expect(context.coordination.getTriggerDefinition(trigger.id)).toMatchObject({ enabled: false });
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(1);
+      expect((context.agents.sqlite.prepare(
+        "SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ? AND kind = 'trigger_occurrence'",
+      ).get(context.agent.id) as { count: number }).count).toBe(1);
+      expect(context.notifications()).toBe(1);
+
+      await context.service.refresh();
+      expect((context.service as unknown as { scheduleTimer?: NodeJS.Timeout }).scheduleTimer).toBe(scheduleTimer);
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(1);
+      expect((context.agents.sqlite.prepare(
+        "SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ? AND kind = 'trigger_occurrence'",
+      ).get(context.agent.id) as { count: number }).count).toBe(1);
+      expect(context.notifications()).toBe(1);
+    } finally {
+      await context.service.stop();
+      context.agents.close();
+    }
+  });
+
+  it("restores one persisted filesystem burst when source readiness becomes available", async () => {
+    const now = new Date("2026-07-16T12:00:00.000Z");
+    let sourceReady = false;
+    const context = setup(now, () => true, () => sourceReady);
+    try {
+      const trigger = context.coordination.createTriggerDefinition({
+        id: "readiness-burst", projectId: context.project.id, conversationId: context.conversation.id,
+        agentId: context.agent.id, name: "Recovered files", instructions: "Inspect recovered file activity",
+        sourceKind: "filesystem",
+        sourceConfig: { include: ["src/**"], exclude: [], quietMs: 100, maxWindowMs: 500 },
+      });
+      context.coordination.recordFilesystemTriggerEvent({
+        triggerId: trigger.id,
+        path: "src/recovered.ts",
+        eventType: "change",
+        maxCapturedPaths: 500,
+        now: now.toISOString(),
+      });
+      await context.service.start();
+      expect((context.service as unknown as { bursts: Map<string, unknown> }).bursts.size).toBe(0);
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toHaveLength(1);
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(0);
+
+      sourceReady = true;
+      await context.service.refresh();
+      expect((context.service as unknown as { bursts: Map<string, unknown> }).bursts.size).toBe(1);
+      await context.service.refresh();
+      expect((context.service as unknown as { bursts: Map<string, unknown> }).bursts.size).toBe(1);
+      await vi.waitFor(() => expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(1));
+      expect(context.coordination.listTriggerOccurrences(trigger.id)[0]).toMatchObject({
+        payload: { changes: [{ path: "src/recovered.ts", types: ["change"] }] },
+      });
+      expect(context.coordination.listPendingFilesystemTriggerBursts()).toHaveLength(0);
+      expect((context.agents.sqlite.prepare(
+        "SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ? AND kind = 'trigger_occurrence'",
+      ).get(context.agent.id) as { count: number }).count).toBe(1);
+      expect(context.notifications()).toBe(1);
+
+      await context.service.refresh();
+      expect(context.coordination.listTriggerOccurrences(trigger.id)).toHaveLength(1);
+      expect((context.agents.sqlite.prepare(
+        "SELECT COUNT(*) AS count FROM agent_activations WHERE agent_id = ? AND kind = 'trigger_occurrence'",
+      ).get(context.agent.id) as { count: number }).count).toBe(1);
+      expect(context.notifications()).toBe(1);
     } finally {
       await context.service.stop();
       context.agents.close();

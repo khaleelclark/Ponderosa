@@ -2309,6 +2309,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!retained.has(key)) resolveOperationalNotification(key);
     }
   };
+  const reconcileProjectDeletionOperationalNotifications = (): void => {
+    for (const receipt of store.listPendingProjectDeletionReceipts()) {
+      createOperationalNotification({
+        dedupeKey: `project-deletion:${receipt.projectId}`,
+        category: "system",
+        severity: "attention",
+        title: "Project deletion cleanup needs attention",
+        body: `The Project was deleted, but filesystem cleanup is still retrying. ${receipt.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
+        projectId: receipt.projectId,
+      });
+    }
+    for (const notification of workspace.listNotifications()) {
+      const key = notification.dedupeKey;
+      if (!key?.startsWith("project-deletion:") || (notification.status ?? "open") !== "open") continue;
+      const projectId = key.slice("project-deletion:".length);
+      const receipt = store.getProjectDeletionReceipt(projectId);
+      if (receipt?.storageCleanupCompleted) resolveOperationalNotification(key);
+    }
+  };
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
     const cursor = workspace.cursor();
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
@@ -5179,8 +5198,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3.expireDue();
     if (!artifactFilesystem.ok) await coordinationV3Scheduler.pauseLeasing();
     coordinationV3Scheduler.start();
-    if (artifactFilesystem.ok) await triggerSources.start();
+    await triggerSources.start();
     reconcileTriggerOperationalNotifications();
+    reconcileProjectDeletionOperationalNotifications();
     await drainAgentDeletionCleanup();
     agentDeletionCleanupSweep = setInterval(() => { void drainAgentDeletionCleanup(); }, 30_000);
     agentDeletionCleanupSweep.unref();
@@ -7509,6 +7529,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!artifactFilesystem.ok) {
       return reply.code(409).send({ error: artifactFilesystemError() });
     }
+    await triggerSources.refresh();
     deploymentDraining = false;
     coordinationV3Scheduler.resumeLeasing();
     return {
