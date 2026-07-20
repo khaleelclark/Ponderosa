@@ -42,7 +42,17 @@ export function formatMessageTimestamp(
   };
 }
 
-export function MessageTimestamp({ value, compact = false, align = "end" }: { value: string; compact?: boolean; align?: "start" | "end" }): JSX.Element | null {
+export function MessageTimestamp({
+  value,
+  compact = false,
+  align = "end",
+  desktopOnly = false,
+}: {
+  value: string;
+  compact?: boolean;
+  align?: "start" | "end";
+  desktopOnly?: boolean;
+}): JSX.Element | null {
   const timestamp = formatMessageTimestamp(value);
   if (!timestamp) {
     return null;
@@ -56,7 +66,7 @@ export function MessageTimestamp({ value, compact = false, align = "end" }: { va
       title={timestamp.title}
       variant="caption"
       sx={{
-        display: "block",
+        display: desktopOnly ? { xs: "none", sm: "block" } : "block",
         color: "inherit",
         maxWidth: "100%",
         mt: 0,
@@ -72,11 +82,13 @@ export function MessageTimestamp({ value, compact = false, align = "end" }: { va
 /** Keeps every chat surface's timestamp after its message actions. */
 export function MessageActionsAndTimestamp({
   actions,
+  mobileTimestampRevealed = false,
   status,
   value,
   showTimestamp = true,
 }: {
   actions?: ReactNode;
+  mobileTimestampRevealed?: boolean;
   status?: ReactNode;
   value: string;
   showTimestamp?: boolean;
@@ -89,8 +101,11 @@ export function MessageActionsAndTimestamp({
     <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
       <Box className="chat-message-action-buttons" sx={{ display: "flex", minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>
       <Box sx={{ flex: 1 }} />
-      {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} /> : null}
+      {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} desktopOnly /> : null}
     </Stack>
-    {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} /></Box> : null}
+    {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} desktopOnly /></Box> : null}
+    {mobileTimestampRevealed ? <Box data-mobile-message-timestamp sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.25 }}>
+      <MessageTimestamp value={value} compact />
+    </Box> : null}
   </Box>;
 }

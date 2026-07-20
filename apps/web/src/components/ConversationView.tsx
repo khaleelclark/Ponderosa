@@ -107,6 +107,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { projectedMessageIdForFocus } from "../messageFocus";
+import { mobileOperationalStatus, useMobileComposerAutoHide } from "../mobileChat";
 
 export function ConversationMessage({
   message,
@@ -144,6 +145,7 @@ export function ConversationMessage({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
+  const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
   // Older projections stored the structured broadcast scope as visible prose.
   // Agent-authored Project-chat messages already carry that scope structurally.
   const visibleText = conversation === "main" && message.authorAgentId
@@ -158,14 +160,15 @@ export function ConversationMessage({
       className="chat-message"
       aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
       tabIndex={-1}
+      onClick={() => setMobileTimestampRevealed((current) => !current)}
       sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+        {!fromManager ? <Avatar aria-label={`${senderName} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
         <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
           {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
             <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>
-            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
+            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
           </Stack> : null}
           {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
           <Box
@@ -229,6 +232,7 @@ export function ConversationMessage({
         <MessageReactions reactions={message.reactions} />
           </Box>
           <MessageActionsAndTimestamp
+            mobileTimestampRevealed={mobileTimestampRevealed}
             showTimestamp={false}
             value={message.createdAt}
             status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
@@ -385,6 +389,7 @@ export function ConversationView({
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
+  const { composerHidden, onChatScroll, revealComposer } = useMobileComposerAutoHide(mobileRoster);
 
   useEffect(() => {
     setOlderMain(undefined);
@@ -396,6 +401,7 @@ export function ConversationView({
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `conversation.${conversationId}`), activeView);
+    revealComposer();
   }, [activeView, conversationId]);
 
   const conversation = detailQuery.data?.conversation;
@@ -1029,6 +1035,7 @@ export function ConversationView({
             if (chatScrollRef.current) {
               shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
               setShowScrollToLatest(!shouldFollowNewMessages.current);
+              onChatScroll(chatScrollRef.current, shouldFollowNewMessages.current);
               writeChatState(
                 chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
                 String(chatScrollRef.current.scrollTop),
@@ -1073,8 +1080,9 @@ export function ConversationView({
               {operationalEvents.map((event) => {
                 const content = <>
                   <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
-                  <Typography variant="body2" sx={{ flex: 1 }}>{event.text}</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+                  <Typography variant="body2" sx={{ display: { xs: "none", sm: "block" }, flex: 1 }}>{event.text}</Typography>
+                  <Typography variant="body2" sx={{ display: { xs: "block", sm: "none" }, flex: 1 }}>{mobileOperationalStatus(event.state)}</Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
                 </>;
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
@@ -1136,6 +1144,7 @@ export function ConversationView({
             shouldFollowNewMessages.current = true;
             scrollChatToBottom(chatScrollRef.current);
             setShowScrollToLatest(false);
+            revealComposer();
           }}
         />
       </Box>
@@ -1233,7 +1242,7 @@ export function ConversationView({
         onClose={() => setAgentWorkOpen(false)}
       />
 
-      <Box>
+      <Box data-mobile-composer-hidden={composerHidden ? "true" : "false"} sx={{ display: composerHidden ? { xs: "none", sm: "block" } : "block" }}>
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
         {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (
@@ -1265,7 +1274,9 @@ export function ConversationView({
           onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
-          placeholder={engineReady ? "Message Project Chat" : "#tag an agent or use #broadcast for shared context"}
+          placeholder={engineReady
+              ? "Describe a request — starts a new agent"
+              : "#tag an agent or use #broadcast for shared context"}
           onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
           onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
           preferQueue={Boolean(directReplyTargetId && (queuedMessagesQuery.data ?? []).some((message) => message.targetAgentId === directReplyTargetId))}

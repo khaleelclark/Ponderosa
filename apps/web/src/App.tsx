@@ -5,18 +5,20 @@ import MenuIcon from "@mui/icons-material/Menu";
 import SearchIcon from "@mui/icons-material/Search";
 import LanguageIcon from "@mui/icons-material/Language";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import CloseIcon from "@mui/icons-material/Close";
 import {
   Alert,
   AppBar,
   Box,
   Badge,
   Button,
+  ButtonBase,
   Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Drawer,
+  SwipeableDrawer,
   Checkbox,
   FormControlLabel,
   IconButton,
@@ -30,6 +32,8 @@ import {
   Toolbar,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -125,6 +129,8 @@ export default function App({
   const engines = enginesQuery.data ?? [];
   const engineAvailability = engineAvailabilityPresentation(engines);
   const appIconSource = colorMode === "light" ? "/icons/app-icon-inverted.png" : "/icons/app-icon.png";
+  const theme = useTheme();
+  const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
   const [projectDialogOpen, setProjectDialogOpen] = useState(false);
   const [projectLabel, setProjectLabel] = useState("");
@@ -539,9 +545,9 @@ export default function App({
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
           <Box component="img" src={appIconSource} alt="" sx={{ display: { xs: "none", sm: "block" }, width: 28, height: 28, mr: 1, borderRadius: 1, objectFit: "contain" }} />
-          <Typography variant="h6" component="h1" sx={{ fontWeight: 800, flex: 1, minWidth: 0 }} noWrap>
-            Ponderosa
-          </Typography>
+          <ButtonBase aria-label="Open All Chat" onClick={() => navigateWorkspace({ kind: "allChat" })} sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", borderRadius: 1 }}>
+            <Typography variant="h6" component="h1" sx={{ fontWeight: 800, minWidth: 0 }} noWrap>Ponderosa</Typography>
+          </ButtonBase>
           <Tooltip title={`${engineAvailability.label}. Click for provider details.`} arrow enterTouchDelay={0}>
             <Chip
               size="small"
@@ -602,7 +608,7 @@ export default function App({
           />
         </Box>
       <Box component="main" id="main-content" sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-        <WorkspaceTabs
+        {!mobileWorkspace ? <WorkspaceTabs
           tabs={workspaceTabs}
           projects={projects}
           activeKey={activeWorkspaceTabKey}
@@ -612,7 +618,7 @@ export default function App({
           onCloseOthers={closeOtherWorkspaceViews}
           onRename={renameWorkspaceView}
           onReorder={reorderWorkspaceViews}
-        />
+        /> : null}
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {route.kind === "wiki" ? (
           <WikiView articleId={route.articleId} navigate={navigateWorkspace} />
@@ -675,7 +681,17 @@ export default function App({
       </Box>
       </Box>
 
-      <Drawer open={mobileNavOpen} onClose={() => setMobileNavOpen(false)} PaperProps={{ sx: { width: "min(100vw, 390px)", maxWidth: "100vw", height: "100dvh", overflow: "hidden" } }}>
+      <SwipeableDrawer
+        open={mobileNavOpen}
+        onOpen={() => setMobileNavOpen(true)}
+        onClose={() => setMobileNavOpen(false)}
+        disableDiscovery
+        PaperProps={{ sx: { width: "min(100vw, 390px)", maxWidth: "100vw", height: "100dvh", overflow: "hidden" } }}
+      >
+        <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
+        <Tooltip title="Close Navigation">
+          <IconButton aria-label="Close workspace navigation" onClick={() => setMobileNavOpen(false)} sx={{ position: "absolute", zIndex: 4, top: "max(8px, env(safe-area-inset-top))", right: 8, minWidth: 44, minHeight: 44, bgcolor: "background.paper", boxShadow: 1 }}><CloseIcon /></IconButton>
+        </Tooltip>
         <WorkspaceSidebar
           drawer
           projects={projects}
@@ -696,7 +712,8 @@ export default function App({
           onOpenProfile={() => { setMobileNavOpen(false); openOperatorProfile(); }}
           onOpenEngineStatus={() => { setMobileNavOpen(false); setEngineStatusOpen(true); }}
         />
-      </Drawer>
+        </Box>
+      </SwipeableDrawer>
 
       <Dialog
         open={sidebarConversationAction?.kind === "rename"}

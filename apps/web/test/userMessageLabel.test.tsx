@@ -50,8 +50,8 @@ describe("user message labels on chat surfaces", () => {
 
     expect(html).toContain(">User</div>");
     expect(html).toContain('aria-label="User avatar"');
-    expect(html).toContain("width:36px");
-    expect(html).toContain("height:36px");
+    expect(html).toContain("width:32px");
+    expect(html).toContain("height:32px");
     expect(html).toContain("data-message-sender");
     expect(html).not.toContain("aria-hidden");
   });

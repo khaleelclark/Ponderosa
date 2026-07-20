@@ -517,7 +517,7 @@ export function replyFallbackText(text: string): string {
 export function isLongChatMessage(text: string): boolean {
   // Display-only progressive disclosure. Provider input and artifact limits
   // remain governed by the canonical constants imported above.
-  return unicodeCodePointLength(text) > 6_400 || text.split("\n").length > 72;
+  return text.length > 3_200 || text.split("\n").length > 36;
 }
 
 export function individualChatSenderLabel(
@@ -686,13 +686,13 @@ export function ChatMarkdown({
         whiteSpace: "normal",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
-        fontSize: "0.9375rem",
-        lineHeight: 1.48,
+        fontSize: { xs: "0.875rem", sm: "0.9375rem" },
+        lineHeight: { xs: 1.44, sm: 1.48 },
         "& p": { my: 0.35, maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
-        "& h1": { fontSize: "1.35rem" },
-        "& h2": { fontSize: "1.2rem" },
-        "& h3, & h4": { fontSize: "1.05rem" },
+        "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
+        "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
+        "& h3, & h4": { fontSize: { xs: "1rem", sm: "1.05rem" } },
         "& ul, & ol": { my: 0.45, pl: 2.75 },
         "& li": { maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& li + li": { mt: 0.15 },
@@ -825,11 +825,11 @@ export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorPro
   const glyph = ({ "default-user": "🌲", sunset: "🌅", river: "🌊", mountain: "⛰️", fox: "🦊", owl: "🦉" } as Record<string, string>)[profile?.avatarId ?? "default-user"] ?? "●";
   const name = profile?.displayName ?? "User";
   return (
-    <Stack direction="row" spacing={0.75} sx={{ minHeight: 36, mb: 0.25, alignItems: "center" }}>
-      <Avatar aria-label={`${name} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{glyph}</Avatar>
+    <Stack direction="row" spacing={0.75} sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center" }}>
+      <Avatar aria-label={`${name} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{glyph}</Avatar>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
-        <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={name} /></Box>
-        {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="start" /></Box> : null}
+        <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
+        {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="start" desktopOnly /></Box> : null}
       </Stack>
     </Stack>
   );
@@ -845,6 +845,7 @@ export function ChatPane({
   onOpenBroadcast,
   onReact,
   onReply,
+  onScrollPositionChange,
   previewScope,
   scrollStorageKey,
   operatorProfile,
@@ -859,6 +860,7 @@ export function ChatPane({
   onOpenBroadcast?(message: MessageDto): void;
   onReact?(message: MessageDto, emoji: string): Promise<void>;
   onReply?(message: MessageDto): void;
+  onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
@@ -872,6 +874,7 @@ export function ChatPane({
   const shouldFollowNewMessages = useRef(true);
   const restoredScrollKey = useRef<string>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [mobileTimestampMessageId, setMobileTimestampMessageId] = useState<string>();
 
   useLayoutEffect(() => {
     if (!scrollRef.current) return;
@@ -905,6 +908,7 @@ export function ChatPane({
         if (scrollRef.current) {
           shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
           setShowScrollToLatest(!shouldFollowNewMessages.current);
+          onScrollPositionChange?.(scrollRef.current, shouldFollowNewMessages.current);
           if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
         }
       }}
@@ -929,6 +933,7 @@ export function ChatPane({
           className="chat-message"
           aria-label={`${senderLabel} message`}
           tabIndex={-1}
+          onClick={() => setMobileTimestampMessageId((current) => current === message.id ? undefined : message.id)}
           sx={{
             alignSelf: "center",
             width: "min(1120px, 100%)",
@@ -938,11 +943,11 @@ export function ChatPane({
           }}
         >
           <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
-            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: 36, height: 36, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: 15, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
+            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
             <Box sx={{ minWidth: 0, width: fromUser ? "fit-content" : "min(100%, 960px)", maxWidth: fromUser ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
               {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
                 <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
-                <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" /></Box>
+                <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
               </Stack> : null}
               {fromUser ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
               <Box
@@ -999,6 +1004,7 @@ export function ChatPane({
             <MessageReactions reactions={message.reactions} />
               </Box>
               <MessageActionsAndTimestamp
+                mobileTimestampRevealed={mobileTimestampMessageId === message.id}
                 showTimestamp={false}
                 value={message.createdAt}
                 status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
@@ -1035,7 +1041,6 @@ export function ChatPane({
 
 export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   const { event } = item;
-  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   let title: string = event.type;
   let body = "";
 
@@ -1074,39 +1079,11 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
     body = `${event.path} · ${event.width}×${event.height}`;
   }
 
-  const copyCommand = event.type === "command" ? async () => {
-    try {
-      await copyText(event.command);
-      setCopyState("copied");
-    } catch {
-      setCopyState("failed");
-    }
-    window.setTimeout(() => setCopyState("idle"), 2_000);
-  } : undefined;
-  const copyLabel = copyState === "copied"
-    ? "Command copied"
-    : copyState === "failed" ? "Copy command failed" : "Copy command";
-
   return (
     <Box sx={{ borderLeft: 2, borderColor: "divider", pl: 1.25, py: 0.75 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Chip size="small" label={`#${item.seq}`} variant="outlined" />
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>{title}</Typography>
-        {copyCommand ? <>
-          <Tooltip title={copyLabel}>
-            <IconButton
-              size="small"
-              color={copyState === "failed" ? "error" : "inherit"}
-              aria-label="Copy command"
-              onClick={(clickEvent) => {
-                clickEvent.preventDefault();
-                clickEvent.stopPropagation();
-                void copyCommand();
-              }}
-            >{copyState === "copied" ? <CheckIcon fontSize="inherit" /> : <ContentCopyIcon fontSize="inherit" />}</IconButton>
-          </Tooltip>
-          <Box component="span" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{copyState === "idle" ? "" : copyLabel}</Box>
-        </> : null}
+        <Typography variant="subtitle2">{title}</Typography>
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, overflowWrap: "anywhere" }}>
         {body}
@@ -1459,14 +1436,7 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
   focusId?: string;
 }): JSX.Element {
   const groups = groupActivityByExecution(activity);
-  return <Stack
-    spacing={1}
-    className="ponderosa-scroll"
-    data-testid="activity-scroll-region"
-    tabIndex={0}
-    sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
-    aria-label="Agent activity"
-  >
+  return <Stack spacing={1} className="ponderosa-scroll" sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overflowX: "hidden" }} aria-label="Agent activity">
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Activity</Typography>
       <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
@@ -1729,9 +1699,8 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
     <Button
       fullWidth
       color="inherit"
-      onClick={() => onOpenReview ? onOpenReview(file.path) : setExpanded((value) => !value)}
-      aria-label={onOpenReview ? `Open current diff for ${file.path}` : `Show recorded change for ${file.path}`}
-      aria-expanded={onOpenReview ? undefined : expanded}
+      onClick={() => setExpanded((value) => !value)}
+      aria-expanded={expanded}
       sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
@@ -1743,7 +1712,6 @@ function ChangedFileEntry({ agentId, file, onOpenReview, onOpenReviewInNewTab }:
       Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
     </Typography>
     {onOpenReview ? <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => onOpenReview(file.path)} sx={{ mt: 0.5 }}>Open Current Diff</Button> : null}
-    {onOpenReview && file.diffAvailable ? <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5, ml: 0.5 }}>{expanded ? "Hide Recorded Change" : "Show Recorded Change"}</Button> : null}
     {expanded ? detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
       : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>File provenance could not be loaded.</Alert>
         : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>

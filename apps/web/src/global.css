@@ -113,6 +113,22 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+@media (max-width: 599.95px) {
+  html {
+    /* A slightly denser type scale for phone layouts; interactive targets keep
+       their explicit 44px sizing and no browser zoom is involved. */
+    font-size: 15px;
+  }
+
+  .ponderosa-composer {
+    margin-top: 6px;
+  }
+
+  .chat-message-actions {
+    margin-top: 2px;
+  }
+}
+
 button,
 input,
 textarea,

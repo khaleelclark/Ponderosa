@@ -20,6 +20,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
+import { browserTouchScrollDelta, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
 
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
@@ -50,7 +51,11 @@ export function BrowserPanel({
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
   const [typeText, setTypeText] = useState("");
-  const wheelAt = useRef(0);
+  const inputBusy = useRef(false);
+  const queuedScroll = useRef<BrowserScrollInput>();
+  const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
+  const suppressClick = useRef(false);
+  const refreshFrame = useRef<() => void>(() => undefined);
 
   const sessionQuery = useQuery({
     queryKey,
@@ -87,7 +92,10 @@ export function BrowserPanel({
       runId!,
       { ...request, expectedControlEpoch: session!.controlEpoch } as BrowserOperatorInputRequest,
     ),
-    onSuccess: update,
+    onSuccess: (next) => {
+      update(next);
+      refreshFrame.current();
+    },
   });
 
   useEffect(() => {
@@ -97,7 +105,12 @@ export function BrowserPanel({
     }
     let cancelled = false;
     let timer: number | undefined;
+    let loading = false;
+    let refreshRequested = false;
     const load = async (): Promise<void> => {
+      if (loading) { refreshRequested = true; return; }
+      loading = true;
+      refreshRequested = false;
       try {
         const frame = await api.getBrowserFrame(projectId, agentId, runId);
         if (cancelled) return;
@@ -113,12 +126,23 @@ export function BrowserPanel({
       } catch (error) {
         if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void load(), 700);
+        loading = false;
+        if (!cancelled) {
+          const delay = refreshRequested ? 0 : 1_500;
+          refreshRequested = false;
+          timer = window.setTimeout(() => void load(), delay);
+        }
       }
+    };
+    refreshFrame.current = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      refreshRequested = true;
+      void load();
     };
     void load();
     return () => {
       cancelled = true;
+      refreshFrame.current = () => undefined;
       if (timer !== undefined) window.clearTimeout(timer);
       setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return undefined; });
     };
@@ -134,7 +158,20 @@ export function BrowserPanel({
   const operatorControl = ready && session.controlOwner === "operator";
 
   const sendInput = (request: UnfencedBrowserInput): void => {
-    if (operatorControl && !input.isPending) input.mutate(request);
+    if (!operatorControl) return;
+    if (inputBusy.current) {
+      if (request.kind === "scroll") queuedScroll.current = mergeBrowserScrollInputs(queuedScroll.current, request);
+      return;
+    }
+    inputBusy.current = true;
+    input.mutate(request, {
+      onSettled: (_data, error) => {
+        inputBusy.current = false;
+        const next = queuedScroll.current;
+        queuedScroll.current = undefined;
+        if (!error && next) sendInput(next);
+      },
+    });
   };
 
   if (!standalone) return <Paper component="section" aria-label="Interactive browser in use" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
@@ -147,7 +184,7 @@ export function BrowserPanel({
   </Paper>;
 
   return (
-    <Paper component="section" aria-label="Interactive browser" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
+    <Paper component="section" aria-label="Interactive browser" className="ponderosa-scroll" square variant="outlined" sx={{ height: "100%", minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", borderInline: 0, borderTop: 0 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1, sm: 1.5 }, py: .75, minWidth: 0 }}>
         <LanguageIcon color={ready ? "primary" : "disabled"} fontSize="small" />
         <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -206,6 +243,7 @@ export function BrowserPanel({
                   tabIndex={operatorControl ? 0 : -1}
                   onClick={(event) => {
                     if (!operatorControl) return;
+                    if (suppressClick.current) { suppressClick.current = false; return; }
                     const rect = event.currentTarget.getBoundingClientRect();
                     sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT_WIDTH / rect.width, y: (event.clientY - rect.top) * VIEWPORT_HEIGHT / rect.height });
                   }}
@@ -215,11 +253,39 @@ export function BrowserPanel({
                     sendInput({ kind: "key", key: event.key });
                   }}
                   onWheel={(event) => {
-                    if (!operatorControl || Date.now() - wheelAt.current < 120) return;
-                    wheelAt.current = Date.now();
-                    sendInput({ kind: "scroll", deltaX: event.deltaX, deltaY: event.deltaY });
+                    if (!operatorControl) return;
+                    event.preventDefault();
+                    sendInput({
+                      kind: "scroll",
+                      deltaX: normalizeBrowserWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth),
+                      deltaY: normalizeBrowserWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight),
+                    });
                   }}
-                  sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", cursor: operatorControl ? "crosshair" : "default", outlineOffset: -3 }}
+                  onPointerDown={(event) => {
+                    if (!operatorControl || event.pointerType !== "touch") return;
+                    touchGesture.current = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY };
+                    event.currentTarget.setPointerCapture(event.pointerId);
+                  }}
+                  onPointerMove={(event) => {
+                    const gesture = touchGesture.current;
+                    if (!operatorControl || !gesture || gesture.pointerId !== event.pointerId) return;
+                    const deltaX = browserTouchScrollDelta(gesture.lastX, event.clientX);
+                    const deltaY = browserTouchScrollDelta(gesture.lastY, event.clientY);
+                    gesture.lastX = event.clientX;
+                    gesture.lastY = event.clientY;
+                    if (Math.abs(deltaX) + Math.abs(deltaY) < 2) return;
+                    suppressClick.current = true;
+                    event.preventDefault();
+                    sendInput({ kind: "scroll", deltaX, deltaY });
+                  }}
+                  onPointerUp={(event) => {
+                    if (touchGesture.current?.pointerId === event.pointerId) touchGesture.current = undefined;
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+                    if (suppressClick.current) window.setTimeout(() => { suppressClick.current = false; }, 0);
+                  }}
+                  onPointerCancel={() => { touchGesture.current = undefined; }}
+                  draggable={false}
+                  sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", touchAction: operatorControl ? "none" : "auto", cursor: operatorControl ? "crosshair" : "default", outlineOffset: -3 }}
                 /> : <Stack sx={{ position: "absolute", inset: 0, alignItems: "center", justifyContent: "center" }}><CircularProgress size={24} /></Stack>}
               </Box>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 1 }}>

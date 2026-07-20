@@ -39,6 +39,8 @@ describe("responsive compact controls", () => {
   it("uses the same accessible list navigation in the phone drawer and desktop shell", () => {
     expect(app.match(/<WorkspaceSidebar/g)).toHaveLength(2);
     expect(app).toContain('width: "min(100vw, 390px)", maxWidth: "100vw"');
+    expect(app).toContain("<SwipeableDrawer");
+    expect(app).toContain('aria-label="Close workspace navigation"');
     expect(app).toContain("setMobileNavOpen(false); navigateWorkspace(next)");
     expect(sidebar).toContain('aria-label="Primary navigation"');
     expect(sidebar).toContain('placeholder="Search Project Chats"');
@@ -52,13 +54,13 @@ describe("responsive compact controls", () => {
     expect(sidebar).not.toContain("maxHeight: \"34%\"");
   });
 
-  it("keeps mobile tabs touchable, horizontally contained, and browser-like", () => {
-    expect(tabs).not.toContain('display: { xs: "none", md: "flex" }');
+  it("removes workspace tabs on mobile while retaining the desktop tab strip", () => {
+    expect(app).toContain('theme.breakpoints.down("md")');
+    expect(app).toContain("!mobileWorkspace ? <WorkspaceTabs");
     expect(tabs).toContain('minWidth: { xs: 132, md: 140 }');
     expect(tabs).toContain('flex: "0 1 220px"');
     expect(tabs).toContain('overflowX: "auto"');
     expect(tabs).toContain('scrollSnapType: "x proximity"');
-    expect(tabs).toContain('width: { xs: 44, md: 36 }');
   });
 
   it("animates collapse without slowing pointer resize and honors reduced motion", () => {

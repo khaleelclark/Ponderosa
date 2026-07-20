@@ -97,4 +97,13 @@ describe("message timestamps", () => {
     expect(markup.indexOf("Copy")).toBeLessThan(markup.indexOf("Processed by Cabrillo"));
     expect(markup.indexOf("Processed by Cabrillo")).toBeLessThan(markup.indexOf("<time"));
   });
+
+  it("keeps desktop timestamps in place and adds a compact mobile timestamp only after reveal", () => {
+    const hidden = renderToStaticMarkup(<MessageActionsAndTimestamp value="2026-07-11T14:05:06.789Z" />);
+    const revealed = renderToStaticMarkup(<MessageActionsAndTimestamp value="2026-07-11T14:05:06.789Z" mobileTimestampRevealed />);
+
+    expect(hidden).not.toContain("data-mobile-message-timestamp");
+    expect(revealed).toContain("data-mobile-message-timestamp");
+    expect(revealed).toContain("display:none");
+  });
 });

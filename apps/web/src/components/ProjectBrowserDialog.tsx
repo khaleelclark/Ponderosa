@@ -10,6 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
+import { browserTouchScrollDelta, mergeBrowserScrollInputs, normalizeBrowserWheelDelta, type BrowserScrollInput } from "../browserInteraction";
 
 const VIEWPORT = { width: 1280, height: 720 } as const;
 type Input = BrowserOperatorInputRequest extends infer Item
@@ -32,7 +33,11 @@ export function ProjectBrowserDialog({
   const [frameUrl, setFrameUrl] = useState<string>();
   const [frameError, setFrameError] = useState<string>();
   const [typeText, setTypeText] = useState("");
-  const wheelAt = useRef(0);
+  const inputBusy = useRef(false);
+  const queuedScroll = useRef<BrowserScrollInput>();
+  const touchGesture = useRef<{ pointerId: number; lastX: number; lastY: number }>();
+  const suppressClick = useRef(false);
+  const refreshFrame = useRef<() => void>(() => undefined);
   const handledRequest = useRef(0);
 
   const sessionQuery = useQuery({
@@ -75,7 +80,10 @@ export function ProjectBrowserDialog({
   });
   const input = useMutation({
     mutationFn: (value: Input) => api.sendProjectBrowserInput(projectId!, { ...value, expectedControlEpoch: session!.controlEpoch } as BrowserOperatorInputRequest),
-    onSuccess: update,
+    onSuccess: (next) => {
+      update(next);
+      refreshFrame.current();
+    },
   });
 
   useEffect(() => {
@@ -97,7 +105,12 @@ export function ProjectBrowserDialog({
     }
     let cancelled = false;
     let timer: number | undefined;
+    let loading = false;
+    let refreshRequested = false;
     const load = async () => {
+      if (loading) { refreshRequested = true; return; }
+      loading = true;
+      refreshRequested = false;
       try {
         const frame = await api.getProjectBrowserFrame(projectId);
         if (cancelled) return;
@@ -113,19 +126,45 @@ export function ProjectBrowserDialog({
       } catch (error) {
         if (!cancelled) setFrameError(error instanceof Error ? error.message : String(error));
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void load(), 700);
+        loading = false;
+        if (!cancelled) {
+          const delay = refreshRequested ? 0 : 1_500;
+          refreshRequested = false;
+          timer = window.setTimeout(() => void load(), delay);
+        }
       }
+    };
+    refreshFrame.current = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      refreshRequested = true;
+      void load();
     };
     void load();
     return () => {
       cancelled = true;
+      refreshFrame.current = () => undefined;
       if (timer !== undefined) window.clearTimeout(timer);
       setFrameUrl((current) => { if (current) URL.revokeObjectURL(current); return undefined; });
     };
   }, [open, projectId, session?.id, session?.status]);
 
   const operator = session?.status === "ready" && session.controlOwner === "operator";
-  const sendInput = (value: Input) => { if (operator && !input.isPending) input.mutate(value); };
+  const sendInput = (value: Input): void => {
+    if (!operator) return;
+    if (inputBusy.current) {
+      if (value.kind === "scroll") queuedScroll.current = mergeBrowserScrollInputs(queuedScroll.current, value);
+      return;
+    }
+    inputBusy.current = true;
+    input.mutate(value, {
+      onSettled: (_data, error) => {
+        inputBusy.current = false;
+        const next = queuedScroll.current;
+        queuedScroll.current = undefined;
+        if (!error && next) sendInput(next);
+      },
+    });
+  };
   const error = openBrowser.error ?? navigate.error ?? reconnect.error ?? close.error ?? control.error ?? input.error;
   const submitAddress = () => {
     const url = address.trim();
@@ -163,10 +202,15 @@ export function ProjectBrowserDialog({
         {session?.status === "failed" ? <Alert severity="error">{session.failure ?? "Browser failed to start."}</Alert> : null}
         {(!session || missing || session.status === "closed") && !openBrowser.isPending ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Project browser is open.</Typography><Button variant="contained" onClick={() => openBrowser.mutate(address.trim() || undefined)}>Open Browser</Button></Stack> : null}
         {session?.status === "ready" && frameUrl ? <Box component="img" src={frameUrl} alt={`Project browser viewport: ${session.title ?? session.url ?? "page"}`} tabIndex={operator ? 0 : -1}
-          onClick={(event) => { if (!operator) return; const rect = event.currentTarget.getBoundingClientRect(); sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT.width / rect.width, y: (event.clientY - rect.top) * VIEWPORT.height / rect.height }); }}
+          onClick={(event) => { if (!operator) return; if (suppressClick.current) { suppressClick.current = false; return; } const rect = event.currentTarget.getBoundingClientRect(); sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT.width / rect.width, y: (event.clientY - rect.top) * VIEWPORT.height / rect.height }); }}
           onKeyDown={(event) => { if (!operator || event.key === "Tab" || event.key === "Escape") return; event.preventDefault(); sendInput({ kind: "key", key: event.key }); }}
-          onWheel={(event) => { if (!operator || Date.now() - wheelAt.current < 120) return; wheelAt.current = Date.now(); sendInput({ kind: "scroll", deltaX: event.deltaX, deltaY: event.deltaY }); }}
-          sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", cursor: operator ? "crosshair" : "default", outlineOffset: -3 }} /> : null}
+          onWheel={(event) => { if (!operator) return; event.preventDefault(); sendInput({ kind: "scroll", deltaX: normalizeBrowserWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth), deltaY: normalizeBrowserWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight) }); }}
+          onPointerDown={(event) => { if (!operator || event.pointerType !== "touch") return; touchGesture.current = { pointerId: event.pointerId, lastX: event.clientX, lastY: event.clientY }; event.currentTarget.setPointerCapture(event.pointerId); }}
+          onPointerMove={(event) => { const gesture = touchGesture.current; if (!operator || !gesture || gesture.pointerId !== event.pointerId) return; const deltaX = browserTouchScrollDelta(gesture.lastX, event.clientX); const deltaY = browserTouchScrollDelta(gesture.lastY, event.clientY); gesture.lastX = event.clientX; gesture.lastY = event.clientY; if (Math.abs(deltaX) + Math.abs(deltaY) < 2) return; suppressClick.current = true; event.preventDefault(); sendInput({ kind: "scroll", deltaX, deltaY }); }}
+          onPointerUp={(event) => { if (touchGesture.current?.pointerId === event.pointerId) touchGesture.current = undefined; if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); if (suppressClick.current) window.setTimeout(() => { suppressClick.current = false; }, 0); }}
+          onPointerCancel={() => { touchGesture.current = undefined; }}
+          draggable={false}
+          sx={{ width: "100%", height: "100%", objectFit: "contain", display: "block", touchAction: operator ? "none" : "auto", cursor: operator ? "crosshair" : "default", outlineOffset: -3 }} /> : null}
       </Box>
 
       <Stack spacing={1}>
