@@ -789,6 +789,22 @@ class MockAdapter implements Adapter {
   }
 }
 
+function retryFenceSqliteState(store: AgentStore) {
+  const rows = (table: string) => store.sqlite.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all();
+  return {
+    databaseBytes: store.sqlite.serialize().toString("base64"),
+    requests: rows("coordination_requests"),
+    requestUpdates: rows("coordination_request_updates"),
+    joins: rows("coordination_joins"),
+    activations: rows("agent_activations"),
+    outbox: rows("activation_outbox"),
+    retryLineage: rows("activation_delivery_retry_lineage"),
+    idempotency: rows("coordination_idempotency"),
+    runs: rows("scheduler_runs"),
+    runActivations: rows("scheduler_run_activations"),
+  };
+}
+
 class TestEventQueue implements AsyncIterable<AgentEvent> {
   private values: AgentEvent[] = [];
   private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
@@ -4599,6 +4615,14 @@ describe("server chunk F", () => {
     });
     expect(intake.statusCode).toBe(503);
     expect(intake.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    for (const blockedUrl of [
+      "/api/user-reactions",
+      `/api/conversations/${randomUUID()}/direct-replies`,
+    ]) {
+      const blocked = await app.inject({ method: "POST", url: blockedUrl, payload: {} });
+      expect(blocked.statusCode, blockedUrl).toBe(503);
+      expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    }
     expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
     expect(store.getRuns(agent.id)).toEqual([]);
     expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).statusCode).toBe(409);
@@ -4618,6 +4642,257 @@ describe("server chunk F", () => {
       expect.objectContaining({ dedupeKey: "startup:artifact-filesystem-capability", status: "resolved" }),
     ]));
     await restored.close();
+  });
+
+  it("retries a failed Request through the public API when artifact readiness is healthy", async () => {
+    const project = store.createProject({ label: "Healthy Request retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect((await app.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "healthy-request-original",
+      requests: [{
+        requestId: "healthy-request-original",
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "Original work" },
+      }],
+    });
+    coordination.updateRequest({
+      requestId: "healthy-request-original",
+      updateId: "healthy-request-failed",
+      kind: "failed",
+      actor: { kind: "agent", id: recipient.id },
+      payload: { text: "Failed before completion" },
+    });
+    const before = durableMutationState(store, dataDir, project.id);
+    const requestCountBefore = (store.sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM coordination_requests",
+    ).get() as { count: number }).count;
+    const joinCountBefore = (store.sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM coordination_joins",
+    ).get() as { count: number }).count;
+
+    const retried = await app.inject({
+      method: "POST",
+      url: "/api/requests/healthy-request-original/retry",
+      payload: { idempotencyKey: "healthy-request-retry" },
+    });
+    expect(retried.statusCode, retried.body).toBe(200);
+    const result = retried.json<{ requestIds: string[]; joinId?: string; replayed: boolean; retryOfRequestId: string }>();
+    expect(result).toMatchObject({
+      requestIds: [expect.stringMatching(/^healthy-request-original:retry:/)],
+      joinId: expect.stringMatching(/^healthy-request-original:retry:.*:join$/),
+      replayed: false,
+      retryOfRequestId: "healthy-request-original",
+    });
+    expect(coordination.getRequest("healthy-request-original")?.state).toBe("failed");
+    expect(coordination.getRequest(result.requestIds[0]!)?.payload).toMatchObject({
+      text: "Original work",
+      retryOfRequestId: "healthy-request-original",
+      recoveryInstruction: expect.stringContaining("Audit current state"),
+    });
+    const after = durableMutationState(store, dataDir, project.id);
+    expect(after.activations).toBe(before.activations + 1);
+    expect(after.outbox).toBe(before.outbox + 1);
+    expect(after.runs).toBe(before.runs);
+    expect(after.activeLeases).toBe(0);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_requests").get() as { count: number }).count)
+      .toBe(requestCountBefore + 1);
+    expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get() as { count: number }).count)
+      .toBe(joinCountBefore + 1);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects Agent creation without procfs before opening work or metadata can persist", async () => {
+    const project = store.createProject({ label: "Blocked Agent creation", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Opening room" });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const agentsBefore = structuredClone(store.listAgents(project.id));
+    const messagesBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const opening = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: {
+        title: "Must not exist",
+        engine: "codex",
+        conversationId: conversation.id,
+        initialMessage: "Must not create opening work",
+      },
+    });
+    expect(opening.statusCode).toBe(503);
+    expect(opening.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(agentsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+
+    const metadataOnly = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Also blocked", engine: "codex", conversationId: conversation.id },
+    });
+    expect(metadataOnly.statusCode).toBe(503);
+    expect(metadataOnly.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(agentsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects Request retry without procfs and leaves Request, Activation, outbox, and scheduler bytes unchanged", async () => {
+    const project = store.createProject({ label: "Blocked Request retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const requester = store.createAgent(project.id, { title: "Requester", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      conversationId: conversation.id,
+      requesterAgentId: requester.id,
+      actorScope: "user:local-operator",
+      idempotencyKey: "blocked-request-original",
+      requests: [{
+        requestId: "blocked-request-original",
+        recipientAgentId: recipient.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "Original work" },
+      }],
+    });
+    coordination.updateRequest({
+      requestId: "blocked-request-original",
+      updateId: "blocked-request-failed",
+      kind: "failed",
+      actor: { kind: "agent", id: recipient.id },
+      payload: { text: "Failed before completion" },
+    });
+    const requestBefore = structuredClone(coordination.getRequest("blocked-request-original"));
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/api/requests/blocked-request-original/retry",
+      payload: { idempotencyKey: "must-not-persist" },
+    });
+    expect(blocked.statusCode).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(coordination.getRequest("blocked-request-original")).toEqual(requestBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+  });
+
+  it("rejects delivery retry without procfs and leaves delivery, Activation, outbox, and scheduler bytes unchanged", async () => {
+    const project = store.createProject({ label: "Blocked delivery retry", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Retry room" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const eventId = "blocked-delivery-communication";
+    const communication: CommunicationEvent = {
+      eventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" },
+      intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id },
+      text: "Original operator delivery",
+      createdAt: "2026-07-20T00:00:00.000Z",
+    };
+    const original = coordination.recordRuntimeCommunication({
+      id: eventId,
+      projectId: project.id,
+      sender: communication.sender,
+      intent: communication.intent,
+      audience: communication.audience,
+      scopeKey: `conversation:${conversation.id}`,
+      payload: { communication, dispatch: { conversationId: conversation.id, text: communication.text } },
+      activation: {
+        agentId: recipient.id,
+        kind: "human_message",
+        priority: 100,
+        dispatchPolicy: "steer_or_run",
+        promptClass: "human",
+      },
+      now: communication.createdAt,
+    });
+    expect(original.activationId).toBeTruthy();
+    store.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'failed', terminal_outcome = 'permanent_failure',
+        terminal_at = '2026-07-20T00:00:01.000Z', updated_at = '2026-07-20T00:00:01.000Z'
+      WHERE id = ?
+    `).run(original.activationId);
+    store.sqlite.prepare("DELETE FROM activation_outbox WHERE activation_id = ?").run(original.activationId);
+    const receiptBefore = structuredClone(coordination.deliveryReceiptsForCommunication(project.id, eventId));
+    expect(receiptBefore).toEqual([expect.objectContaining({
+      activationId: original.activationId,
+      state: "failed",
+      canRetry: true,
+    })]);
+    const durableBefore = durableMutationState(store, dataDir, project.id);
+    const sqliteBefore = retryFenceSqliteState(store);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/message-deliveries/${original.activationId}/retry`,
+      payload: { idempotencyKey: "must-not-persist" },
+    });
+    expect(blocked.statusCode).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(coordination.deliveryReceiptsForCommunication(project.id, eventId)).toEqual(receiptBefore);
+    expect(retryFenceSqliteState(store)).toEqual(sqliteBefore);
+    expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
   });
 
   it("lets provider-confirmed entitlement failure override a stale login-positive probe", async () => {
