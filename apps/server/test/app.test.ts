@@ -12,7 +12,7 @@ import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions } from "@ponderosa/core";
-import { AgentStore, CoordinationV3Store, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
+import { AgentStore, CoordinationV3Store, EventLog, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
 import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
@@ -5361,33 +5361,25 @@ describe("server chunk F", () => {
     await restarted.close();
   });
 
-  it("persists legacy provider-evidence migration completion and skips historical scans on restart", async () => {
-    const project = store.createProject({ label: "Legacy provider evidence", hostPath: repoDir });
-    const agent = store.createAgent(project.id, { title: "Legacy runtime", engine: "codex" });
+  it("does not reconstruct provider evidence by scanning historical Agent events at startup", async () => {
+    const project = store.createProject({ label: "Historical provider events", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Historical runtime", engine: "codex" });
     store.appendEvent(agent.id, { type: "error", message: "subscription access denied" });
-    const firstScan = vi.spyOn(store, "readEvents");
-    const first = createServer({ dataDir, store, engines, logger: false });
-    // One read belongs to interrupted-execution recovery; the second is the
-    // one-time legacy provider-evidence migration under test.
-    expect(firstScan).toHaveBeenCalledTimes(2);
-    expect(firstScan).toHaveBeenCalledWith(agent.id);
-    expect(readFileSync(path.join(dataDir, "engine-availability.jsonl"), "utf8"))
-      .toContain('"migrationId":"provider-runtime-evidence-v1"');
-    firstScan.mockRestore();
-    await first.close();
-
-    store = new AgentStore(dataDir);
-    const restartScan = vi.spyOn(store, "readEvents");
-    const restarted = createServer({ dataDir, store, engines, logger: false });
-    expect(restartScan).toHaveBeenCalledTimes(1);
-    expect((await restarted.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
+    // Isolate compatibility reconstruction from the separate execution-crash
+    // recovery pass, which owns its own Agent event-log scan.
+    const executionRecovery = vi.spyOn(store, "recoverInterruptedExecutions").mockReturnValue([]);
+    const historicalScan = vi.spyOn(EventLog.prototype, "readAll");
+    const app = createServer({ dataDir, store, engines, logger: false });
+    expect(executionRecovery).toHaveBeenCalledOnce();
+    expect(historicalScan).not.toHaveBeenCalled();
+    expect((await app.inject({ method: "GET", url: "/api/engines" })).json()).toContainEqual(expect.objectContaining({
       id: "codex",
-      available: false,
-      availabilityDetail: expect.stringContaining("subscription access denied"),
+      available: true,
     }));
-    expect(restartScan).toHaveBeenCalledTimes(1);
-    restartScan.mockRestore();
-    await restarted.close();
+    expect(existsSync(path.join(dataDir, "engine-availability.jsonl"))).toBe(false);
+    historicalScan.mockRestore();
+    executionRecovery.mockRestore();
+    await app.close();
   });
 
   it("keeps denied work queued and releases it only after an explicit successful provider probe", async () => {

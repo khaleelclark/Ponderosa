@@ -1,7 +1,7 @@
 import { chmodSync, closeSync, existsSync, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import path from "node:path";
 
-export type EngineAvailabilityEvidenceSource = "provider_run" | "operator_probe" | "legacy_recovery";
+export type EngineAvailabilityEvidenceSource = "provider_run" | "operator_probe";
 
 export interface EngineAvailabilityEvidence {
   engineId: string;
@@ -11,12 +11,6 @@ export interface EngineAvailabilityEvidence {
   observedAt: string;
 }
 
-interface EngineAvailabilityMigrationEvidence {
-  kind: "migration";
-  migrationId: string;
-  completedAt: string;
-}
-
 /**
  * Append-only operational evidence about real provider access. A configured
  * credential is deliberately not evidence that the provider will accept work.
@@ -24,7 +18,6 @@ interface EngineAvailabilityMigrationEvidence {
 export class EngineAvailabilityStore {
   private readonly filePath: string;
   private readonly latest = new Map<string, EngineAvailabilityEvidence>();
-  private readonly completedMigrations = new Set<string>();
   private appendNeedsSeparator = false;
 
   constructor(dataDir: string) {
@@ -35,15 +28,10 @@ export class EngineAvailabilityStore {
     for (const line of contents.split("\n")) {
       if (!line.trim()) continue;
       try {
-        const value = JSON.parse(line) as Partial<EngineAvailabilityEvidence & EngineAvailabilityMigrationEvidence>;
-        if (value.kind === "migration" && typeof value.migrationId === "string" &&
-            typeof value.completedAt === "string") {
-          this.completedMigrations.add(value.migrationId);
-          continue;
-        }
+        const value = JSON.parse(line) as Partial<EngineAvailabilityEvidence>;
         if (typeof value.engineId !== "string" || typeof value.available !== "boolean" ||
             typeof value.observedAt !== "string" ||
-            !["provider_run", "operator_probe", "legacy_recovery"].includes(value.source ?? "")) continue;
+            !["provider_run", "operator_probe"].includes(value.source ?? "")) continue;
         this.latest.set(value.engineId, {
           engineId: value.engineId,
           available: value.available,
@@ -66,17 +54,6 @@ export class EngineAvailabilityStore {
     return evidence && !evidence.available ? evidence : undefined;
   }
 
-  migrationCompleted(migrationId: string): boolean {
-    return this.completedMigrations.has(migrationId);
-  }
-
-  completeMigration(migrationId: string, completedAt = new Date().toISOString()): void {
-    if (this.completedMigrations.has(migrationId)) return;
-    const evidence: EngineAvailabilityMigrationEvidence = { kind: "migration", migrationId, completedAt };
-    this.appendDurable(evidence);
-    this.completedMigrations.add(migrationId);
-  }
-
   record(input: Omit<EngineAvailabilityEvidence, "observedAt"> & { observedAt?: string }): EngineAvailabilityEvidence {
     const evidence: EngineAvailabilityEvidence = {
       engineId: input.engineId,
@@ -90,7 +67,7 @@ export class EngineAvailabilityStore {
     return evidence;
   }
 
-  private appendDurable(record: EngineAvailabilityEvidence | EngineAvailabilityMigrationEvidence): void {
+  private appendDurable(record: EngineAvailabilityEvidence): void {
     const existed = existsSync(this.filePath);
     const descriptor = openSync(this.filePath, "a", 0o600);
     try {

@@ -35,18 +35,23 @@ describe("EngineAvailabilityStore", () => {
     expect(readFileSync(path.join(dir, "engine-availability.jsonl"), "utf8").trim().split("\n")).toHaveLength(2);
   });
 
-  it("persists a versioned migration marker after an interrupted trailing record", () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-migration-"));
+  it("persists current provider evidence after an interrupted trailing record", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-evidence-"));
     dirs.push(dir);
     const file = path.join(dir, "engine-availability.jsonl");
-    writeFileSync(file, '{"kind":"migration"', "utf8");
+    writeFileSync(file, '{"engineId":"codex"', "utf8");
 
     const first = new EngineAvailabilityStore(dir);
-    expect(first.migrationCompleted("provider-runtime-evidence-v1")).toBe(false);
-    first.completeMigration("provider-runtime-evidence-v1", "2026-07-20T00:00:00.000Z");
+    first.record({
+      engineId: "codex",
+      available: false,
+      detail: "subscription access denied",
+      source: "provider_run",
+      observedAt: "2026-07-20T00:00:00.000Z",
+    });
 
     const restarted = new EngineAvailabilityStore(dir);
-    expect(restarted.migrationCompleted("provider-runtime-evidence-v1")).toBe(true);
-    expect(readFileSync(file, "utf8")).toContain('\n{"kind":"migration","migrationId":"provider-runtime-evidence-v1"');
+    expect(restarted.denial("codex")).toMatchObject({ detail: "subscription access denied" });
+    expect(readFileSync(file, "utf8")).toContain('\n{"engineId":"codex","available":false');
   });
 });

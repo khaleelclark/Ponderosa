@@ -2552,36 +2552,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       cleanupPending: !(receipt.storageCleanupCompleted && receipt.serverCleanupCompleted),
     };
   };
-  // Migrate pre-V3.1.3 provider evidence exactly once. A durable completion
-  // marker prevents every daemon construction from rescanning all Agent logs.
-  const legacyProviderEvidenceMigration = "provider-runtime-evidence-v1";
-  if (!engineAvailability.migrationCompleted(legacyProviderEvidenceMigration)) {
-    const latestRuntimeEvidence = new Map<string, { failure?: { detail: string; at: number }; successAt?: number }>();
-    for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
-      if (engineAvailability.get(agent.activeEngine)) continue;
-      const evidence = latestRuntimeEvidence.get(agent.activeEngine) ?? {};
-      for (const stored of store.readEvents(agent.id)) {
-        const at = Date.parse(stored.ts);
-        if (stored.event.type === "error" && classifyProviderFailure(stored.event.message) === "authentication" &&
-            (!evidence.failure || at >= evidence.failure.at)) evidence.failure = { detail: stored.event.message, at };
-        if (stored.event.type === "agent_lifecycle" && stored.event.status === "completed" && at >= (evidence.successAt ?? 0)) {
-          evidence.successAt = at;
-        }
-      }
-      latestRuntimeEvidence.set(agent.activeEngine, evidence);
-    }
-    for (const [engineId, evidence] of latestRuntimeEvidence) if (!engineAvailability.get(engineId) && evidence.failure &&
-        evidence.failure.at > (evidence.successAt ?? 0)) {
-      engineAvailability.record({
-        engineId,
-        available: false,
-        detail: evidence.failure.detail,
-        source: "legacy_recovery",
-        observedAt: new Date(evidence.failure.at).toISOString(),
-      });
-    }
-    engineAvailability.completeMigration(legacyProviderEvidenceMigration);
-  }
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
     if (denial) createOperationalNotification({
