@@ -150,7 +150,7 @@ import {
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, publishManagedArtifactContent, readManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, publishManagedArtifactContent, openManagedArtifactContent, readManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type ManagedArtifactContentHandle, type ManagedArtifactAsyncReadFaults, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
 import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
@@ -615,6 +615,8 @@ export interface CreateServerOptions {
   };
   /** Deterministic workspace-derived artifact read seams; never enabled in production configuration. */
   workspaceArtifactReadFaults?: WorkspaceArtifactReadFaults;
+  /** Deterministic async managed-artifact read seam; never enabled in production configuration. */
+  managedArtifactReadFaults?: ManagedArtifactAsyncReadFaults;
   /** Deterministic startup capability seam; production probes Linux /proc/self/fd. */
   artifactFilesystemCapabilityProbe?: () => ReadinessDto["checks"]["artifactFilesystem"];
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
@@ -13220,9 +13222,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectId: string,
     agentId: string,
     artifactId: string,
-  ): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> {
+    signal?: AbortSignal,
+  ): Promise<{ body?: Buffer; managed?: ManagedArtifactContentHandle; name: string; mediaType: string; size: number } | undefined> {
     const project = store.getProject(projectId);
-    const generatedPdfSource = async (): Promise<{ body: Buffer; name: string; mediaType: string } | undefined> => {
+    const generatedPdfSource = async (): Promise<{ body: Buffer; name: string; mediaType: string; size: number } | undefined> => {
       const agent = store.getAgentDetail(agentId, 1, false)?.agent;
       if (!project || !agent || agent.projectId !== project.id) return undefined;
       const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
@@ -13234,7 +13237,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         maxBytes: 32 * 1024 * 1024,
         faults: opts.workspaceArtifactReadFaults,
       });
-      return source ? { body: source.body, name: source.name, mediaType: "application/pdf" } : undefined;
+      return source ? { body: source.body, name: source.name, mediaType: "application/pdf", size: source.body.length } : undefined;
     };
     const managed = store.getProjectArtifact(projectId, artifactId);
     if (project && managed) {
@@ -13242,51 +13245,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (managed.kind === "diff" && managed.sourcePath?.toLowerCase().endsWith(".pdf")) {
         return generatedPdfSource();
       }
-      const runtime = assets.authoritativeRuntimeArtifactById(projectId, artifactId);
+      const runtime = assets.authoritativeRuntimeArtifactMetadataById(projectId, artifactId);
       if (runtime) {
-        if (!managedProjectArtifactAgreesWithRuntime(managed, runtime.artifact)) return undefined;
-        return {
-          body: runtime.body,
-          name: managed.summary ?? path.basename(managed.path),
-          mediaType: managed.mediaType ?? "application/octet-stream",
-        };
+        if (!managedProjectArtifactAgreesWithRuntime(managed, runtime)) return undefined;
       }
       if (managed.size === undefined || !managed.mediaType || !managed.sha256) return undefined;
       if (managed.kind === "generated_file") {
-        const authoritative = assets.authoritativeGeneratedArtifact(projectId, managed);
-        if (authoritative) return {
-          body: authoritative.body,
-          name: managed.summary ?? path.basename(managed.path),
-          mediaType: managed.mediaType,
-        };
+        if (!assets.authoritativeGeneratedArtifactMetadata(projectId, managed)) return undefined;
       }
-      const authoritative = readManagedArtifactContent(
+      const authoritative = await openManagedArtifactContent(
         opts.dataDir, projectId, managed.id, managed.size, managed.sha256,
+        { signal, faults: opts.managedArtifactReadFaults },
       );
       return authoritative ? {
-        body: authoritative.body,
+        managed: authoritative,
         name: managed.summary ?? path.basename(managed.path),
         mediaType: managed.mediaType,
+        size: authoritative.size,
       } : undefined;
     }
     return generatedPdfSource();
   }
 
-  function sendGeneratedPreview(
+  async function sendGeneratedPreview(
     reply: import("fastify").FastifyReply,
-    file: { body: Buffer; name: string; mediaType: string },
+    file: { body?: Buffer; managed?: ManagedArtifactContentHandle; name: string; mediaType: string; size: number },
+    signal?: AbortSignal,
   ) {
     const activeDocument = file.mediaType === "text/html" || file.mediaType === "image/svg+xml";
     const textual = file.mediaType.startsWith("text/") || file.mediaType === "application/json";
-    const utf8Body = textual ? boundedUtf8Preview(file.body, MAX_FILE_BYTES) : undefined;
-    const binaryFallback = textual && utf8Body === undefined;
-    const body = textual
-      ? utf8Body ?? file.body.subarray(0, Math.min(file.body.length, MAX_FILE_BYTES))
-      : file.body;
-    if (body.length < file.body.length) {
-      reply.header("X-Ponderosa-Preview-Truncated", "true")
-        .header("X-Ponderosa-Artifact-Bytes", String(file.body.length));
-    }
     // The web app frames previews from this authenticated same-origin route;
     // the iframe/CSP sandbox supplies the untrusted document's opaque origin.
     reply.header("X-Frame-Options", "SAMEORIGIN");
@@ -13300,20 +13287,130 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         .header("Referrer-Policy", "no-referrer")
         .header("X-Content-Type-Options", "nosniff");
     }
-    return reply.type(binaryFallback ? "application/octet-stream" : file.mediaType)
+    if (!textual && file.managed) {
+      const body = file.managed.createReadStream(signal);
+      return {
+        body,
+        response: reply.type(file.mediaType)
+          .header("Content-Length", String(file.size))
+          .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline")),
+      };
+    }
+    const source = file.body ?? await file.managed!.readRange(MAX_FILE_BYTES + 4, signal);
+    await file.managed?.close();
+    const utf8Body = textual ? boundedUtf8Preview(source, MAX_FILE_BYTES) : undefined;
+    const binaryFallback = textual && utf8Body === undefined;
+    const body = textual
+      ? utf8Body ?? source.subarray(0, Math.min(source.length, MAX_FILE_BYTES))
+      : source;
+    if (body.length < file.size) {
+      reply.header("X-Ponderosa-Preview-Truncated", "true")
+        .header("X-Ponderosa-Artifact-Bytes", String(file.size));
+    }
+    return {
+      body,
+      response: reply.type(binaryFallback ? "application/octet-stream" : file.mediaType)
       .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
-      .send(body);
+    };
+  }
+
+  function beginArtifactTransfer(
+    projectId: string,
+    weight: number,
+    request: { raw: NodeJS.EventEmitter },
+    reply: { raw: NodeJS.EventEmitter },
+  ): { signal: AbortSignal; finish: () => void } | undefined {
+    const release = acquireProjectFileTransfer(projectId, weight);
+    if (!release) return undefined;
+    const controller = new AbortController();
+    let finished = false;
+    const abort = (): void => controller.abort(new Error("managed artifact request disconnected"));
+    request.raw.once("aborted", abort);
+    reply.raw.once("close", abort);
+    return {
+      signal: controller.signal,
+      finish: () => {
+        if (finished) return;
+        finished = true;
+        request.raw.removeListener("aborted", abort);
+        reply.raw.removeListener("close", abort);
+        release();
+      },
+    };
+  }
+
+  async function serveGeneratedPreview(
+    request: { raw: NodeJS.EventEmitter },
+    reply: import("fastify").FastifyReply,
+    projectId: string,
+    agentId: string,
+    artifactId: string,
+  ) {
+    if (!store.getProject(projectId)) return reply.code(404).send({ error: "project not found" });
+    const transfer = beginArtifactTransfer(projectId, PROJECT_FILE_PREVIEW_WEIGHT, request, reply);
+    if (!transfer) return reply.code(429).header("Retry-After", "1").send({ error: "artifact preview capacity exceeded" });
+    let file: Awaited<ReturnType<typeof generatedFile>>;
+    try {
+      file = await generatedFile(projectId, agentId, artifactId, transfer.signal);
+      if (!file) {
+        transfer.finish();
+        return reply.code(404).send({ error: "generated artifact not found" });
+      }
+      const prepared = await sendGeneratedPreview(reply, file, transfer.signal);
+      if (prepared.body instanceof Readable) bindProjectFileTransferLifecycle(request, reply, prepared.body, transfer.finish);
+      else transfer.finish();
+      return prepared.response.send(prepared.body);
+    } catch (error) {
+      await file?.managed?.close();
+      transfer.finish();
+      if (transfer.signal.aborted) return reply;
+      throw error;
+    }
+  }
+
+  async function serveGeneratedDownload(
+    request: { raw: NodeJS.EventEmitter },
+    reply: import("fastify").FastifyReply,
+    projectId: string,
+    agentId: string,
+    artifactId: string,
+  ) {
+    if (!store.getProject(projectId)) return reply.code(404).send({ error: "project not found" });
+    const transfer = beginArtifactTransfer(projectId, PROJECT_FILE_DOWNLOAD_WEIGHT, request, reply);
+    if (!transfer) return reply.code(429).header("Retry-After", "1").send({ error: "artifact download capacity exceeded" });
+    let file: Awaited<ReturnType<typeof generatedFile>>;
+    try {
+      file = await generatedFile(projectId, agentId, artifactId, transfer.signal);
+      if (!file) {
+        transfer.finish();
+        return reply.code(404).send({ error: "generated artifact not found" });
+      }
+      const response = reply.type(file.mediaType)
+        .header("Content-Length", String(file.size))
+        .header("Content-Disposition", contentDisposition(file.name));
+      if (file.managed) {
+        const body = file.managed.createReadStream(transfer.signal);
+        bindProjectFileTransferLifecycle(request, reply, body, transfer.finish);
+        return response.send(body);
+      }
+      transfer.finish();
+      return response.send(file.body!);
+    } catch (error) {
+      await file?.managed?.close();
+      transfer.finish();
+      if (transfer.signal.aborted) return reply;
+      throw error;
+    }
   }
 
   app.get<{ Params: { projectId: string; aid: string } }>(
     "/api/projects/:projectId/artifacts/:aid/preview",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
-      const file = artifact && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)
-        ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id)
-        : undefined;
-      if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return sendGeneratedPreview(reply, file);
+      if (!artifact || !store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)) {
+        return reply.code(404).send({ error: "generated artifact not found" });
+      }
+      return serveGeneratedPreview(request, reply, request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id);
     },
   );
 
@@ -13321,29 +13418,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     "/api/projects/:projectId/artifacts/:aid/download",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
-      const file = artifact && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)
-        ? await generatedFile(request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id)
-        : undefined;
-      if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return reply.type(file.mediaType).header("Content-Disposition", contentDisposition(file.name)).send(file.body);
+      if (!artifact || !store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)) {
+        return reply.code(404).send({ error: "generated artifact not found" });
+      }
+      return serveGeneratedDownload(request, reply, request.params.projectId, artifact.originAgentId ?? artifact.agentId, artifact.id);
     },
   );
 
   app.get<{ Params: { projectId: string; id: string; aid: string } }>(
     "/api/projects/:projectId/agents/:id/generated-artifacts/:aid/preview",
     async (request, reply) => {
-      const file = await generatedFile(request.params.projectId, request.params.id, request.params.aid);
-      if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return sendGeneratedPreview(reply, file);
+      return serveGeneratedPreview(request, reply, request.params.projectId, request.params.id, request.params.aid);
     },
   );
 
   app.get<{ Params: { projectId: string; id: string; aid: string } }>(
     "/api/projects/:projectId/agents/:id/generated-artifacts/:aid/download",
     async (request, reply) => {
-      const file = await generatedFile(request.params.projectId, request.params.id, request.params.aid);
-      if (!file) return reply.code(404).send({ error: "generated artifact not found" });
-      return reply.type(file.mediaType).header("Content-Disposition", contentDisposition(file.name)).send(file.body);
+      return serveGeneratedDownload(request, reply, request.params.projectId, request.params.id, request.params.aid);
     },
   );
 
@@ -13354,11 +13446,38 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!agent || agent.projectId !== request.params.projectId) return reply.code(404).send({ error: "agent not found" });
       const artifact = store.getArtifact(agent.id, request.params.aid);
       if (!artifact || artifact.kind !== "screenshot") return reply.code(404).send({ error: "browser screenshot not found" });
-      const file = await generatedFile(agent.projectId, agent.id, artifact.id);
-      if (!file || file.mediaType !== "image/png") return reply.code(404).send({ error: "browser screenshot not found" });
-      const response = reply.type("image/png").header("cache-control", "private, no-store");
-      if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(file.name));
-      return response.send(file.body);
+      const transfer = beginArtifactTransfer(
+        agent.projectId,
+        request.query.download === "1" ? PROJECT_FILE_DOWNLOAD_WEIGHT : PROJECT_FILE_PREVIEW_WEIGHT,
+        request,
+        reply,
+      );
+      if (!transfer) return reply.code(429).header("Retry-After", "1").send({ error: "browser artifact capacity exceeded" });
+      let file: Awaited<ReturnType<typeof generatedFile>>;
+      try {
+        file = await generatedFile(agent.projectId, agent.id, artifact.id, transfer.signal);
+        if (!file || file.mediaType !== "image/png") {
+          await file?.managed?.close();
+          transfer.finish();
+          return reply.code(404).send({ error: "browser screenshot not found" });
+        }
+        const response = reply.type("image/png")
+          .header("Content-Length", String(file.size))
+          .header("cache-control", "private, no-store");
+        if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(file.name));
+        if (file.managed) {
+          const body = file.managed.createReadStream(transfer.signal);
+          bindProjectFileTransferLifecycle(request, reply, body, transfer.finish);
+          return response.send(body);
+        }
+        transfer.finish();
+        return response.send(file.body!);
+      } catch (error) {
+        await file?.managed?.close();
+        transfer.finish();
+        if (transfer.signal.aborted) return reply;
+        throw error;
+      }
     },
   );
 
@@ -13371,18 +13490,33 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!artifact) return reply.code(404).send({ error: "artifact not found" });
       const managed = store.getProjectArtifact(agent.projectId, artifact.id);
       if (!managed?.size || !managed.sha256) return reply.code(404).send({ error: "artifact content not found" });
-      const file = readManagedArtifactContent(opts.dataDir, agent.projectId, managed.id, managed.size, managed.sha256);
-      if (!file) return reply.code(404).send({ error: "artifact content not found" });
-      const preview = boundedUtf8Preview(file.body, MAX_FILE_BYTES);
-      const previewEnd = preview?.length ?? 0;
-      const content = preview?.toString("utf8") ?? "";
-      return {
-        ...managed,
-        content,
-        contentType: preview ? contentTypeForArtifact(managed.path) : "application/octet-stream",
-        truncated: previewEnd < file.body.length,
-        totalBytes: file.body.length,
-      };
+      const transfer = beginArtifactTransfer(agent.projectId, PROJECT_FILE_PREVIEW_WEIGHT, request, reply);
+      if (!transfer) return reply.code(429).header("Retry-After", "1").send({ error: "artifact viewer capacity exceeded" });
+      let file: ManagedArtifactContentHandle | undefined;
+      try {
+        file = await openManagedArtifactContent(
+          opts.dataDir, agent.projectId, managed.id, managed.size, managed.sha256,
+          { signal: transfer.signal, faults: opts.managedArtifactReadFaults },
+        );
+        if (!file) return reply.code(404).send({ error: "artifact content not found" });
+        const source = await file.readRange(MAX_FILE_BYTES + 4, transfer.signal);
+        const preview = boundedUtf8Preview(source, MAX_FILE_BYTES);
+        const previewEnd = preview?.length ?? 0;
+        const content = preview?.toString("utf8") ?? "";
+        return {
+          ...managed,
+          content,
+          contentType: preview ? contentTypeForArtifact(managed.path) : "application/octet-stream",
+          truncated: previewEnd < file.size,
+          totalBytes: file.size,
+        };
+      } catch (error) {
+        if (transfer.signal.aborted) return reply;
+        throw error;
+      } finally {
+        await file?.close();
+        transfer.finish();
+      }
     },
   );
 

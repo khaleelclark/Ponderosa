@@ -50,6 +50,15 @@ export interface StreamProcessOptions {
 }
 
 const POST_EXIT_STDOUT_DRAIN_MS = 250;
+const LIVE_STDOUT_BUFFER_RECORDS = 64;
+const LIVE_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
+const TERMINAL_STDOUT_BUFFER_RECORDS = 512;
+const TERMINAL_STDOUT_BUFFER_BYTES = 4 * 1024 * 1024;
+
+function bufferedRecordBytes(raw: unknown): number {
+  try { return Buffer.byteLength(JSON.stringify(raw), "utf8"); }
+  catch { return TERMINAL_STDOUT_BUFFER_BYTES + 1; }
+}
 
 /**
  * Spawn a CLI, parse its stdout as JSONL, and yield mapped AgentEvents. On abort,
@@ -147,13 +156,15 @@ export async function* streamProcess(
       // successful short-lived CLI can exit while its final JSONL records are
       // already buffered; a slow consumer must not lose those records merely
       // because the bounded post-root drain deadline expires between yields.
-      const buffered: unknown[] = [];
+      const buffered: Array<{ raw: unknown; bytes: number }> = [];
+      let bufferedBytes = 0;
       let wake: (() => void) | undefined;
       let releaseProducer: (() => void) | undefined;
       let rootHasExited = false;
       let parsingDone = false;
       let parsingError: unknown;
       let stdoutDrainDeadlineReached = false;
+      let terminalBufferExceeded = false;
       void rootExit.then(() => {
         rootHasExited = true;
         releaseProducer?.();
@@ -162,15 +173,26 @@ export async function* streamProcess(
       const parsing = (async () => {
         try {
           for await (const raw of parseJsonlChunks(stdout as AsyncIterable<string>)) {
-            buffered.push(raw);
+            const bytes = bufferedRecordBytes(raw);
+            if (rootHasExited && (bytes > TERMINAL_STDOUT_BUFFER_BYTES ||
+                buffered.length >= TERMINAL_STDOUT_BUFFER_RECORDS ||
+                bufferedBytes + bytes > TERMINAL_STDOUT_BUFFER_BYTES)) {
+              terminalBufferExceeded = true;
+              stdout.destroy();
+              break;
+            }
+            buffered.push({ raw, bytes });
+            bufferedBytes += bytes;
             wake?.();
             wake = undefined;
             // Preserve ordinary stream backpressure during a live Run. Once
             // the root exits, drain the finite terminal pipe contents eagerly
             // so downstream persistence latency cannot lose successful output.
-            if (!rootHasExited && buffered.length >= 64) {
+            if (!rootHasExited && (buffered.length >= LIVE_STDOUT_BUFFER_RECORDS ||
+                bufferedBytes >= LIVE_STDOUT_BUFFER_BYTES)) {
               await new Promise<void>((resolve) => {
-                if (rootHasExited || buffered.length < 64) resolve();
+                if (rootHasExited || (buffered.length < LIVE_STDOUT_BUFFER_RECORDS &&
+                    bufferedBytes < LIVE_STDOUT_BUFFER_BYTES)) resolve();
                 else releaseProducer = resolve;
               });
             }
@@ -197,16 +219,23 @@ export async function* streamProcess(
           });
           continue;
         }
-        const raw = buffered.shift();
+        const record = buffered.shift()!;
+        bufferedBytes -= record.bytes;
         releaseProducer?.();
         releaseProducer = undefined;
-        await faults?.afterDecodeBeforeYield?.(raw, processSnapshot(child));
-        for (const ev of map(raw, { cwd })) yield ev;
+        await faults?.afterDecodeBeforeYield?.(record.raw, processSnapshot(child));
+        for (const ev of map(record.raw, { cwd })) yield ev;
       }
       await parsing;
       // A local deadline close is expected when an out-of-group process holds
       // an inherited descriptor. Preserve actual parser failures otherwise.
-      if (parsingError && !stdoutDrainDeadlineReached) throw parsingError;
+      if (parsingError && !stdoutDrainDeadlineReached && !terminalBufferExceeded) throw parsingError;
+      if (terminalBufferExceeded) {
+        yield {
+          type: "error",
+          message: `${label} terminal output exceeded the 512-record / 4 MiB buffer limit after root exit`,
+        };
+      }
     }
 
     const code = await rootExit;

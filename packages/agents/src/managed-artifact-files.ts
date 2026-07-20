@@ -13,7 +13,10 @@ import {
   renameSync,
   rmSync,
   writeSync,
+  promises as fs,
 } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import { Readable } from "node:stream";
 import path from "node:path";
 import { managedArtifactContentPath } from "./paths.js";
 
@@ -24,6 +27,19 @@ export interface ManagedArtifactFile {
   body: Buffer;
   size: number;
   sha256: string;
+}
+
+export interface ManagedArtifactContentHandle {
+  path: string;
+  size: number;
+  sha256: string;
+  readRange(maxBytes: number, signal?: AbortSignal): Promise<Buffer>;
+  createReadStream(signal?: AbortSignal): Readable;
+  close(): Promise<void>;
+}
+
+export interface ManagedArtifactAsyncReadFaults {
+  afterOpen?: (path: string) => void | Promise<void>;
 }
 
 export interface ManagedArtifactPublicationFaults {
@@ -317,6 +333,124 @@ export function readManagedArtifactContent(
     return undefined;
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
+    closeManagedDirectory(opened);
+  }
+}
+
+const MANAGED_ARTIFACT_READ_CHUNK_BYTES = 256 * 1024;
+
+function sameOpenedFile(
+  before: Awaited<ReturnType<FileHandle["stat"]>>,
+  after: Awaited<ReturnType<FileHandle["stat"]>>,
+): boolean {
+  return after.isFile() && after.nlink === 1 && after.dev === before.dev && after.ino === before.ino &&
+    after.size === before.size;
+}
+
+/**
+ * Verify one immutable managed blob without retaining its complete contents.
+ * Directory ancestry remains descriptor-pinned for the handle lifetime; reads
+ * and SHA-256 work are chunked through libuv so a 64 MiB blob cannot monopolize
+ * the event loop. Callers may then read a bounded prefix or stream the same
+ * verified descriptor and must close the returned handle when not streaming it.
+ */
+export async function openManagedArtifactContent(
+  dataDir: string,
+  projectId: string,
+  artifactId: string,
+  expectedSize: number,
+  expectedSha256: string,
+  options?: { signal?: AbortSignal; faults?: ManagedArtifactAsyncReadFaults },
+): Promise<ManagedArtifactContentHandle | undefined> {
+  if (!safeArtifactId(artifactId) || !safeProjectId(projectId)) return undefined;
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
+      !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
+  const signal = options?.signal;
+  let opened: OpenedManagedDirectory | undefined;
+  let handle: FileHandle | undefined;
+  try {
+    signal?.throwIfAborted();
+    opened = openManagedDirectory(dataDir, projectId, false);
+    const file = managedArtifactContentPath(dataDir, projectId, artifactId);
+    if (file !== path.join(opened.nominalPath, artifactId)) return undefined;
+    handle = await fs.open(
+      descriptorPath(opened.directoryDescriptor, artifactId),
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+    );
+    const before = await handle.stat();
+    if (!before.isFile() || before.nlink !== 1 || before.size !== expectedSize) return undefined;
+    await options?.faults?.afterOpen?.(file);
+
+    const digest = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(Math.min(MANAGED_ARTIFACT_READ_CHUNK_BYTES, expectedSize));
+    let position = 0;
+    while (position < expectedSize) {
+      signal?.throwIfAborted();
+      const requested = Math.min(chunk.length, expectedSize - position);
+      const { bytesRead } = await handle.read(chunk, 0, requested, position);
+      if (bytesRead < 1) return undefined;
+      digest.update(chunk.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    signal?.throwIfAborted();
+    const after = await handle.stat();
+    if (!sameOpenedFile(before, after) || position !== expectedSize ||
+        !sameManagedDirectory(dataDir, projectId, opened) || digest.digest("hex") !== expectedSha256) return undefined;
+
+    const retainedDirectory = opened;
+    const retainedHandle = handle;
+    opened = undefined;
+    handle = undefined;
+    let closed = false;
+    const close = async (): Promise<void> => {
+      if (closed) return;
+      closed = true;
+      try { await retainedHandle.close(); }
+      catch { /* a stream may already have closed the descriptor */ }
+      closeManagedDirectory(retainedDirectory);
+    };
+    const readRange = async (maxBytes: number, readSignal?: AbortSignal): Promise<Buffer> => {
+      if (closed) throw new Error("managed artifact handle is closed");
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("managed artifact range must be bounded");
+      const length = Math.min(expectedSize, maxBytes);
+      const body = Buffer.allocUnsafe(length);
+      let offset = 0;
+      while (offset < length) {
+        readSignal?.throwIfAborted();
+        const { bytesRead } = await retainedHandle.read(body, offset, length - offset, offset);
+        if (bytesRead < 1) throw new Error("managed artifact changed during bounded read");
+        offset += bytesRead;
+      }
+      readSignal?.throwIfAborted();
+      const current = await retainedHandle.stat();
+      if (!sameOpenedFile(before, current) || !sameManagedDirectory(dataDir, projectId, retainedDirectory)) {
+        throw new Error("managed artifact changed during bounded read");
+      }
+      return body;
+    };
+    const createReadStream = (readSignal?: AbortSignal): Readable => {
+      if (closed) throw new Error("managed artifact handle is closed");
+      const stream = retainedHandle.createReadStream({ autoClose: true, start: 0, end: expectedSize - 1 });
+      const abort = (): void => {
+        stream.destroy(readSignal?.reason instanceof Error
+          ? readSignal.reason
+          : new Error("managed artifact transfer aborted"));
+      };
+      if (readSignal?.aborted) abort();
+      else readSignal?.addEventListener("abort", abort, { once: true });
+      const cleanup = (): void => {
+        readSignal?.removeEventListener("abort", abort);
+        void close();
+      };
+      stream.once("close", cleanup).once("error", cleanup);
+      return stream;
+    };
+    return { path: file, size: expectedSize, sha256: expectedSha256, readRange, createReadStream, close };
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
     closeManagedDirectory(opened);
   }
 }

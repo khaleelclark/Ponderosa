@@ -779,21 +779,39 @@ export class AssetStore {
       : undefined;
   }
 
+  /** Validate the immutable runtime-artifact ledger identity without reading
+   * its blob. HTTP transfer paths use this before opening the blob through the
+   * async descriptor-retained reader. */
+  authoritativeRuntimeArtifactMetadataById(
+    projectId: string,
+    id: string,
+  ): RuntimeArtifactInputV3 | undefined {
+    const registered = this.authority.runtimeArtifact(projectId, id);
+    return registered?.projectId === projectId ? this.validRuntimeArtifactMetadata(registered) : undefined;
+  }
+
+  private validRuntimeArtifactMetadata(registered: RegisteredRuntimeArtifact): RuntimeArtifactInputV3 | undefined {
+    const { projectId: _projectId, createdAt: _createdAt, ...authoritativeMetadata } = registered;
+    const artifact = authoritativeMetadata as RuntimeArtifactInputV3;
+    if (!/^text-[a-f0-9]{64}$/.test(artifact.id) ||
+        (artifact.role !== "long_text" && artifact.role !== "document") ||
+        !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
+        artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
+        !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
+        artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
+        ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
+        (artifact.originAgentId !== undefined &&
+          (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
+    return artifact;
+  }
+
   private readAuthoritativeRuntimeArtifact(
     registered: RegisteredRuntimeArtifact,
   ): AuthoritativeRuntimeArtifact | undefined {
     try {
-      const { projectId, createdAt: _createdAt, ...authoritativeMetadata } = registered;
-      const artifact = authoritativeMetadata as RuntimeArtifactInputV3;
-      if (!/^text-[a-f0-9]{64}$/.test(artifact.id) ||
-          (artifact.role !== "long_text" && artifact.role !== "document") ||
-          !artifact.title.trim() || artifact.mediaType !== "text/markdown" ||
-          artifact.blobPath !== artifact.id || !/^[a-f0-9]{64}$/.test(artifact.blobHash) ||
-          !Number.isSafeInteger(artifact.byteLength) || artifact.byteLength < 1 ||
-          artifact.byteLength > ASSET_LIMITS.maxFileBytes ||
-          ((artifact.originAgentId === undefined) !== (artifact.executionId === undefined)) ||
-          (artifact.originAgentId !== undefined &&
-            (!RUNTIME_UUID.test(artifact.originAgentId) || !RUNTIME_UUID.test(artifact.executionId!)))) return undefined;
+      const { projectId } = registered;
+      const artifact = this.validRuntimeArtifactMetadata(registered);
+      if (!artifact) return undefined;
       const canonicalPath = managedArtifactContentPath(this.dataDir, projectId, artifact.id);
       const content = readManagedArtifactContent(
         this.dataDir, projectId, artifact.id, artifact.byteLength, artifact.blobHash,
@@ -850,6 +868,36 @@ export class AssetStore {
     if (!registered || JSON.stringify(generatedArtifactIdentity(registered)) !==
         JSON.stringify(generatedArtifactIdentity(candidate))) return undefined;
     return this.readGeneratedArtifact(registered);
+  }
+
+  /** Validate generated-file catalog/ledger agreement without synchronously
+   * materializing the managed blob. */
+  authoritativeGeneratedArtifactMetadata(
+    projectId: string,
+    expected: ArtifactDto,
+  ): boolean {
+    if (expected.projectId !== projectId || expected.kind !== "generated_file" ||
+        !expected.originAgentId || !expected.summary || !expected.mediaType ||
+        expected.size === undefined || !expected.sha256) return false;
+    const candidate: RegisteredGeneratedArtifact = {
+      id: expected.id,
+      projectId,
+      agentId: expected.agentId,
+      originAgentId: expected.originAgentId,
+      ...(expected.executionId ? { executionId: expected.executionId } : {}),
+      kind: "generated_file",
+      path: expected.path,
+      ...(expected.sourcePath ? { sourcePath: expected.sourcePath } : {}),
+      summary: expected.summary,
+      createdAt: expected.createdAt,
+      mediaType: expected.mediaType,
+      size: expected.size,
+      sha256: expected.sha256,
+    };
+    if (!generatedArtifactMetadataIsValid(candidate)) return false;
+    const registered = this.authority.generatedArtifact(projectId, expected.id);
+    return Boolean(registered && JSON.stringify(generatedArtifactIdentity(registered)) ===
+      JSON.stringify(generatedArtifactIdentity(candidate)));
   }
 
   private readGeneratedArtifact(

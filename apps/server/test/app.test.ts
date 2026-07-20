@@ -1399,6 +1399,49 @@ describe("generated artifact endpoints", () => {
     await app.close();
   });
 
+  it("bounds managed artifact verification and streaming per Project and globally", async () => {
+    const artifacts = Array.from({ length: 4 }, (_, index) => {
+      const project = store.createProject({ label: `Managed transfer ${index}`, hostPath: repoDir });
+      const agent = store.createAgent(project.id, { title: `Transfer ${index}`, engine: "codex" });
+      const stored = store.appendEvent(agent.id, {
+        type: "file_change",
+        path: `transfer-${index}.txt`,
+        kind: "edit",
+        diff: `+managed-${index}\n`,
+      });
+      return { project, agent, artifactId: `${agent.id}:a:${stored.seq}:0` };
+    });
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      managedArtifactReadFaults: { afterOpen: async () => { entered += 1; await barrier; } },
+    });
+    const download = ({ project, artifactId }: typeof artifacts[number]) => app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/artifacts/${artifactId}/download`,
+    });
+
+    const active = [download(artifacts[0]!), download(artifacts[0]!)];
+    await vi.waitFor(() => expect(entered).toBe(2));
+    const projectSaturated = await download(artifacts[0]!);
+    expect(projectSaturated.statusCode).toBe(429);
+    expect(projectSaturated.headers["retry-after"]).toBe("1");
+
+    active.push(
+      download(artifacts[1]!), download(artifacts[1]!),
+      download(artifacts[2]!), download(artifacts[2]!),
+    );
+    await vi.waitFor(() => expect(entered).toBe(6));
+    const globalSaturated = await download(artifacts[3]!);
+    expect(globalSaturated.statusCode).toBe(429);
+    release();
+    expect((await Promise.all(active)).map((response) => response.statusCode))
+      .toEqual([200, 200, 200, 200, 200, 200]);
+    await app.close();
+  });
+
   it("captures an exact in-Project generated file through retained descriptors", async () => {
     const outputDirectory = path.join(repoDir, "output");
     const output = path.join(outputDirectory, "report.png");

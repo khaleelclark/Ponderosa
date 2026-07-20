@@ -185,4 +185,57 @@ describe("observed process-group termination", () => {
       { type: "text", delta: "2" },
     ]);
   });
+
+  it("bounds terminal records and bytes when a root exits ahead of a slow consumer", async () => {
+    const controller = new AbortController();
+    const records = Array.from({ length: 700 }, (_, ordinal) => JSON.stringify({
+      ordinal,
+      payload: "x".repeat(9 * 1024),
+    })).join("\n") + "\n";
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      stdout,
+      stderr,
+      stdin: null,
+      pid: undefined,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      kill: () => true,
+    }) as unknown as ChildProcess;
+    const spawnFn = (() => {
+      setImmediate(() => {
+        stdout.write(records);
+        (child as unknown as { exitCode: number | null }).exitCode = 0;
+        child.emit("exit", 0, null);
+      });
+      return child;
+    }) as unknown as typeof spawn;
+    let decoded = 0;
+    const events: AgentEvent[] = [];
+    for await (const event of streamProcess({
+      bin: "terminal-flood",
+      args: [],
+      cwd: process.cwd(),
+      signal: controller.signal,
+      spawnFn,
+      killGraceMs: 50,
+      label: "terminal flood",
+      map: (raw) => [{ type: "text", delta: String((raw as { ordinal: number }).ordinal) }],
+      faults: {
+        afterDecodeBeforeYield: async () => {
+          decoded += 1;
+          if (decoded === 1) await sleep(350);
+        },
+      },
+    })) events.push(event);
+
+    expect(events[0]).toEqual({ type: "text", delta: "0" });
+    expect(events.at(-1)).toEqual({
+      type: "error",
+      message: "terminal flood terminal output exceeded the 512-record / 4 MiB buffer limit after root exit",
+    });
+    expect(events.filter((event) => event.type === "text").length).toBeLessThan(700);
+    expect(events.filter((event) => event.type === "text").length).toBeLessThanOrEqual(512);
+  });
 });

@@ -14,6 +14,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   publishManagedArtifactContent,
+  openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
 } from "../src/managed-artifact-files.js";
@@ -116,5 +117,38 @@ describe("Project-owned managed artifact files", () => {
     });
     expect(repairedDuringPublication).toEqual([[]]);
     expect(readFileSync(published.path)).toEqual(body);
+  });
+
+  it("hashes asynchronously, retains only bounded preview bytes, and streams the verified descriptor", async () => {
+    const large = Buffer.alloc(8 * 1024 * 1024, 0x61);
+    const hash = createHash("sha256").update(large).digest("hex");
+    publishManagedArtifactContent(dataDir, projectId, artifactId, large);
+    let timerFired = false;
+    const timer = setTimeout(() => { timerFired = true; }, 0);
+    const opened = await openManagedArtifactContent(dataDir, projectId, artifactId, large.length, hash);
+    clearTimeout(timer);
+    expect(timerFired).toBe(true);
+    expect(opened).toBeDefined();
+    const preview = await opened!.readRange(1024);
+    expect(preview).toEqual(large.subarray(0, 1024));
+
+    const streamedHash = createHash("sha256");
+    let streamedBytes = 0;
+    for await (const chunk of opened!.createReadStream()) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      streamedHash.update(bytes);
+      streamedBytes += bytes.length;
+    }
+    expect(streamedBytes).toBe(large.length);
+    expect(streamedHash.digest("hex")).toBe(hash);
+  });
+
+  it("cancels an async managed-artifact verification while retaining descriptor safety", async () => {
+    publishManagedArtifactContent(dataDir, projectId, artifactId, body);
+    const controller = new AbortController();
+    await expect(openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
+      signal: controller.signal,
+      faults: { afterOpen: () => controller.abort(new Error("cancelled test read")) },
+    })).rejects.toThrow(/cancelled test read/);
   });
 });
