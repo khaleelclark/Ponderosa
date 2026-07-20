@@ -336,6 +336,81 @@ function collectReachableArtifactIds(value: unknown, found = new Set<string>()):
   return found;
 }
 
+function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): string | undefined {
+  if (portablePackage.kind !== "agent" && portablePackage.kind !== "organization") {
+    return "Agent package kind must match its organization shape";
+  }
+  if (typeof portablePackage.rootRef !== "string" || !portablePackage.rootRef.trim()) {
+    return "Agent package rootRef must identify the unique organization root";
+  }
+  if ((portablePackage.kind === "agent") !== (portablePackage.agents.length === 1)) {
+    return "Agent package kind must match its organization shape";
+  }
+
+  const nodes = new Map<string, { managerRef?: string }>();
+  for (const candidate of portablePackage.agents as unknown[]) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return "Agent package nodes must have a consistent organization shape";
+    }
+    const node = candidate as { ref?: unknown; managerRef?: unknown };
+    if (typeof node.ref !== "string" || !node.ref.trim() ||
+        (node.managerRef !== undefined && (typeof node.managerRef !== "string" || !node.managerRef.trim()))) {
+      return "Agent package nodes must have non-empty string refs";
+    }
+    if (nodes.has(node.ref)) return "Agent package refs must be unique";
+    if (node.managerRef === node.ref) return "organization package contains a self manager reference";
+    nodes.set(node.ref, node.managerRef === undefined ? {} : { managerRef: node.managerRef as string });
+  }
+  if (!nodes.has(portablePackage.rootRef)) return "Agent package rootRef must identify the unique organization root";
+  for (const node of nodes.values()) {
+    if (node.managerRef && !nodes.has(node.managerRef)) {
+      return "organization package contains an external manager reference";
+    }
+  }
+
+  const roots = [...nodes].filter(([, node]) => node.managerRef === undefined).map(([ref]) => ref);
+  if (roots.length !== 1 || roots[0] !== portablePackage.rootRef) {
+    return "Agent package rootRef must identify the unique organization root";
+  }
+  const children = new Map<string, string[]>();
+  for (const [ref, node] of nodes) {
+    if (!node.managerRef) continue;
+    const siblings = children.get(node.managerRef) ?? [];
+    siblings.push(ref);
+    children.set(node.managerRef, siblings);
+  }
+  const reachable = new Set<string>();
+  const pending = [portablePackage.rootRef];
+  while (pending.length) {
+    const ref = pending.pop()!;
+    if (reachable.has(ref)) return "every imported Agent must be reachable exactly once from rootRef";
+    reachable.add(ref);
+    pending.push(...(children.get(ref) ?? []));
+  }
+  if (reachable.size !== nodes.size) {
+    return "every imported Agent must be reachable exactly once from rootRef";
+  }
+  return undefined;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function rewritePortableArtifactReferences(text: string, artifactRefMap: ReadonlyMap<string, string>): string {
+  const rewrittenRefs = [...artifactRefMap]
+    .filter(([sourceId, destinationId]) => sourceId !== destinationId)
+    .map(([sourceId]) => sourceId)
+    .sort((left, right) => right.length - left.length);
+  if (!rewrittenRefs.length) return text;
+  const canonicalReference = new RegExp(
+    `ponderosa:\\/\\/artifact\\/(${rewrittenRefs.map(escapeRegExp).join("|")})(?=$|[^A-Za-z0-9_-])`,
+    "gu",
+  );
+  return text.replace(canonicalReference, (_reference, sourceId: string) =>
+    `ponderosa://artifact/${artifactRefMap.get(sourceId)!}`);
+}
+
 function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
   let end = Math.min(content.length, maximumEnd);
   if (end >= content.length) return end;
@@ -9614,6 +9689,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is already in progress" });
     if (!conversation || conversation.projectId !== project.id) return reply.code(400).send({ error: "destination Project chat is required" });
     if (body?.package?.schema !== "ponderosa.agent-package.v1" || !Array.isArray(body.package.agents) || body.package.agents.length < 1 || body.package.agents.length > 100) return reply.code(400).send({ error: "invalid Ponderosa Agent package" });
+    const topologyError = portableAgentTopologyError(body.package);
+    if (topologyError) return reply.code(400).send({ error: topologyError });
     const invalidPermissions = body.package.agents.some((node) => {
       const permissions = node.managementPermissions as unknown;
       return !permissions || typeof permissions !== "object" || Array.isArray(permissions) ||
@@ -9637,9 +9714,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const target = body.engineMapping[source]!;
       if (!engines.has(target)) return reply.code(400).send({ error: `mapped engine is not configured: ${target}` });
     }
-    const refs = new Set(body.package.agents.map((node) => node.ref));
-    if (refs.size !== body.package.agents.length || !refs.has(body.package.rootRef)) return reply.code(400).send({ error: "Agent package refs must be unique and include rootRef" });
-    if (body.package.agents.some((node) => node.managerRef && !refs.has(node.managerRef))) return reply.code(400).send({ error: "organization package contains an external manager reference" });
     const portableArtifactData = new Map<string, Buffer>();
     const artifactRefMap = new Map<string, string>();
     let artifactBytes = 0;
@@ -9711,15 +9785,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }
           store.recordProjectArtifact(catalogArtifact);
         }
-        const rewriteArtifactRefs = (text: string): string => {
-          let rewritten = text;
-          for (const [sourceId, destinationId] of artifactRefMap) if (sourceId !== destinationId) rewritten = rewritten.split(sourceId).join(destinationId);
-          return rewritten;
-        };
         const importedHistory = [
           ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: body.package.exportedAt }] : []),
           ...(node.history ?? []),
-        ].map((message) => ({ ...message, text: rewriteArtifactRefs(message.text) }));
+        ].map((message) => ({ ...message, text: rewritePortableArtifactReferences(message.text, artifactRefMap) }));
         if (importedHistory.length) store.setImportedHistory(agent.id, body.package.sourceLabel, importedHistory);
       }
       for (const node of body.package.agents) if (node.managerRef) {

@@ -9539,6 +9539,115 @@ describe("V3.3 Decisions, management, and portability", () => {
     await app.close();
   });
 
+  it("rejects malformed imported organization topology before mutation and retries idempotently", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Topology validation", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const permissions = {
+      allowAutomaticDescendantDeletion: false,
+      allowAutomaticDescendantReorganization: false,
+    };
+    const node = (ref: string, managerRef?: string) => ({
+      ref,
+      title: ref,
+      engine: "codex",
+      managementPermissions: permissions,
+      ...(managerRef ? { managerRef } : {}),
+    });
+    const portablePackage = (agents: ReturnType<typeof node>[], rootRef = "root", kind: "agent" | "organization" = "organization") => ({
+      schema: "ponderosa.agent-package.v1" as const,
+      mode: "template" as const,
+      kind,
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "malformed topology",
+      rootRef,
+      agents,
+    });
+    const malformedPackages: AgentPortablePackageDto[] = [
+      portablePackage([node("root"), node("disconnected")]),
+      portablePackage([node("root"), node("cycle-a", "cycle-b"), node("cycle-b", "cycle-a")]),
+      portablePackage([node("root"), node("self", "self")]),
+      portablePackage([node("root"), node("child", "root")], "child"),
+      portablePackage([node("root")], "root", "organization"),
+    ];
+    const initialAgents = store.listAgents(project.id);
+    const initialMutationState = durableMutationState(store, dataDir, project.id);
+    for (const candidate of malformedPackages) {
+      const payload = {
+        package: candidate,
+        conversationId: destinationChat.id,
+        engineMapping: { codex: "codex" },
+      };
+      const first = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+      const retry = await app.inject({ method: "POST", url: `/api/projects/${project.id}/import-agents`, payload });
+      expect(first.statusCode, first.body).toBe(400);
+      expect(retry.statusCode, retry.body).toBe(400);
+      expect(retry.body).toBe(first.body);
+      expect(store.listAgents(project.id)).toEqual(initialAgents);
+      expect(durableMutationState(store, dataDir, project.id)).toEqual(initialMutationState);
+    }
+    await app.close();
+  });
+
+  it("rewrites only canonical artifact tokens after a one-character import collision", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Artifact token collision", hostPath: repoDir });
+    const destinationChat = store.createConversation(project.id, { title: "Destination" });
+    const existing = store.createAgent(project.id, { title: "Existing", engine: "codex", conversationId: destinationChat.id });
+    store.recordProjectArtifact({
+      id: "a",
+      projectId: project.id,
+      agentId: existing.id,
+      originAgentId: existing.id,
+      kind: "document",
+      path: "communication/a.md",
+      summary: "existing.md",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      visibility: "project",
+      pinned: false,
+      size: 1,
+    });
+    const originalText = "Use ponderosa://artifact/a; prose a, data-a, ponderosa://artifact/ab, and 文档a🙂 stay unchanged.";
+    const portablePackage: AgentPortablePackageDto = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "agent",
+      exportedAt: "2026-07-20T00:00:00.000Z",
+      sourceLabel: "one-character collision",
+      rootRef: "root",
+      agents: [{
+        ref: "root",
+        title: "Imported",
+        engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+        history: [{ role: "user", text: originalText }],
+        artifacts: [{
+          ref: "a",
+          kind: "document",
+          path: "portable/a.md",
+          createdAt: "2026-07-20T00:00:00.000Z",
+          dataBase64: Buffer.from("portable").toString("base64"),
+        }],
+      }],
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload: { package: portablePackage, conversationId: destinationChat.id, engineMapping: { codex: "codex" } },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    const importedAgentId = response.json<{ rootAgentId: string }>().rootAgentId;
+    const importedArtifact = store.getProjectArtifacts(project.id).find((artifact) => artifact.originAgentId === importedAgentId)!;
+    expect(importedArtifact.id).not.toBe("a");
+    expect(store.getImportedHistory(importedAgentId)?.messages[0]?.text).toBe(
+      `Use ponderosa://artifact/${importedArtifact.id}; prose a, data-a, ponderosa://artifact/ab, and 文档a🙂 stay unchanged.`,
+    );
+    await app.close();
+  });
+
   it("exports and imports private context, source rules, and generated artifacts with collision-safe references", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Portable", hostPath: repoDir });
@@ -9572,7 +9681,7 @@ describe("V3.3 Decisions, management, and portability", () => {
     } as const;
     registerTestGeneratedArtifact(dataDir, catalogArtifact);
     store.recordProjectArtifact(catalogArtifact);
-    store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
+    store.setImportedHistory(source.id, "prior system", [{ role: "user", text: `Retrieve artifact ponderosa://artifact/${artifactId}`, createdAt: "2026-07-16T00:00:01.000Z" }]);
     const exported = await app.inject({ method: "GET", url: `/api/agents/${source.id}/export?mode=full` });
     expect(exported.statusCode, exported.body).toBe(200);
     expect(exported.json()).toMatchObject({
