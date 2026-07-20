@@ -464,7 +464,7 @@ export function WorkspaceSidebar({
     </Box>
     <Box sx={{ boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}`, p: 1.5 }}>
       <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "agents" ? "page" : undefined} onClick={() => onNavigate({ kind: "agents", projectId: project.project.id })} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "agents" ? "text.primary" : "text.secondary", bgcolor: route.kind === "agents" ? "action.selected" : "transparent" }}>Project Agents</Button>
-      <Button fullWidth color="inherit" aria-label="Open project files" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project files</Button>
+      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project overview</Button>
     </Box>
   </Box> : null;
 

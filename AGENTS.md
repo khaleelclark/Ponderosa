@@ -106,6 +106,16 @@ pay-per-token provider API keys.
    message references their stable artifact ID, or when the operator pins or
    publishes them. Never replay the entire artifact library.
 
+   An authoritative active Run may explicitly request a fresh provider session
+   with one bounded continuation handoff. The handoff is a non-authoritative
+   working-state bridge, not Communication, shared knowledge, scheduler state,
+   or transcript memory. It becomes eligible only after that exact source Run
+   completes successfully, forces observed teardown of the retired runtime,
+   survives restart, and is submitted once to the next fresh session. Consume it
+   only after provider-input acknowledgement; pre-acknowledgement failure may
+   retry it, while cancellation, source failure, and uncertain post-submission
+   outcomes never promote or replay it as organizational truth.
+
    Canonical user and provider text uses NFC, LF line endings, and Unicode code
    point counts. Keep at most 10,000 code points inline; artifact-back longer
    text through an 8 MiB UTF-8 ceiling. Remove every Run steering injection ID

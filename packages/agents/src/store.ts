@@ -127,6 +127,7 @@ import {
   agentDeletionReceipts,
   agentManagementApprovals,
   agentConversationMemberships,
+  continuationHandoffs,
 } from "./schema.js";
 
 export interface ContextReadBoundary {
@@ -3594,6 +3595,7 @@ export class AgentStore {
       }
     }
     const grouped = new Map<string, TokenUsageBreakdownDto>();
+    const wakeCauses = this.exactWakeCauses(rows.map((row) => row.executionId));
     for (const row of rows.filter((item) => item.totalTokens !== undefined)) {
       const key = [row.projectId, row.conversationId ?? "", row.agentId, row.engine, row.model ?? ""].join("\0");
       const current = grouped.get(key) ?? {
@@ -3626,6 +3628,7 @@ export class AgentStore {
       ...(range.from || range.to ? { range } : {}),
       metricAvailability,
       breakdown: [...grouped.values()].sort((a, b) => b.runs - a.runs || a.agentTitle.localeCompare(b.agentTitle)),
+      wakeCauses,
       recentTurns: rows
         .filter((row) => row.totalTokens !== undefined)
         .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
@@ -3728,6 +3731,38 @@ export class AgentStore {
       },
       providerRequestUsageJson: row.provider_request_usage_json,
     }));
+  }
+
+  private exactWakeCauses(executionIds: string[]): TokenUsageSummaryDto["wakeCauses"] {
+    const uniqueIds = [...new Set(executionIds)];
+    const causedRunIds = new Set<string>();
+    const aggregates = new Map<string, { runs: Set<string>; activations: number }>();
+    for (let offset = 0; offset < uniqueIds.length; offset += 400) {
+      const page = uniqueIds.slice(offset, offset + 400);
+      if (!page.length) continue;
+      const attached = this.client.prepare(`
+        SELECT attached.run_id, activation.kind
+        FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id = attached.activation_id
+        WHERE attached.run_id IN (${page.map(() => "?").join(",")})
+        ORDER BY attached.run_id, activation.kind, activation.id
+      `).all(...page) as Array<{ run_id: string; kind: string }>;
+      for (const row of attached) {
+        causedRunIds.add(row.run_id);
+        const aggregate = aggregates.get(row.kind) ?? { runs: new Set<string>(), activations: 0 };
+        aggregate.runs.add(row.run_id);
+        aggregate.activations += 1;
+        aggregates.set(row.kind, aggregate);
+      }
+    }
+    const otherRuns = uniqueIds.filter((id) => !causedRunIds.has(id)).length;
+    const result = [...aggregates.entries()].map(([cause, aggregate]) => ({
+      cause,
+      runs: aggregate.runs.size,
+      activations: aggregate.activations,
+    }));
+    if (otherRuns) result.push({ cause: "other", runs: otherRuns, activations: otherRuns });
+    return result.sort((left, right) => right.runs - left.runs || right.activations - left.activations || left.cause.localeCompare(right.cause));
   }
 
   getWorkItems(agentId: string): WorkItemDto[] {
@@ -4185,6 +4220,7 @@ export class AgentStore {
   rebuildProjections(): void {
     this.recoverAgentDeletionDirectories();
     this.client.prepare(`DELETE FROM tool_output_projection`).run();
+    this.db.delete(continuationHandoffs).run();
     this.db.delete(activityProjection).run();
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
@@ -4484,6 +4520,24 @@ export class AgentStore {
               .where(eq(agents.id, agentId))
               .run();
             break;
+          case "insert_continuation_handoff":
+            tx.insert(continuationHandoffs)
+              .values({
+                id: op.id,
+                agentId,
+                sourceExecutionId: op.executionId,
+                text: op.text,
+                createdAt: op.createdAt,
+              })
+              .onConflictDoNothing()
+              .run();
+            break;
+          case "consume_continuation_handoff":
+            tx.update(continuationHandoffs)
+              .set({ consumedByExecutionId: op.executionId, consumedAt: op.consumedAt })
+              .where(and(eq(continuationHandoffs.id, op.id), eq(continuationHandoffs.agentId, agentId)))
+              .run();
+            break;
           case "set_state":
             tx.update(agents)
               .set({ stateBranch: op.branch ?? null, stateCommit: op.commit ?? null })
@@ -4648,6 +4702,45 @@ export class AgentStore {
       updatedAt: row.updatedAt,
       archived: row.archived === 1,
     };
+  }
+
+  continuationHandoffForRun(agentId: string, executionId: string): {
+    id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
+  } | undefined {
+    const row = this.db.select().from(continuationHandoffs)
+      .where(and(eq(continuationHandoffs.agentId, agentId), eq(continuationHandoffs.sourceExecutionId, executionId)))
+      .get();
+    return row ? {
+      id: row.id,
+      executionId: row.sourceExecutionId,
+      text: row.text,
+      createdAt: row.createdAt,
+      ...(row.consumedAt ? { consumedAt: row.consumedAt } : {}),
+    } : undefined;
+  }
+
+  pendingContinuationHandoff(agentId: string): {
+    id: string; executionId: string; text: string; createdAt: string;
+  } | undefined {
+    const row = this.client.prepare(`
+      SELECT handoff.id, handoff.source_execution_id, handoff.text, handoff.created_at
+      FROM continuation_handoffs handoff
+      JOIN runs source_run ON source_run.id = handoff.source_execution_id
+      WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
+        AND source_run.status = 'completed'
+      ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
+    `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
+    return row ? { id: row.id, executionId: row.source_execution_id, text: row.text, createdAt: row.created_at } : undefined;
+  }
+
+  consumeContinuationHandoff(agentId: string, handoffId: string, executionId: string): boolean {
+    const pending = this.client.prepare(`
+      SELECT 1 FROM continuation_handoffs
+      WHERE id = ? AND agent_id = ? AND consumed_at IS NULL
+    `).get(handoffId, agentId);
+    if (!pending) return false;
+    this.appendEvent(agentId, { type: "continuation_handoff_consumed", handoffId, executionId });
+    return true;
   }
 
   /** Durable compatibility and reachability state for the accepted provider session. */

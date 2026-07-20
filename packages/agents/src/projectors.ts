@@ -41,6 +41,8 @@ export type ProjectionOp =
   | { kind: "insert_artifact"; row: ArtifactRow; content?: string }
   | { kind: "insert_event"; row: EventRow; executionId?: string }
   | { kind: "set_session"; sessionId: string | null; toolContractHash: string | null; artifactIds: string[] }
+  | { kind: "insert_continuation_handoff"; id: string; executionId: string; text: string; createdAt: string }
+  | { kind: "consume_continuation_handoff"; id: string; executionId: string; consumedAt: string }
   | { kind: "set_state"; branch?: string; commit?: string }
   | { kind: "touch_agent"; updatedAt: string };
 
@@ -161,6 +163,25 @@ export function projectEvent(
 
     case "session_reset":
       ops.push({ kind: "set_session", sessionId: null, toolContractHash: null, artifactIds: [] });
+      break;
+
+    case "continuation_handoff":
+      ops.push({
+        kind: "insert_continuation_handoff",
+        id: event.handoffId,
+        executionId: event.executionId,
+        text: event.text,
+        createdAt: ts,
+      });
+      break;
+
+    case "continuation_handoff_consumed":
+      ops.push({
+        kind: "consume_continuation_handoff",
+        id: event.handoffId,
+        executionId: event.executionId,
+        consumedAt: ts,
+      });
       break;
 
     case "agent_lifecycle": {

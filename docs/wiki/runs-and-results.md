@@ -19,6 +19,12 @@ The responding indicator and elapsed time come from canonical Run ownership. **W
 
 Files & results contains managed Artifacts with their Project, Agent, and execution provenance. Long text above the inline limit becomes a stable Markdown artifact rather than being copied through every later prompt. A message may reference the artifact's stable ID; authorized Agents retrieve the body only when the current work needs it.
 
+The Project overview gathers existing rules, attention signals, active work, pinned or published outputs, and usage links without creating another status record. **Why this Run started** opens the corresponding Agent Work trace, while the Run card lists the structured provider-input sources before offering the sensitive exact prompt.
+
+## Continue across a fresh provider session
+
+An Agent that deliberately needs a fresh provider session can submit one bounded continuation handoff. Ponderosa accepts it only from the active Run, retires the old provider runtime after that Run succeeds, and includes the handoff once in the next fresh seed as non-authoritative background. Failed or cancelled source Runs cannot make a handoff eligible. Canonical messages, Requests, Decisions, artifacts, and Project rules remain the source of truth; `/fresh` starts a fresh session without inventing a handoff.
+
 ## Stop the exact Run
 
 Cancellation targets the exact Run ID the operator observed. An accepted stop immediately fences the execution and interrupts its provider process. A delayed retry cannot cancel a successor Run. Later queued work remains eligible, while the cancelled Activation is never silently respawned.

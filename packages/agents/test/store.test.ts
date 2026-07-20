@@ -41,6 +41,7 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
     "activity_projection",
     "changed_file_projection",
     "managed_artifact_projection",
+    "continuation_handoffs",
   ];
   const out: Record<string, unknown[]> = {};
   for (const t of tables) {
@@ -58,6 +59,8 @@ function snapshot(s: AgentStore): Record<string, unknown[]> {
           ? "agent_id, path"
         : t === "managed_artifact_projection"
           ? "project_id, artifact_id"
+        : t === "continuation_handoffs"
+          ? "agent_id, source_execution_id"
         : "id";
     const rows = db.prepare(`SELECT * FROM ${t} ORDER BY ${order}`).all() as unknown[];
     out[t] = rows;
@@ -1110,6 +1113,25 @@ describe("AgentStore — append + projection", () => {
     const other = store.createAgent(otherProject.id, { title: "Other", engine: "claude" });
 
     for (const event of RUN) store.appendEvent(agentId, event);
+    const now = "2026-07-19T12:00:00.000Z";
+    store.sqlite.prepare(`
+      INSERT INTO scheduler_runs (
+        id, project_id, agent_id, status, lease_owner, lease_expires_at, fencing_token,
+        prompt_injection_state, heartbeat_at, created_at, updated_at, started_at, terminal_at
+      ) VALUES (?, ?, ?, 'completed', 'test-worker', ?, 1, 'injected', ?, ?, ?, ?, ?)
+    `).run("run-1", projectId, agentId, now, now, now, now, now, now);
+    for (const [id, kind] of [["activation-human-1", "human_message"], ["activation-human-2", "human_message"], ["activation-outcome", "coordination_outcome"]] as const) {
+      store.sqlite.prepare(`
+        INSERT INTO agent_activations (
+          id, project_id, agent_id, kind, priority, dispatch_policy, prompt_class, state,
+          dedupe_key, payload_json, available_at, created_at, updated_at, consumed_at
+        ) VALUES (?, ?, ?, ?, 1, 'next_run', 'ordinary', 'consumed', ?, '{}', ?, ?, ?, ?)
+      `).run(id, projectId, agentId, kind, id, now, now, now, now);
+      store.sqlite.prepare(`
+        INSERT INTO scheduler_run_activations (run_id, activation_id, attached_at, consumed_at)
+        VALUES ('run-1', ?, ?, ?)
+      `).run(id, now, now);
+    }
     store.appendEvent(unmetered.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "legacy-run" });
     store.appendEvent(unmetered.id, { type: "turn_done", executionId: "legacy-run" });
     store.appendEvent(unmetered.id, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "legacy-run" });
@@ -1117,9 +1139,24 @@ describe("AgentStore — append + projection", () => {
     store.appendEvent(other.id, { type: "turn_done", executionId: "other-run", usage: { inputTokens: 20, cachedInputTokens: 8, outputTokens: 7, reasoningOutputTokens: 3, totalTokens: 27 } });
     store.appendEvent(other.id, { type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "other-run" });
 
-    expect(store.getTokenUsage({ type: "agent", id: agentId })).toMatchObject({ totalTokens: 15, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
+    expect(store.getTokenUsage({ type: "agent", id: agentId })).toMatchObject({
+      totalTokens: 15, finalizedRuns: 1, reportedRuns: 1, coverage: 1,
+      wakeCauses: [
+        { cause: "human_message", runs: 1, activations: 2 },
+        { cause: "coordination_outcome", runs: 1, activations: 1 },
+      ],
+    });
     expect(store.getTokenUsage({ type: "project", id: projectId })).toMatchObject({ totalTokens: 15, finalizedRuns: 2, reportedRuns: 1, unreportedRuns: 1, coverage: 0.5 });
-    expect(store.getTokenUsage({ type: "overall" })).toMatchObject({ inputTokens: 30, cachedInputTokens: 8, outputTokens: 12, reasoningOutputTokens: 3, totalTokens: 42, finalizedRuns: 3, reportedRuns: 2 });
+    expect(store.getTokenUsage({ type: "overall" })).toMatchObject({
+      inputTokens: 30, cachedInputTokens: 8, outputTokens: 12, reasoningOutputTokens: 3,
+      totalTokens: 42, finalizedRuns: 3, reportedRuns: 2,
+      wakeCauses: expect.arrayContaining([
+        { cause: "human_message", runs: 1, activations: 2 },
+        { cause: "coordination_outcome", runs: 1, activations: 1 },
+        { cause: "other", runs: 2, activations: 2 },
+      ]),
+    });
+    expect(store.getTokenUsage({ type: "overall" }).wakeCauses).toHaveLength(3);
     expect(store.getMeteredRuns({ type: "agent", id: agentId })).toEqual([expect.objectContaining({
       providerRequestUsage: [
         { inputTokens: 4, outputTokens: 2, totalTokens: 6 },
@@ -1228,6 +1265,53 @@ describe("AgentStore — append + projection", () => {
     store.rebuildProjections();
     expect(store.resumeSessionId(agentId)).toBeUndefined();
     expect(store.clearResumeSession("missing-agent", "explicit_compaction")).toBe(false);
+  });
+
+  it("rebuilds and consumes one bounded continuation handoff from canonical events", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-before-rollover",
+    });
+    store.appendEvent(agentId, {
+      type: "continuation_handoff",
+      handoffId: "handoff-1",
+      executionId: "run-before-rollover",
+      text: "Continue from the verified state.",
+    });
+    expect(store.continuationHandoffForRun(agentId, "run-before-rollover")).toMatchObject({
+      id: "handoff-1", text: "Continue from the verified state.",
+    });
+    expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "completed", reason: "turn_completed", executionId: "run-before-rollover",
+    });
+    expect(store.pendingContinuationHandoff(agentId)?.id).toBe("handoff-1");
+
+    store.rebuildProjections();
+    expect(store.pendingContinuationHandoff(agentId)?.id).toBe("handoff-1");
+    expect(store.consumeContinuationHandoff(agentId, "handoff-1", "run-after-rollover")).toBe(true);
+    expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.consumeContinuationHandoff(agentId, "handoff-1", "run-after-rollover")).toBe(false);
+
+    store.rebuildProjections();
+    expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    expect(store.continuationHandoffForRun(agentId, "run-before-rollover")?.consumedAt).toBeTruthy();
+
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "failed-rollover-run",
+    });
+    store.appendEvent(agentId, {
+      type: "continuation_handoff",
+      handoffId: "handoff-from-failed-run",
+      executionId: "failed-rollover-run",
+      text: "This must never seed a successor.",
+    });
+    store.appendEvent(agentId, {
+      type: "agent_lifecycle", status: "failed", reason: "runtime_error", executionId: "failed-rollover-run",
+    });
+    expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
+    store.rebuildProjections();
+    expect(store.pendingContinuationHandoff(agentId)).toBeUndefined();
   });
 });
 

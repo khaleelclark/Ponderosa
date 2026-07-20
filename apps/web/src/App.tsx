@@ -240,7 +240,7 @@ export default function App({
     }
     if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
     // Every project-scoped route is already a concrete destination. In
-    // particular, Project files intentionally uses the bare project route;
+    // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
     // redirect back to the most recent chat.
     if (["project", "conversation", "agents", "agent"].includes(route.kind) && selectedProjectId) return;
@@ -612,6 +612,7 @@ export default function App({
         ) : selectedProjectId ? (
           <ProjectShell
             projectId={selectedProjectId}
+            project={projects.find((project) => project.id === selectedProjectId)!}
             route={route}
             engines={engines}
             navigate={goHome}

@@ -1294,7 +1294,7 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference";
+    kind: "policy" | "identity" | "history_message" | "activation" | "trigger_occurrence" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
@@ -1376,6 +1376,9 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   breakdown: TokenUsageBreakdownDto[];
   /** Most recent finalized turns in the selected range. */
   recentTurns: TokenUsageTurnDto[];
+  /** Exact structural Activation kinds attached to finalized Runs. One Run may
+   * contribute to several causes; activation counts preserve coalesced wakes. */
+  wakeCauses: Array<{ cause: string; runs: number; activations: number }>;
   projectedApiCost?: ProjectedApiCostDto;
 }
 

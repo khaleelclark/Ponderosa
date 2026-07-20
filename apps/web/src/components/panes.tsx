@@ -368,6 +368,17 @@ function wakeCauseLabel(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
   }
 }
 
+function runCauseSentence(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
+  switch (cause) {
+    case "project_request": return "Started because the Project received a new request";
+    case "direct_message": return "Started because a direct message arrived";
+    case "collaboration": return "Started because coordinated work produced a new result or message";
+    case "trigger": return "Started because a Trigger fired";
+    case "decision": return "Started because your Decision response arrived";
+    case "managed_failure": return "Started because a managed Agent failed";
+  }
+}
+
 function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   if (kind === "diff") {
     return <DifferenceIcon fontSize="small" />;
@@ -1224,16 +1235,20 @@ export function RunsPane({
                 {run.engine} · {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString()}
               </Typography>
               {run.wakeCause ? (
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-                  Started by {wakeCauseLabel(run.wakeCause)}
-                </Typography>
+                onOpenAgentWork ? <Button
+                  size="small"
+                  color="inherit"
+                  onClick={() => onOpenAgentWork(run.id)}
+                  sx={{ display: "flex", justifyContent: "flex-start", px: 0, py: 0.25, textAlign: "left", color: "text.secondary" }}
+                >Why this Run started: {runCauseSentence(run.wakeCause)}</Button>
+                  : <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Started by {wakeCauseLabel(run.wakeCause)}</Typography>
               ) : null}
               <Typography variant="caption" color={run.usage ? "text.secondary" : "warning.main"} sx={{ display: "block" }}>
                 {run.usage
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
                   : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
               </Typography>
-              {onOpenAgentWork ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent work</Button> : null}
+              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent work</Button> : null}
               {run.providerInput ? <RunProviderInput run={run} /> : null}
             </Paper>
           ))}
@@ -1341,8 +1356,15 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
   const manifest = run.providerInput!.sourceManifest;
   return <Box sx={{ mt: 0.75 }}>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} submitted history · {manifest.schemaVersion === 2 ? `${manifest.retainedSessionSourceCount} retained-session source(s) · ` : ""}{manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
+      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} submitted history · {"retainedSessionSourceCount" in manifest ? `${manifest.retainedSessionSourceCount} retained-session source(s) · ` : ""}{manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
     </Typography>
+    <Box sx={{ mt: 0.5, maxHeight: 150, overflowY: "auto", borderLeft: 2, borderColor: "divider", pl: 1 }} aria-label={`Provider input sources for Run ${run.id}`}>
+      {manifest.sources.map((source, index) => <Stack key={`${source.kind}:${source.ref}:${index}`} direction="row" spacing={0.75} sx={{ alignItems: "baseline", minWidth: 0 }}>
+        <Typography variant="caption" fontWeight={700} sx={{ flexShrink: 0 }}>{source.kind.replaceAll("_", " ")}</Typography>
+        <Typography variant="caption" color="text.secondary" noWrap title={source.ref}>{source.ref}</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ ml: "auto !important", flexShrink: 0 }}>{"delivery" in source ? source.delivery.replaceAll("_", " ") : "submitted"}</Typography>
+      </Stack>)}
+    </Box>
     <Button size="small" sx={{ px: 0, minWidth: 0 }} onClick={() => setShowExact((value) => !value)}>
       {showExact ? "Hide exact provider input" : "Show exact provider input"}
     </Button>
@@ -1635,10 +1657,14 @@ function MarkdownViewer({ content }: { content: string }): JSX.Element {
 function ArtifactViewer({
   artifact,
   agentId,
+  agentTitle,
+  onOpenRun,
   liveContent,
 }: {
   artifact: ArtifactDto | undefined;
   agentId: string;
+  agentTitle: string;
+  onOpenRun(runId: string): void;
   liveContent: string | undefined;
 }): JSX.Element {
   const contentQuery = useQuery({
@@ -1669,6 +1695,7 @@ function ArtifactViewer({
         {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open preview</Button> : null}
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
+      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
       {artifact.previewUrl ? <Box component="iframe" title={`Preview ${artifact.path}`} src={artifact.previewUrl} sx={{ width: "100%", height: { xs: "55vh", md: "66vh" }, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "background.paper" }} /> : <Alert severity="info">The PDF is still being indexed. Refresh to preview or download it.</Alert>}
     </Box>;
   }
@@ -1680,6 +1707,7 @@ function ArtifactViewer({
         <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open</Button>
         {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
       </Stack>
+      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
       <Box component="img" src={artifact.previewUrl} alt={artifact.summary ?? "Browser screenshot"} sx={{ display: "block", maxWidth: "100%", maxHeight: { xs: "55vh", md: "66vh" }, mx: "auto", border: 1, borderColor: "divider", borderRadius: 1 }} />
     </Box>;
   }
@@ -1706,6 +1734,7 @@ function ArtifactViewer({
         <Typography variant="subtitle2">{artifactDisplayLabel(content)}</Typography>
         <Typography variant="caption" color="text.secondary" noWrap title={content.path}>{compactPath(content.path)}</Typography>
       </Stack>
+      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
       <Paper variant="outlined" sx={{ p: 1.25, overflow: "auto", maxHeight: { xs: "55vh", md: "64vh" } }}>
         {content.contentType === "markdown" ? (
           <MarkdownViewer content={content.content} />
@@ -1719,16 +1748,34 @@ function ArtifactViewer({
   );
 }
 
+function ArtifactProvenance({ artifact, agentTitle, onOpenRun }: {
+  artifact: ArtifactDto;
+  agentTitle: string;
+  onOpenRun(runId: string): void;
+}): JSX.Element {
+  return <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
+    <Chip size="small" label={`Created by ${agentTitle}`} />
+    {artifact.executionId
+      ? <Button size="small" onClick={() => onOpenRun(artifact.executionId!)}>Generated from Run {artifact.executionId.slice(0, 8)}</Button>
+      : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
+    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project scope"} />
+  </Stack>;
+}
+
 export function ArtifactsPane({
   artifacts,
   agentId,
+  agentTitle,
   timeline,
   initialArtifactId,
+  onOpenRun,
 }: {
   artifacts: ArtifactDto[];
   agentId: string;
+  agentTitle: string;
   timeline: ExecutionItem[];
   initialArtifactId?: string;
+  onOpenRun(runId: string): void;
 }): JSX.Element {
   const orderedArtifacts = [...artifacts].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
@@ -1824,7 +1871,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-          <ArtifactViewer artifact={selectedArtifact} agentId={agentId} liveContent={liveContent} />
+        <ArtifactViewer artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
         </Box>
       </Box>
     </Box>

@@ -129,6 +129,7 @@ import {
   PONDEROSA_COORDINATE_TOOL,
   PONDEROSA_CONTEXT_TOOL,
   PONDEROSA_DOCS_TOOL,
+  PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_RESULT_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_MESSAGE_TOOL,
@@ -937,6 +938,7 @@ function communicationV3Prompt(): string[] {
     "Live Team identities are retrievable with ponderosa_team_directory. Retrieve overflow Activation or artifact references with ponderosa_result({refs:[ref]}); continue only with the returned nextCursor.",
     "Version-controlled product documentation is advertised as stable references and retrieved only when needed with ponderosa_docs({refs:[ref]}).",
     "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
+    "When this provider session should be replaced, call ponderosa_rollover({handoff}) once with bounded working state; the next fresh session receives it as non-authoritative continuation context.",
     "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
     "Discover stable teammate IDs with ponderosa_team_directory({}).",
   ];
@@ -3378,7 +3380,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     clearRunLeaseTimer(run);
     clearRunLivenessTimer(run);
     agentMessageCapabilities.delete(run.messageCapability);
-    scheduledSessionRollovers.delete(agentId);
+    if (scheduledSessionRollovers.delete(agentId)) {
+      const abandonedHandoff = store.continuationHandoffForRun(agentId, run.runId);
+      if (abandonedHandoff && !abandonedHandoff.consumedAt) {
+        store.consumeContinuationHandoff(agentId, abandonedHandoff.id, run.runId);
+      }
+    }
     try {
       coordinationV3.failRun({
         runId: run.v3SchedulerRunId!,
@@ -4191,7 +4198,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         clearRunLeaseTimer(run);
         clearRunLivenessTimer(run);
         agentMessageCapabilities.delete(run.messageCapability);
-        scheduledSessionRollovers.delete(agentId);
+        if (scheduledSessionRollovers.delete(agentId)) {
+          const abandonedHandoff = store.continuationHandoffForRun(agentId, run.runId);
+          if (abandonedHandoff && !abandonedHandoff.consumedAt) {
+            store.consumeContinuationHandoff(agentId, abandonedHandoff.id, run.runId);
+          }
+        }
         run.controller.abort();
         const runtime = persistentRuntimeForTermination(agentId);
         const terminationError = await terminateRuntimeHandle(agentId, run, runtime);
@@ -6871,7 +6883,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { ...found.document };
   });
 
-  app.post("/api/agent-session/rollover", async (request, reply) => {
+  app.post<{ Body: { handoff?: string } }>("/api/agent-session/rollover", async (request, reply) => {
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
     const capability = token ? agentMessageCapabilities.get(token) : undefined;
     if (!capability) return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
@@ -6879,8 +6891,34 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!capabilityOwnsAuthoritativeRun(capability, active) || active!.messageCapability !== token) {
       return reply.code(401).send({ error: "invalid or expired agent messaging capability" });
     }
+    const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
+      ? request.body as Record<string, unknown>
+      : {};
+    if (Object.keys(body).some((key) => key !== "handoff")) {
+      return reply.code(400).send({ error: "unknown rollover field" });
+    }
+    if (typeof body.handoff !== "string") return reply.code(400).send({ error: "handoff is required" });
+    const handoff = canonicalizeProviderText(
+      body.handoff,
+      coordinationV3.steeringInjectionIds(capability.runId),
+    ).trim();
+    if (!handoff) return reply.code(400).send({ error: "handoff is required" });
+    if (unicodeCodePointLength(handoff) > 20_000) {
+      return reply.code(400).send({ error: "handoff must be at most 20000 Unicode code points" });
+    }
+    const existing = store.continuationHandoffForRun(capability.agentId, capability.runId);
+    if (existing && existing.text !== handoff) {
+      return reply.code(409).send({ error: "this Run already scheduled a different continuation handoff" });
+    }
+    const handoffId = existing?.id ?? randomUUID();
+    if (!existing) store.appendEvent(capability.agentId, {
+      type: "continuation_handoff",
+      handoffId,
+      executionId: capability.runId,
+      text: handoff,
+    });
     scheduledSessionRollovers.set(capability.agentId, new Date().toISOString());
-    return { scheduled: true, afterRunId: capability.runId };
+    return { scheduled: true, afterRunId: capability.runId, handoffId };
   });
 
   app.get("/api/health", async (): Promise<HealthDto> => ({
@@ -10268,7 +10306,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // handle confirms exit. Never start a replacement beside it.
       await reconcileAgentRuntimeAuthority(agent.id);
       let resumeSessionState = store.resumeSessionState(agent.id);
-      if (requestContextRollover) {
+      const eligibleContinuationHandoff = store.pendingContinuationHandoff(agent.id);
+      if (eligibleContinuationHandoff) {
+        // The source Run completed successfully, but the daemon may have died
+        // before its in-memory rollover request cleared the native session.
+        // Durable handoff eligibility therefore owns the restart boundary too:
+        // retire the opaque cache before constructing the fresh target prompt.
+        const staleRuntime = reusableRuntime(agent.id);
+        scheduledSessionRollovers.delete(agent.id);
+        store.clearResumeSession(agent.id, "explicit_compaction");
+        organizationEnvelopeStates.delete(agent.id);
+        resumeSessionState = undefined;
+        if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
+      } else if (requestContextRollover) {
         // Provider sessions are resumable caches, not agent identity. A newly
         // created inbound request is an independent task context, while answer,
         // join, human, and steering activations continue their current context.
@@ -10296,6 +10346,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
       const resumeSessionId = resumeSessionState?.sessionId;
       const retainedSessionArtifactIds = resumeSessionState?.artifactIds ?? [];
+      const continuationHandoff = resumeSessionId ? undefined : eligibleContinuationHandoff;
       const mode = resumeSessionId ? "continue" : "seed";
       const historySourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
       const privateHistoryPage = resumeSessionId
@@ -10532,7 +10583,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const teamDirectoryReference = teamDirectoryPrompt(directoryForTurn);
       const documentationReference = documentationReferences.compactPromptIndex();
       const olderContextReference = hasOmittedScopedContext ? olderContextPrompt() : "";
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
+      const continuationHandoffPrompt = continuationHandoff
+        ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
+        : "";
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first
@@ -10651,6 +10705,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             kind: "context_reference" as const,
             ref: routingConversationId ?? agent.id,
             hash: createHash("sha256").update(olderContextReference).digest("hex"),
+            delivery: "submitted" as const,
+          }] : []),
+          ...(continuationHandoff ? [{
+            kind: "continuation_handoff" as const,
+            ref: continuationHandoff.id,
+            hash: createHash("sha256").update(continuationHandoff.text).digest("hex"),
+            createdAt: continuationHandoff.createdAt,
             delivery: "submitted" as const,
           }] : []),
           ...submittedHistory.map((message, index) => ({
@@ -10800,6 +10861,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         let firstTextSeq: number | undefined;
         let lastTextSeq: number | undefined;
         let v3PromptInjected = false;
+        let continuationHandoffConsumed = false;
         let providerWorkObserved = false;
         let schedulerCancelled = false;
         try {
@@ -10848,6 +10910,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 const isContext = call.name === PONDEROSA_CONTEXT_TOOL.name;
                 const isResult = call.name === PONDEROSA_RESULT_TOOL.name;
                 const isDocs = call.name === PONDEROSA_DOCS_TOOL.name;
+                const isRollover = call.name === PONDEROSA_ROLLOVER_TOOL.name;
                 const contextQuery = new URLSearchParams();
                 if (typeof contextArguments.cursor === "string" && contextArguments.cursor.trim()) contextQuery.set("cursor", contextArguments.cursor.trim());
                 if (typeof contextArguments.limit === "number") contextQuery.set("limit", String(contextArguments.limit));
@@ -10863,6 +10926,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                     ? "/api/agent-results"
                   : isDocs
                     ? "/api/agent-docs"
+                  : isRollover
+                    ? "/api/agent-session/rollover"
                   : call.name === PONDEROSA_UPDATE_REQUEST_TOOL.name
                     ? "/api/agent-request-updates"
                     : call.name === PONDEROSA_MESSAGE_TOOL.name
@@ -11119,6 +11184,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
                 });
                 v3PromptInjected = true;
+                if (continuationHandoff && !continuationHandoffConsumed) {
+                  continuationHandoffConsumed = store.consumeContinuationHandoff(
+                    agent.id,
+                    continuationHandoff.id,
+                    runId,
+                  );
+                }
               }
               if (deletingAgentIds.has(agent.id) || closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
               if (!receiveRuntimeEvent(agent.id, activeRun)) break;
@@ -11186,6 +11258,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         } finally {
           const owned = ownsActiveRun(agent.id, activeRun);
           schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
+          const rolloverRequested = owned && scheduledSessionRollovers.delete(agent.id);
+          const rolloverSucceeded = Boolean(rolloverRequested && !closed && !controller.signal.aborted && !schedulerCancelled && !runError);
           if (schedulerCancelled && !owned && !closed && store.getRuns(agent.id).some((run) => run.id === runId && run.status === "running")) {
             const cancelled = store.appendEvent(agent.id, {
               type: "agent_lifecycle",
@@ -11194,9 +11268,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               executionId: runId,
             });
             publish(agent.id, cancelled);
-          }
-          if (owned && scheduledSessionRollovers.delete(agent.id)) {
-            store.clearResumeSession(agent.id, "explicit_compaction");
           }
           if (owned && !closed && !controller.signal.aborted) {
             if (!schedulerCancelled && !runError && finalText.trim() && firstTextSeq !== undefined && lastTextSeq !== undefined) {
@@ -11216,6 +11287,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               executionId: runId,
             });
             publish(agent.id, terminal);
+            if (rolloverSucceeded) {
+              store.clearResumeSession(agent.id, "explicit_compaction");
+              organizationEnvelopeStates.delete(agent.id);
+              const staleRuntime = reusableRuntime(agent.id);
+              if (staleRuntime) {
+                try {
+                  await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
+                } catch (error) {
+                  // The retained teardown registry keeps replacement fenced and
+                  // will retry. The completed source Run and pending handoff
+                  // remain durable even though cleanup is still operationally pending.
+                  app.log.error({ err: error, agentId: agent.id, runId }, "continuation rollover teardown remains pending");
+                }
+              }
+            } else if (rolloverRequested) {
+              const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
+              if (abandonedHandoff && !abandonedHandoff.consumedAt) {
+                store.consumeContinuationHandoff(agent.id, abandonedHandoff.id, runId);
+              }
+            }
             const acceptedSessionId = !runError && !schedulerCancelled ? store.resumeSessionId(agent.id) : undefined;
             if (acceptedSessionId) {
               organizationEnvelopeStates.set(agent.id, {
@@ -11951,6 +12042,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       // not an independent queued user instruction. Do not let it immediately
       // manufacture a successor after the operator stops the Run.
       scheduledSessionRollovers.delete(request.params.id);
+      const abandonedHandoff = store.continuationHandoffForRun(request.params.id, result.runId!);
+      if (abandonedHandoff && !abandonedHandoff.consumedAt) {
+        store.consumeContinuationHandoff(request.params.id, abandonedHandoff.id, result.runId!);
+      }
       void closeRunBrowser(request.params.id, ownedTarget, "run_cancelled");
     }
     if (!result.replayed && ownedTarget && store.getAgent(request.params.id)) {

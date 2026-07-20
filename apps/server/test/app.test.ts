@@ -2132,6 +2132,9 @@ describe("token usage API", () => {
     const agentUsage = (await app.inject({ method: "GET", url: `/api/agents/${agent.id}/usage` })).json();
     expect(agentUsage).toMatchObject({ scope: "agent", scopeId: agent.id, inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, totalTokens: 150, finalizedRuns: 1, reportedRuns: 1, coverage: 1 });
     expect(agentUsage.metricAvailability).toMatchObject({ inputTokens: "available", cachedInputTokens: "available", reasoningOutputTokens: "available" });
+    expect(agentUsage.wakeCauses).toEqual([
+      expect.objectContaining({ cause: "human_message", runs: 1, activations: 1 }),
+    ]);
     expect(agentUsage.breakdown).toEqual([expect.objectContaining({ projectId: project.id, agentId: agent.id, runs: 1, usage: expect.objectContaining({ totalTokens: 150 }), pricingAvailableRuns: 1 })]);
     expect(agentUsage.recentTurns[0]).toMatchObject({ projectId: project.id, agentId: agent.id, executionId: expect.any(String), pricingAvailable: true });
     expect(agentUsage.projectedApiCost).toMatchObject({
@@ -3636,11 +3639,13 @@ describe("server chunk F", () => {
     expect((await app.inject({
       method: "POST", url: "/api/agent-session/rollover",
       headers: { authorization: `Bearer ${token}` },
+      payload: { handoff: "Continue only if this Run completes." },
     })).statusCode).toBe(200);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
       .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "compacting", reason: "session_rollover_scheduled" })] });
 
     await cancelAndWait(app, agent.id);
+    expect(store.pendingContinuationHandoff(agent.id)).toBeUndefined();
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-health` })).json())
       .toMatchObject({ agents: [expect.objectContaining({ agentId: agent.id, status: "cancelled", reason: "agent_cancelled" })] });
     await app.close();
@@ -5332,13 +5337,32 @@ describe("server chunk F", () => {
     expect(token).toBeTruthy();
     expect(url).toBe("http://127.0.0.1:8787/api/agent-session/rollover");
 
-    const scheduled = await app.inject({ method: "POST", url: "/api/agent-session/rollover", headers: { authorization: `Bearer ${token}` } });
-    expect(scheduled.statusCode).toBe(200);
-    expect(scheduled.json()).toMatchObject({ scheduled: true });
+    const handoff = "Current objective: finish the safe rollover.\nRecommended next action: verify the manifest.";
+    const scheduled = await app.inject({
+      method: "POST",
+      url: "/api/agent-session/rollover",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { handoff },
+    });
+    expect(scheduled.statusCode, scheduled.body).toBe(200);
+    expect(scheduled.json()).toMatchObject({ scheduled: true, handoffId: expect.any(String) });
     await waitForRun(agent.id);
 
     expect(store.resumeSessionId(agent.id)).toBeUndefined();
+    expect(store.pendingContinuationHandoff(agent.id)?.text).toBe(handoff);
     expect(store.readEvents(agent.id).some((item) => item.event.type === "session_reset" && item.event.reason === "explicit_compaction")).toBe(true);
+
+    adapter.mode = "normal";
+    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "continue after refresh" } });
+    await waitForSeedCount(2);
+    expect(adapter.seeds[1]?.prompt).toContain("CONTINUATION HANDOFF");
+    expect(adapter.seeds[1]?.prompt).toContain(handoff);
+    await waitForRun(agent.id);
+    expect(store.pendingContinuationHandoff(agent.id)).toBeUndefined();
+    const latestRun = store.getRuns(agent.id).at(-1);
+    expect(latestRun?.providerInput?.sourceManifest.sources).toContainEqual(expect.objectContaining({
+      kind: "continuation_handoff", delivery: "submitted",
+    }));
     await app.close();
   });
 
@@ -6540,7 +6564,7 @@ describe("server chunk F", () => {
     ]);
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toContain("ponderosa_browser_open");
     expect(requesterRuntime.dynamicTools?.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result", "ponderosa_docs",
+      "ponderosa_team_directory", "ponderosa_context", "ponderosa_result", "ponderosa_docs", "ponderosa_rollover",
     ]));
     const providerDocs = await requesterRuntime.handleDynamicToolCall!({
       name: "ponderosa_docs", arguments: { refs: ["ponderosa://docs/project-chat"], maxBytes: 4096 },

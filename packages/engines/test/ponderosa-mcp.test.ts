@@ -62,7 +62,7 @@ describe("Ponderosa stdio MCP bridge", () => {
     expect(responses[1]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "decision" }, { name: "manage" },
       { name: "coordinate" }, { name: "result" }, { name: "update_request" }, { name: "message" },
-      { name: "team_directory" }, { name: "context" }, { name: "docs" },
+      { name: "team_directory" }, { name: "context" }, { name: "rollover" }, { name: "docs" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
@@ -102,6 +102,7 @@ describe("Ponderosa stdio MCP bridge", () => {
         PONDEROSA_AGENT_SPAWN_URL: `${origin}/api/agent-spawn`,
         PONDEROSA_AGENT_DIRECTORY_URL: `${origin}/api/agent-directory`,
         PONDEROSA_AGENT_CONTEXT_URL: `${origin}/api/agent-context`,
+        PONDEROSA_AGENT_ROLLOVER_URL: `${origin}/api/agent-session/rollover`,
         PONDEROSA_AGENT_MESSAGE_TOKEN: "secret-run-token",
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -132,11 +133,15 @@ describe("Ponderosa stdio MCP bridge", () => {
       jsonrpc: "2.0", id: 6, method: "tools/call",
       params: { name: "result", arguments: { refs: ["ponderosa://artifact/text-1"], maxBytes: 4096 } },
     })}\n`);
-    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(6);
+    child.stdin!.write(`${JSON.stringify({
+      jsonrpc: "2.0", id: 7, method: "tools/call",
+      params: { name: "rollover", arguments: { handoff: "Continue from the verified state." } },
+    })}\n`);
+    await expect.poll(() => responses.length, { timeout: 5_000 }).toBe(7);
     expect(responses[0]).toMatchObject({ result: { tools: [
       { name: "create_managed_agent" }, { name: "decision" }, { name: "manage" },
       { name: "coordinate" }, { name: "result" }, { name: "update_request" }, { name: "message" },
-      { name: "team_directory" }, { name: "context" }, { name: "docs" },
+      { name: "team_directory" }, { name: "context" }, { name: "rollover" }, { name: "docs" },
       { name: "browser_open" }, { name: "browser_navigate" }, { name: "browser_inspect" },
       { name: "browser_act" }, { name: "browser_screenshot" }, { name: "browser_take_control" }, { name: "browser_close" },
     ] } });
@@ -152,6 +157,7 @@ describe("Ponderosa stdio MCP bridge", () => {
       "/api/agent-browser",
       "/api/agent-directory/agent%2Fa",
       "/api/agent-context?cursor=opaque-cursor&limit=12",
+      "/api/agent-session/rollover",
     ].sort());
     await new Promise<void>((resolve) => http.close(() => resolve()));
   });
