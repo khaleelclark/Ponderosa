@@ -805,6 +805,43 @@ function retryFenceSqliteState(store: AgentStore) {
   };
 }
 
+function readinessFenceDurableState(store: AgentStore, dataDir: string, projectId: string) {
+  const directoryState = (root: string) => {
+    if (!existsSync(root)) return [];
+    const files: Array<{ path: string; size: number; sha256: string }> = [];
+    const visit = (directory: string) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+        const absolute = path.join(directory, entry.name);
+        if (entry.isDirectory()) {
+          visit(absolute);
+          continue;
+        }
+        const body = readFileSync(absolute);
+        files.push({
+          path: path.relative(root, absolute),
+          size: body.length,
+          sha256: createHash("sha256").update(body).digest("hex"),
+        });
+      }
+    };
+    visit(root);
+    return files;
+  };
+  const optionalFile = (file: string) => existsSync(file) ? readFileSync(file).toString("base64") : undefined;
+  const authority = new Database(path.join(dataDir, "asset-authority.sqlite"), { readonly: true, fileMustExist: true });
+  try {
+    return {
+      sqlite: retryFenceSqliteState(store),
+      projectFiles: directoryState(path.join(dataDir, "projects", projectId)),
+      assetAuthorityBytes: authority.serialize().toString("base64"),
+      reactions: optionalFile(path.join(dataDir, "user-reactions.jsonl")),
+      workspace: optionalFile(path.join(dataDir, "workspace-events.jsonl")),
+    };
+  } finally {
+    authority.close();
+  }
+}
+
 class TestEventQueue implements AsyncIterable<AgentEvent> {
   private values: AgentEvent[] = [];
   private waiters: Array<(value: IteratorResult<AgentEvent>) => void> = [];
@@ -4762,6 +4799,218 @@ describe("server chunk F", () => {
     expect(durableMutationState(store, dataDir, project.id)).toEqual(durableBefore);
     expect(adapter.seeds).toEqual([]);
     await app.close();
+  });
+
+  it("rejects a valid Agent package import without procfs before roster or managed artifact mutation", async () => {
+    const project = store.createProject({ label: "Blocked Agent import", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Import destination" });
+    const artifactRef = randomUUID();
+    const artifactBody = Buffer.from("portable generated artifact");
+    const portablePackage: AgentPortablePackageDto = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "full",
+      kind: "agent",
+      exportedAt: "2026-07-20T01:00:00.000Z",
+      sourceLabel: "Valid portable Agent",
+      rootRef: "portable-root",
+      agents: [{
+        ref: "portable-root",
+        title: "Must not import",
+        engine: "codex",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+        history: [{ role: "user", text: `Inspect artifact ${artifactRef}`, createdAt: "2026-07-20T01:00:01.000Z" }],
+        artifacts: [{
+          ref: artifactRef,
+          kind: "generated_file",
+          path: "generated/result.txt",
+          summary: "result.txt",
+          createdAt: "2026-07-20T01:00:02.000Z",
+          mediaType: "text/plain",
+          visibility: "project",
+          pinned: false,
+          dataBase64: artifactBody.toString("base64"),
+        }],
+      }],
+    };
+    const payload = {
+      package: portablePackage,
+      conversationId: conversation.id,
+      engineMapping: { codex: "codex" },
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const rosterBefore = structuredClone(store.listAgents(project.id));
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const historyBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const artifactsBefore = structuredClone(store.getProjectArtifacts(project.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload,
+    });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(rosterBefore);
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(historyBefore);
+    expect(store.getProjectArtifacts(project.id)).toEqual(artifactsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(existsSync(managedArtifactContentPath(dataDir, project.id, artifactRef))).toBe(false);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    expect((await healthy.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(200);
+    const imported = await healthy.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload,
+    });
+    expect(imported.statusCode, imported.body).toBe(201);
+    const importedAgentId = imported.json<{ rootAgentId: string }>().rootAgentId;
+    expect(store.getAgent(importedAgentId)).toMatchObject({ title: "Must not import", conversationId: conversation.id });
+    expect(store.getProjectArtifacts(project.id)).toEqual([
+      expect.objectContaining({ id: artifactRef, originAgentId: importedAgentId, kind: "generated_file" }),
+    ]);
+    expect(readFileSync(managedArtifactContentPath(dataDir, project.id, artifactRef))).toEqual(artifactBody);
+    expect(adapter.seeds).toEqual([]);
+    await healthy.close();
+  });
+
+  it("rejects valid reaction and direct-reply intake without procfs before any canonical or notification mutation", async () => {
+    const project = store.createProject({ label: "Blocked private reply intake", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Valid reply target" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: conversation.id });
+    const communicationEventId = randomUUID();
+    store.appendCommunicationEvent({
+      eventId: communicationEventId,
+      schemaVersion: 2,
+      projectId: project.id,
+      conversationId: conversation.id,
+      sender: { kind: "agent", agentId: author.id, executionId: "completed-author-run" },
+      intent: "broadcast",
+      audience: { kind: "organization", organizationId: project.id },
+      text: "Agent-authored target",
+      createdAt: "2026-07-20T02:00:00.000Z",
+    });
+    const targetMessage = store.appendConversationMessage(
+      conversation.id,
+      { role: "assistant", text: "#broadcast Agent-authored target" },
+      author.id,
+      "main",
+      undefined,
+      undefined,
+      communicationEventId,
+    )!;
+    store.appendEvent(author.id, {
+      type: "communication_projection",
+      communicationEventId,
+      text: "Agent-authored target",
+      role: "assistant",
+    });
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await app.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const messagesBefore = structuredClone(store.getConversationMessages(conversation.id));
+    const authorEventsBefore = structuredClone(store.getMessages(author.id));
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+
+    const reaction = await app.inject({
+      method: "POST",
+      url: "/api/user-reactions",
+      payload: {
+        projectId: project.id,
+        communicationEventId,
+        emoji: "✅",
+        idempotencyKey: "blocked-valid-reaction",
+      },
+    });
+    expect(reaction.statusCode, reaction.body).toBe(503);
+    expect(reaction.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+
+    const directReply = await app.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/direct-replies`,
+      payload: {
+        text: "Valid private follow-up",
+        replyToMessageId: targetMessage.id,
+        targetAuthorAgentId: author.id,
+        idempotencyKey: "blocked-valid-direct-reply",
+        activeRunDelivery: "queue",
+      },
+    });
+    expect(directReply.statusCode, directReply.body).toBe(503);
+    expect(directReply.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
+    expect(store.getMessages(author.id)).toEqual(authorEventsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect(adapter.seeds).toEqual([]);
+    await app.close();
+
+    store = new AgentStore(dataDir);
+    const healthy = createServer({ dataDir, store, engines, logger: false });
+    expect((await healthy.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
+    const healthyReaction = await healthy.inject({
+      method: "POST",
+      url: "/api/user-reactions",
+      payload: {
+        projectId: project.id,
+        communicationEventId,
+        emoji: "✅",
+        idempotencyKey: "blocked-valid-reaction",
+      },
+    });
+    expect(healthyReaction.statusCode, healthyReaction.body).toBe(200);
+    const healthyReply = await healthy.inject({
+      method: "POST",
+      url: `/api/conversations/${conversation.id}/direct-replies`,
+      payload: {
+        text: "Valid private follow-up",
+        replyToMessageId: targetMessage.id,
+        targetAuthorAgentId: author.id,
+        idempotencyKey: "blocked-valid-direct-reply",
+        activeRunDelivery: "queue",
+      },
+    });
+    expect(healthyReply.statusCode, healthyReply.body).toBe(200);
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(communicationsBefore.length + 2);
+    expect(store.getConversationMessages(conversation.id)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        replyTo: expect.objectContaining({ messageId: targetMessage.id, authorAgentId: author.id }),
+      }),
+    ]));
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(2);
+    expect(adapter.seeds).toEqual([]);
+    await healthy.close();
   });
 
   it("rejects Request retry without procfs and leaves Request, Activation, outbox, and scheduler bytes unchanged", async () => {
@@ -10702,6 +10951,122 @@ describe("V3.3 Decisions, management, and portability", () => {
     expect(persistent.interrupted).toBeGreaterThanOrEqual(1);
     expect(persistent.closed).toBeGreaterThanOrEqual(1);
     await app.close();
+  });
+
+  it("rejects authorized create-Agent management plan/apply without procfs before plan or organization mutation", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 2, leaseMs: 30 * 60 * 1000 },
+      executionLeaseScheduling: { leaseMs: 30 * 60 * 1000, heartbeatMs: 10 * 60 * 1000 },
+    });
+    const project = store.createProject({ label: "Blocked management apply", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Team" });
+    const owner = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${owner.id}/messages`,
+      payload: { text: "Prepare a managed Agent", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+    const planned = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_manage",
+      arguments: {
+        action: "plan",
+        idempotencyKey: "blocked-create-agent-plan",
+        operations: [{
+          kind: "create_agent",
+          ref: "new-report",
+          title: "New report",
+          engine: "codex",
+          instructions: "Perform the opening assignment.",
+        }],
+      },
+    });
+    expect(planned.success, planned.text).toBe(true);
+    const planId = JSON.parse(planned.text).planId as string;
+    const messageToken = runtime.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN;
+    expect(messageToken).toBeTruthy();
+
+    const storeClose = store.close.bind(store);
+    const closeStub = vi.spyOn(store, "close").mockImplementation(() => {});
+    const unavailable = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "artifact filesystem requires visible Linux /proc/self/fd: simulated masked procfs",
+      }),
+    });
+    expect((await unavailable.inject({ method: "GET", url: "/api/ready" })).statusCode).toBe(503);
+    const rosterBefore = structuredClone(store.listAgents(project.id));
+    const communicationsBefore = structuredClone(store.readCommunicationEvents(project.id));
+    const projectionsBefore = structuredClone(store.readCommunicationProjections(project.id));
+    const approvalsBefore = store.sqlite.prepare(
+      "SELECT * FROM agent_management_approvals ORDER BY rowid",
+    ).all();
+    const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
+    const runtimeBefore = {
+      opened: persistent.opened,
+      closed: persistent.closed,
+      interrupted: persistent.interrupted,
+      starts: persistent.starts.length,
+      steers: persistent.steers.length,
+    };
+
+    const blockedPlan = await unavailable.inject({
+      method: "POST",
+      url: "/api/agent-management",
+      headers: { authorization: `Bearer ${messageToken}` },
+      payload: {
+        action: "plan",
+        idempotencyKey: "must-not-persist-plan",
+        operations: [{ kind: "create_agent", ref: "blocked-report", title: "Blocked report", engine: "codex" }],
+      },
+    });
+    expect(blockedPlan.statusCode, blockedPlan.body).toBe(503);
+    expect(blockedPlan.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+
+    const blocked = await unavailable.inject({
+      method: "POST",
+      url: "/api/agent-management",
+      headers: { authorization: `Bearer ${messageToken}` },
+      payload: { action: "apply", planId },
+    });
+    expect(blocked.statusCode, blocked.body).toBe(503);
+    expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(store.listAgents(project.id)).toEqual(rosterBefore);
+    expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
+    expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
+    expect(store.sqlite.prepare("SELECT * FROM agent_management_approvals ORDER BY rowid").all()).toEqual(approvalsBefore);
+    expect(readinessFenceDurableState(store, dataDir, project.id)).toEqual(durableBefore);
+    expect({
+      opened: persistent.opened,
+      closed: persistent.closed,
+      interrupted: persistent.interrupted,
+      starts: persistent.starts.length,
+      steers: persistent.steers.length,
+    }).toEqual(runtimeBefore);
+    const applied = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } });
+    expect(applied.success, applied.text).toBe(true);
+    expect(JSON.parse(applied.text)).toMatchObject({ replayed: false });
+    const created = store.listAgents(project.id).find((agent) => agent.title === "New report");
+    expect(created).toMatchObject({ managerAgentId: owner.id, spawnedByAgentId: owner.id });
+    expect(store.getImportedHistory(created!.id)?.messages[0]?.text).toBe("Perform the opening assignment.");
+    const replay = await runtime.handleDynamicToolCall!({ name: "ponderosa_manage", arguments: { action: "apply", planId } });
+    expect(replay.success, replay.text).toBe(true);
+    expect(JSON.parse(replay.text)).toMatchObject({ replayed: true });
+    await unavailable.close();
+    await app.close();
+    closeStub.mockRestore();
+    storeClose();
   });
 
   it("reauthorizes destructive plans at apply and rejects stale topology or unrelated approvals", async () => {

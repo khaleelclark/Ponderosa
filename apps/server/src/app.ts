@@ -1850,12 +1850,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const pathname = url.split("?", 1)[0]!;
     return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
+      pathname === "/api/agent-management" ||
       pathname === "/api/user-reactions" ||
       /^\/api\/agents\/[^/]+\/messages$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|direct-replies|collaboration\/messages)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
       /^\/api\/decisions\/[^/]+\/respond$/u.test(pathname);
