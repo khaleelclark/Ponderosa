@@ -55,6 +55,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   engineDefaults: {},
   globalInstructions: "",
   maxConcurrentAgentRuns: 8,
+  onboardingCompletedAt: null,
   profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
 };
@@ -102,6 +103,7 @@ export class WorkspaceStore {
       engineDefaults: record.event.preferences.engineDefaults ?? {},
       globalInstructions: record.event.preferences.globalInstructions ?? "",
       maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
+      onboardingCompletedAt: record.event.preferences.onboardingCompletedAt ?? null,
       profile: normalizeProfile(record.event.preferences.profile),
     };
     if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
@@ -253,6 +255,7 @@ export class WorkspaceStore {
       engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
       globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
       maxConcurrentAgentRuns: patch.maxConcurrentAgentRuns ?? this.preferences.maxConcurrentAgentRuns,
+      onboardingCompletedAt: patch.onboardingCompletedAt === undefined ? this.preferences.onboardingCompletedAt : patch.onboardingCompletedAt,
       profile: patch.profile ? normalizeProfile(patch.profile) : this.preferences.profile,
       sidebarWidth: Math.max(220, Math.min(520, Math.round(patch.sidebarWidth ?? this.preferences.sidebarWidth))),
       updatedAt: new Date().toISOString(),

@@ -143,7 +143,7 @@ describe("workspace tab bar", () => {
       onReorder={onReorder}
     /></QueryClientProvider>);
 
-    const chatTab = view.root.findByProps({ "aria-label": "Open All Chat in Ponderosa" });
+    const chatTab = view.root.findByProps({ "aria-label": "Open Home in Ponderosa" });
     expect(chatTab.props["aria-keyshortcuts"]).toBe("Shift+F10");
     const menuKey = { key: "ContextMenu", shiftKey: false, preventDefault: vi.fn(), currentTarget: {} };
     act(() => chatTab.props.onKeyDown(menuKey));

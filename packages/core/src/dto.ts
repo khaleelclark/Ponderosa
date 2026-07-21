@@ -88,6 +88,8 @@ export interface WorkspacePreferencesDto {
   globalInstructions: string;
   /** Workspace-wide admission limit for concurrently active Agent Runs. */
   maxConcurrentAgentRuns: number;
+  /** Durable, cross-device completion marker for the operator's welcome flow. */
+  onboardingCompletedAt: string | null;
   profile: OperatorProfileDto;
   updatedAt: string;
 }

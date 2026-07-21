@@ -104,7 +104,7 @@ export function WorkspaceTabs({
               : tabRoute.kind === "agents" ? "Agents"
                 : tabRoute.kind === "browser" ? "Browser"
                 : tabRoute.kind === "allAgents" ? "All Agents"
-                  : tabRoute.kind === "allChat" ? "All Chat"
+                  : tabRoute.kind === "allChat" ? "Home"
                   : tabRoute.kind === "project" ? "Project Overview"
                     : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";

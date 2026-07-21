@@ -58,12 +58,7 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
       </Stack>
     </Paper>
 
-    <Box sx={{ minHeight: 0, width: "100%", display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "250px minmax(0, 1fr)", xl: "270px minmax(0, 1fr) 280px" }, overflow: "hidden" }}>
-      <Box component="nav" aria-label="Wiki navigation" className="ponderosa-scroll" sx={{ display: { xs: "none", md: "block" }, overflowY: "auto", borderRight: 1, borderColor: "divider", p: 1.5, bgcolor: "background.paper" }}>
-        {index.isError ? <Alert severity="error">Wiki navigation could not be loaded.</Alert> : null}
-        {index.data?.sections.map((section) => <Box component="section" key={section.id} sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>{section.title}</Typography><List dense disablePadding>{section.articles.map((candidate) => <ListItemButton key={candidate.id} selected={candidate.id === activeId} onClick={() => open(candidate)} sx={{ borderRadius: 1.25, mb: .25 }}><ListItemText primary={candidate.title} primaryTypographyProps={{ fontSize: 13, fontWeight: candidate.id === activeId ? 800 : 600 }} /></ListItemButton>)}</List></Box>)}
-      </Box>
-
+    <Box sx={{ minHeight: 0, width: "100%", display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", xl: "minmax(0, 1fr) 280px" }, overflow: "hidden" }}>
       <Box component="article" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, sm: 4, lg: 6 }, py: { xs: 2.5, md: 4 }, scrollBehavior: "smooth" }}>
         <TextField select fullWidth size="small" label="Wiki article" value={activeId ?? ""} onChange={(event) => {
           const selected = articles.find((candidate) => candidate.id === event.target.value);

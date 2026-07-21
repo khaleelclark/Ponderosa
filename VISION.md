@@ -187,10 +187,12 @@ usage demonstrates that the flexibility/safety tradeoff requires it.
 
 ## Projects and agent organization
 
-Projects and their Project chats live in a collapsible, resizable explorer-style
-sidebar rather than top-level tabs. Project sorting is either Last used or
-Alphabetical and is a synced server preference. Selecting a project opens its
-most recently used active Project chat, with deterministic first-chat fallback.
+Home combines All Chat with a collapsible, resizable explorer-style Project
+sidebar rather than presenting them as competing destinations. Project sorting
+is either Last used or Alphabetical and is a synced server preference. Selecting
+a Project opens its Project Overview; selecting a Project chat opens that chat.
+The Wiki reuses the same sidebar surface for its article navigation instead of
+nesting a second documentation sidebar inside the content view.
 Semantic navigation preferences—including project sorting, custom project order,
 and the last-used Project chat—remain server-synced so navigation is coherent
 across devices. Presentation state is deliberately device-local: sidebar width,
@@ -198,6 +200,12 @@ sidebar collapse, and Agents-section expansion are stored only in that browser
 and are not written through the workspace-preferences API. The phone drawer
 always opens as a full list navigator regardless of the desktop sidebar state on
 that device.
+
+On a new installation, Home opens a concise welcome flow that creates the first
+Project and its initial Project chat, then places the operator directly in the
+composer. Completion is stored with the operator's synced preferences so the
+flow does not repeat on another device; the Wiki remains the persistent help
+destination.
 
 Creating a project requires a label, a validated host working folder, and a
 default subscription-backed engine, and atomically creates an initial “New chat.”

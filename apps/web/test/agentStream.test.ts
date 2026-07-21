@@ -26,7 +26,8 @@ describe("updateAgentDetail", () => {
   it("attaches finalized worked time to the completed Agent message while leaving the live stopwatch separate", async () => {
     const { readFile } = await import("node:fs/promises");
     const detail = await readFile(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
-    expect(detail).toContain("const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);");
+    expect(detail).toContain("const finalizedRunDurationLabels = new Map(");
+    expect(detail).toContain("message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined;");
     expect(detail).toContain("completedWorkDurationLabel={completedWorkDurationLabel}");
     expect(detail).toContain("startedAt={runtimeActivity?.startedAt}");
     expect(detail).not.toContain("finalizedDurationMs={");

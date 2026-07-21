@@ -12656,6 +12656,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {
       return reply.code(400).send({ error: `maximum concurrent Agent Runs must be an integer from ${MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY} to ${MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY}` });
     }
+    if (patch.onboardingCompletedAt !== undefined && patch.onboardingCompletedAt !== null &&
+        (typeof patch.onboardingCompletedAt !== "string" || !Number.isFinite(Date.parse(patch.onboardingCompletedAt)))) {
+      return reply.code(400).send({ error: "onboarding completion must be a valid timestamp or null" });
+    }
     if (patch.profile !== undefined) {
       const profile = patch.profile;
       const handle = profile?.handle?.replace(/^#/, "").toLowerCase();
