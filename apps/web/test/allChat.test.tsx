@@ -56,7 +56,7 @@ describe("All Chat view contract", () => {
     const first = item({
       author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
-      text: "First release note",
+      text: "First release note\n\n**Bold detail**",
     });
     const second = item({
       communicationEventId: "event-2",
@@ -76,8 +76,9 @@ describe("All Chat view contract", () => {
     await act(async () => {
       view = create(<QueryClientProvider client={client}><AllChatView onNavigate={vi.fn()} /></QueryClientProvider>);
     });
-    const radioControls = () => view.root.findAllByProps({ role: "radio" }).filter((node) => node.type === "button");
+    const radioControls = () => view.root.findAllByProps({ role: "radio" }).filter((node) => node.type === "article");
     await vi.waitFor(() => expect(radioControls()).toHaveLength(2));
+    expect(view.root.findAllByType("strong").some((node) => node.children.join("") === "Bold detail")).toBe(true);
     expect(new Set(radioControls().map((choice) => choice.props["aria-label"])).size).toBe(2);
     expect(radioControls()[0]!.props["aria-label"]).toContain("First release note");
     expect(radioControls()[1]!.props["aria-label"]).toContain("Second release note");

@@ -3355,13 +3355,41 @@ describe("project lifecycle API", () => {
     mkdirSync(path.join(repoDir, "inside"));
     const outside = mkdtempSync(path.join(tmpdir(), "pond-browse-outside-"));
     symlinkSync(outside, path.join(repoDir, "escape"));
+    const defaultListed = await app.inject({ method: "GET", url: "/api/project-folders/browse" });
+    expect(defaultListed.json<{ path: string }>().path).toBe(repoDir);
     const listed = await app.inject({ method: "GET", url: `/api/project-folders/browse?path=${encodeURIComponent(repoDir)}` });
     expect(listed.statusCode).toBe(200);
     expect(listed.json<{ folders: Array<{ name: string }> }>().folders.map((item) => item.name)).toEqual(["inside"]);
+    expect((await app.inject({ method: "POST", url: "/api/project-folders/create", payload: { parentPath: repoDir, name: "created-here" } })).statusCode).toBe(200);
+    expect(existsSync(path.join(repoDir, "created-here"))).toBe(true);
+    expect((await app.inject({ method: "POST", url: "/api/project-folders/create", payload: { parentPath: outside, name: "blocked" } })).statusCode).toBe(400);
     expect((await app.inject({ method: "GET", url: `/api/project-folders/browse?path=${encodeURIComponent(path.join(repoDir, "escape"))}` })).statusCode).toBe(400);
     expect((await app.inject({ method: "POST", url: "/api/projects", payload: { label: "Escape", hostPath: outside, defaultEngine: "codex" } })).statusCode).toBe(400);
     rmSync(outside, { recursive: true, force: true });
     await app.close();
+  });
+
+  it("browses and creates folders anywhere the unrestricted host process can access", async () => {
+    const configuredRoot = process.env.PONDEROSA_BROWSE_ROOTS;
+    delete process.env.PONDEROSA_BROWSE_ROOTS;
+    const outside = mkdtempSync(path.join(tmpdir(), "pond-host-picker-"));
+    const app = createServer({ dataDir, store, engines, logger: false });
+    try {
+      const listed = await app.inject({ method: "GET", url: `/api/project-folders/browse?path=${encodeURIComponent(outside)}` });
+      expect(listed.statusCode).toBe(200);
+      expect(listed.json<{ path: string }>().path).toBe(outside);
+      const created = await app.inject({ method: "POST", url: "/api/project-folders/create", payload: { parentPath: outside, name: "New Project" } });
+      expect(created.statusCode).toBe(200);
+      expect(created.json<{ hostPath: string }>().hostPath).toBe(path.join(outside, "New Project"));
+      expect(existsSync(path.join(outside, "New Project"))).toBe(true);
+      expect((await app.inject({ method: "POST", url: "/api/project-folders/create", payload: { parentPath: outside, name: "New Project" } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: "/api/project-folders/create", payload: { parentPath: outside, name: "../escape" } })).statusCode).toBe(400);
+    } finally {
+      await app.close();
+      rmSync(outside, { recursive: true, force: true });
+      if (configuredRoot === undefined) delete process.env.PONDEROSA_BROWSE_ROOTS;
+      else process.env.PONDEROSA_BROWSE_ROOTS = configuredRoot;
+    }
   });
 
   it("renames and permanently deletes canonical project data without deleting source files", async () => {

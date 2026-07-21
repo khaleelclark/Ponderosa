@@ -284,6 +284,16 @@ export interface HostFolderBrowseDto {
   folders: Array<{ name: string; hostPath: string }>;
 }
 
+export interface CreateHostFolderRequest {
+  parentPath: string;
+  name: string;
+}
+
+export interface HostFolderCreateDto {
+  name: string;
+  hostPath: string;
+}
+
 /** Current Git-backed workspace state. Execution events remain the provenance trail. */
 export interface WorkspaceChangeDto {
   path: string;

@@ -57,6 +57,8 @@ import type {
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
   AllChatPageDto,
+  CreateHostFolderRequest,
+  HostFolderCreateDto,
   HistoryPageDto,
   HostFolderBrowseDto,
   ImageAttachmentDto,
@@ -187,6 +189,12 @@ export const realApi = {
   },
   browseProjectFolders(path?: string): Promise<HostFolderBrowseDto> {
     return requestJson<HostFolderBrowseDto>(`/api/project-folders/browse${toQuery({ path })}`);
+  },
+  createProjectFolder(request: CreateHostFolderRequest): Promise<HostFolderCreateDto> {
+    return requestJson<HostFolderCreateDto>("/api/project-folders/create", {
+      method: "POST",
+      body: JSON.stringify(request satisfies CreateHostFolderRequest),
+    });
   },
   markProjectUsed(projectId: string, conversationId?: string): Promise<ProjectDto> {
     return requestJson<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}/use`, { method: "POST", body: JSON.stringify({ conversationId }) });

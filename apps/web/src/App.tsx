@@ -26,6 +26,8 @@ import {
   FormControl,
   InputLabel,
   MenuItem,
+  Radio,
+  RadioGroup,
   Select,
   Stack,
   Switch,
@@ -54,7 +56,7 @@ import { NotificationPanel } from "./components/NotificationPanel";
 import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
-import { useEngines, useNotifications, useProjectFolders, useProjects, useWorkspacePreferences } from "./hooks/queries";
+import { useEngines, useNotifications, useProjects, useWorkspacePreferences } from "./hooks/queries";
 import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -139,7 +141,6 @@ export default function App({
   const [projectLabel, setProjectLabel] = useState("");
   const [projectPath, setProjectPath] = useState("");
   const [projectFolderMode, setProjectFolderMode] = useState<ProjectFolderMode>("none");
-  const [projectFolderName, setProjectFolderName] = useState("");
   const [projectDefaultEngine, setProjectDefaultEngine] = useState("");
   const [projectDefaultModel, setProjectDefaultModel] = useState("");
   const [projectDefaultEffort, setProjectDefaultEffort] = useState("");
@@ -173,7 +174,6 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
-  const projectFoldersQuery = useProjectFolders(projectDialogOpen);
   const settingsProjectConversationsQuery = useQuery({
     queryKey: ["conversations", settingsProjectId],
     queryFn: () => api.listConversations(settingsProjectId!),
@@ -303,7 +303,6 @@ export default function App({
         label: projectLabel,
         mode: projectFolderMode,
         existingPath: projectPath,
-        newFolderName: projectFolderName,
         defaultEngine: projectDefaultEngine as ProjectDto["defaultEngine"],
         defaultModel: projectDefaultModel,
         defaultEffort: projectDefaultEffort,
@@ -316,7 +315,6 @@ export default function App({
       setProjectDialogOpen(false);
       setProjectLabel("");
       setProjectPath("");
-      setProjectFolderName("");
       setProjectFolderMode("none");
       setProjectDefaultEngine("");
       setProjectDefaultModel("");
@@ -837,8 +835,18 @@ export default function App({
               {engine.displayName} is configured but unavailable. {engine.availabilityDetail}
             </Alert>)}
             {recheckEngine.isError ? <Alert severity="error">{String(recheckEngine.error)}</Alert> : null}
-            <Box><Typography variant="subtitle2">Working folder</Typography><Typography variant="body2" color="text.secondary">{projectFolderMode === "existing" ? projectPath || "No existing folder selected" : projectFolderMode === "create" ? `New managed folder: ${projectFolderName || "not named"}` : "Private empty workspace"}</Typography></Box>
-            <Button variant="outlined" startIcon={<FolderOutlinedIcon />} onClick={() => setFolderPickerOpen(true)}>Choose Working Folder…</Button>
+            <Box>
+              <Typography variant="subtitle2">Working Folder</Typography>
+              <RadioGroup value={projectFolderMode} onChange={(event) => {
+                const mode = event.target.value as ProjectFolderMode;
+                setProjectFolderMode(mode);
+                if (mode === "none") setProjectPath("");
+              }}>
+                <FormControlLabel value="none" control={<Radio />} label="Private Empty Workspace" />
+                <FormControlLabel value="existing" control={<Radio />} label="Use a Folder on This Host" />
+              </RadioGroup>
+              {projectFolderMode === "existing" ? <Stack spacing={1}><Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{projectPath || "No folder selected"}</Typography><Button variant="outlined" startIcon={<FolderOutlinedIcon />} onClick={() => setFolderPickerOpen(true)}>{projectPath ? "Change Folder…" : "Choose Folder…"}</Button></Stack> : <Typography variant="body2" color="text.secondary">Ponderosa will create a private empty workspace.</Typography>}
+            </Box>
             {createProject.isError ? <Alert severity="error">{String(createProject.error)}</Alert> : null}
           </Stack>
         </DialogContent>
@@ -846,17 +854,16 @@ export default function App({
           <Button onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
           <Button
             variant="contained"
-            disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, newFolderName: projectFolderName, defaultEngine: projectDefaultEngine, pending: createProject.isPending })}
+            disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, defaultEngine: projectDefaultEngine, pending: createProject.isPending })}
             onClick={() => createProject.mutate()}
           >
             Create
           </Button>
         </DialogActions>
       </Dialog>
-      <HostFolderPicker open={folderPickerOpen} initialMode={projectFolderMode} initialPath={projectPath || undefined} initialFolderName={projectFolderName || undefined} managedRoot={projectFoldersQuery.data?.managedRoot} onClose={() => setFolderPickerOpen(false)} onChoose={(selection) => {
-        setProjectFolderMode(selection.mode);
-        setProjectPath(selection.path ?? "");
-        setProjectFolderName(selection.newFolderName ?? "");
+      <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(path) => {
+        setProjectFolderMode("existing");
+        setProjectPath(path);
         setFolderPickerOpen(false);
       }} />
       <NotificationPanel
