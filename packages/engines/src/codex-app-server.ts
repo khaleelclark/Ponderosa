@@ -5,6 +5,7 @@ import type {
   TokenUsage,
   OpenRuntimeSessionOptions,
   RuntimeSession,
+  RuntimeCommandResult,
   RuntimeSteerResult,
   RuntimeTurnInput,
   RuntimeProcessHandle,
@@ -256,6 +257,56 @@ export async function discoverCodexAppServerCapabilities(opts: {
     await rpc.close();
   }
 }
+interface CodexContextUsage {
+  totalTokens: number;
+  modelContextWindow?: number;
+}
+
+function rateWindowLabel(window: Record<string, unknown>): string | undefined {
+  const usedPercent = typeof window.usedPercent === "number" && Number.isFinite(window.usedPercent)
+    ? Math.max(0, Math.min(100, window.usedPercent))
+    : undefined;
+  if (usedPercent === undefined) return undefined;
+  const minutes = typeof window.windowDurationMins === "number" && window.windowDurationMins > 0
+    ? window.windowDurationMins
+    : undefined;
+  const duration = minutes === undefined
+    ? "Rate limit"
+    : minutes % (24 * 60) === 0
+      ? `${minutes / (24 * 60)}d limit`
+      : minutes % 60 === 0
+        ? `${minutes / 60}h limit`
+        : `${minutes}m limit`;
+  return `${duration} ${Math.round(usedPercent)}% used`;
+}
+
+export function formatCodexStatus(input: {
+  sessionId: string;
+  model?: string;
+  context?: CodexContextUsage;
+  rateLimits?: unknown;
+}): string {
+  const parts = [`Codex session ${input.sessionId}`, `Model ${input.model ?? "provider default"}`];
+  if (input.context?.modelContextWindow) {
+    const usedPercent = Math.min(100, (input.context.totalTokens / input.context.modelContextWindow) * 100);
+    parts.push(`Context ${Math.round(usedPercent)}% used (${input.context.totalTokens.toLocaleString()} of ${input.context.modelContextWindow.toLocaleString()} tokens)`);
+  } else if (input.context) {
+    parts.push(`Thread usage ${input.context.totalTokens.toLocaleString()} tokens; context-window size not reported`);
+  } else {
+    parts.push("Context usage not yet reported");
+  }
+  const response = object(input.rateLimits);
+  const byId = object(response?.rateLimitsByLimitId);
+  const snapshot = object(byId?.codex) ?? object(response?.rateLimits);
+  for (const candidate of [object(snapshot?.primary), object(snapshot?.secondary)]) {
+    if (!candidate) continue;
+    const label = rateWindowLabel(candidate);
+    if (label) parts.push(label);
+  }
+  if (snapshot?.rateLimitReachedType) parts.push("Provider limit reached");
+  return parts.join(" · ");
+}
+
 
 export class CodexAppServerSession implements RuntimeSession {
   private activeTurnId?: string;
@@ -264,6 +315,7 @@ export class CodexAppServerSession implements RuntimeSession {
   private readonly usageCheckpointsByTurnId = new Map<string, Set<string>>();
   private baselineTotal?: TokenUsage;
   private latestTotal?: TokenUsage;
+  private latestContextUsage?: CodexContextUsage;
   private capabilitiesSnapshot?: EngineCapabilities;
   private capabilitiesDiscovery?: Promise<EngineCapabilities>;
   private capabilitiesDirty = true;
@@ -405,13 +457,21 @@ export class CodexAppServerSession implements RuntimeSession {
     }
   }
 
-  async invokeCommand(name: string, argumentsText?: string): Promise<void> {
-    if (name !== "compact" || argumentsText?.trim()) throw new Error(`unsupported Codex runtime command: ${name}`);
+  async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void> {
+    if (argumentsText?.trim()) throw new Error(`/${name} does not accept arguments`);
     const command = (await this.capabilities()).commands.find((candidate) => candidate.name === name);
     if (!command || command.status !== "available" || command.invocation !== "runtime") {
       throw new Error(command?.unavailableReason ?? `Codex no longer advertises /${name}`);
     }
-    await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
+    if (name === "compact") {
+      await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
+      return;
+    }
+    if (name === "status") {
+      const rateLimits = await optionalRequest(this.rpc, "account/rateLimits/read", undefined);
+      return { message: formatCodexStatus({ sessionId: this.engineAgentId, model: this.activeModel, context: this.latestContextUsage, rateLimits }) };
+    }
+    throw new Error(`unsupported Codex runtime command: ${name}`);
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
@@ -517,10 +577,15 @@ export class CodexAppServerSession implements RuntimeSession {
     yield { type: "session", sessionId: this.engineAgentId };
     for await (const notification of this.rpc.notifications) {
       if (notification.method === "thread/tokenUsage/updated") {
-        const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown } } | undefined;
+        const params = notification.params as { turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
         if (typeof params?.turnId === "string") {
           const total = mapCodexTokenUsage(params.tokenUsage?.total);
           if (total) {
+            const modelContextWindow = typeof params.tokenUsage?.modelContextWindow === "number" && params.tokenUsage.modelContextWindow > 0
+              ? params.tokenUsage.modelContextWindow
+              : undefined;
+            this.latestContextUsage = { totalTokens: total.totalTokens ?? 0, ...(modelContextWindow ? { modelContextWindow } : {}) };
+
             // A resumed thread replays its prior cumulative total before the new
             // turn's events. That checkpoint is the durable interval baseline.
             if (params.turnId !== this.activeTurnId) {

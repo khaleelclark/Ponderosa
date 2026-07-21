@@ -84,6 +84,7 @@ lines.on("line", (line) => {
     return;
   }
   if (message.method === "thread/compact/start") return send({ id: message.id, result: {} });
+  if (message.method === "account/rateLimits/read") return send({ id: message.id, result: discovery.rateLimits ?? { rateLimits: { primary: null, secondary: null } } });
   if (message.method === "turn/start") {
     if (typeof discovery.rejectTurnStartModel === "string" &&
         discovery.rejectTurnStartModel === message.params?.model) {

@@ -11318,7 +11318,7 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("appends one immutable correction and dispatches exactly one idempotent follow-up turn", async () => {
+  it("corrects an earlier message after newer work and dispatches exactly one idempotent follow-up turn", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     const masterId = store.getProject(project.id)!.lastConversationId!;
     await app.inject({ method: "PUT", url: `/api/agents/${agent.id}/conversation-memberships`, payload: { conversationIds: [masterId], primaryConversationId: masterId } });
@@ -11328,6 +11328,12 @@ describe("server chunk F", () => {
     });
     const originalMessageId = originalSend.json<{ messageId: string }>().messageId;
     await waitForRun(agent.id);
+    const newerSend = await app.inject({
+      method: "POST", url: `/api/conversations/${masterId}/direct-messages`,
+      payload: { text: "Newer request", recipients: [{ agentId: agent.id }], idempotencyKey: "newer-request" },
+    });
+    expect(newerSend.statusCode, newerSend.body).toBe(200);
+    await waitForRun(agent.id, 2);
 
     const refusedSteer = await app.inject({
       method: "POST",
@@ -11341,7 +11347,7 @@ describe("server chunk F", () => {
     const replay = await app.inject({ method: "POST", url: `/api/conversations/${masterId}/messages/${originalMessageId}/corrections`, payload: correctionPayload });
     expect(corrected.json()).toMatchObject({ originalMessageId, replayed: false });
     expect(replay.json()).toMatchObject({ originalMessageId, replayed: true, correctionMessageId: corrected.json<{ correctionMessageId: string }>().correctionMessageId });
-    await waitForRun(agent.id, 2);
+    await waitForRun(agent.id, 3);
 
     const timeline = store.getConversationMessages(masterId);
     expect(timeline.find((message) => message.id === originalMessageId)?.text).toBe("Original request");

@@ -55,8 +55,8 @@ describe("runtime capability menu", () => {
   });
   it("keeps actionable skills insertable and explains unsupported expansion", () => {
     expect(composerCapabilityDisabledReason({ id: "skill:review", kind: "skill", label: "review", description: "Review", status: "available", insertText: "$review " })).toBeUndefined();
-    expect(composerCapabilityDisabledReason({ id: "plugin:github", kind: "plugin", label: "GitHub", description: "GitHub", status: "available" })).toContain("runtime-provided skills");
-    expect(composerCapabilityDisabledReason({ id: "connector:gmail", kind: "connector", label: "Gmail", description: "Gmail", status: "available" })).toContain("direct connector expansion");
+    expect(composerCapabilityDisabledReason({ id: "plugin:github", kind: "plugin", label: "GitHub", description: "GitHub", status: "available" })).toContain("Available automatically");
+    expect(composerCapabilityDisabledReason({ id: "connector:gmail", kind: "connector", label: "Gmail", description: "Gmail", status: "available" })).toContain("no direct connector command");
     expect(composerCapabilityDisabledReason({ id: "connector:offline", kind: "connector", label: "Offline", description: "Offline", status: "unavailable", unavailableReason: "Sign in first." })).toBe("Sign in first.");
     expect(insertComposerCapability("Please  review", 7, { id: "skill:review", kind: "skill", label: "review", description: "Review", status: "available", insertText: "$review " }))
       .toEqual({ text: "Please $review  review", caret: 15 });

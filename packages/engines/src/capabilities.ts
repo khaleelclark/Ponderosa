@@ -405,6 +405,17 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
   }
 
   const mcpServers = [...mcpByName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const statusUnavailable = !input.sessionId ? "Requires an active Codex session." : undefined;
+  commands.set("status", {
+    name: "status",
+    description: "Show Codex session, context, and rate-limit status",
+    source: "built-in",
+    acceptsArguments: false,
+    insertText: "/status",
+    status: statusUnavailable ? "unavailable" : "available",
+    ...(statusUnavailable ? { unavailableReason: statusUnavailable } : {}),
+    invocation: "runtime",
+  });
   const plugins: DiscoveredEnginePlugin[] = [...installedPlugins].map(([name, meta]) => ({
     capability: { id: `plugin:${name}`, kind: "plugin", label: meta.label, description: meta.description, status: "available" },
     commands: [],

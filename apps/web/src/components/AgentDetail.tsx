@@ -804,10 +804,15 @@ export function AgentDetail({
       return sent;
     };
 
-  const finalizedDuration = detail.finalizedWorkDurationMs ?? finalizedWorkDurationMs(detail.runs);
-  const completedWorkDurationLabel = detail.finalizedWorkDurationMs !== undefined || detail.runs.some((run) => Boolean(run.completedAt))
-    ? `Worked for ${formatFinalizedWorkDuration(finalizedDuration)}`
-    : undefined;
+  const finalizedRunDurationLabels = new Map(detail.runs.flatMap((run) => {
+    if (!run.completedAt) return [];
+    const duration = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
+    return Number.isFinite(duration) && duration >= 0
+      ? [[run.id, `Worked for ${formatFinalizedWorkDuration(duration)}`] as const]
+      : [];
+  }));
+  const completedWorkDurationLabel = (message: MessageDto): string | undefined =>
+    message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><Stack spacing={1} sx={{ p: (decisionsQuery.data?.length ?? 0) ? 1.5 : 0 }}>{(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"}><Typography variant="subtitle2">Decision needed</Typography><Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography><Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">{decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}{(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}</Stack></Alert>)}</Stack><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onReact={(message, emoji) => api.sendUserReaction({
@@ -1155,7 +1160,7 @@ export function AgentDetail({
           onCommand={(command, argumentsText) => api.invokeProviderCommand(agentId, {
             name: command.name,
             ...(argumentsText ? { argumentsText } : {}),
-          }).then(() => setQueuedMessageNotice(`/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`))}
+          }).then((result) => setQueuedMessageNotice(result.message ?? `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`))}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
           onCancel={() => stopActiveRun()}

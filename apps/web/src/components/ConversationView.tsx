@@ -264,7 +264,7 @@ export function ConversationMessage({
         {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
         {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && onEdit ? <Tooltip title="Edit Latest Message"><IconButton size="small" aria-label="Edit latest message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {conversation === "main" && onEdit ? <Tooltip title="Edit Message"><IconButton size="small" aria-label="Edit message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && message.authorAgentId ? (
           <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
             size="small"
@@ -1156,7 +1156,7 @@ export function ConversationView({
                   emoji,
                   requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
                 }).then(() => undefined)}
-                onEdit={activeView === "main" && message.id === messages.filter((candidate) => candidate.role === "user" && !candidate.authorAgentId).at(-1)?.id && !message.correctedByMessageId
+                onEdit={activeView === "main" && message.role === "user" && !message.authorAgentId && !message.correctedByMessageId && !message.correctionOfMessageId
                   ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); }
                   : undefined}
               />
@@ -1370,9 +1370,9 @@ export function ConversationView({
       </Dialog>
 
       <Dialog open={Boolean(editingMessage)} onClose={() => !correctMessage.isPending && setEditingMessage(undefined)} fullWidth maxWidth="sm">
-        <DialogTitle>Edit latest message</DialogTitle>
+        <DialogTitle>Edit Message</DialogTitle>
         <DialogContent>
-          <Alert severity="info" sx={{ mb: 2 }}>The original remains in append-only history. Shared-project edits update the visible revision without redelivering to an active agent.</Alert>
+          <Alert severity="info" sx={{ mb: 2 }}>The original remains in append-only history. Broadcast edits update the shared note; edits to a delivered request queue a correction to its original recipient.</Alert>
           <TextField autoFocus fullWidth multiline minRows={3} label="Message" value={correctionText} onChange={(event) => setCorrectionText(event.target.value)} />
           {correctMessage.isError ? <Alert severity="error" sx={{ mt: 2 }}>{String(correctMessage.error)}</Alert> : null}
         </DialogContent>

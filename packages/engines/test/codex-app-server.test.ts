@@ -588,6 +588,10 @@ describe("Codex app-server persistent runtime", () => {
     });
     const capabilities = await session.capabilities();
     expect(capabilities.commands.find((command) => command.name === "compact")).toMatchObject({ status: "available" });
+    expect(capabilities.commands.find((command) => command.name === "status")).toMatchObject({ status: "available" });
+    const status = await session.invokeCommand("status");
+    expect(status?.message).toContain("Codex session codex-thread-v1 · Model model-b");
+    expect(status?.message).toContain("Context usage not yet reported");
     expect(capabilities.mcpServers).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "empty", toolsDiscovered: true, toolCount: 0, usable: true }),
       expect.objectContaining({ name: "callable", toolsDiscovered: true, toolCount: 1, usable: true }),
