@@ -198,8 +198,11 @@ pay-per-token provider API keys.
 
 9. **Full host access is intentional and scoped by design.** Agents run as the
    host user with real fs/shell access (single-operator box). That is by design.
-   But: the *file-browser API* is scoped to registered project paths even though
-   the *agent* is not. Don't widen the browsing API to arbitrary host paths.
+   Ongoing Project file APIs are scoped to registered Project paths even though
+   the *agent* is not. The operator-only pre-registration Project folder picker is
+   the narrow exception: unless an administrator configures browse roots, it may
+   browse and create folders anywhere the Ponderosa host user can access. Do not
+   extend that exception to Agent tools or ordinary Project file browsing.
 
    V3.2 Triggers use that same full Agent authority; there is no pretend
    observe-only or project-only sandbox. A Trigger belongs to exactly one Agent
@@ -357,11 +360,12 @@ Ordinary runtime output → execution-scoped Work log
   document inherits the event's audience exactly: Broadcast is organizational,
   while Direct Message and Collaboration remain private. Document provenance
   records the author agent and execution.
-- Project creation requires a validated host folder (which may be a newly created
-  managed workspace) and a default subscription-backed engine, and atomically
-  creates its initial Project chat. The pre-registration folder picker is scoped
-  to explicitly configured canonical roots; deleting a project removes
-  Ponderosa-owned canonical data—not the selected source folder.
+- Project creation requires a validated host folder (which may be newly created
+  on the host) and a default subscription-backed engine, and atomically creates
+  its initial Project chat. The pre-registration picker follows the host operating
+  system and defaults to host-user access; configured browse roots may restrict
+  it for locked-down deployments. Deleting a Project removes Ponderosa-owned
+  canonical data—not the selected source folder.
 - V1 Project chats have two lifecycle states: active and deleted. Do not add an
   archive state without a complete archive browser, restore flow, and retention
   policy.

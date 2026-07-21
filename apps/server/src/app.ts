@@ -5,6 +5,7 @@ import { promises as dns } from "node:dns";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type Socket } from "node:net";
 import type { IncomingMessage } from "node:http";
+import os from "node:os";
 import { Readable, Transform } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
@@ -28,6 +29,8 @@ import type {
   EngineCapabilities,
   EngineDto,
   ProjectEngineCapabilitiesDto,
+  CreateHostFolderRequest,
+  HostFolderCreateDto,
   ProjectFolderOptionsDto,
   HostFolderBrowseDto,
   WorkspaceChangeDto,
@@ -2871,9 +2874,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const configuredBrowseRoots = (opts.allowedBrowseRoots ?? (process.env.PONDEROSA_BROWSE_ROOTS ?? "").split(path.delimiter))
     .map((root) => root.trim()).filter(Boolean).map((root) => path.resolve(root));
 
-  async function browseRoots(): Promise<string[]> {
-    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    const resolved: string[] = [await fs.realpath(managedWorkspacesRoot)];
+  async function restrictedBrowseRoots(): Promise<string[]> {
+    const resolved: string[] = [];
     for (const root of configuredBrowseRoots) {
       try {
         const real = await fs.realpath(root);
@@ -2884,16 +2886,29 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }
 
   function insideRoot(candidate: string, root: string): boolean {
-    return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+    const relative = path.relative(root, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
   }
 
   async function validatedBrowsePath(input: string): Promise<{ candidate: string; root: string }> {
-    const roots = await browseRoots();
     const candidate = await fs.realpath(path.resolve(input));
-    const root = roots.find((allowed) => insideRoot(candidate, allowed));
-    if (!root) throw new Error("path is outside configured browse roots");
     if (!(await fs.stat(candidate)).isDirectory()) throw new Error("path must be a directory");
+    const roots = await restrictedBrowseRoots();
+    const root = roots.length > 0
+      ? roots.find((allowed) => insideRoot(candidate, allowed))
+      : path.parse(candidate).root;
+    if (!root) throw new Error("path is outside configured browse roots");
     return { candidate, root };
+  }
+  async function defaultBrowsePath(): Promise<string> {
+    const restrictedRoots = await restrictedBrowseRoots();
+    if (restrictedRoots[0]) return restrictedRoots[0];
+    try {
+      const home = await fs.realpath(os.homedir());
+      if ((await fs.stat(home)).isDirectory()) return home;
+    } catch { /* use the managed workspace when the host home is unavailable */ }
+    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
+    return fs.realpath(managedWorkspacesRoot);
   }
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
@@ -7985,9 +8000,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.get<{ Querystring: { path?: string } }>("/api/project-folders/browse", async (request, reply): Promise<HostFolderBrowseDto | unknown> => {
-    const roots = await browseRoots();
-    const requested = request.query.path || roots[0]!;
     try {
+      const requested = request.query.path || await defaultBrowsePath();
       const { candidate, root } = await validatedBrowsePath(requested);
       const entries = await fs.readdir(candidate, { withFileTypes: true });
       const folders: HostFolderBrowseDto["folders"] = [];
@@ -8003,6 +8017,26 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return { path: candidate, root, ...(insideRoot(parent, root) ? { parentPath: parent } : {}), folders: folders.sort((a, b) => a.name.localeCompare(b.name)) };
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "folder is unavailable" });
+    }
+  });
+
+  app.post<{ Body: CreateHostFolderRequest }>("/api/project-folders/create", async (request, reply): Promise<HostFolderCreateDto | unknown> => {
+    const parentPath = request.body?.parentPath?.trim();
+    const name = request.body?.name?.trim();
+    if (!parentPath) return reply.code(400).send({ error: "parentPath is required" });
+    if (!name || !/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(name) || name === "." || name === "..") {
+      return reply.code(400).send({ error: "folder name must be a single safe name" });
+    }
+    try {
+      const parent = await validatedBrowsePath(parentPath);
+      const requestedPath = path.join(parent.candidate, name);
+      if (!insideRoot(requestedPath, parent.root)) return reply.code(400).send({ error: "folder is outside the configured browse root" });
+      await fs.mkdir(requestedPath, { recursive: false });
+      const hostPath = await fs.realpath(requestedPath);
+      return { name, hostPath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return reply.code(409).send({ error: "folder already exists" });
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "folder could not be created" });
     }
   });
 

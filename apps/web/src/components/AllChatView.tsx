@@ -1,14 +1,14 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
-  Alert, Box, Button, ButtonBase, Chip, CircularProgress, Divider, Paper, Stack, Typography, useMediaQuery, useTheme,
+  Alert, Avatar, Box, Button, CircularProgress, Stack, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { useAllChat } from "../hooks/queries";
+import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
 import type { Route } from "../routing";
-import { Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./panes";
+import { ChatMessageBody, Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { useMobileComposerAutoHide } from "../mobileChat";
 
@@ -54,6 +54,7 @@ export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | u
 export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }): JSX.Element {
   const queryClient = useQueryClient();
   const query = useAllChat();
+  const workspacePreferences = useWorkspacePreferences();
   const [older, setOlder] = useState<{ items: AllChatItemDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
@@ -138,7 +139,6 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
         <Typography variant="h5" component="h1" fontWeight={800}>All Chat</Typography>
         <Typography variant="body2" color="text.secondary">Canonical messages across Project, Team, and Agent chats.</Typography>
       </Box>
-      <Chip size="small" variant="outlined" label="View oriented" />
     </Stack>
 
     <Box sx={{ minHeight: 0, position: "relative", overflow: "hidden" }}>
@@ -151,60 +151,54 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
-      <Stack spacing={1.25} sx={{ width: "100%", maxWidth: 1280, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
+      <Stack spacing={2.5} sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }} role="radiogroup" aria-label="Source message for direct reply">
         {items.map((item, index) => {
           const selectedItem = selectedId === item.communicationEventId;
-          return <Paper
+          const fromUser = item.author.kind === "user";
+          return <Box
             key={item.communicationEventId}
             component="article"
-            variant="outlined"
+            role="radio"
+            aria-checked={selectedItem}
+            aria-label={allChatSourceAccessibleName(item)}
+            tabIndex={selectedId ? (selectedItem ? 0 : -1) : (index === 0 ? 0 : -1)}
             onClick={() => {
               selectItem(item);
               setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId);
             }}
-            sx={{ p: 1.75, cursor: "pointer", borderColor: selectedItem ? "primary.main" : "divider", bgcolor: selectedItem ? "action.selected" : "background.paper" }}
+            onKeyDown={(event) => {
+              if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
+              event.preventDefault();
+              const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
+              const nextIndex = (index + delta + items.length) % items.length;
+              const nextItem = items[nextIndex];
+              if (!nextItem) return;
+              selectItem(nextItem);
+              const group = event.currentTarget.closest<HTMLElement>('[role="radiogroup"]');
+              group?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
+            }}
+            sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", outline: "none", cursor: "pointer", borderRadius: 2, "&:focus-visible": { boxShadow: (muiTheme) => `0 0 0 2px ${muiTheme.palette.primary.main}` } }}
           >
-            <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
-              <ButtonBase
-                role="radio"
-                aria-checked={selectedItem}
-                aria-label={allChatSourceAccessibleName(item)}
-                tabIndex={selectedId ? (selectedItem ? 0 : -1) : (index === 0 ? 0 : -1)}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  selectItem(item);
-                  setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId);
-                }}
-                onKeyDown={(event) => {
-                  if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
-                  event.preventDefault();
-                  const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
-                  const nextIndex = (index + delta + items.length) % items.length;
-                  const nextItem = items[nextIndex];
-                  if (!nextItem) return;
-                  selectItem(nextItem);
-                  const group = event.currentTarget.closest<HTMLElement>('[role="radiogroup"]');
-                  group?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
-                }}
-                sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", textAlign: "left", borderRadius: 1 }}
-              >
-                <Box sx={{ minWidth: 0 }}>
-                  <Typography variant="subtitle2">{item.author.label}</Typography>
-                  <Typography variant="caption" color="text.secondary">{sourceLabel(item)}<Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}> · {new Date(item.createdAt).toLocaleString()}</Box></Typography>
+            <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? { xs: "94%", sm: "min(78%, 920px)" } : "100%", maxWidth: fromUser ? 920 : 1120, alignItems: "flex-start" }}>
+              {!fromUser ? <Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar> : null}
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                {fromUser
+                  ? <UserMessageLabel profile={workspacePreferences.data?.profile} createdAt={item.createdAt} />
+                  : <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "baseline", mb: 0.25 }}>
+                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography>
+                    <MessageTimestamp value={item.createdAt} compact desktopOnly />
+                  </Stack>}
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.6 }}>{sourceLabel(item)}</Typography>
+                <Box sx={{ px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
+                  <ChatMessageBody text={item.text} collapseLongMessage={fromUser} projectId={item.project.id} />
                 </Box>
-              </ButtonBase>
-              <Button
-                size="small"
-                color="inherit"
-                endIcon={<OpenInNewIcon fontSize="small" />}
-                onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }}
-              >Open Source</Button>
+                {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
+                <Stack direction="row" spacing={0.5} sx={{ mt: 0.35, justifyContent: fromUser ? "flex-end" : "flex-start" }}>
+                  <Button size="small" color="inherit" endIcon={<OpenInNewIcon fontSize="small" />} onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }}>Open Source</Button>
+                </Stack>
+              </Box>
             </Stack>
-            <Divider sx={{ my: 1.25 }} />
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.text}</Typography>
-            {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align="start" /></Box> : null}
-            {item.directMessageAgent ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1.25 }}>Select to message {item.directMessageAgent.title} directly.</Typography> : null}
-          </Paper>;
+          </Box>;
         })}
         {!query.isLoading && !query.isError && items.length === 0 ? <Alert severity="info">No authored chat messages yet.</Alert> : null}
       </Stack>

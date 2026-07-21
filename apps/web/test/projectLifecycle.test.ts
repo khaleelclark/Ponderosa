@@ -4,12 +4,11 @@ import { createProjectRequest, nextProjectAfterDelete, projectCreationDisabled }
 
 describe("project lifecycle UI", () => {
   it("requires an engine and validated host-folder choice", () => {
-    expect(projectCreationDisabled({ label: "Demo", mode: "none", existingPath: "", newFolderName: "", defaultEngine: "codex", pending: false })).toBe(false);
-    expect(projectCreationDisabled({ label: "Demo", mode: "existing", existingPath: "", newFolderName: "", defaultEngine: "codex", pending: false })).toBe(true);
-    expect(projectCreationDisabled({ label: "Demo", mode: "existing", existingPath: "/repo", newFolderName: "", defaultEngine: "", pending: false })).toBe(true);
-    expect(createProjectRequest({ label: " Demo ", mode: "existing", existingPath: " /repo ", newFolderName: "", defaultEngine: "codex" })).toEqual({ label: "Demo", hostPath: "/repo", defaultEngine: "codex" });
-    expect(createProjectRequest({ label: "Demo", mode: "create", existingPath: "", newFolderName: " fresh ", defaultEngine: "claude" })).toEqual({ label: "Demo", createFolderName: "fresh", defaultEngine: "claude" });
-    expect(createProjectRequest({ label: " Demo ", mode: "none", existingPath: "", newFolderName: "", defaultEngine: "codex" })).toEqual({ label: "Demo", defaultEngine: "codex" });
+    expect(projectCreationDisabled({ label: "Demo", mode: "none", existingPath: "", defaultEngine: "codex", pending: false })).toBe(false);
+    expect(projectCreationDisabled({ label: "Demo", mode: "existing", existingPath: "", defaultEngine: "codex", pending: false })).toBe(true);
+    expect(projectCreationDisabled({ label: "Demo", mode: "existing", existingPath: "/repo", defaultEngine: "", pending: false })).toBe(true);
+    expect(createProjectRequest({ label: " Demo ", mode: "existing", existingPath: " /repo ", defaultEngine: "codex" })).toEqual({ label: "Demo", hostPath: "/repo", defaultEngine: "codex" });
+    expect(createProjectRequest({ label: " Demo ", mode: "none", existingPath: "", defaultEngine: "codex" })).toEqual({ label: "Demo", defaultEngine: "codex" });
   });
 
   it("navigates to a surviving project after confirmed deletion", () => {

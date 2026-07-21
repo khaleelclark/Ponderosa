@@ -201,9 +201,11 @@ that device.
 
 Creating a project requires a label, a validated host working folder, and a
 default subscription-backed engine, and atomically creates an initial “New chat.”
-The host folder picker exposes only explicitly configured browse roots and rejects
-canonical paths or symlinks that escape them; manual entry is validated by the
-same rule. Creating another Project chat is immediate and inherits the project
+The operator-only host folder picker follows the operating system running
+Ponderosa and can browse or create any folder that host user can access. A
+deployment may configure browse roots to restrict that surface; canonical paths
+and symlinks must remain inside those roots. Creating another Project chat is
+immediate and inherits the project
 engine default, while each send may override engine, model, and effort. Projects
 can be renamed or permanently deleted; deletion removes Ponderosa-owned chats,
 agents, executions, artifacts, and projections without deleting source files.
