@@ -83,7 +83,7 @@ describe("responsive workspace sidebar flow", () => {
     act(() => view.root.findByProps({ "aria-label": "Home" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalled();
     expect(view.root.findByProps({ "aria-label": "Open Messages" })).toBeTruthy();
-    expect(JSON.stringify(view.toJSON())).toContain("Search projects");
+    expect(JSON.stringify(view.toJSON())).toContain("Search recent");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
     act(() => view.root.findByProps({ children: "View All Projects" }).props.onClick());
@@ -93,7 +93,7 @@ describe("responsive workspace sidebar flow", () => {
     act(() => view.root.findByProps({ "aria-label": "Open project overview" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project agents" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "agents", projectId: "alpha" });
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents", filterProjectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");
@@ -147,13 +147,14 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
     const onOpenProfile = vi.fn();
+    const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
       engines={engineRoster}
       preferences={{ ...preferences, profile: { ...preferences.profile, displayName: "Khaleel Clark" } }}
       route={{ kind: "projects" }}
       notifications={[]}
-      onNavigate={vi.fn()}
+      onNavigate={onNavigate}
       onCreateProject={vi.fn()}
       onManageProject={vi.fn()}
       onPreferences={vi.fn()}
@@ -162,8 +163,10 @@ describe("responsive workspace sidebar flow", () => {
       onOpenProfile={onOpenProfile}
     /></QueryClientProvider>);
     expect(view.root.findByProps({ "aria-label": "Khaleel Clark avatar" })).toBeTruthy();
-    act(() => view.root.findByProps({ "aria-label": "Open operator profile" }).props.onClick());
-    expect(onOpenProfile).toHaveBeenCalledOnce();
+    act(() => view.root.findByProps({ "aria-label": "Open operator profile navigation" }).props.onClick());
+    expect(onOpenProfile).not.toHaveBeenCalled();
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(JSON.stringify(view.toJSON())).toContain("Edit Operator Profile");
     view.unmount();
     client.clear();
   });

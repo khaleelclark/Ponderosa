@@ -5,7 +5,15 @@ describe("mobile-critical durable navigation", () => {
   it.each<Route>([
     { kind: "projects" },
     { kind: "allChat" },
+    { kind: "allChats" },
+    { kind: "allChats", filterProjectId: "project / one" },
     { kind: "allAgents" },
+    { kind: "allAgents", filterProjectId: "project / one" },
+    { kind: "allTriggers" },
+    { kind: "settings", section: "providers" },
+    { kind: "profile" },
+    { kind: "usage" },
+    { kind: "usage", projectId: "project / one" },
     { kind: "wiki" },
     { kind: "wiki", articleId: "communication-scopes" },
     { kind: "project", projectId: "project / one" },
@@ -34,7 +42,7 @@ describe("mobile-critical durable navigation", () => {
     expect(routeToPath({ kind: "projects" })).toBe("/projects");
     expect(routeToPath({ kind: "home" })).toBe("/");
     expect(routeToPath({ kind: "allChat" })).toBe("/messages");
-    expect(parseRoute("/chats")).toEqual({ kind: "allChat" });
+    expect(parseRoute("/chats")).toEqual({ kind: "allChats" });
     expect(routeToPath({ kind: "allAgents" })).toBe("/agents");
     expect(parseRoute("/agents")).toEqual({ kind: "allAgents" });
     expect(routeToPath({ kind: "wiki", articleId: "project chat" })).toBe("/wiki/project%20chat");

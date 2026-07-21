@@ -155,7 +155,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"all" | "projects" | "threads" | "agents" | "files">("all");
+  const [scope, setScope] = useState<"all" | "projects" | "chats" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(-1);
   useEffect(() => {
@@ -175,7 +175,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
   const visibleResults = useMemo(() => (search.data?.results ?? []).filter((result) => {
     if (scope === "all") return true;
-    if (scope === "threads") return result.chat.kind === "conversation";
+    if (scope === "chats") return result.chat.kind === "conversation";
     if (scope === "agents") return result.chat.kind === "agent";
     return false;
   }), [scope, search.data]);
@@ -236,14 +236,14 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
             "aria-controls": "global-search-results",
             "aria-activedescendant": activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined,
           }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box component="kbd" aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 10 }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 11, fontFamily: "inherit" }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />
     </DialogTitle>
     <DialogContent sx={{ px: { xs: 1.5, sm: 2 }, pt: "16px !important", pb: 1.5, minHeight: { sm: 520 } }}>
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
-        {(["all", "projects", "threads", "agents", "files"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
+        {(["all", "projects", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
       {search.isFetching ? <LinearProgress aria-label="Searching chats" sx={{ mb: 1 }} /> : null}
       {search.isError ? <Alert severity="error" sx={{ mb: 1 }}>Search is unavailable. Check the server connection and try again.</Alert> : null}

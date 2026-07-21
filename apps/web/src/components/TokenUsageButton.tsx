@@ -136,7 +136,7 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
   </Stack>;
 }
 
-export function TokenUsageButton({ scope, scopeId, label, compact = false }: { scope: TokenUsageScope; scopeId?: string; label: string; compact?: boolean }): JSX.Element {
+export function TokenUsageButton({ scope, scopeId, label, compact = false, onViewInWorkspace }: { scope: TokenUsageScope; scopeId?: string; label: string; compact?: boolean; onViewInWorkspace?(): void }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [rangeKey, setRangeKey] = useState<"all" | "24h" | "7d" | "30d">("30d");
   const range: TokenUsageRangeDto = rangeKey === "all" ? {} : { from: new Date(Date.now() - ({ "24h": 24, "7d": 24 * 7, "30d": 24 * 30 }[rangeKey] ?? 0) * 60 * 60 * 1000).toISOString() };
@@ -182,7 +182,7 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
         </FormControl>
         {usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !data ? <LinearProgress /> : <Box component="details"><Typography component="summary" fontWeight={700} sx={{ cursor: "pointer", py: 1 }}>View Technical Usage Details</Typography><TokenUsageDetails data={data} /></Box>}
       </DialogContent>
-      <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
+      <DialogActions>{onViewInWorkspace ? <Button onClick={() => { setOpen(false); onViewInWorkspace(); }}>View in Workspace</Button> : null}<Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
     </Dialog>
   </>;
 }

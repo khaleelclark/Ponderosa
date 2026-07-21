@@ -10,6 +10,10 @@ import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import {
   Badge, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle,
   IconButton, Menu, MenuItem, Stack, TextField, Tooltip, Typography,
@@ -24,9 +28,13 @@ import { TokenUsageButton } from "./TokenUsageButton";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
   if (kind === "home") return <HomeOutlinedIcon fontSize="small" />;
-  if (kind === "conversation" || kind === "allChat") return <ChatBubbleOutlineIcon fontSize="small" />;
+  if (kind === "conversation" || kind === "allChat" || kind === "allChats") return <ChatBubbleOutlineIcon fontSize="small" />;
   if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
   if (kind === "agents" || kind === "allAgents") return <GroupsOutlinedIcon fontSize="small" />;
+  if (kind === "allTriggers") return <BoltOutlinedIcon fontSize="small" />;
+  if (kind === "settings") return <SettingsOutlinedIcon fontSize="small" />;
+  if (kind === "profile") return <PersonOutlineIcon fontSize="small" />;
+  if (kind === "usage") return <DataUsageOutlinedIcon fontSize="small" />;
   if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
   if (kind === "browser") return <LanguageIcon fontSize="small" />;
   if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
@@ -39,7 +47,7 @@ export function newTabShortcutLabel(platform = typeof navigator === "undefined" 
 }
 
 export function WorkspaceTabs({
-  tabs, projects, activeKey, notificationCount = 0, onActivate, onCreate, onSearch, onOpenInbox, onClose, onCloseOthers, onRename, onReorder,
+  tabs, projects, activeKey, notificationCount = 0, onActivate, onCreate, onSearch, onOpenInbox, onOpenUsage, onClose, onCloseOthers, onRename, onReorder,
 }: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
@@ -49,6 +57,7 @@ export function WorkspaceTabs({
   onCreate(): void;
   onSearch(): void;
   onOpenInbox(): void;
+  onOpenUsage(projectId?: string): void;
   onClose(key: string): void;
   onCloseOthers(key: string): void;
   onRename(key: string, title: string): void;
@@ -59,7 +68,7 @@ export function WorkspaceTabs({
   const [renameDraft, setRenameDraft] = useState("");
   const [draggedKey, setDraggedKey] = useState<string>();
   const [dragTargetKey, setDragTargetKey] = useState<string>();
-  const projectIds = [...new Set(tabs.flatMap((tab) => "projectId" in tab.route ? [tab.route.projectId] : []))];
+  const projectIds = [...new Set(tabs.flatMap((tab) => "projectId" in tab.route && typeof tab.route.projectId === "string" ? [tab.route.projectId] : []))];
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
       queryKey: ["conversations", projectId], queryFn: () => api.listConversations(projectId), staleTime: 10_000,
@@ -99,11 +108,11 @@ export function WorkspaceTabs({
     }}>
       {tabs.map((tab) => {
         const tabRoute = tab.route;
-        const projectId = "projectId" in tabRoute ? tabRoute.projectId : undefined;
+        const projectId = "projectId" in tabRoute && typeof tabRoute.projectId === "string" ? tabRoute.projectId : undefined;
         const project = projectId ? projects.find((candidate) => candidate.id === projectId) : undefined;
         const resources = projectId ? resourcesByProject.get(projectId) : undefined;
         const generatedLabel = tabRoute.kind === "conversation"
-          ? `${project?.label ?? "Project"} · ${resources?.conversations.find((conversation) => conversation.id === tabRoute.conversationId)?.title ?? "Project Chat"}`
+          ? resources?.conversations.find((conversation) => conversation.id === tabRoute.conversationId)?.title ?? "Chat"
           : tabRoute.kind === "agent"
             ? resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"
             : tabRoute.kind === "review"
@@ -112,6 +121,11 @@ export function WorkspaceTabs({
                 : tabRoute.kind === "browser" ? "Shared Browser"
                 : tabRoute.kind === "projectWork" ? "Agent Work"
                 : tabRoute.kind === "allAgents" ? "All Agents"
+                  : tabRoute.kind === "allChats" ? "All Chats"
+                  : tabRoute.kind === "allTriggers" ? "All Triggers"
+                    : tabRoute.kind === "settings" ? "Settings"
+                      : tabRoute.kind === "profile" ? "Operator Profile"
+                        : tabRoute.kind === "usage" ? "Provider Activity"
                   : tabRoute.kind === "home" ? "Home"
                     : tabRoute.kind === "allChat" ? "Messages"
                   : tabRoute.kind === "project" ? "Project Overview"
@@ -189,7 +203,7 @@ export function WorkspaceTabs({
     <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
     <Tooltip title="Search"><IconButton aria-label="Search Ponderosa" onClick={onSearch} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0 }}><SearchIcon fontSize="small" /></IconButton></Tooltip>
     <Tooltip title="Inbox"><IconButton aria-label="Open Inbox" onClick={onOpenInbox} sx={{ width: 36, height: 36, flexShrink: 0 }}><Badge color="error" badgeContent={notificationCount} max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge></IconButton></Tooltip>
-      {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project Provider Activity" compact /> : <TokenUsageButton scope="overall" label="Provider Activity" compact />}
+      {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project Provider Activity" compact onViewInWorkspace={() => onOpenUsage(activeProjectId)} /> : <TokenUsageButton scope="overall" label="Provider Activity" compact onViewInWorkspace={() => onOpenUsage()} />}
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
       <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename Tab</MenuItem>
