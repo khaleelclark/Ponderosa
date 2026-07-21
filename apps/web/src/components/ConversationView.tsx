@@ -108,7 +108,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 }
 import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
-import { projectedMessageIdForFocus } from "../messageFocus";
+import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
 
 export function ConversationMessage({
@@ -534,6 +534,7 @@ export function ConversationView({
     setShowScrollToLatest(true);
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
+    highlightFocusedMessage(target);
     focusedMessage.current = focusMessageId;
   }, [activeView, collaborationMessages, collaborationQuery.data?.messages, conversationId, detailQuery.data?.messages, focusMessageId, initialView, messages]);
   useLayoutEffect(() => {

@@ -60,7 +60,7 @@ import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import { projectedMessageIdForFocus } from "../messageFocus";
+import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { compactViewportQuery } from "../responsive";
 import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, QueuedMessageTray, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
@@ -428,6 +428,7 @@ export function AgentDetail({
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
+    highlightFocusedMessage(target);
     focusedMessage.current = focusMessageId;
   }, [agentId, detail?.messages, focusMessageId, tab]);
 

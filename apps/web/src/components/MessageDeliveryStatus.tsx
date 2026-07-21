@@ -177,7 +177,7 @@ export function MessageDeliveryStatus({
           disabled={pendingRetryId === receipt.activationId}
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
-        >{pendingRetryId === receipt.activationId ? "Retrying…" : "Retry"}</Button> : null}
+        >{pendingRetryId === receipt.activationId ? "Trying Delivery Again…" : "Try Delivery Again"}</Button> : null}
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}
@@ -187,10 +187,10 @@ export function MessageDeliveryStatus({
       maxWidth="xs"
       fullWidth
     >
-      <DialogTitle>Retry uncertain delivery?</DialogTitle>
+      <DialogTitle>Try delivering this message again?</DialogTitle>
       <DialogContent>
         <Typography variant="body2">
-          The previous attempt may have reached the provider even though Ponderosa did not receive an acknowledgement. The retry tells the agent to audit current state before repeating any work.
+          Ponderosa could not confirm whether the provider received the previous attempt. Trying again asks the Agent to check its current state before repeating any work, but duplicate work is still possible.
         </Typography>
       </DialogContent>
       <DialogActions>
@@ -200,7 +200,7 @@ export function MessageDeliveryStatus({
           variant="contained"
           onClick={() => confirmRetry && void retryDelivery(confirmRetry)}
           disabled={Boolean(pendingRetryId)}
-        >{pendingRetryId ? "Retrying…" : "Retry Anyway"}</Button>
+        >{pendingRetryId ? "Trying Again…" : "Try Again Anyway"}</Button>
       </DialogActions>
     </Dialog>
   </Stack>;

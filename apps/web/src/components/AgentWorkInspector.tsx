@@ -30,6 +30,10 @@ function kindLabel(kind: AgentWorkItemDto["kind"]): string {
   return "Decision";
 }
 
+export function agentWorkStateLabel(state: string): string {
+  return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
+}
+
 function itemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
   if (!focusId) return false;
   const bareId = focusId.includes(":") ? focusId.slice(focusId.indexOf(":") + 1) : focusId;
@@ -176,7 +180,7 @@ export function AgentWorkInspector({
                       <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto", gap: 0.75, alignItems: "start" }}>
                         <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
                         <Typography variant="subtitle2" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
-                        <Chip size="small" label={item.state.replaceAll("_", " ")} />
+                        <Chip size="small" label={agentWorkStateLabel(item.state)} />
                       </Box>
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
                       <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>

@@ -1103,6 +1103,63 @@ describe("runtime settings API", () => {
 });
 
 describe("notification panel actions", () => {
+  it("reconciles a terminal user message once to its exact Chat and excludes internal Collaboration", async () => {
+    const project = store.createProject({ label: "Delivery attention", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Release chat" });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const userCommunication: CommunicationEvent = {
+      eventId: "failed-user-message", schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id },
+      text: "Please deliver this", createdAt: "2026-07-21T20:00:00.000Z",
+    };
+    coordination.recordRuntimeCommunication({
+      id: userCommunication.eventId, projectId: project.id, sender: userCommunication.sender,
+      intent: userCommunication.intent, audience: userCommunication.audience,
+      payload: { communication: userCommunication }, scopeKey: `conversation:${conversation.id}`,
+      activation: { agentId: recipient.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
+      now: userCommunication.createdAt,
+    });
+    const collaboration: CommunicationEvent = {
+      eventId: "failed-collaboration", schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Internal handoff",
+      createdAt: "2026-07-21T20:00:01.000Z",
+    };
+    coordination.recordRuntimeCommunication({
+      id: collaboration.eventId, projectId: project.id, sender: collaboration.sender,
+      intent: collaboration.intent, audience: collaboration.audience,
+      payload: { communication: collaboration }, scopeKey: `conversation:${conversation.id}`,
+      activation: { agentId: recipient.id, kind: "ordinary_message", priority: 50, dispatchPolicy: "next_run", promptClass: "ordinary" },
+      now: collaboration.createdAt,
+    });
+    const lease = coordination.leaseNextRun({ workerId: "notification-test", now: "2026-07-21T20:01:00.000Z" })!;
+    expect(coordination.failRun({
+      runId: lease.runId, fencingToken: lease.fencingToken, workerId: "notification-test",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "recipient runtime is unavailable", now: "2026-07-21T20:01:01.000Z",
+    })).toBe("terminal");
+    const collaborationLease = coordination.leaseNextRun({ workerId: "notification-test-2", now: "2026-07-21T20:01:02.000Z" });
+    if (collaborationLease) expect(coordination.failRun({
+      runId: collaborationLease.runId, fencingToken: collaborationLease.fencingToken, workerId: "notification-test-2",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "internal delivery failed", now: "2026-07-21T20:01:03.000Z",
+    })).toBe("terminal");
+    expect(coordination.terminalActivations(project.id)).toHaveLength(2);
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0 } });
+    const first = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
+      category?: string; severity?: string; conversationId?: string; communicationEventId?: string; body: string;
+    }>>();
+    expect(first).toEqual([expect.objectContaining({
+      category: "communication", severity: "urgent", conversationId: conversation.id,
+      communicationEventId: userCommunication.eventId, body: expect.stringContaining("recipient runtime is unavailable"),
+    })]);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toHaveLength(1);
+    await app.close();
+  });
+
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Release chat" });
