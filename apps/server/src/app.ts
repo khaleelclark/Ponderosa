@@ -3368,7 +3368,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     run && run.runId === capability.runId && run.messageCapability &&
     run.v3SchedulerRunId === capability.v3SchedulerRunId &&
     run.v3FencingToken === capability.v3FencingToken &&
-    coordinationV3.ownsRunForCleanup(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId),
+    (coordinationV3.ownsRunForCleanup(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId) ||
+      coordinationV3.ownsOutcomeUnknownRun(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId)),
   );
 
   function ownsActiveRun(agentId: string, run: ActiveRun): boolean {

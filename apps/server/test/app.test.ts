@@ -8987,6 +8987,68 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("accepts one Forge late result after Saratoga outcome uncertainty without reopening the old Join", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    const project = store.createProject({ label: "Saratoga", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Forge" });
+    const requester = store.createAgent(project.id, { title: "Saratoga", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Forge", engine: "codex", conversationId: conversation.id });
+    await app.inject({ method: "POST", url: `/api/agents/${requester.id}/messages`, payload: {
+      text: "Ask Forge", sourceChannel: "main", sourceConversationId: conversation.id,
+    } });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const coordinated = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate", arguments: {
+        idempotencyKey: "saratoga-forge-late", requests: [{
+          requestId: "forge-late-request", recipientAgentId: recipient.id,
+          text: "Finish the Forge result.", lifetime: { kind: "indefinite" },
+        }], join: { id: "saratoga-forge-join", mode: "all" },
+      },
+    });
+    expect(coordinated.success, coordinated.text).toBe(true);
+    persistent.completeTurn(0);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions[1]!;
+    const recipientRun = store.sqlite.prepare(`
+      SELECT id, fencing_token FROM scheduler_runs
+      WHERE agent_id = ? AND status = 'running'
+    `).get(recipient.id) as { id: string; fencing_token: number };
+    expect(new CoordinationV3Store(store.sqlite).failRun({
+      runId: recipientRun.id, fencingToken: recipientRun.fencing_token,
+      workerId: `server:${process.pid}`, sameRunResumable: false,
+    })).toBe("outcome_unknown");
+
+    const args = {
+      updateId: "forge-late-result", kind: "completed",
+      text: "Forge finished; audit current state and do not repeat it.",
+    };
+    const late = await recipientRuntime.handleDynamicToolCall!({ name: "ponderosa_update_request", arguments: args });
+    expect(late.success, late.text).toBe(true);
+    expect(JSON.parse(late.text)).toMatchObject({
+      requestId: "forge-late-request", state: "outcome_unknown", replayed: false,
+    });
+    const replay = await recipientRuntime.handleDynamicToolCall!({ name: "ponderosa_update_request", arguments: args });
+    expect(replay.success, replay.text).toBe(true);
+    expect(JSON.parse(replay.text)).toMatchObject({ replayed: true });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'forge-late-request'").get())
+      .toEqual({ state: "outcome_unknown" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'saratoga-forge-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_request_late_results").get())
+      .toEqual({ count: 1 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_late_result'
+    `).get(requester.id)).toEqual({ count: 1 });
+    await app.close();
+  });
+
   it("accepts an actionable shared V3 request without an invalid audit projection", async () => {
     const app = createServer({
       dataDir, store, engines, logger: false,

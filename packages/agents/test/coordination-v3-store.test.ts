@@ -3567,6 +3567,78 @@ describe("CoordinationV3Store scheduler", () => {
       .toEqual({ state: "outcome_unknown" });
   });
 
+  it("retains one correlated late result without reopening an outcome-unknown Request or impossible Join", () => {
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "saratoga-forge", requests: [{
+        requestId: "forge-result", recipientAgentId: recipientA, lifetime: indefinite,
+        payload: { text: "Forge the Saratoga result." },
+      }], join: { id: "saratoga-join", mode: "all" },
+    });
+    const run = store.leaseNextRun({ workerId: "worker-1" })!;
+    acknowledgeLease(run);
+    expect(store.failRun({
+      runId: run.runId, fencingToken: run.fencingToken,
+      workerId: "worker-1", sameRunResumable: false,
+    })).toBe("outcome_unknown");
+    expect(store.getRequest("forge-result")?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'saratoga-join'").get())
+      .toEqual({ state: "impossible" });
+
+    expect(() => store.updateRequest({
+      requestId: "forge-result", updateId: "forge-unauthorized-late", kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "This matching recipient still lacks Run authorization." },
+    })).toThrow("late result requires authorization from the original outcome-unknown run");
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_request_late_results").get())
+      .toEqual({ count: 0 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_late_result'
+    `).get(requesterId)).toEqual({ count: 0 });
+
+    const late = store.updateRequest({
+      requestId: "forge-result", updateId: "forge-late-complete", kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: { runId: run.runId, agentId: recipientA, fencingToken: run.fencingToken },
+      payload: { text: "Forge completed after the uncertain boundary.", canonicalHandoff: true },
+    });
+    expect(late).toEqual({ requestId: "forge-result", state: "outcome_unknown", version: 1, replayed: false });
+    const runsBeforeReplay = opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get();
+    expect(store.updateRequest({
+      requestId: "forge-result", updateId: "forge-late-complete", kind: "completed",
+      actor: { kind: "agent", id: recipientA },
+      runAuthorization: { runId: run.runId, agentId: recipientA, fencingToken: run.fencingToken },
+      payload: { text: "Forge completed after the uncertain boundary.", canonicalHandoff: true },
+    })).toMatchObject({ state: "outcome_unknown", replayed: true });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual(runsBeforeReplay);
+    expect(opened.client.prepare("SELECT state, version FROM coordination_requests WHERE id = 'forge-result'").get())
+      .toEqual({ state: "outcome_unknown", version: 1 });
+    expect(opened.client.prepare("SELECT state FROM coordination_joins WHERE id = 'saratoga-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(opened.client.prepare("SELECT COUNT(*) AS count FROM coordination_request_late_results").get())
+      .toEqual({ count: 1 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_late_result'
+    `).get(requesterId)).toEqual({ count: 1 });
+    expect(store.requestForUpdate("forge-late-complete")).toMatchObject({
+      id: "forge-result", state: "outcome_unknown",
+    });
+    const operationalItems = store.agentWorkItems({ projectId, agentId: requesterId }).items;
+    expect(operationalItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "activation", title: "Late result needs audit" }),
+    ]));
+    const lateActivation = operationalItems.find((item) => item.title === "Late result needs audit")!;
+    expect(store.agentWorkItemDetails({
+      projectId, kind: "activation", recordId: lateActivation.recordId,
+    })).toEqual(expect.arrayContaining([
+      { label: "Kind", value: "coordination_late_result" },
+      expect.objectContaining({ label: "Payload", value: expect.stringContaining("forge-result") }),
+      expect.objectContaining({ label: "Payload", value: expect.stringContaining("do not redo") }),
+    ]));
+  });
+
   it("delivers a completed no-join consultation outcome without marking it unknown", () => {
     store.coordinate({
       projectId,
