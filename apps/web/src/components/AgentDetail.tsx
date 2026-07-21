@@ -223,13 +223,11 @@ function AgentRunState({
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
+  { value: "agentWork", label: "Agent Work", icon: <AccountTreeOutlinedIcon /> },
   { value: "runOutput", label: "Work Log", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
-  { value: "changed_files", label: "Changed Files", icon: <FolderCopyOutlinedIcon /> },
-  { value: "review", label: "Review", icon: <DifferenceOutlinedIcon /> },
   { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
   { value: "artifacts", label: "Files & Results", icon: <Inventory2OutlinedIcon /> },
-  { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
 ];
 
 export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
@@ -331,7 +329,6 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<MessageDto | undefined>();
   const [runSetupOpen, setRunSetupOpen] = useState(false);
-  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
@@ -823,6 +820,7 @@ export function AgentDetail({
     }).then(() => {
       void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
     })} onReply={setReplyTo} /></Box>,
+    agentWork: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,
     runOutput: <WorkLogPane
       entries={detail.runOutput}
       focusId={focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined}
@@ -843,9 +841,9 @@ export function AgentDetail({
     activity: <ActivityPane activity={detail.activity} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" ? focusTelemetry.id : undefined} />,
     changed_files: <ChangedFilesPane agentId={agentId} files={detail.changedFiles} onOpenReviewInNewTab={onOpenReviewInNewTab} />,
     review: <WorkspaceReviewPane projectId={detail.agent.projectId} agentId={agentId} files={detail.changedFiles} running={stream.running} initialPath={readChatState(chatStateKey("view", `agent.${agentId}.review-file`))} onOpenInNewTab={onOpenReviewInNewTab} />,
-    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setAgentWorkOpen(true); }} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setAgentWorkOpen(true); }} />,
-    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setAgentWorkOpen(true); }} />,
+    runs: <RunsPane runs={detail.runs} coordinationV3={detail.coordinationV3} workItems={detail.workItems} timeline={stream.timeline} focus={focusTelemetry?.stream === "runs" || focusTelemetry?.stream === "workItems" ? { stream: focusTelemetry.stream, id: focusTelemetry.id } : undefined} onOpenAgentWork={(runId) => { setAgentWorkFocus(runId ? `run:${runId}` : undefined); setTab("agentWork"); }} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setTab("agentWork"); }} />,
+    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setTab("agentWork"); }} />,
   };
 
   return (
@@ -903,7 +901,7 @@ export function AgentDetail({
             size="small"
             variant="outlined"
             startIcon={<AccountTreeOutlinedIcon />}
-            onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
+            onClick={() => { setAgentWorkFocus(undefined); setTab("agentWork"); }}
             sx={{ minHeight: 36 }}
           >
             Agent Work
@@ -1188,14 +1186,6 @@ export function AgentDetail({
         initialConversationId={detail.agent.conversationId}
         onClose={() => setImportOpen(false)}
         onImported={onOpenAgent}
-      />
-
-      <AgentWorkInspector
-        open={agentWorkOpen}
-        projectId={detail.agent.projectId}
-        agentId={detail.agent.id}
-        focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
-        onClose={() => setAgentWorkOpen(false)}
       />
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">

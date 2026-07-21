@@ -148,10 +148,11 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
   });
   const data = usage.data;
   const costLabel = costSummaryLabel(data);
-  const usageLabel = data?.reportedRuns ? `${formatTokens(data.totalTokens)} tokens` : "Usage";
+  const usageLabel = data?.reportedRuns ? `${formatTokens(data.totalTokens)} tokens` : "Provider Activity";
+  const activityLabel = label === "Provider Activity" ? label : `${label} Provider Activity`;
   return <>
-    {compact ? <Tooltip title={`${label} usage · ${usageLabel} · ${costLabel}`}>
-      <IconButton onClick={() => setOpen(true)} aria-label={`${label} usage`} sx={{ minWidth: 44, minHeight: 44 }}>
+    {compact ? <Tooltip title={`${activityLabel} · ${usageLabel} · ${costLabel}`}>
+      <IconButton onClick={() => setOpen(true)} aria-label={activityLabel} sx={{ minWidth: 44, minHeight: 44 }}>
         <DataUsageOutlinedIcon />
       </IconButton>
     </Tooltip> : <Button
@@ -159,14 +160,17 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
         variant="outlined"
         startIcon={<DataUsageOutlinedIcon />}
         onClick={() => setOpen(true)}
-        aria-label={`${label} usage`}
+        aria-label={activityLabel}
         sx={{ whiteSpace: "nowrap", minHeight: 36 }}
       >
         {usageLabel}
       </Button>}
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="md" aria-labelledby={`${scope}-usage-title`} PaperProps={{ sx: { width: { xs: "calc(100% - 16px)", sm: 720 }, maxHeight: "calc(100dvh - 16px)", m: { xs: 1, sm: 4 } } }}>
-      <DialogTitle id={`${scope}-usage-title`}>{label} usage</DialogTitle>
+      <DialogTitle id={`${scope}-usage-title`}>{activityLabel}</DialogTitle>
       <DialogContent>
+        <Alert severity="info" sx={{ mb: 2 }}>
+          This reflects completed provider Runs, not remaining context or subscription quota. Input can include instructions, tools, conversation context, and cached reuse, so a high total does not by itself mean work was repeated.
+        </Alert>
         <FormControl size="small" sx={{ minWidth: 150, mb: 2 }}>
           <InputLabel id={`${scope}-usage-range-label`}>Time range</InputLabel>
           <Select labelId={`${scope}-usage-range-label`} label="Time range" value={rangeKey} onChange={(event) => setRangeKey(event.target.value as typeof rangeKey)}>
@@ -176,7 +180,7 @@ export function TokenUsageButton({ scope, scopeId, label, compact = false }: { s
             <MenuItem value="all">All Time</MenuItem>
           </Select>
         </FormControl>
-        {usage.isError ? <Alert severity="error">Cost could not be loaded.</Alert> : !data ? <LinearProgress /> : <TokenUsageDetails data={data} />}
+        {usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !data ? <LinearProgress /> : <Box component="details"><Typography component="summary" fontWeight={700} sx={{ cursor: "pointer", py: 1 }}>View Technical Usage Details</Typography><TokenUsageDetails data={data} /></Box>}
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
     </Dialog>

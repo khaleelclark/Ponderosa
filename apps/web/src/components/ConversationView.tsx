@@ -8,7 +8,6 @@ import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
-import CloseIcon from "@mui/icons-material/Close";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
@@ -24,12 +23,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  Drawer,
   IconButton,
   List,
   ListItem,
   ListItemButton,
   ListItemText,
+  Menu,
   MenuItem,
   Stack,
   TextField,
@@ -59,7 +58,6 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { ImportAgentDialog } from "./ImportAgentDialog";
-import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
@@ -212,6 +210,7 @@ export function ConversationMessage({
             const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
             return binding ? { agentId: binding.agentId, label: agentMentionHandle(agentTitle(binding.agentId)) } : undefined;
           }}
+          operatorHandle={operatorProfile?.handle}
           onOpenAgent={onOpenAgent}
           projectId={projectId}
           previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined}
@@ -295,9 +294,11 @@ export function ConversationView({
   onOpenAgent,
   onOpenWorkLog,
   onOpenRosterAgent,
+  onOpenRosterAgentInNewTab,
   initialAgentsOpen = false,
   onInitialAgentsOpenConsumed,
   onOpenReview,
+  onOpenAgentWork,
   onOpenFileActivity,
   onNewAgent,
   onDeleted,
@@ -313,9 +314,11 @@ export function ConversationView({
   onOpenAgent(agentId: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
+  onOpenRosterAgentInNewTab?(agentId: string): void;
   initialAgentsOpen?: boolean;
   onInitialAgentsOpenConsumed?(): void;
   onOpenReview?(agentId: string): void;
+  onOpenAgentWork(focusId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto): void;
   onDeleted(): void;
@@ -356,9 +359,8 @@ export function ConversationView({
   const [importOpen, setImportOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(initialAgentsOpen);
   const consumedInitialAgentsOpen = useRef(false);
-  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
-  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
+  const [rosterMenu, setRosterMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
@@ -981,6 +983,53 @@ export function ConversationView({
     onEffortChange={(next) => { setEffort(next); persistDefaults.mutate({ defaultEffort: next }); }}
   /> : null;
 
+  const agentRoster = <Box data-testid="project-chat-agents" sx={{ width: "min(960px, 100%)", mx: "auto", p: { xs: 1.5, sm: 2.5, md: 3 } }}>
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
+      <Box sx={{ flex: 1 }}>
+        <Typography variant="h5" fontWeight={800}>Agents</Typography>
+        <Typography variant="body2" color="text.secondary">Agents assigned to this Project Chat and how they report to one another.</Typography>
+      </Box>
+      <Chip size="small" label={agents.length} />
+    </Stack>
+    {agents.length === 0 ? <Alert severity="info">No Agents yet. Send a message to start one or use Create Agent.</Alert> : (
+      <List dense disablePadding>
+        {orderedAgentOrganization(agents).map(({ agent, depth }) => {
+          const status = statusByAgentId.get(agent.id) ?? "idle";
+          const manager = agent.managerAgentId ? agents.find((candidate) => candidate.id === agent.managerAgentId) : undefined;
+          return <ListItem
+            key={agent.id}
+            disablePadding
+            sx={{ mb: 0.5, width: "100%", minWidth: 0, boxSizing: "border-box", pl: agentRosterIndent(depth) }}
+            secondaryAction={<Tooltip title="Delete Agent"><IconButton
+              edge="end"
+              size="small"
+              aria-label={`Delete agent ${agent.title}`}
+              onClick={(event) => { event.stopPropagation(); setPendingDelete(agent); }}
+            ><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>}
+          >
+            <ListItemButton
+              onClick={() => (onOpenRosterAgent ?? onOpenAgent)(agent.id)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setRosterMenu({ anchor: event.currentTarget, agentId: agent.id });
+              }}
+              sx={{ minWidth: 0, borderRadius: 1, border: 1, borderLeftWidth: depth ? 3 : 1, borderColor: "divider", pr: 7 }}
+            >
+              <ListItemText
+                primary={agent.title}
+                secondary={`${manager ? `Reports to ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
+                sx={{ minWidth: 0 }}
+                primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
+                secondaryTypographyProps={{ noWrap: true }}
+              />
+              <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} sx={{ mr: 0.5, flexShrink: 0 }} />
+            </ListItemButton>
+          </ListItem>;
+        })}
+      </List>
+    )}
+  </Box>;
+
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <Box className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
@@ -999,9 +1048,7 @@ export function ConversationView({
           </Box>
           </Collapse>
           <Tooltip title="Agent Work"><IconButton
-            onClick={() => { setAgentWorkFocus(undefined); setAgentWorkOpen(true); }}
-            aria-haspopup="dialog"
-            aria-expanded={agentWorkOpen}
+            onClick={() => onOpenAgentWork()}
             aria-label="Open Agent work"
           ><TimelineIcon /></IconButton></Tooltip>
           <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
@@ -1044,9 +1091,9 @@ export function ConversationView({
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={activeView === "main"} aria-label="Switch to project chat" onClick={() => { clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: activeView === "main" ? "text.primary" : "text.secondary", "&::after": activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
-          <Button color="inherit" aria-pressed={activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => setAgentsOpen(true)} aria-haspopup="dialog" aria-expanded={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ px: 1.5, color: "text.secondary" }}>Agents</Button>
+          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "main"} aria-label="Switch to project chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
+          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); setAgentsOpen(true); }} aria-pressed={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary", "&::after": agentsOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Agents</Button>
         </Stack>
         </Collapse>
       </Box>
@@ -1072,7 +1119,8 @@ export function ConversationView({
           }}
           sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
         >
-        <Box data-chat-column sx={{ width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
+        {agentsOpen ? agentRoster : null}
+        <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}
@@ -1115,7 +1163,7 @@ export function ConversationView({
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
                   ? <Box key={event.id} sx={sx}>{content}</Box>
-                  : <ButtonBase key={event.id} onClick={() => { setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Agent work details`} sx={sx}>{content}</ButtonBase>;
+                  : <ButtonBase key={event.id} onClick={() => onOpenAgentWork(event.id)} aria-label={`${event.text}. Open Agent work details`} sx={sx}>{content}</ButtonBase>;
               })}
             </Stack> : null}
             {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (
@@ -1177,102 +1225,9 @@ export function ConversationView({
         />
       </Box>
 
-      <Drawer
-        anchor={mobileRoster ? "bottom" : "right"}
-        open={agentsOpen}
-        onClose={() => setAgentsOpen(false)}
-        ModalProps={{ keepMounted: true }}
-        PaperProps={{
-          sx: mobileRoster
-            ? { maxHeight: "min(75dvh, 640px)", borderRadius: "16px 16px 0 0" }
-            : { width: "min(420px, 92vw)" },
-        }}
-      >
-        <Box sx={{ p: 2, minHeight: 0, overflow: "auto" }} role="dialog" aria-label="Agents in this Project chat">
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
-            <Typography variant="h6" sx={{ flex: 1 }}>Agents in this Project chat</Typography>
-            <Chip size="small" label={agents.length} />
-            <Tooltip title="Close Agent Roster">
-              <IconButton aria-label="Close agent roster" onClick={() => setAgentsOpen(false)} sx={{ minWidth: 44, minHeight: 44 }}>
-                <CloseIcon />
-              </IconButton>
-            </Tooltip>
-          </Stack>
-          {agents.length === 0 ? (
-            <Alert severity="info">No agents yet. Send a message to spawn one.</Alert>
-          ) : (
-            <List dense disablePadding>
-              {orderedAgentOrganization(agents).map(({ agent, depth }) => {
-                const status = statusByAgentId.get(agent.id) ?? "idle";
-                const manager = agent.managerAgentId
-                  ? agents.find((candidate) => candidate.id === agent.managerAgentId)
-                  : undefined;
-                return (
-                  <ListItem
-                    key={agent.id}
-                    disablePadding
-                    sx={{
-                      mb: 0.5,
-                      width: "100%",
-                      minWidth: 0,
-                      boxSizing: "border-box",
-                      pl: agentRosterIndent(depth),
-                    }}
-                    secondaryAction={
-                      <Tooltip title="Delete Agent">
-                        <IconButton
-                          edge="end"
-                          size="small"
-                          aria-label={`Delete agent ${agent.title}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setPendingDelete(agent);
-                          }}
-                        >
-                          <DeleteOutlineIcon fontSize="small" />
-                        </IconButton>
-                      </Tooltip>
-                    }
-                  >
-                    <ListItemButton
-                      onClick={() => {
-                        setAgentsOpen(false);
-                        (onOpenRosterAgent ?? onOpenAgent)(agent.id);
-                      }}
-                      sx={{ minWidth: 0, borderRadius: 1, border: 1, borderLeftWidth: depth ? 3 : 1, borderColor: "divider", pr: 7 }}
-                    >
-                      <ListItemText
-                        primary={agent.title}
-                        secondary={`${manager ? `Reports to ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
-                        sx={{ minWidth: 0 }}
-                        primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
-                        secondaryTypographyProps={{ noWrap: true }}
-                      />
-                      <Chip
-                        size="small"
-                        label={agentStatusLabel(status)}
-                        color={agentStatusColor(status)}
-                        sx={{ mr: 0.5, flexShrink: 0 }}
-                      />
-                    </ListItemButton>
-                  </ListItem>
-                );
-              })}
-            </List>
-          )}
-        </Box>
-      </Drawer>
-      <AgentWorkInspector
-        open={agentWorkOpen}
-        projectId={conversation.projectId}
-        conversationId={conversation.id}
-        focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
-        onClose={() => setAgentWorkOpen(false)}
-      />
-
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
+        data-mobile-composer-hidden={agentsOpen || mobileComposer.hidden ? "true" : "false"}
         onTransitionEnd={(event) => {
           if (
             event.currentTarget !== event.target
@@ -1333,6 +1288,8 @@ export function ConversationView({
           }}
         /> : null}
       </Box>
+
+      {rosterMenu ? <Menu anchorEl={rosterMenu.anchor} open onClose={() => setRosterMenu(undefined)}><MenuItem disabled={!onOpenRosterAgentInNewTab} onClick={() => { onOpenRosterAgentInNewTab?.(rosterMenu.agentId); setRosterMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
 
       <ImportAgentDialog
         open={importOpen}

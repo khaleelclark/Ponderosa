@@ -74,6 +74,14 @@ export interface WorkspacePreferencesDto {
   projectSort: ProjectSort;
   /** Stable project IDs in the operator's chosen order. Unknown/deleted IDs are ignored. */
   projectOrder: string[];
+  /** Stable resource keys arranged by the operator on Home. */
+  homeOrder?: string[];
+  /** Stable conversation IDs in the operator's chosen order. */
+  chatOrder?: string[];
+  /** Stable Agent IDs in the operator's chosen order. */
+  agentOrder?: string[];
+  /** Stable Trigger IDs in the operator's chosen order. */
+  triggerOrder?: string[];
   /** Stable project IDs pinned to the Starred section. Unknown/deleted IDs are ignored. */
   starredProjectIds: string[];
   sidebarCollapsed: boolean;
@@ -1934,7 +1942,7 @@ export interface GlobalChatSearchResponseDto {
   truncated: boolean;
 }
 
-// ─── All Chat ───────────────────────────────────────────────────────────────────────
+// ─── Messages ───────────────────────────────────────────────────────────────────────
 
 export type AllChatSourceDto =
   | { kind: "project" | "team"; conversationId: string; title: string }

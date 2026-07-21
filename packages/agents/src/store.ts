@@ -724,7 +724,7 @@ export class AgentStore {
   }
 
   /** Choose one active placement for a canonical communication. This work is
-   * paid when a placement/lifecycle event changes, never on each All Chat read. */
+   * paid when a placement/lifecycle event changes, never on each Messages read. */
   private refreshAllChatFeedEvent(projectId: string, eventId: string): void {
     const row = this.client.prepare(`
       SELECT search.row_key AS rowKey, search.order_key AS orderKey
@@ -3672,6 +3672,7 @@ export class AgentStore {
       LEFT JOIN agents chat_agent ON search.chat_kind = 'agent' AND chat_agent.id = search.chat_id
       LEFT JOIN agents author_agent ON author_agent.id = search.author_agent_id
       WHERE 1 = 1
+        AND search.communication_intent IN ('broadcast', 'direct_to_user', 'user_dm')
         ${boundary ? "AND (feed.order_key < ? OR (feed.order_key = ? AND feed.row_key < ?))" : ""}
       ORDER BY feed.order_key DESC, feed.row_key DESC
       LIMIT ?

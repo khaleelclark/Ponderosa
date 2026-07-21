@@ -21,7 +21,7 @@ describe("launch navigation labels", () => {
       "Files & Results",
       "Stop All",
       "Open in New Ponderosa Tab",
-      "Project Browser",
+      "Shared Browser",
       "Project Overview",
       "Rename Tab",
       "Close Other Tabs",
@@ -34,16 +34,17 @@ describe("launch navigation labels", () => {
       'label: "Files & results"',
       ">Stop all<",
       ">Open in new Ponderosa tab<",
-      ">Project browser<",
+      ">Shared browser<",
       ">Project overview<",
       ">Close other tabs<",
     ]) expect(sources).not.toContain(retiredLabel);
   });
 
-  it("presents the canonical All Chat route as Home without adding a duplicate route", () => {
+  it("keeps Home and Messages as distinct destinations", () => {
     const routing = readSource("../src/routing.ts");
     const sidebar = readSource("../src/components/WorkspaceSidebar.tsx");
-    expect(routing).not.toContain('| { kind: "home" }');
+    expect(routing).toContain('| { kind: "home" }');
+    expect(routing).toContain('| { kind: "allChat" }');
     expect(sidebar).toContain('label="Home"');
   });
 });

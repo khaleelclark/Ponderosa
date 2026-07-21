@@ -67,11 +67,11 @@ future shared projections but never redelivers work or rewrites context already
 received by an active runtime.
 
 Agent Detail separates durable views of the same execution domain: Chat for
-explicit communication, Work log for ordinary runtime output, Activity for the
-chronological command/test/tool/file feed, Changed Files for the canonical
-agent-attributed file set, Review for the current Git working tree and safe
-diff/file inspection, Runs for execution state, Files & results for durable outputs,
-and Triggers for Agent-owned automatic work.
+explicit communication, Agent Work for Requests, waiting, wake-ups, Runs,
+Triggers, and Decisions, Work Log for ordinary runtime output, Activity for the
+chronological command/test/tool/file feed, Runs for execution state, and Files &
+Results for durable outputs. Changed-file review remains reachable from Files &
+Results without occupying a permanent top-level tab.
 Sources remain attached to their message in a compact footer. Generated files are
 previewable and downloadable as project-scoped artifacts. Active HTML and SVG
 previews run only in an opaque-origin sandbox: local visualization scripts may
@@ -187,25 +187,29 @@ usage demonstrates that the flexibility/safety tradeoff requires it.
 
 ## Projects and agent organization
 
-Home combines All Chat with a collapsible, resizable explorer-style Project
-sidebar rather than presenting them as competing destinations. Project sorting
-is either Last used or Alphabetical and is a synced server preference. Selecting
-a Home navigation icon reveals that sidebar without replacing the current tab;
-content changes only when the operator selects All Chat, a Project, or another
-explicit destination. Selecting a Project opens its Project Overview; selecting
-a Project chat opens that chat. The Wiki reuses the same sidebar surface instead of
-nesting a second documentation sidebar inside the content view.
-Semantic navigation preferences—including project sorting, custom project order,
-and the last-used Project chat—remain server-synced so navigation is coherent
-across devices. Presentation state is deliberately device-local: sidebar width,
+Home is a neutral organizational overview with active-work statistics, attention,
+creation actions, starred Projects, and recent Projects, Chats, and Agents.
+Messages is a separate user-facing inbox containing only communications sent to
+or from the operator; internal Team Chat and Agent-to-Agent traffic never appears
+there. Selecting a spine icon changes only the sidebar section and never replaces
+the current workspace. Content changes only after the operator selects a resource.
+Selecting a Project opens its Project Overview, selecting a Project Chat opens that
+chat, and Agent Work opens as a full workspace rather than a narrow right drawer.
+The Wiki reuses the same sidebar surface instead of nesting another documentation
+sidebar inside the content view. Ordinary selection focuses or reuses an existing
+resource tab; explicit Open in New Ponderosa Tab may create another instance.
+Semantic navigation preferences—including custom order for Home resources,
+Projects, Chats, Agents, and Triggers, plus the last-used Project Chat—remain
+server-synced so navigation is coherent across devices. Presentation state is deliberately device-local: sidebar width,
 sidebar collapse, and Agents-section expansion are stored only in that browser
 and are not written through the workspace-preferences API. The phone drawer
 always opens as a full list navigator regardless of the desktop sidebar state on
 that device.
 
-On a new installation, Home opens a concise welcome flow that creates the first
-Project and its initial Project chat, then places the operator directly in the
-composer. Completion is stored with the operator's synced preferences so the
+On a new installation, Home opens a concise welcome flow. The operator explicitly
+chooses a provider; model and reasoning remain visible and inherit that provider's
+defaults unless overridden. The flow creates the first Project and its initial
+Project Chat, then places the operator directly in the composer. Completion is stored with the operator's synced preferences so the
 flow does not repeat on another device; the Wiki remains the persistent help
 destination.
 

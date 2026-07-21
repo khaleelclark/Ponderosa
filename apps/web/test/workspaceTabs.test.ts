@@ -6,6 +6,7 @@ import {
   navigateWorkspaceTab,
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
+  reusableWorkspaceTab,
   renameWorkspaceTab,
   reorderWorkspaceTabs,
   restoreWorkspaceTabSession,
@@ -13,23 +14,23 @@ import {
 } from "../src/workspaceTabs";
 
 describe("persistent user-owned workspace tabs", () => {
-  it("makes All Chat the home screen without overriding explicit deep links", () => {
+  it("opens the neutral Home destination without overriding explicit deep links", () => {
     const restored = {
       tabs: [
         { key: "agent", route: { kind: "agent", projectId: "alpha", agentId: "worker" } as const, lastActivatedAt: 2 },
-        { key: "home", route: { kind: "allChat" } as const, lastActivatedAt: 1 },
+        { key: "home", route: { kind: "home" } as const, lastActivatedAt: 1 },
       ],
       activeKey: "agent",
     };
-    expect(initializeWorkspaceTabSession(restored, { kind: "allChat" }, 3)).toEqual({
+    expect(initializeWorkspaceTabSession(restored, { kind: "home" }, 3)).toEqual({
       tabs: restored.tabs,
       activeKey: "home",
     });
     expect(initializeWorkspaceTabSession(restored, { kind: "agent", projectId: "alpha", agentId: "worker" }, 3)).toEqual(restored);
 
-    const withoutHome = initializeWorkspaceTabSession({ tabs: [restored.tabs[0]!] }, { kind: "allChat" }, 3);
+    const withoutHome = initializeWorkspaceTabSession({ tabs: [restored.tabs[0]!] }, { kind: "home" }, 3);
     expect(withoutHome.activeKey).toBe(withoutHome.tabs[0]?.key);
-    expect(withoutHome.tabs.map((tab) => tab.route.kind)).toEqual(["allChat", "agent"]);
+    expect(withoutHome.tabs.map((tab) => tab.route.kind)).toEqual(["home", "agent"]);
   });
 
   it("creates duplicate routes only through explicit new tab instances", () => {
@@ -70,7 +71,7 @@ describe("persistent user-owned workspace tabs", () => {
     );
     expect(removeProjectWorkspaceTabs(tabs, new Set()).map((tab) => tab.key)).toEqual(["all-chat"]);
     expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())).toHaveLength(1);
-    expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())[0]?.route).toEqual({ kind: "allChat" });
+    expect(removeProjectWorkspaceTabs([tabs[1]!], new Set())[0]?.route).toEqual({ kind: "home" });
   });
 
   it("reorders tabs without changing their identities, routes, or custom titles", () => {
@@ -86,7 +87,7 @@ describe("persistent user-owned workspace tabs", () => {
     expect(restoreWorkspaceTabSession(serializeWorkspaceTabs(reordered, "a"))).toEqual({ tabs: reordered, activeKey: "a" });
   });
 
-  it("migrates saved Home tabs to All Chat without changing tab identity or user titles", () => {
+  it("restores saved Home tabs without changing tab identity or user titles", () => {
     const restored = restoreWorkspaceTabSession(JSON.stringify({
       version: 2,
       activeKey: "legacy-home",
@@ -94,7 +95,7 @@ describe("persistent user-owned workspace tabs", () => {
     }));
     expect(restored).toEqual({
       activeKey: "legacy-home",
-      tabs: [{ key: "legacy-home", route: { kind: "allChat" }, lastActivatedAt: 7, title: "My start page" }],
+      tabs: [{ key: "legacy-home", route: { kind: "home" }, lastActivatedAt: 7, title: "My start page" }],
     });
   });
 });

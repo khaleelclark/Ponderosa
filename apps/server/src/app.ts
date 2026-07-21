@@ -1746,7 +1746,7 @@ export function conciseConversationTitle(text: string): string | undefined {
   if (!normalized) return undefined;
   const words = normalized.split(" ").filter(Boolean).slice(0, 6);
   if (words.length < 2) return undefined;
-  return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 72).trim() || undefined;
+  return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 48).trim() || undefined;
 }
 
 const TITLE_STOP_WORDS = new Set("a an and are as at be by can could for from get give have how i if in into is it me my of on or please request should that the this to update we what when with you your".split(" "));
@@ -1768,7 +1768,7 @@ export function semanticConversationTitle(operatorText: string, agentText: strin
   const unique: string[] = [];
   for (const word of words) if (!unique.some((item) => item.toLowerCase() === word.toLowerCase())) unique.push(word);
   if (unique.length === 0) return undefined;
-  return unique.slice(0, 5).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ").slice(0, 72);
+  return unique.slice(0, 5).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ").slice(0, 48);
 }
 
 export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {
@@ -4531,6 +4531,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const activationPayloads = lease.activations
         .map((activation) => activation.payload)
         .filter((payload): payload is Record<string, unknown> => Boolean(payload) && typeof payload === "object");
+      // A leased delivery is no longer editable queue state. Publish that
+      // transition immediately so the composer removes it before provider
+      // startup completes (or fails).
+      for (const activation of lease.activations) {
+        const payload = activation.payload && typeof activation.payload === "object"
+          ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; sourceConversationId?: string } }
+          : undefined;
+        const communication = payload?.communication;
+        if (communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") continue;
+        const conversationId = payload?.dispatch?.sourceConversationId ?? payload?.dispatch?.conversationId ?? communication.conversationId;
+        if (conversationId) appendWorkspace({
+          type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "started",
+        });
+      }
       const communication = activationPayloads
         .map((payload) => payload.communication)
         .find((value): value is CommunicationEvent => value !== null && typeof value === "object" && "eventId" in value);
@@ -12633,6 +12647,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
     if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
       return reply.code(400).send({ error: "invalid custom project order" });
+    }
+    for (const [label, order] of [["home", patch.homeOrder], ["chat", patch.chatOrder], ["agent", patch.agentOrder], ["trigger", patch.triggerOrder]] as const) {
+      if (order !== undefined && (!Array.isArray(order) || order.length > 10_000 || order.some((id) => typeof id !== "string" || id.length > 200) || new Set(order).size !== order.length)) {
+        return reply.code(400).send({ error: `invalid custom ${label} order` });
+      }
     }
     if (patch.starredProjectIds !== undefined && (!Array.isArray(patch.starredProjectIds) || patch.starredProjectIds.length > 10_000 || patch.starredProjectIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.starredProjectIds).size !== patch.starredProjectIds.length)) {
       return reply.code(400).send({ error: "invalid starred projects" });

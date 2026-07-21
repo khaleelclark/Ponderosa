@@ -1,8 +1,9 @@
 // Lightweight URL-driven navigation (no router dependency). Durable URLs let a
 // refresh or browser back/forward restore the exact project + selection:
 //
-//   / (All Chat)
-//   /chats (legacy/direct All Chat route)
+//   / (Home overview)
+//   /messages (messages to and from the operator)
+//   /chats (legacy Messages route)
 //   /projects/:projectId/chats/:conversationId
 //   /projects/:projectId/agents
 //   /projects/:projectId/agents/:agentId
@@ -21,23 +22,25 @@ export interface AgentTelemetryFocus {
   id: string;
 }
 
-export type AgentDetailView = "chat" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
+export type AgentDetailView = "chat" | "agentWork" | "runOutput" | "activity" | "changed_files" | "review" | "runs" | "artifacts" | "triggers";
 
-const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "runOutput", "activity", "changed_files", "review", "runs", "artifacts", "triggers"];
+const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "agentWork", "runOutput", "activity", "changed_files", "review", "runs", "artifacts", "triggers"];
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
 }
 
 export type Route =
+  | { kind: "home" }
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allAgents" }
   | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string }
+  | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
-  | { kind: "agents"; projectId: string }
+  | { kind: "agents"; projectId: string; create?: boolean }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; view?: AgentDetailView }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
@@ -57,15 +60,21 @@ export function parseRoute(pathname: string, search = ""): Route {
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
-  if (parts.length === 0) return { kind: "allChat" };
+  if (parts.length === 0) return { kind: "home" };
+  if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
   if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
-    return { kind: "allChat" };
+    return { kind: "home" };
   }
   const projectId = decodeURIComponent(parts[1]);
+  if (parts[2] === "work") {
+    const conversationId = query.get("chat")?.trim() || undefined;
+    const focusId = query.get("focus")?.trim() || undefined;
+    return { kind: "projectWork", projectId, ...(conversationId ? { conversationId } : {}), ...(focusId ? { focusId } : {}) };
+  }
   if (parts[2] === "agents" && parts[3] && parts[4] === "runs" && parts[5] && parts[6] === "browser") {
     return { kind: "browser", projectId, agentId: decodeURIComponent(parts[3]), runId: decodeURIComponent(parts[5]) };
   }
@@ -89,23 +98,31 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
   }
   if (parts[2] === "agents") {
-    return { kind: "agents", projectId };
+    return { kind: "agents", projectId, ...(query.get("create") === "1" ? { create: true } : {}) };
   }
   return { kind: "project", projectId };
 }
 
 export function routeToPath(route: Route): string {
   switch (route.kind) {
+    case "home":
+      return "/";
     case "projects":
       return "/projects";
     case "allChat":
-      return "/";
+      return "/messages";
     case "allAgents":
       return "/agents";
     case "wiki":
       return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
+    case "projectWork": {
+      const query = new URLSearchParams();
+      if (route.conversationId) query.set("chat", route.conversationId);
+      if (route.focusId) query.set("focus", route.focusId);
+      return `/projects/${encodeURIComponent(route.projectId)}/work${query.size ? `?${query.toString()}` : ""}`;
+    }
     case "browser":
       return route.agentId && route.runId
         ? `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}/runs/${encodeURIComponent(route.runId)}/browser`
@@ -118,7 +135,7 @@ export function routeToPath(route: Route): string {
       return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
     }
     case "agents":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents`;
+      return `/projects/${encodeURIComponent(route.projectId)}/agents${route.create ? "?create=1" : ""}`;
     case "agent": {
       const query = new URLSearchParams();
       if (route.focusMessageId) query.set("message", route.focusMessageId);

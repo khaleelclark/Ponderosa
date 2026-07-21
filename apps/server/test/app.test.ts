@@ -11147,6 +11147,10 @@ describe("server chunk F", () => {
     await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
     expect([...adapter.seeds, ...adapter.continues]
       .filter((turn) => turn.agentId === author.id && turn.prompt.includes(editedText))).toHaveLength(1);
+    expect(new WorkspaceStore(dataDir).readSince(0).map((record) => record.event)).toContainEqual(expect.objectContaining({
+      type: "queued_message_changed", deliveryId: queued[0]!.deliveryId, action: "started",
+    }));
+    expect((await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` })).json()).toEqual([]);
     await app.close();
   });
 

@@ -88,7 +88,7 @@ export function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): bo
   return event.type === "conversation_changed" || event.type === "notification_changed";
 }
 
-/** All Chat is a canonical communication projection. Refresh it only for
+/** Messages is a canonical communication projection. Refresh it only for
  * workspace events that can add or change one of its communication rows. */
 export function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
   return event.type === "conversation_changed"
