@@ -82,7 +82,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(view.root.findAll((node) => node.props.color === "error" && node.props.badgeContent === 1)).toHaveLength(1);
 
     act(() => view.root.findByProps({ "aria-label": "Home" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "allChat" });
+    expect(onNavigate).not.toHaveBeenCalled();
     expect(view.root.findByProps({ "aria-label": "Open All Chat" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search projects");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
