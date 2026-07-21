@@ -151,7 +151,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
-      <Stack spacing={1.25} sx={{ maxWidth: 920, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
+      <Stack spacing={1.25} sx={{ width: "100%", maxWidth: 1280, mx: "auto" }} role="radiogroup" aria-label="Source message for direct reply">
         {items.map((item, index) => {
           const selectedItem = selectedId === item.communicationEventId;
           return <Paper
@@ -230,7 +230,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       }}
       sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}
     >
-      <Box sx={{ maxWidth: 920, mx: "auto" }}>
+      <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
         {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
           : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>
             : <Stack spacing={1}>

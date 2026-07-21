@@ -15,6 +15,30 @@ export interface WorkspaceTabSession {
   activeKey?: string;
 }
 
+/**
+ * Reconciles persisted browser-style tabs with the URL that opened Ponderosa.
+ * The app root is the All Chat home screen, so it must activate a real All Chat
+ * tab instead of relabeling whichever persisted tab happened to be active.
+ * Explicit deep links continue to open the requested destination.
+ */
+export function initializeWorkspaceTabSession(
+  restored: WorkspaceTabSession,
+  initialRoute: Route,
+  now = Date.now(),
+): Required<WorkspaceTabSession> {
+  if (initialRoute.kind === "allChat") {
+    const existingHome = restored.tabs.find((tab) => tab.route.kind === "allChat");
+    if (existingHome) return { tabs: restored.tabs, activeKey: existingHome.key };
+    const home = createWorkspaceTab({ kind: "allChat" }, now);
+    return { tabs: [home, ...restored.tabs], activeKey: home.key };
+  }
+  if (restored.tabs.length > 0) {
+    return { tabs: restored.tabs, activeKey: restored.activeKey ?? restored.tabs[0]!.key };
+  }
+  const first = createWorkspaceTab(initialRoute, now);
+  return { tabs: [first], activeKey: first.key };
+}
+
 interface PersistedWorkspaceTabs {
   version: 2;
   tabs: WorkspaceTabState[];

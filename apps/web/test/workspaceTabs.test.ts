@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   adjacentWorkspaceTab,
   closeWorkspaceTab,
+  initializeWorkspaceTabSession,
   navigateWorkspaceTab,
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
@@ -12,6 +13,25 @@ import {
 } from "../src/workspaceTabs";
 
 describe("persistent user-owned workspace tabs", () => {
+  it("makes All Chat the home screen without overriding explicit deep links", () => {
+    const restored = {
+      tabs: [
+        { key: "agent", route: { kind: "agent", projectId: "alpha", agentId: "worker" } as const, lastActivatedAt: 2 },
+        { key: "home", route: { kind: "allChat" } as const, lastActivatedAt: 1 },
+      ],
+      activeKey: "agent",
+    };
+    expect(initializeWorkspaceTabSession(restored, { kind: "allChat" }, 3)).toEqual({
+      tabs: restored.tabs,
+      activeKey: "home",
+    });
+    expect(initializeWorkspaceTabSession(restored, { kind: "agent", projectId: "alpha", agentId: "worker" }, 3)).toEqual(restored);
+
+    const withoutHome = initializeWorkspaceTabSession({ tabs: [restored.tabs[0]!] }, { kind: "allChat" }, 3);
+    expect(withoutHome.activeKey).toBe(withoutHome.tabs[0]?.key);
+    expect(withoutHome.tabs.map((tab) => tab.route.kind)).toEqual(["allChat", "agent"]);
+  });
+
   it("creates duplicate routes only through explicit new tab instances", () => {
     const route = { kind: "conversation", projectId: "alpha", conversationId: "chat" } as const;
     const tabs = openWorkspaceTab(openWorkspaceTab([], route, 1, "first"), route, 2, "second");

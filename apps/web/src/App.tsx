@@ -74,6 +74,7 @@ import {
   adjacentWorkspaceTab,
   closeWorkspaceTab,
   createWorkspaceTab,
+  initializeWorkspaceTabSession,
   navigateWorkspaceTab,
   openWorkspaceTab,
   removeProjectWorkspaceTabs,
@@ -102,15 +103,11 @@ export default function App({
   const [initialWorkspaceSession] = useState(() => {
     try {
       const restored = restoreWorkspaceTabSession(window.localStorage.getItem(WORKSPACE_TABS_STORAGE_KEY));
-      if (restored.tabs.length > 0) return {
-        tabs: restored.tabs,
-        activeKey: restored.activeKey ?? restored.tabs[0]!.key,
-      };
+      return initializeWorkspaceTabSession(restored, route);
     } catch {
       // Fall through to the required first tab.
     }
-    const first = createWorkspaceTab(route);
-    return { tabs: [first], activeKey: first.key };
+    return initializeWorkspaceTabSession({ tabs: [] }, route);
   });
   const [workspaceTabs, setWorkspaceTabs] = useState(initialWorkspaceSession.tabs);
   const [activeWorkspaceTabKey, setActiveWorkspaceTabKey] = useState(initialWorkspaceSession.activeKey);
