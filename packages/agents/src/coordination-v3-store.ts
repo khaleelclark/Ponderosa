@@ -3126,6 +3126,7 @@ export class CoordinationV3Store {
       const row = this.sqlite.prepare(`
         SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
           scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
+          scheduler.provider_failure_json,
           provider.execution_id, provider.prompt_hash, execution.status AS execution_status,
           execution.wake_cause, execution.completed_at
         FROM scheduler_runs scheduler
@@ -3137,11 +3138,13 @@ export class CoordinationV3Store {
         id: string; status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
         lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
         execution_status: string | null; wake_cause: string | null; completed_at: string | null;
+        provider_failure_json: string | null;
       } | undefined;
       return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
         ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
         ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
         ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
+        ["Provider failure", inspectorJson(row.provider_failure_json)],
         ["Lease expires", row.lease_expires_at], ["Scheduler terminal time", row.terminal_at],
         ["Execution completed time", row.completed_at]) : undefined;
     }
@@ -3277,11 +3280,21 @@ export class CoordinationV3Store {
       this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
 
       this.authorizeUpdate(request, input.kind, input.actor);
+      const ownsUnresolvedJoin = Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM coordination_joins
+        WHERE state = 'open'
+          AND EXISTS (
+            SELECT 1 FROM json_each(continuation_request_ids_json)
+            WHERE value = ?
+          )
+        LIMIT 1
+      `).get(request.id));
       const next = reduceCoordinationRequest(
         {
           state: request.state,
           version: request.version,
           ...(request.open_question_update_id ? { openQuestionUpdateId: request.open_question_update_id } : {}),
+          ownsUnresolvedJoin,
         },
         {
           kind: input.kind,
@@ -4370,10 +4383,26 @@ export class CoordinationV3Store {
     /** Explicit provider rejection proves the prompt did not execute despite submission. */
     confirmedNotExecuted?: boolean;
     failureKind?: "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
+    failureDetail?: {
+      phase: string;
+      promptInjectionState: "not_injected" | "injecting" | "injected";
+      exitCode?: number | null;
+      signal?: string | null;
+      stderr?: string;
+      message?: string;
+    };
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
       const run = this.getFencedRun(input.runId, input.fencingToken);
+      if (input.failureDetail) this.sqlite.prepare(`
+        UPDATE scheduler_runs SET provider_failure_json = ?
+        WHERE id = ? AND fencing_token = ?
+      `).run(stableJson({
+        ...input.failureDetail,
+        ...(input.failureDetail.stderr ? { stderr: input.failureDetail.stderr.slice(-8_192) } : {}),
+        ...(input.failureDetail.message ? { message: input.failureDetail.message.slice(0, 2_000) } : {}),
+      }), input.runId, input.fencingToken);
       const disposition = input.confirmedNotExecuted ? "retry" : activationRetryDisposition({
         promptInjectionState: run.prompt_injection_state as "not_injected" | "injecting" | "injected",
         sameRunResumable: input.sameRunResumable,

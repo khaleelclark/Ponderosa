@@ -73,6 +73,7 @@ import type {
   MessageReferenceDto,
   RuntimeProcessHandle,
   RuntimeSession,
+  ProviderRootExitDetail,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
@@ -3134,7 +3135,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
-  function persistentRootExited(agentId: string, identity: object): void {
+  function persistentRootExited(agentId: string, identity: object, detail?: ProviderRootExitDetail): void {
     const authority = runtimeAuthority(agentId);
     const runtime = authority?.reusable;
     if (runtime?.identity === identity) {
@@ -3166,13 +3167,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
     publish(agentId, lifecycle);
     try {
+      const promptInjectionState = coordinationV3.agentSnapshot(agentId).activeRun?.promptInjectionState ?? "not_injected";
       coordinationV3.failRun({
         runId: run.v3SchedulerRunId!,
         fencingToken: run.v3FencingToken!,
         workerId: coordinationV3WorkerId,
         sameRunResumable: false,
-        retryable: false,
+        retryable: true,
         error: "persistent provider root exited",
+        failureDetail: {
+          phase: promptInjectionState === "not_injected" ? "before_prompt_submission" : "provider_execution",
+          promptInjectionState,
+          ...detail,
+          message: "persistent provider root exited",
+        },
       });
     } catch { /* cancellation/deletion may already have advanced the fence */ }
     publishMessageDeliveryChanged(agentId);
@@ -11944,7 +11952,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 };
               },
               onRuntimeSpawned,
-              onRuntimeRootExit: () => persistentRootExited(agent.id, identity),
+              onRuntimeRootExit: (detail) => persistentRootExited(agent.id, identity, detail),
               onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
               signal: controller.signal,
             });
@@ -12363,6 +12371,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
                 retryable: failureKind !== "authentication",
                 error: `[${failureKind}] ${runError}`,
+                failureDetail: {
+                  phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
+                  promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
+                    ?? (v3PromptInjected ? "injected" : "not_injected"),
+                  message: runError,
+                },
               });
               }
               else coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);

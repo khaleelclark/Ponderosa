@@ -3985,6 +3985,37 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("retries an Activation on a fresh persistent session after a pre-submission root exit", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseOpening!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpening = resolve; });
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Pre-submit root exit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Retry safely", engine: "codex" });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Retry this exactly once safely" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    persistent.openedOptions[0]!.onRuntimeRootExit({ exitCode: 17, signal: null, stderr: "bounded failure" });
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    releaseOpening();
+    await vi.waitFor(() => expect(persistent.opened).toBe(2));
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    expect(store.sqlite.prepare(`
+      SELECT status, prompt_injection_state, provider_failure_json FROM scheduler_runs
+      ORDER BY created_at LIMIT 1
+    `).get()).toMatchObject({
+      status: "failed",
+      prompt_injection_state: "not_injected",
+      provider_failure_json: expect.stringContaining('"exitCode":17'),
+    });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    await app.close();
+  });
+
   it("retains a root-exited Run as a Project-deletion barrier until its event loop settles", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.closeLeavesEventsOpen = true;
@@ -8913,6 +8944,14 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT continuation_request_ids_json AS continuations FROM coordination_joins WHERE id = 'inner-join'
     `).get()).toEqual({ continuations: '["delivery-work"]' });
+    const progress = await persistent.openedOptions[1]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "delivery-progress", kind: "progress", text: "Integration is continuing." },
+    });
+    expect(progress.success, progress.text).toBe(true);
+    expect(JSON.parse(progress.text)).toMatchObject({ state: "waiting_dependency" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "waiting_dependency" });
     persistent.completeTurn(1);
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM coordination_request_updates
