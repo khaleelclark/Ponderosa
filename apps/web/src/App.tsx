@@ -750,6 +750,7 @@ export default function App({
         ) : route.kind === "allAgents" ? (
           <AllAgentsWorkspace
             projects={projects}
+            engines={engines}
             filterProjectId={route.filterProjectId}
             preferences={preferences}
             onPreferences={savePreferences}

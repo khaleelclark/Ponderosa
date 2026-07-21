@@ -989,7 +989,7 @@ export function ConversationView({
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
       <Box sx={{ flex: 1 }}>
         <Typography variant="h5" fontWeight={800}>Agents</Typography>
-        <Typography variant="body2" color="text.secondary">Agents assigned to this Project Chat and how they report to one another.</Typography>
+        <Typography variant="body2" color="text.secondary">Agents assigned to this Chat and how they report to one another.</Typography>
       </Box>
       <Chip size="small" label={agents.length} />
     </Stack>
@@ -1043,16 +1043,12 @@ export function ConversationView({
         >
           <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180} sx={{ minWidth: 0, flex: 1 }}>
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
             <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
+            <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
           </Box>
           </Collapse>
-          <Tooltip title="Agent Work"><IconButton
-            onClick={() => onOpenAgentWork()}
-            aria-label="Open Agent work"
-          ><TimelineIcon /></IconButton></Tooltip>
           <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
             size="small"
             aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
@@ -1060,7 +1056,7 @@ export function ConversationView({
             sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
           >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
           <ChatOverflowMenu
-            label={`${activeView === "collaboration" ? "Team" : "Project"} Chat Actions`}
+            label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={[
@@ -1092,10 +1088,11 @@ export function ConversationView({
           />
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
-        <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
+        <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={!agentsOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentsOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
           <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
+          <Button color="inherit" startIcon={<TimelineIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Agent work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agent Work</Button>
         </Stack>
         </Collapse>
       </Box>

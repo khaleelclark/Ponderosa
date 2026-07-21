@@ -2004,9 +2004,9 @@ export function ArtifactsPane({
   onOpenArtifactInNewTab?(artifactId: string): void;
   onOpenRun(runId: string): void;
 }): JSX.Element {
-  const orderedArtifacts = [...artifacts].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
+  const orderedArtifacts = artifacts.filter((artifact) => artifact.kind !== "log").sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
-    initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)
+    initialArtifactId && orderedArtifacts.some((artifact) => artifact.id === initialArtifactId)
       ? initialArtifactId
       : orderedArtifacts[0]?.id,
   );
@@ -2014,9 +2014,9 @@ export function ArtifactsPane({
   const [artifactMenu, setArtifactMenu] = useState<{ anchor: HTMLElement; artifactId: string }>();
 
   useEffect(() => {
-    if (initialArtifactId && artifacts.some((artifact) => artifact.id === initialArtifactId)) {
+    if (initialArtifactId && orderedArtifacts.some((artifact) => artifact.id === initialArtifactId)) {
       if (selectedArtifactId !== initialArtifactId) setSelectedArtifactId(initialArtifactId);
-    } else if (!selectedArtifactId || !artifacts.some((artifact) => artifact.id === selectedArtifactId)) {
+    } else if (!selectedArtifactId || !orderedArtifacts.some((artifact) => artifact.id === selectedArtifactId)) {
       setSelectedArtifactId(orderedArtifacts[0]?.id);
     }
   }, [artifacts, initialArtifactId, orderedArtifacts, selectedArtifactId]);
@@ -2028,11 +2028,10 @@ export function ArtifactsPane({
   const groups = [
     { label: "Files", kinds: new Set<ArtifactDto["kind"]>(["generated_file", "document", "screenshot", "diff"]) },
     { label: "Results", kinds: new Set<ArtifactDto["kind"]>(["test_report", "pr_summary"]) },
-    { label: "Activity", kinds: new Set<ArtifactDto["kind"]>(["log"]) },
   ].map((group) => ({ ...group, artifacts: visibleArtifacts.filter((artifact) => group.kinds.has(artifact.kind)) }))
     .filter((group) => group.artifacts.length > 0);
 
-  const selectedArtifact = artifacts.find((artifact) => artifact.id === selectedArtifactId);
+  const selectedArtifact = orderedArtifacts.find((artifact) => artifact.id === selectedArtifactId);
   const liveSeq = selectedArtifact?.id.startsWith("live-artifact-")
     ? Number(selectedArtifact.id.replace("live-artifact-", ""))
     : undefined;
@@ -2044,10 +2043,10 @@ export function ArtifactsPane({
         ? `## Test result\n\n${liveEvent.summary}`
         : undefined;
 
-  if (artifacts.length === 0) {
+  if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No files or results yet. Diffs, test reports, and logs appear here.</Alert>
+        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in Activity.</Alert>
       </Box>
     );
   }
@@ -2057,7 +2056,7 @@ export function ArtifactsPane({
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, px: 1.5, py: 1.25, borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={750}>Files &amp; Results</Typography>
-          <Typography variant="caption" color="text.secondary">{artifacts.length} item{artifacts.length === 1 ? "" : "s"} from this agent</Typography>
+          <Typography variant="caption" color="text.secondary">{orderedArtifacts.length} item{orderedArtifacts.length === 1 ? "" : "s"} from this agent</Typography>
         </Box>
         <TextField
           size="small"

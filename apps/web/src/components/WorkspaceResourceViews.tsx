@@ -11,9 +11,9 @@ import {
   Alert, Box, Button, ButtonBase, FormControl, IconButton, InputAdornment, InputLabel, LinearProgress,
   Menu, MenuItem, Paper, Select, Stack, TextField, Tooltip, Typography,
 } from "@mui/material";
-import type { ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { EngineDto, ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import {
   resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
@@ -22,6 +22,8 @@ import {
 import type { Route } from "../routing";
 import { reorderStableIds } from "./WorkspaceSidebar";
 import { TokenUsageDetails } from "./TokenUsageButton";
+import { AgentsTab } from "./AgentsTab";
+import { mergeAgentStatuses } from "../agents";
 
 function WorkspaceHeader({ icon, title, detail, action }: { icon: JSX.Element; title: string; detail: string; action?: JSX.Element }): JSX.Element {
   return <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}>
@@ -61,19 +63,34 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   </Box>;
 }
 
-export function AllAgentsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
-  projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string): void;
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+  projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string, managerAgentId?: string): void;
 }): JSX.Element {
-  const queries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agents", project.id], queryFn: () => api.listAgents(project.id), staleTime: 5_000 })) });
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<{ anchor: HTMLElement; route: Route }>();
-  const sort = workspaceResourceSort(preferences, "agent"); const starred = starredWorkspaceResources(preferences);
-  const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
-  const filtered = rows.filter(({ project, agent }) => (!projectId || project.id === projectId) && (!search.trim() || `${agent.title} ${project.label} ${agent.activeEngine}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
-  const ordered = sortWorkspaceResources(filtered, sort, preferences.agentOrder, (row) => row.agent.id, (row) => row.agent.title, (row) => row.agent.updatedAt);
-  return <Box sx={{ minHeight: 0, overflow: "auto" }}><WorkspaceHeader icon={<GroupsOutlinedIcon />} title="Agents" detail={`${rows.length} Agents across ${projects.length} ${projects.length === 1 ? "Project" : "Projects"}`} action={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Agent</Button>} /><ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("agent", value))} projectId={projectId} projects={projects} onProject={setProjectId} />
-    <Box sx={{ px: { xs: 2, md: 3 }, pb: 3, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(100%, 280px), 1fr))", gap: 1.25 }}>{ordered.map(({ project, agent }) => { const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id }; const key = resourcePreferenceKey("agent", agent.id); return <Paper key={agent.id} variant="outlined" draggable onDragStart={() => setDragged(agent.id)} onDragEnd={() => setDragged(undefined)} onDragOver={(event) => { if (dragged) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (dragged) onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), dragged, agent.id) }); setDragged(undefined); }} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route }); }} sx={{ display: "flex" }}><ButtonBase onClick={() => onNavigate(route)} sx={{ minWidth: 0, flex: 1, p: 2, textAlign: "left", justifyContent: "flex-start", gap: 1.5 }}><Box sx={{ width: 42, height: 42, borderRadius: "50%", bgcolor: "action.selected", display: "grid", placeItems: "center" }}><SmartToyOutlinedIcon /></Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={800} noWrap>{agent.title}</Typography><Typography variant="body2" color="text.secondary" noWrap>{project.label}</Typography><Typography variant="caption" color="text.secondary">{agent.activeEngine}</Typography></Box></ButtonBase><Tooltip title={starred.has(key) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starred.has(key) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agent.id))}>{starred.has(key) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip></Paper>; })}{!queries.some((query) => query.isLoading) && ordered.length === 0 ? <Alert severity="info">No Agents match these filters.</Alert> : null}</Box>
-    <ResourceMenu menu={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+  const agentQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agents", project.id], queryFn: () => api.listAgents(project.id), staleTime: 5_000 })) });
+  const conversationQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["conversations", project.id], queryFn: () => api.listConversations(project.id), staleTime: 10_000 })) });
+  const healthQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agent-health", project.id], queryFn: () => api.getAgentHealth(project.id), staleTime: 5_000 })) });
+  const [projectId, setProjectId] = useState(filterProjectId ?? "");
+  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
+  const sort = workspaceResourceSort(preferences, "agent");
+  const rows = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
+  const scopedRows = rows.filter(({ project }) => !projectId || project.id === projectId);
+  const orderedRows = sortWorkspaceResources(scopedRows, sort, preferences.agentOrder, (row) => row.agent.id, (row) => row.agent.title, (row) => row.agent.updatedAt);
+  const agents = orderedRows.map((row) => row.agent);
+  const conversations = projects.flatMap((project, index) => (!projectId || project.id === projectId) ? (conversationQueries[index]?.data ?? []).filter((conversation) => !conversation.archived) : []);
+  const allHealth = projects.flatMap((project, index) => (!projectId || project.id === projectId) ? (healthQueries[index]?.data?.agents ?? []) : []);
+  const healthByAgentId = new Map(allHealth.map((item) => [item.agentId, item]));
+  const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
+  const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
+  const starredIds = starredWorkspaceResources(preferences);
+  return <Box sx={{ minHeight: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.25} sx={{ px: { xs: 2, md: 3 }, py: 1.5, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}>
+      <Typography variant="body2" color="text.secondary" sx={{ flex: 1 }}>{rows.length} Agent{rows.length === 1 ? "" : "s"} across {projects.length} Project{projects.length === 1 ? "" : "s"}</Typography>
+      <FormControl size="small" sx={{ minWidth: 220 }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
+      <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="recent">Recently Updated</MenuItem><MenuItem value="name">Name</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
+    </Stack>
+    {projects.length ? <AgentsTab agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} /> : <Alert severity="info" sx={{ m: 2 }}>Create a Project before creating Agents.</Alert>}
   </Box>;
 }
 

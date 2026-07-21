@@ -896,15 +896,6 @@ export function AgentDetail({
               {cancelRun.isPending ? "Stopping…" : "Stop"}
             </Button>
           ) : null}
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<AccountTreeOutlinedIcon />}
-            onClick={() => { setAgentWorkFocus(undefined); setTab("agentWork"); }}
-            sx={{ minHeight: 36 }}
-          >
-            Agent Work
-          </Button>
           <ChatOverflowMenu
             label="Agent Chat Actions"
             transcriptMarkdown={transcriptMarkdown}

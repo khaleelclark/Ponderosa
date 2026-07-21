@@ -3,6 +3,9 @@ import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
+import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
+import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Alert,
   Box,
@@ -97,9 +100,15 @@ export function AgentsTab({
   onOpenAgent,
   onOpenAgentInNewTab,
   onNewAgent,
+  projectByAgentId,
+  starredAgentIds,
+  onToggleStar,
+  displayOrder,
+  selectionAllowed = true,
+  onReorder,
 }: {
   agents: AgentDto[];
-  projectId: string;
+  projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
   statusByAgentId: Map<string, AgentStatus>;
@@ -107,6 +116,12 @@ export function AgentsTab({
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
+  projectByAgentId?: Map<string, { id: string; label: string }>;
+  starredAgentIds?: ReadonlySet<string>;
+  onToggleStar?(agentId: string): void;
+  displayOrder?: readonly string[];
+  selectionAllowed?: boolean;
+  onReorder?(sourceAgentId: string, targetAgentId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
@@ -120,6 +135,8 @@ export function AgentsTab({
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
+  const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
+  const [draggedAgentId, setDraggedAgentId] = useState<string>();
 
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
@@ -132,7 +149,9 @@ export function AgentsTab({
   const masterName = (id: string | undefined): string =>
     id ? (conversations.find((master) => master.id === id)?.title ?? "Unknown Project chat") : "Unassigned";
 
-  const filtered = orderedAgentOrganization(agents).filter(({ agent }) => {
+  const organizationRows = orderedAgentOrganization(agents);
+  const orderRank = new Map(displayOrder?.map((id, index) => [id, index]));
+  const filtered = organizationRows.filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
     if (!matchesAgentStatusFilters(agent, status, statusFilters)) return false;
     if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
@@ -140,7 +159,7 @@ export function AgentsTab({
     }
     if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
     return true;
-  });
+  }).sort((left, right) => displayOrder ? (orderRank.get(left.agent.id) ?? Number.MAX_SAFE_INTEGER) - (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER) : 0);
   const statusOptions = agentStatusFilterOptions(agents, statusByAgentId);
   const activeRunTargets = agents.flatMap((agent) => {
     const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
@@ -180,7 +199,6 @@ export function AgentsTab({
         <Typography variant="h6" sx={{ flex: 1 }}>
           Agents
         </Typography>
-        <Button variant="outlined" size="small" disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => void stopAll()}>Stop All</Button>
         {selectionMode ? <>
           <Button color="inherit" size="small" onClick={() => {
             const visibleIds = filtered.map(({ agent }) => agent.id);
@@ -193,15 +211,17 @@ export function AgentsTab({
           }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear Visible" : "Select All Visible"}</Button>
           <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete Selected ({selectedAgentIds.size})</Button>
           <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel Selection</Button>
-        </> : <Button color="inherit" variant="outlined" size="small" disabled={agents.length === 0} onClick={() => setSelectionMode(true)}>Select Agents</Button>}
-        <Button variant="outlined" size="small" startIcon={<FileUploadOutlinedIcon />} onClick={() => setImportOpen(true)} sx={{ minHeight: 44, flexShrink: 0 }}>Import Agent or Organization</Button>
-        <Button variant="contained" size="small" startIcon={<AddIcon />} onClick={() => onNewAgent()} sx={{ flexShrink: 0, minHeight: 44 }}>
-          New Agent
-        </Button>
+        </> : <Tooltip title="Agent actions: stop, select, import, or create"><IconButton aria-label="Agent actions" onClick={(event) => setActionsAnchor(event.currentTarget)} sx={{ minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton></Tooltip>}
+        {actionsAnchor ? <Menu anchorEl={actionsAnchor} open onClose={() => setActionsAnchor(undefined)}>
+          <MenuItem disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => { setActionsAnchor(undefined); void stopAll(); }}>Stop All</MenuItem>
+          <MenuItem disabled={agents.length === 0 || !selectionAllowed} onClick={() => { setActionsAnchor(undefined); setSelectionMode(true); }}>Select Agents</MenuItem>
+          <MenuItem disabled={!projectId} onClick={() => { setActionsAnchor(undefined); setImportOpen(true); }}><FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Import Agent or Organization</MenuItem>
+          <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
+        </Menu> : null}
       </Stack>
       {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
 
-      <ImportAgentDialog
+      {projectId ? <ImportAgentDialog
         open={importOpen}
         projectId={projectId}
         engines={engines}
@@ -209,7 +229,7 @@ export function AgentsTab({
         initialConversationId={conversations[0]?.id}
         onClose={() => setImportOpen(false)}
         onImported={onOpenAgent}
-      />
+      /> : null}
 
       <Stack
         direction={{ xs: "column", sm: "row" }}
@@ -294,6 +314,11 @@ export function AgentsTab({
                 <Stack key={agent.id} spacing={0.75} sx={{ ml: { xs: Math.min(depth, 2), sm: depth * 3 }, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 1 : 0 }}>
                   <Paper
                     variant="outlined"
+                    draggable={Boolean(onReorder)}
+                    onDragStart={() => setDraggedAgentId(agent.id)}
+                    onDragEnd={() => setDraggedAgentId(undefined)}
+                    onDragOver={(event) => { if (draggedAgentId) event.preventDefault(); }}
+                    onDrop={(event) => { event.preventDefault(); if (draggedAgentId && draggedAgentId !== agent.id) onReorder?.(draggedAgentId, agent.id); setDraggedAgentId(undefined); }}
                     sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
                   >
                   {selectionMode ? <Checkbox
@@ -325,6 +350,7 @@ export function AgentsTab({
                       sx={{ mt: 0.75, alignItems: "center" }}
                     >
                       <Chip size="small" variant="outlined" label={agent.activeEngine} />
+                      {projectByAgentId?.get(agent.id) ? <Chip size="small" variant="outlined" label={projectByAgentId.get(agent.id)!.label} /> : null}
                       {organizationParent ? <Chip size="small" color="secondary" variant="outlined" label={`Reports to ${organizationParent.title}`} /> : null}
                       <Chip
                         size="small"
@@ -350,6 +376,7 @@ export function AgentsTab({
                       <DeleteOutlineIcon fontSize="small" />
                     </IconButton>
                   </Tooltip> : null}
+                  {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
                   {organizationParent ? (
                     <Tooltip title="Promote to Top Level">
                       <IconButton
@@ -381,15 +408,15 @@ export function AgentsTab({
         )}
       </Box>
 
-      <AgentDeletionDialog
+      {pendingDelete ? <AgentDeletionDialog
         open={Boolean(pendingDelete)}
-        projectId={projectId}
+        projectId={projectByAgentId?.get(pendingDelete.id)?.id ?? projectId!}
         rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
         onClose={() => setPendingDelete(undefined)}
         onDeleted={() => setPendingDelete(undefined)}
-      />
+      /> : null}
       {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}><MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
-      <AgentDeletionDialog
+      {projectId ? <AgentDeletionDialog
         open={deleteSelectedOpen}
         projectId={projectId}
         rootAgentIds={[...selectedAgentIds]}
@@ -397,7 +424,7 @@ export function AgentsTab({
         confirmationText="DELETE SELECTED"
         onClose={() => setDeleteSelectedOpen(false)}
         onDeleted={leaveSelectionMode}
-      />
+      /> : null}
     </Box>
   );
 }

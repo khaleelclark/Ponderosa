@@ -95,10 +95,10 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
       <Paper variant="outlined" sx={{ p: 2 }}>
         <Box sx={{ mb: 1.5 }}><Typography variant="h6" fontWeight={800}>Create</Typography><Typography variant="body2" color="text.secondary">Start with the thing you want; Ponderosa will ask for its scope next.</Typography></Box>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1 }}>
-          <Button variant="contained" startIcon={<FolderOutlinedIcon />} onClick={onCreateProject}>Project</Button>
-          <Button variant="outlined" startIcon={<ChatBubbleOutlineIcon />} disabled={!projects.length} onClick={onCreateChat}>Chat</Button>
-          <Button variant="outlined" startIcon={<PersonOutlineIcon />} disabled={!projects.length} onClick={onCreateAgent}>Agent</Button>
-          <Button variant="outlined" startIcon={<BoltOutlinedIcon />} disabled={!projects.length} onClick={onCreateTrigger}>Trigger</Button>
+          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} onClick={onCreateProject}>New Project</Button>
+          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateChat}>New Chat</Button>
+          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateAgent}>New Agent</Button>
+          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateTrigger}>New Trigger</Button>
         </Box>
       </Paper>
 

@@ -75,7 +75,7 @@ describe("responsive workspace sidebar flow", () => {
     const rendered = JSON.stringify(view.toJSON());
     expect(view.root.findByProps({ "aria-label": "Home" })).toBeTruthy();
     expect(view.root.findAll((node) => node.props["aria-label"] === "Projects").length).toBeGreaterThan(0);
-    expect(rendered).toContain("Search Project Chats");
+    expect(rendered).toContain("Search Chats");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
     expect(view.root.findAll((node) => node.props.color === "info" && node.props.badgeContent === 1)).toHaveLength(1);
@@ -84,7 +84,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     expect(view.root.findByProps({ "aria-label": "Open Messages" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search recent");
-    expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
+    expect(JSON.stringify(view.toJSON())).not.toContain("Search Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View Home");
     expect(JSON.stringify(view.toJSON())).not.toContain("View All Projects");
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());

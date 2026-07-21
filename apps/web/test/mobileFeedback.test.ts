@@ -56,8 +56,8 @@ describe("mobile feedback slice", () => {
     expect(globalCss).toContain("transition: max-height 180ms");
     expect(globalCss).toContain("@media (prefers-reduced-motion: reduce)");
     const projectHeader = conversation.slice(conversation.indexOf('className="mobile-chat-chrome mobile-chat-header"'), conversation.indexOf('className="chat-scroll-region"'));
-    expect(projectHeader.indexOf('aria-label="Open Agent work"')).toBeLessThan(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"'));
     expect(projectHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand chat header"')).toBeLessThan(projectHeader.indexOf("<ChatOverflowMenu"));
+    expect(projectHeader.indexOf('aria-label={`View ${agents.length} Project Agents`}')).toBeLessThan(projectHeader.indexOf('aria-label="Open Agent work"'));
     const agentHeader = agentDetail.slice(agentDetail.indexOf('className="mobile-chat-chrome mobile-chat-header"'), agentDetail.indexOf('aria-label="Agent details"'));
     expect(agentHeader.indexOf("{detail.agent.title}")).toBeLessThan(agentHeader.indexOf('aria-label={mobileHeaderCollapsed ? "Expand agent header"'));
     expect(agentHeader).toContain('flexBasis: { xs: "100%", sm: "auto" }');
