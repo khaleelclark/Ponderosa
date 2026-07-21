@@ -1,5 +1,4 @@
 import AddIcon from "@mui/icons-material/Add";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
@@ -10,9 +9,6 @@ import CloseIcon from "@mui/icons-material/Close";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 import {
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Alert,
   AppBar,
   Box,
@@ -58,6 +54,7 @@ import { ProviderStatusDialog } from "./components/ProviderStatusDialog";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
 import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
+import { HomeView } from "./components/HomeView";
 import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
@@ -87,6 +84,7 @@ import {
   removeProjectWorkspaceTabs,
   removeWorkspaceRoute,
   renameWorkspaceTab,
+  reusableWorkspaceTab,
   reorderWorkspaceTabs,
   restoreWorkspaceTabSession,
   serializeWorkspaceTabs,
@@ -177,6 +175,8 @@ export default function App({
   const [settingsProjectDefaultEffort, setSettingsProjectDefaultEffort] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent" | "trigger">();
+  const [homeCreateProjectId, setHomeCreateProjectId] = useState("");
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
   const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
@@ -282,12 +282,12 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
+    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
     // redirect back to the most recent chat.
-    if (["project", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
+    if (["project", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
     if (!target) return;
@@ -376,7 +376,7 @@ export default function App({
       setDeleteConfirmationOpen(false);
       setProjectSettingsOpen(false);
       if (next) { saveLastProjectId(next.id); navigate({ kind: "project", projectId: next.id }); }
-      else navigate({ kind: "allChat" });
+      else navigate({ kind: "home" });
     },
   });
 
@@ -415,7 +415,6 @@ export default function App({
   };
   const openProjectCreator = (onboarding = false) => {
     setOnboardingProjectCreation(onboarding);
-    if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? "");
     setProjectDialogOpen(true);
   };
   const closeProjectCreator = () => {
@@ -428,7 +427,6 @@ export default function App({
     if (projects.length > 0 || preferences.onboardingCompletedAt) return;
     onboardingPrompted.current = true;
     setOnboardingProjectCreation(true);
-    setProjectDefaultEngine((current) => current || engines.find(engineIsAvailable)?.id || "");
     setProjectDialogOpen(true);
   }, [engines, enginesQuery.isSuccess, preferences.onboardingCompletedAt, preferencesQuery.isSuccess, projects.length, projectsQuery.isSuccess]);
 
@@ -453,7 +451,10 @@ export default function App({
   }, []);
 
   const navigateWorkspace = (next: Route) => {
-    setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, next));
+    const reusable = reusableWorkspaceTab(workspaceTabs, activeWorkspaceTabKey, next);
+    const targetKey = reusable?.key ?? activeWorkspaceTabKey;
+    if (reusable) setActiveWorkspaceTabKey(targetKey);
+    setWorkspaceTabs((current) => navigateWorkspaceTab(current, targetKey, next));
     navigate(next);
   };
   const activateWorkspaceView = (key: string) => {
@@ -464,7 +465,7 @@ export default function App({
     navigate(tab.route);
   };
   const createWorkspaceView = () => {
-    const tab = createWorkspaceTab({ kind: "allChat" });
+    const tab = createWorkspaceTab({ kind: "home" });
     setWorkspaceTabs((current) => openWorkspaceTab(current, tab.route, tab.lastActivatedAt, tab.key));
     setActiveWorkspaceTabKey(tab.key);
     navigate(tab.route);
@@ -481,6 +482,49 @@ export default function App({
     setProjectBrowserRequest({ ...(url ? { url } : {}), requestId: projectBrowserRequestId.current });
     openWorkspaceRoute({ kind: "browser", projectId: selectedProjectId });
   };
+  const createHomeChat = async (projectId?: string) => {
+    const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
+    if (!project) return;
+    const conversation = await api.createConversation(project.id, { title: "New Project Chat", defaultEngine: project.defaultEngine });
+    await api.markProjectUsed(project.id, conversation.id);
+    void queryClient.invalidateQueries({ queryKey: ["conversations", project.id] });
+    navigateWorkspace({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
+  };
+  const createHomeAgent = (projectId?: string) => {
+    const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
+    if (project) navigateWorkspace({ kind: "agents", projectId: project.id, create: true });
+  };
+  const createHomeTrigger = async (projectId?: string) => {
+    const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
+    if (!project) return;
+    const agents = await api.listAgents(project.id);
+    const agent = agents.find((candidate) => !candidate.archived);
+    navigateWorkspace(agent
+      ? { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" }
+      : { kind: "agents", projectId: project.id });
+  };
+  const beginHomeCreate = (kind: "chat" | "agent" | "trigger") => {
+    if (projects.length === 1) {
+      const projectId = projects[0]!.id;
+      if (kind === "chat") void createHomeChat(projectId);
+      else if (kind === "agent") createHomeAgent(projectId);
+      else void createHomeTrigger(projectId);
+      return;
+    }
+    setHomeCreateProjectId("");
+    setHomeCreateKind(kind);
+  };
+
+  const continueHomeCreate = () => {
+    if (!homeCreateKind || !homeCreateProjectId) return;
+    const kind = homeCreateKind;
+    const projectId = homeCreateProjectId;
+    setHomeCreateKind(undefined);
+    if (kind === "chat") void createHomeChat(projectId);
+    else if (kind === "agent") createHomeAgent(projectId);
+    else void createHomeTrigger(projectId);
+  };
+
   useEffect(() => {
     const openNotificationRoute = (event: MessageEvent) => {
       if (event.data?.type !== "ponderosa:open-route" || typeof event.data.url !== "string") return;
@@ -590,9 +634,9 @@ export default function App({
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
           <Box component="img" src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }, height: { xs: 26, sm: 28 }, mr: { xs: 0.75, sm: 1 }, borderRadius: 1, objectFit: "contain", flexShrink: 0 }} />
-          <ButtonBase aria-label="Open Home" onClick={() => navigateWorkspace({ kind: "allChat" })} sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", borderRadius: 1 }}>
+          <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h6" component="h1" sx={{ fontWeight: 800, minWidth: 0 }} noWrap>Ponderosa</Typography>
-          </ButtonBase>
+          </Box>
           <Tooltip title={`${engineAvailability.label}. Click for provider details.`} arrow enterTouchDelay={0}>
             <Chip
               size="small"
@@ -606,7 +650,7 @@ export default function App({
             />
           </Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
-          <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
+          <Tooltip title={selectedProjectId ? "Shared Browser" : "Select a Project to use its Shared Browser"}><span><IconButton aria-label="Open Shared Browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
@@ -647,8 +691,11 @@ export default function App({
           projects={projects}
           activeKey={activeWorkspaceTabKey}
           onActivate={activateWorkspaceView}
+          notificationCount={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}
           onCreate={createWorkspaceView}
           onClose={closeWorkspaceView}
+          onSearch={() => setGlobalSearchOpen(true)}
+          onOpenInbox={() => setNotificationPanelOpen(true)}
           onCloseOthers={closeOtherWorkspaceViews}
           onRename={renameWorkspaceView}
           onReorder={reorderWorkspaceViews}
@@ -685,6 +732,21 @@ export default function App({
               <Button variant="contained" startIcon={<AddIcon />} onClick={() => openProjectCreator(!preferences.onboardingCompletedAt)}>Create Your First Project</Button>
             </Stack>
           </Box>
+        ) : route.kind === "home" ? (
+          <HomeView
+            projects={projects}
+            engines={engines}
+            notifications={notificationsQuery.data ?? []}
+            preferences={preferences}
+            onNavigate={navigateWorkspace}
+            onOpenInNewTab={openWorkspaceRoute}
+            onPreferences={savePreferences}
+            onCreateProject={() => openProjectCreator()}
+            onCreateChat={() => beginHomeCreate("chat")}
+            onCreateAgent={() => beginHomeCreate("agent")}
+            onCreateTrigger={() => beginHomeCreate("trigger")}
+            onOpenInbox={() => setNotificationPanelOpen(true)}
+          />
         ) : route.kind === "allChat" ? (
           <AllChatView onNavigate={navigateWorkspace} />
         ) : route.kind === "projects" || route.kind === "allAgents" ? (
@@ -692,6 +754,7 @@ export default function App({
             projects={projects}
             preferences={preferences}
             onNavigate={navigateWorkspace}
+            onOpenInNewTab={openWorkspaceRoute}
             onCreateProject={() => openProjectCreator()}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
@@ -840,23 +903,21 @@ export default function App({
               autoFocus
               fullWidth
             />
-            <Box><Typography variant="subtitle2">Default AI runtime</Typography><Typography variant="body2" color="text.secondary">Used when a new chat or Agent does not choose its own provider, model, or reasoning level. Every chat can override these defaults.</Typography></Box>
-            <FormControl fullWidth><InputLabel id="project-default-engine-label">Default AI provider</InputLabel><Select labelId="project-default-engine-label" label="Default AI provider" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
+            <Box><Typography variant="subtitle2">Default AI Runtime</Typography><Typography variant="body2" color="text.secondary">Choose the provider for this Project. Chats and Agents can override its model and reasoning later.</Typography></Box>
+            <FormControl fullWidth><InputLabel shrink id="project-default-engine-label">AI Provider</InputLabel><Select labelId="project-default-engine-label" label="AI Provider" value={projectDefaultEngine} displayEmpty onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
+              <MenuItem value="" disabled>Select a Provider</MenuItem>
               {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — Unavailable" : " — Not Signed In"}</MenuItem>)}
             </Select></FormControl>
-            <Accordion disableGutters elevation={0} sx={{ border: 1, borderColor: "divider", borderRadius: "8px !important", "&::before": { display: "none" } }}>
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}><Box><Typography variant="subtitle2">Advanced Settings</Typography><Typography variant="caption" color="text.secondary">Optional model and reasoning overrides</Typography></Box></AccordionSummary>
-              <AccordionDetails><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-                <FormControl fullWidth><InputLabel id="project-default-model-label">Default Model</InputLabel><Select labelId="project-default-model-label" label="Default Model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
-                  <MenuItem value="">Automatic Default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                <FormControl fullWidth disabled={!projectDefaultEngine}><InputLabel id="project-default-model-label">Model</InputLabel><Select labelId="project-default-model-label" label="Model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
+                  <MenuItem value="">Provider Default — {(newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model) || "Automatic"}</MenuItem>
                   {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select></FormControl>
-                <FormControl fullWidth><InputLabel id="project-default-effort-label">Default Reasoning</InputLabel><Select labelId="project-default-effort-label" label="Default Reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
-                  <MenuItem value="">Automatic Default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
+                <FormControl fullWidth disabled={!projectDefaultEngine}><InputLabel id="project-default-effort-label">Reasoning</InputLabel><Select labelId="project-default-effort-label" label="Reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
+                  <MenuItem value="">Provider Default — {(newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort) || "Automatic"}</MenuItem>
                   {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
                 </Select></FormControl>
-              </Stack></AccordionDetails>
-            </Accordion>
+            </Stack>
             {engines.filter(engineCanTestAccess).map((engine) => <Alert
               key={engine.id}
               severity="warning"
@@ -898,6 +959,16 @@ export default function App({
             {onboardingProjectCreation ? "Create Project and Continue" : "Create"}
           </Button>
         </DialogActions>
+      </Dialog>
+      <Dialog open={Boolean(homeCreateKind)} onClose={() => setHomeCreateKind(undefined)} fullWidth maxWidth="xs">
+        <DialogTitle>Create {homeCreateKind ? homeCreateKind.charAt(0).toUpperCase() + homeCreateKind.slice(1) : ""}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography color="text.secondary">Choose the Project where this {homeCreateKind ?? "item"} belongs.</Typography>
+            <FormControl fullWidth><InputLabel id="home-create-project-label">Project</InputLabel><Select labelId="home-create-project-label" label="Project" value={homeCreateProjectId} onChange={(event) => setHomeCreateProjectId(event.target.value)}>{projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}</Select></FormControl>
+          </Stack>
+        </DialogContent>
+        <DialogActions><Button onClick={() => setHomeCreateKind(undefined)}>Cancel</Button><Button variant="contained" disabled={!homeCreateProjectId} onClick={continueHomeCreate}>Continue</Button></DialogActions>
       </Dialog>
       <Dialog open={onboardingCompleteOpen} onClose={() => setOnboardingCompleteOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>You’re Ready to Build</DialogTitle>

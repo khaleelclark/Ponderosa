@@ -74,16 +74,15 @@ describe("responsive workspace sidebar flow", () => {
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);
     const rendered = JSON.stringify(view.toJSON());
     expect(view.root.findByProps({ "aria-label": "Home" })).toBeTruthy();
-    expect(view.root.findAll((node) => node.props["aria-label"] === "Projects")).toHaveLength(0);
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Projects").length).toBeGreaterThan(0);
     expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
     expect(view.root.findAll((node) => node.props.color === "info" && node.props.badgeContent === 1)).toHaveLength(1);
-    expect(view.root.findAll((node) => node.props.color === "error" && node.props.badgeContent === 1)).toHaveLength(1);
 
     act(() => view.root.findByProps({ "aria-label": "Home" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalled();
-    expect(view.root.findByProps({ "aria-label": "Open All Chat" })).toBeTruthy();
+    expect(view.root.findByProps({ "aria-label": "Open Messages" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search projects");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
@@ -110,7 +109,7 @@ describe("responsive workspace sidebar flow", () => {
     client.clear();
   });
 
-  it("puts global search in its own sidebar icon with an OS-aware accessible shortcut", () => {
+  it("keeps OS-aware global search labels while search lives in the top utility bar", () => {
     expect(globalSearchShortcutLabel("MacIntel")).toBe("⌘K");
     expect(globalSearchShortcutLabel("Win32")).toBe("Ctrl K");
     expect(globalSearchShortcutAccessibleLabel("MacIntel")).toBe("Command K");
@@ -121,19 +120,16 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agents", project.id], []);
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
-    const onSearch = vi.fn();
     const render = (drawer = false) => create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects} engines={engineRoster} preferences={preferences} route={{ kind: "projects" }} notifications={[]}
       drawer={drawer} onNavigate={vi.fn()} onCreateProject={vi.fn()} onManageProject={vi.fn()} onPreferences={vi.fn()}
-      onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={onSearch}
+      onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={vi.fn()}
     /></QueryClientProvider>);
     const desktop = render();
-    const search = desktop.root.findByProps({ "aria-label": `Search All Chats (${globalSearchShortcutAccessibleLabel()})` });
-    act(() => search.props.onClick());
-    expect(onSearch).toHaveBeenCalledOnce();
+    expect(desktop.root.findAll((node) => node.props["aria-label"]?.startsWith?.("Search All Chats"))).toHaveLength(0);
     expect(desktop.root.findAllByType("kbd")).toHaveLength(0);
     const mobile = render(true);
-    expect(mobile.root.findByProps({ "aria-label": "Search All Chats" })).toBeTruthy();
+    expect(mobile.root.findAll((node) => node.props["aria-label"] === "Search All Chats")).toHaveLength(0);
     expect(mobile.root.findAllByType("kbd")).toHaveLength(0);
     desktop.unmount();
     mobile.unmount();

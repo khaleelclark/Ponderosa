@@ -70,9 +70,9 @@ describe("mobile feedback slice", () => {
     expect(conversation).toContain("Open Agent work details");
   });
 
-  it("makes mobile Ponderosa open Home and provides swipe and explicit-close navigation", () => {
-    expect(app).toContain('aria-label="Open Home"');
-    expect(app).toContain('navigateWorkspace({ kind: "allChat" })');
+  it("keeps the mobile brand noninteractive and provides swipe and explicit-close navigation", () => {
+    expect(app).not.toContain('aria-label="Open Home"');
+    expect(app).toContain('aria-label="Ponderosa"');
     expect(app).toContain('src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }');
     expect(app).toContain("<SwipeableDrawer");
     expect(app).toContain('aria-label="Close workspace navigation"');

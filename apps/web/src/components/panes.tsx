@@ -665,6 +665,7 @@ export function ChatMarkdown({
   onOpenBroadcast,
   previewScope,
   projectId,
+  operatorHandle,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
@@ -673,6 +674,7 @@ export function ChatMarkdown({
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
   projectId?: string;
+  operatorHandle?: string;
 }): JSX.Element {
   return (
     <Box
@@ -726,11 +728,15 @@ export function ChatMarkdown({
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
-            const visibleLabel = boundMention ? `#${boundMention.label}` : label;
+            const operatorMention = handle.toLocaleLowerCase() === "user"
+              || Boolean(operatorHandle && handle.toLocaleLowerCase() === operatorHandle.toLocaleLowerCase());
+            const visibleLabel = operatorMention && operatorHandle ? `#${operatorHandle}` : boundMention ? `#${boundMention.label}` : label;
+            const mentionSx = { display: "inline", px: 0.45, py: 0.1, borderRadius: 0.75, bgcolor: "action.selected", color: "primary.light", fontWeight: 700, textDecoration: "none", boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)" } as const;
+            if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
             if (!agentId || !onOpenAgent) {
-              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={{ fontWeight: 600, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: 2 }}>{visibleLabel}</Box>;
+              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
             }
-            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{visibleLabel}</Box>;
+            return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...mentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
       >
@@ -740,7 +746,7 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
+export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
@@ -748,8 +754,9 @@ export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle,
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
   projectId?: string;
+  operatorHandle?: string;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
@@ -775,7 +782,7 @@ export function CommunicationDocumentCard({ document }: { document: Communicatio
   </Paper>;
 }
 
-export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId }: {
+export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle }: {
   text: string;
   citations?: VerifiedCitationDto[];
   collapseLongMessage?: boolean;
@@ -785,6 +792,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   onOpenBroadcast?(): void;
   previewScope?: LinkPreviewScope;
   projectId?: string;
+  operatorHandle?: string;
 }): JSX.Element {
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
@@ -802,7 +810,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} />
       </Box>
       {collapsible ? (
         <Button
@@ -1004,6 +1012,7 @@ export function ChatPane({
                 const title = binding ? agentNameForId?.(binding.agentId) : undefined;
                 return binding && title ? { agentId: binding.agentId, label: agentMentionHandle(title) } : undefined;
               }}
+              operatorHandle={operatorProfile?.handle}
               onOpenAgent={onOpenAgent}
               onOpenBroadcast={message.role === "assistant" && message.conversationId && message.communicationEventId && /^\s*#broadcast(?:\s|$)/iu.test(message.text)
                 ? () => onOpenBroadcast?.(message)

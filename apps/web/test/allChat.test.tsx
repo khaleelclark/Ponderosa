@@ -96,7 +96,7 @@ describe("All Chat view contract", () => {
     expect(focus[1]).toHaveBeenCalledOnce();
     expect(radioControls().map((choice) => [choice.props["aria-checked"], choice.props.tabIndex])).toEqual([[false, -1], [true, 0]]);
 
-    const composer = view.root.find((node) => node.props.guidance === "Recipient is fixed by the selected source. This message is private and cannot be broadcast from All Chat.");
+    const composer = view.root.find((node) => node.props.guidance === "Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages.");
     await act(async () => { await composer.props.onSend("Private follow-up"); });
     expect(sendMessage).toHaveBeenCalledWith("agent-2", expect.objectContaining({
       text: "Private follow-up", replyToMessageId: "message-2", activeRunDelivery: "steer",

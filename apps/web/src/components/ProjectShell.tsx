@@ -94,7 +94,6 @@ export function ProjectShell({
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
   const [presetsOpen, setPresetsOpen] = useState(false);
   const [agentReturnContext, setAgentReturnContext] = useState<AgentReturnContext>();
-  const [projectAgentWorkOpen, setProjectAgentWorkOpen] = useState(false);
 
   const statusByAgentId = useMemo(() => {
     return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], new Map());
@@ -197,6 +196,12 @@ export function ProjectShell({
     }
   }, [agents, loading, conversations, navigate, projectId, route]);
 
+  useEffect(() => {
+    if (loading || route.kind !== "agents" || !route.create) return;
+    setAgentDialog({ open: true, defaultName: suggestedName() });
+    navigate({ kind: "agents", projectId }, { replace: true });
+  }, [loading, route, projectId, navigate]);
+
   if (conversationsQuery.isError || agentsQuery.isError) {
     return (
       <Box sx={{ p: 2 }}>
@@ -242,9 +247,11 @@ export function ProjectShell({
         onOpenAgent={(agentId) => openAgentFromConversation(agentId, false)}
         onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
+        onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         initialAgentsOpen={reopenRoster}
         onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
         onOpenReview={openAgentReview}
+        onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={openNewAgentFromMaster}
         onDeleted={() => {
@@ -319,8 +326,10 @@ export function ProjectShell({
       initialPath={route.path}
       onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
     />;
+  } else if (route.kind === "projectWork") {
+    main = <AgentWorkInspector open projectId={projectId} conversationId={route.conversationId} focus={route.focusId ? { id: route.focusId } : undefined} onClose={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "project") {
-    main = <>
+    main =
       <ProjectArtifactsView
         projectId={projectId}
         project={project}
@@ -329,10 +338,8 @@ export function ProjectShell({
         onOpenArtifact={openProjectArtifact}
         onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenRun={(agentId, runId) => navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "runs", id: runId } })}
-        onOpenAgentWork={() => setProjectAgentWorkOpen(true)}
+        onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
-      <AgentWorkInspector open={projectAgentWorkOpen} projectId={projectId} onClose={() => setProjectAgentWorkOpen(false)} />
-    </>;
   } else {
     main = (
       <Box sx={{ p: 3 }}>

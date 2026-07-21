@@ -97,7 +97,7 @@ describe("workspace tab bar", () => {
 
   it("omits the close icon when only one tab remains", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
-    const tabs = openWorkspaceTab([], { kind: "allChat" }, 1, "home-tab");
+    const tabs = openWorkspaceTab([], { kind: "home" }, 1, "home-tab");
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={[]}
@@ -148,7 +148,7 @@ describe("workspace tab bar", () => {
   it("opens keyboard tab actions that move a tab without changing its persisted identity", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const tabs = openWorkspaceTab(
-      openWorkspaceTab(openWorkspaceTab([], { kind: "projects" }, 1, "projects"), { kind: "allChat" }, 2, "chat"),
+      openWorkspaceTab(openWorkspaceTab([], { kind: "projects" }, 1, "projects"), { kind: "home" }, 2, "chat"),
       { kind: "allAgents" }, 3, "agents",
     );
     const onReorder = vi.fn();

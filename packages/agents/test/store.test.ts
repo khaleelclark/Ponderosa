@@ -838,7 +838,7 @@ describe("AgentStore — multi-conversation membership", () => {
 });
 
 describe("AgentStore — All Chat", () => {
-  it("deduplicates canonical messages, prefers source chats, and pages by a stable workspace cursor", () => {
+  it("shows only messages to or from the user, deduplicates them, and pages by a stable workspace cursor", () => {
     const project = store.createProject({ label: "All Chat", hostPath: "/all-chat" });
     const room = store.createConversation(project.id, { title: "Planning" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: room.id });
@@ -876,9 +876,9 @@ describe("AgentStore — All Chat", () => {
     }, [{ surface: "conversation", key: room.id }, { surface: "direct_agent_audit", key: recipient.id }]);
 
     const recent = store.getAllChatPage({ limit: 2 });
-    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["team-note", "private-question"]);
+    expect(recent.items.map((item) => item.communicationEventId)).toEqual(["agent-update", "private-question"]);
     expect(recent.items[0]).toMatchObject({
-      source: { kind: "team", conversationId: room.id },
+      source: { kind: "project", conversationId: room.id },
       directMessageAgent: { id: author.id, title: "Author" },
     });
     expect(recent.items[1]).toMatchObject({
@@ -888,13 +888,10 @@ describe("AgentStore — All Chat", () => {
     expect(recent.history).toMatchObject({ limit: 2, hasMore: true, cursor: expect.any(String) });
 
     const older = store.getAllChatPage({ limit: 2, cursor: recent.history.cursor });
-    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast", "agent-update"]);
+    expect(older.items.map((item) => item.communicationEventId)).toEqual(["broadcast"]);
     expect(older.items[0]?.directMessageAgent).toBeUndefined();
-    expect(older.items[1]).toMatchObject({
-      source: { kind: "project", conversationId: room.id },
-      directMessageAgent: { id: author.id, title: "Author" },
-    });
     expect(older.history).toEqual({ limit: 2, hasMore: false });
+    expect([...recent.items, ...older.items].some((item) => item.communicationEventId === "team-note")).toBe(false);
     expect(() => store.getAllChatPage({ cursor: `${recent.history.cursor}x` })).toThrow("invalid history cursor");
   });
 });

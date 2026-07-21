@@ -44,7 +44,7 @@ export function allChatSourceAccessibleName(item: AllChatItemDto): string {
 
 export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | undefined {
   if (item.author.kind === "user") return "You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.";
-  if (!item.directMessageAgent) return "This source does not identify one exact active Agent. All Chat cannot compose broadcasts or choose a different recipient.";
+  if (!item.directMessageAgent) return "This message does not identify one active Agent you can reply to. Messages can send only a private reply to the selected Agent.";
   return undefined;
 }
 
@@ -133,8 +133,8 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="h5" component="h1" fontWeight={800}>All Chat</Typography>
-        <Typography variant="body2" color="text.secondary">Canonical messages across Project, Team, and Agent chats.</Typography>
+        <Typography variant="h5" component="h1" fontWeight={800}>Messages</Typography>
+        <Typography variant="body2" color="text.secondary">Everything sent to or from you across Ponderosa.</Typography>
       </Box>
     </Stack>
 
@@ -146,7 +146,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       mobileComposer.observeScroll(scrollRef.current, followLatest.current);
     }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
-      {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>All Chat could not be loaded.</Alert> : null}
+      {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>Messages could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
       <Stack spacing={2.5} sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }} role="radiogroup" aria-label="Source message for direct reply">
         {items.map((item, index) => {
@@ -186,7 +186,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
                 <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
-                  <ChatMessageBody text={item.text} collapseLongMessage={fromUser} projectId={item.project.id} />
+                  <ChatMessageBody text={item.text} collapseLongMessage={fromUser} projectId={item.project.id} operatorHandle={workspacePreferences.data?.profile.handle} />
                 </Box>
                 {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
                 <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>
@@ -232,12 +232,13 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                 disabled={send.isPending}
                 running={false}
                 attachmentsEnabled={false}
-                attachmentsUnavailableReason="All Chat sends a direct text reply to the selected Agent."
+                attachmentsUnavailableReason="Messages sends a direct text reply to the selected Agent."
                 placeholder={`Message ${selected.directMessageAgent.title}`}
                 replyTo={{ text: selected.text }}
                 replyLabel={`Direct reply to ${selected.directMessageAgent.title}`}
-                draftStorageKey={`all-chat:${selected.communicationEventId}`}
-                guidance="Recipient is fixed by the selected source. This message is private and cannot be broadcast from All Chat."
+                onCancelReply={() => { setSelectedId(undefined); setNotice(undefined); send.reset(); }}
+                draftStorageKey={`messages:${selected.communicationEventId}`}
+                guidance="Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages."
                 onSend={(body) => send.mutateAsync(body)}
               />
             </Stack>}

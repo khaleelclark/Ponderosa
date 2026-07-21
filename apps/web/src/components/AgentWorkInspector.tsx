@@ -1,4 +1,3 @@
-import CloseIcon from "@mui/icons-material/Close";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import {
   Accordion,
@@ -8,7 +7,6 @@ import {
   Box,
   Chip,
   CircularProgress,
-  Drawer,
   IconButton,
   Stack,
   Tooltip,
@@ -126,20 +124,14 @@ export function AgentWorkInspector({
     return counts;
   }, { active: 0, attention: 0, finished: 0 }) ?? { active: 0, attention: 0, finished: 0 };
 
-  return <Drawer
-    anchor="right"
-    open={open}
-    onClose={onClose}
-    PaperProps={{ sx: { width: { xs: "100%", sm: 560 }, maxWidth: "100%", overflow: "hidden" } }}
-  >
-    <Stack sx={{ height: "100%", minHeight: 0 }}>
+  if (!open) return <></>;
+  return <Stack data-testid="agent-work-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="h6">Agent work</Typography>
           <Typography variant="caption" color="text.secondary">Requests, waiting, wake-ups, Runs, Triggers, and Decisions</Typography>
         </Box>
         <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Agent work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
-        <IconButton aria-label="Close Agent work" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} active`} />
@@ -197,6 +189,5 @@ export function AgentWorkInspector({
           })}
         </Stack>
       </Box>
-    </Stack>
-  </Drawer>;
+  </Stack>;
 }

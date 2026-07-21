@@ -15,6 +15,7 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
+  Menu,
   MenuItem,
   Stack,
   TextField,
@@ -59,12 +60,7 @@ function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot
 }
 
 function openProjectRoute(snapshot: WorkspaceProjectSnapshot): Route {
-  const active = snapshot.conversations.filter((conversation) => !conversation.archived);
-  const conversation = active.find((item) => item.id === snapshot.project.lastConversationId)
-    ?? [...active].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
-  return conversation
-    ? { kind: "conversation", projectId: snapshot.project.id, conversationId: conversation.id }
-    : { kind: "agents", projectId: snapshot.project.id };
+  return { kind: "project", projectId: snapshot.project.id };
 }
 
 export function reorderProjectIds(order: string[], draggedId: string, targetId: string, position: "before" | "after" = "before"): string[] {
@@ -86,10 +82,11 @@ export function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
-export function AllProjectsView({ projects, preferences, onNavigate, onCreateProject, onManageProject, onPreferences }: {
+export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onManageProject, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
+  onOpenInNewTab?(route: Route): void;
   onCreateProject(): void;
   onManageProject(project: ProjectDto): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -98,6 +95,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
   const [filter, setFilter] = useState("");
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
+  const [tabMenu, setTabMenu] = useState<{ anchor: HTMLElement; route: Route }>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredProjectIds = new Set(preferences.starredProjectIds);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -161,6 +159,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
         return <Stack
           key={snapshot.project.id}
           direction="row"
+          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: openProjectRoute(snapshot) }); }}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -211,5 +210,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onCreatePro
       })}
       {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
     </List>
+    {tabMenu ? <Menu anchorEl={tabMenu.anchor} open onClose={() => setTabMenu(undefined)}><MenuItem disabled={!onOpenInNewTab} onClick={() => { onOpenInNewTab?.(tabMenu.route); setTabMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
   </Box>;
 }

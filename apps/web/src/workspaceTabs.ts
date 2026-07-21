@@ -17,8 +17,8 @@ export interface WorkspaceTabSession {
 
 /**
  * Reconciles persisted browser-style tabs with the URL that opened Ponderosa.
- * The app root is the All Chat home screen, so it must activate a real All Chat
- * tab instead of relabeling whichever persisted tab happened to be active.
+ * The app root is the neutral Home overview, so it must activate a real Home tab
+ * instead of relabeling whichever persisted tab happened to be active.
  * Explicit deep links continue to open the requested destination.
  */
 export function initializeWorkspaceTabSession(
@@ -26,10 +26,10 @@ export function initializeWorkspaceTabSession(
   initialRoute: Route,
   now = Date.now(),
 ): Required<WorkspaceTabSession> {
-  if (initialRoute.kind === "allChat") {
-    const existingHome = restored.tabs.find((tab) => tab.route.kind === "allChat");
+  if (initialRoute.kind === "home") {
+    const existingHome = restored.tabs.find((tab) => tab.route.kind === "home");
     if (existingHome) return { tabs: restored.tabs, activeKey: existingHome.key };
-    const home = createWorkspaceTab({ kind: "allChat" }, now);
+    const home = createWorkspaceTab({ kind: "home" }, now);
     return { tabs: [home, ...restored.tabs], activeKey: home.key };
   }
   if (restored.tabs.length > 0) {
@@ -50,10 +50,15 @@ export const WORKSPACE_TABS_STORAGE_KEY = "ponderosa.workspaceTabs.v2";
 export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
-  if (candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allAgents") return true;
+  if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allAgents") return true;
   if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
   if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
-  if (candidate.kind === "project" || candidate.kind === "agents") return true;
+  if (candidate.kind === "project") return true;
+  if (candidate.kind === "agents") {
+    return candidate.create === undefined || typeof candidate.create === "boolean";
+  }
+  if (candidate.kind === "projectWork") return (candidate.conversationId === undefined || typeof candidate.conversationId === "string")
+    && (candidate.focusId === undefined || typeof candidate.focusId === "string");
   if (candidate.kind === "browser") return (candidate.agentId === undefined && candidate.runId === undefined)
     || (typeof candidate.agentId === "string" && Boolean(candidate.agentId) && typeof candidate.runId === "string" && Boolean(candidate.runId));
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
@@ -67,11 +72,13 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
 /** Stable resource identity, used only when a deleted resource must be removed. */
 export function workspaceTabKey(route: Route): string {
   switch (route.kind) {
+    case "home": return "home";
     case "projects": return "projects";
     case "allChat": return "all-chat";
     case "allAgents": return "all-agents";
     case "wiki": return `wiki:${route.articleId ?? "home"}`;
     case "project": return `project:${route.projectId}`;
+    case "projectWork": return `project-work:${route.projectId}:${route.conversationId ?? "project"}`;
     case "browser": return `browser:${route.projectId}:${route.agentId ?? "project"}:${route.runId ?? "persistent"}`;
     case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;
     case "agents": return `agents:${route.projectId}`;
@@ -88,6 +95,13 @@ function generatedTabKey(): string {
 
 export function createWorkspaceTab(route: Route, now = Date.now(), key = generatedTabKey()): WorkspaceTabState {
   return { key, route, lastActivatedAt: now };
+}
+
+/** Prefer the active matching resource, then the most recently used matching tab. */
+export function reusableWorkspaceTab(current: WorkspaceTabState[], activeKey: string, route: Route): WorkspaceTabState | undefined {
+  const resourceKey = workspaceTabKey(route);
+  const matches = current.filter((tab) => workspaceTabKey(tab.route) === resourceKey);
+  return matches.find((tab) => tab.key === activeKey) ?? matches.sort((a, b) => b.lastActivatedAt - a.lastActivatedAt)[0];
 }
 
 /** Explicitly create a new browser-style tab. Duplicate routes are valid. */
@@ -153,12 +167,12 @@ export function mostRecentWorkspaceTab(current: WorkspaceTabState[], excludingKe
 export function removeWorkspaceRoute(current: WorkspaceTabState[], route: Route): WorkspaceTabState[] {
   const resourceKey = workspaceTabKey(route);
   const retained = current.filter((tab) => workspaceTabKey(tab.route) !== resourceKey);
-  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "allChat" })];
+  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
 }
 
 export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], projectIds: Set<string>): WorkspaceTabState[] {
   const retained = current.filter((tab) => !("projectId" in tab.route) || projectIds.has(tab.route.projectId));
-  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "allChat" })];
+  return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
 }
 
 export function serializeWorkspaceTabs(tabs: WorkspaceTabState[], activeKey?: string): string {
@@ -173,9 +187,7 @@ export function restoreWorkspaceTabSession(value: string | null): WorkspaceTabSe
     const seen = new Set<string>();
     const tabs = parsed.tabs.flatMap((candidate) => {
       if (!candidate || typeof candidate !== "object") return [];
-      const route = (candidate.route as { kind?: unknown } | undefined)?.kind === "home"
-        ? { kind: "allChat" as const }
-        : candidate.route;
+      const route = candidate.route;
       if (!isWorkspaceTabRoute(route) ||
           typeof candidate.key !== "string" || !candidate.key || seen.has(candidate.key) ||
           !Number.isFinite(candidate.lastActivatedAt) ||
