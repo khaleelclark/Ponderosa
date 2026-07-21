@@ -47,6 +47,9 @@ describe("All Chat view contract", () => {
   it("contains only a selected-source direct-message mutation, never a broadcast composer", () => {
     const source = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
     expect(source).toContain("selected.directMessageAgent.id");
+    expect(source).not.toContain(">Open Source</Button>");
+    expect(source).toContain('onNavigate({ kind: "project", projectId: item.project.id })');
+    expect(source).toContain("{item.project.label}</ButtonBase>");
     expect(source).toContain("replyToMessageId: selected.messageId");
     expect(source).not.toContain("shareWithOrganization");
     expect(source).not.toContain("sendConversationMessage");

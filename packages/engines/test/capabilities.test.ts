@@ -96,6 +96,7 @@ describe("engine capability discovery", () => {
     expect(available.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "user-added-audit", source: "skill", insertText: "$user-added-audit " }),
       expect.objectContaining({ name: "acme:release", source: "plugin", pluginName: "acme" }),
+      expect.objectContaining({ name: "status", source: "built-in", invocation: "runtime", status: "available" }),
       expect.objectContaining({ name: "compact", source: "built-in", invocation: "runtime", status: "available" }),
     ]));
 

@@ -118,20 +118,22 @@ describe("user message labels on chat surfaces", () => {
     expect(system).not.toContain(">User</div>");
   });
 
-  it("shows finalized worked time with the latest completed Agent message as status metadata", () => {
+  it("shows the exact finalized Run duration immediately beneath every Agent message", () => {
     const html = renderToStaticMarkup(<ChatPane
       agentName="Pinnacles"
-      completedWorkDurationLabel="Worked for 23m 15s"
+      completedWorkDurationLabel={(message) => message.executionId === "run-1" ? "Worked for 1m" : message.executionId === "run-2" ? "Worked for 23m 15s" : undefined}
       messages={[
-        agentMessage({ id: "answer-1", role: "assistant", text: "First result" }),
-        agentMessage({ id: "answer-2", seq: 2, role: "assistant", text: "Completed result" }),
+        agentMessage({ id: "answer-1", role: "assistant", text: "First result", executionId: "run-1" }),
+        agentMessage({ id: "answer-2", seq: 2, role: "assistant", text: "Completed result", executionId: "run-2" }),
       ]}
     />);
 
     expect(html.match(/Worked for 23m 15s/g)).toHaveLength(2); // accessible label and visible text
-    expect(html).toContain('aria-label="Pinnacles completed work. Worked for 23m 15s total across finalized Runs."');
+    expect(html.match(/Worked for 1m/g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Pinnacles completed work. Worked for 23m 15s."');
+    expect(html.indexOf("First result")).toBeLessThan(html.indexOf("Worked for 1m"));
     expect(html.indexOf("Completed result")).toBeLessThan(html.indexOf("Worked for 23m 15s"));
-    expect(html.indexOf("First result")).toBeLessThan(html.indexOf("Completed result"));
+    expect(html.indexOf("Worked for 1m")).toBeLessThan(html.indexOf("Completed result"));
   });
 
   it("labels only manager-authored user-role master and collaboration messages", () => {
@@ -202,6 +204,6 @@ describe("user message labels on chat surfaces", () => {
     expect(attachmentOnly).toContain('aria-label="Download brief.pdf"');
     expect(edited).toContain("Edited context");
     expect(edited).toContain(">Edited</span>");
-    expect(edited).toContain('aria-label="Edit latest message"');
+    expect(edited).toContain('aria-label="Edit message"');
   });
 });

@@ -142,6 +142,11 @@ export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
 
+export interface RuntimeCommandResult {
+  /** Provider-derived, human-readable result for non-mutating runtime commands. */
+  message?: string;
+}
+
 /**
  * One durable engine agent. The process/transport may survive many turns.
  * New signals steer an active turn or start a turn while idle; callers retain a
@@ -162,7 +167,7 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   capabilities?(): Promise<EngineCapabilities>;
   /** Invoke a provider command that is represented by a structured runtime
    * method rather than by ordinary prompt text. */
-  invokeCommand?(name: string, argumentsText?: string): Promise<void>;
+  invokeCommand?(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;

@@ -571,7 +571,7 @@ export const realApi = {
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string }> {
+  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string }> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),

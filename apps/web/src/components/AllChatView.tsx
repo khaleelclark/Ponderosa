@@ -1,6 +1,5 @@
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import {
-  Alert, Avatar, Box, Button, CircularProgress, Stack, Typography, useMediaQuery, useTheme,
+  Alert, Avatar, Box, Button, ButtonBase, CircularProgress, Stack, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -34,9 +33,7 @@ export function mergeAllChatItems(...groups: AllChatItemDto[][]): AllChatItemDto
 }
 
 function sourceLabel(item: AllChatItemDto): string {
-  if (item.source.kind === "project") return `${item.project.label} · Project Chat · ${item.source.title}`;
-  if (item.source.kind === "team") return `${item.project.label} · Team Chat · ${item.source.title}`;
-  return `${item.project.label} · Agent Chat · ${item.source.title}`;
+  return `${item.project.label} · ${item.source.title}`;
 }
 
 export function allChatSourceAccessibleName(item: AllChatItemDto): string {
@@ -179,7 +176,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
             }}
             sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", outline: "none", cursor: "pointer", borderRadius: 2, "&:focus-visible": { boxShadow: (muiTheme) => `0 0 0 2px ${muiTheme.palette.primary.main}` } }}
           >
-            <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? { xs: "94%", sm: "min(78%, 920px)" } : "100%", maxWidth: fromUser ? 920 : 1120, alignItems: "flex-start" }}>
+            <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? "fit-content" : "100%", maxWidth: fromUser ? { xs: "94%", sm: 920 } : 1120, alignItems: "flex-start" }}>
               {!fromUser ? <Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar> : null}
               <Box sx={{ minWidth: 0, flex: 1 }}>
                 {fromUser
@@ -188,13 +185,14 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                     <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography>
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
-                <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.6 }}>{sourceLabel(item)}</Typography>
-                <Box sx={{ px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
+                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
                   <ChatMessageBody text={item.text} collapseLongMessage={fromUser} projectId={item.project.id} />
                 </Box>
                 {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
-                <Stack direction="row" spacing={0.5} sx={{ mt: 0.35, justifyContent: fromUser ? "flex-end" : "flex-start" }}>
-                  <Button size="small" color="inherit" endIcon={<OpenInNewIcon fontSize="small" />} onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }}>Open Source</Button>
+                <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>
+                  <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate({ kind: "project", projectId: item.project.id }); }} sx={{ borderRadius: 0.75, typography: "caption", fontWeight: 650, px: 0.25 }}>{item.project.label}</ButtonBase>
+                  <Typography variant="caption" aria-hidden>·</Typography>
+                  <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }} sx={{ borderRadius: 0.75, typography: "caption", px: 0.25 }}>{item.source.title}</ButtonBase>
                 </Stack>
               </Box>
             </Stack>

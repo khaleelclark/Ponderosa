@@ -216,8 +216,8 @@ export function providerSlashSubmission(
 export function composerCapabilityDisabledReason(capability: EngineComposerCapability): string | undefined {
   if (capability.status === "unavailable") return capability.unavailableReason ?? "This capability is not currently available.";
   if (capability.insertText) return undefined;
-  if (capability.kind === "connector") return "Available to the runtime; direct connector expansion is not supported yet.";
-  if (capability.kind === "plugin") return "Available through its runtime-provided skills and connectors.";
+  if (capability.kind === "connector") return "Available automatically to this Agent; no direct connector command is needed.";
+  if (capability.kind === "plugin") return "Available automatically through its runtime-provided skills and connectors.";
   return "This capability cannot be inserted in a message.";
 }
 
@@ -836,8 +836,8 @@ export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorPro
 function CompletedWorkDurationStatus({ agentName, label }: { agentName: string; label: string }): JSX.Element {
   return <Box
     role="status"
-    aria-label={`${agentName} completed work. ${label} total across finalized Runs.`}
-    sx={{ display: "flex", alignItems: "center", minHeight: 28, maxWidth: "100%", px: 0.75, py: 0.25, borderRadius: 999, color: "success.main", bgcolor: "action.hover" }}
+    aria-label={`${agentName} completed work. ${label}.`}
+    sx={{ display: "flex", width: "fit-content", alignItems: "center", minHeight: 28, maxWidth: "100%", mt: 0.35, px: 0.75, py: 0.25, borderRadius: 999, color: "success.main", bgcolor: "action.hover" }}
   >
     <CheckCircleOutlineIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
     <Typography variant="caption" component="span" sx={{ color: "text.secondary", fontWeight: 650, overflowWrap: "anywhere", textAlign: "right" }}>{label}</Typography>
@@ -875,8 +875,8 @@ export function ChatPane({
   scrollStorageKey?: string;
   operatorProfile?: OperatorProfileDto;
   projectId?: string;
-  /** Authoritative aggregate of finalized Run intervals, already formatted for display. */
-  completedWorkDurationLabel?: string;
+  /** Authoritative finalized duration for the exact Run that authored a message. */
+  completedWorkDurationLabel?(message: MessageDto): string | undefined;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -887,7 +887,6 @@ export function ChatPane({
   const restoredScrollKey = useRef<string>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [mobileTimestampMessageId, setMobileTimestampMessageId] = useState<string>();
-  const lastCompletedAgentMessageId = [...chatMessages].reverse().find((message) => message.role === "assistant")?.id;
 
   useLayoutEffect(() => {
     if (!scrollRef.current) return;
@@ -940,6 +939,7 @@ export function ChatPane({
           ? operatorProfile.displayName
           : individualChatSenderLabel(message.role, visibleAgentName);
         const fromUser = message.role === "user";
+        const workDurationLabel = message.role === "assistant" ? completedWorkDurationLabel?.(message) : undefined;
         return (
         <Box
           key={message.id}
@@ -968,6 +968,9 @@ export function ChatPane({
               <Box
                 data-message-bubble="true"
                 sx={{
+                  width: fromUser ? "fit-content" : "auto",
+                  maxWidth: "100%",
+                  ml: fromUser ? "auto" : 0,
                   px: fromUser ? { xs: 1.25, sm: 1.5 } : 0,
                   py: fromUser ? { xs: 1, sm: 1.15 } : 0,
                   borderRadius: 2,
@@ -1018,6 +1021,7 @@ export function ChatPane({
             </Stack> : null}
             <MessageReactions reactions={message.reactions} />
               </Box>
+              {workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : null}
               <MessageActionsAndTimestamp
                 mobileTimestampAlign={fromUser ? "end" : "start"}
                 mobileTimestampRevealed={mobileTimestampMessageId === message.id}
@@ -1031,9 +1035,7 @@ export function ChatPane({
                     onOpenAgent={onOpenAgent}
                     onOpenWorkLog={onOpenWorkLog}
                   />
-                  : message.id === lastCompletedAgentMessageId && completedWorkDurationLabel
-                    ? <CompletedWorkDurationStatus agentName={senderLabel} label={completedWorkDurationLabel} />
-                    : undefined}
+                  : undefined}
                 actions={<>
               {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
               <CopyMessageButton text={message.text} />
@@ -2697,21 +2699,22 @@ export function Composer({
                   <MenuItem disabled><Typography variant="caption">No capabilities match “{capabilityFilter.trim()}”.</Typography></MenuItem>
                 ) : visibleCapabilities.map((capability) => {
                   const reason = composerCapabilityDisabledReason(capability);
+                  const automatic = capability.status === "available" && !capability.insertText;
                   return <MenuItem
                     key={capability.id}
                     disabled={Boolean(reason)}
                     onClick={() => applyCapability(capability)}
-                    sx={{ whiteSpace: "normal", alignItems: "flex-start", minHeight: 58, py: 0.75 }}
+                    sx={{ whiteSpace: "normal", alignItems: "flex-start", minHeight: 58, py: 0.75, ...(automatic ? { "&.Mui-disabled": { opacity: 1, cursor: "default" } } : {}) }}
                   >
                     <Box sx={{ minWidth: 0, width: "100%" }}>
                       <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
-                        <Typography variant="body2" noWrap sx={{ flex: 1, fontWeight: 650 }}>{capability.label}</Typography>
-                        <Chip size="small" variant="outlined" label={capability.kind} />
+                        <Typography variant="body2" noWrap sx={{ flex: 1, fontWeight: 650, color: automatic ? "text.primary" : undefined }}>{capability.label}</Typography>
+                        <Chip size="small" variant="outlined" color={automatic ? "success" : "default"} label={capability.kind} />
                       </Stack>
                       <Typography variant="caption" color="text.secondary" sx={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", overflowWrap: "anywhere", lineHeight: 1.35 }}>
                         {capability.description}
                       </Typography>
-                      {reason ? <Typography variant="caption" color="text.disabled" noWrap sx={{ display: "block" }}>{reason}</Typography> : null}
+                      {reason ? <Typography variant="caption" color={automatic ? "text.secondary" : "text.disabled"} noWrap sx={{ display: "block" }}>{reason}</Typography> : null}
                     </Box>
                   </MenuItem>;
                 })}

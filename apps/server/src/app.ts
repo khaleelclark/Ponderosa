@@ -9340,15 +9340,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
     const receiptKey = `correction:${conversation.id}:${idempotencyKey}`;
     const messages = store.getConversationMessages(conversation.id, "main");
-    const latestOperatorMessage = messages.filter((message) => message.role === "user" && !message.authorAgentId).at(-1);
+    const requestedOperatorMessage = messages.find((message) => message.id === request.params.messageId && message.role === "user" && !message.authorAgentId);
     const existingMessage = store.getConversationMessageByReceiptKey(conversation.id, receiptKey);
-    if (!existingMessage && (!latestOperatorMessage || latestOperatorMessage.id !== request.params.messageId)) {
-      return reply.code(409).send({ error: "only your latest sent message can be corrected" });
+    if (!existingMessage && !requestedOperatorMessage) {
+      return reply.code(409).send({ error: "only your own sent messages can be corrected" });
     }
-    if (!existingMessage && latestOperatorMessage?.correctedByMessageId) return reply.code(409).send({ error: "this message already has an immutable correction" });
+    if (!existingMessage && requestedOperatorMessage?.correctedByMessageId) return reply.code(409).send({ error: "this message already has an immutable correction" });
     const original = existingMessage
       ? messages.find((message) => message.id === existingMessage.correctionOfMessageId)
-      : latestOperatorMessage;
+      : requestedOperatorMessage;
     const originalEventId = original?.communicationEventId;
     const originalCommunication = originalEventId
       ? store.getCommunicationEvent(conversation.projectId, originalEventId)
@@ -13281,9 +13281,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           catalogVersion: catalog.catalogVersion,
         });
       }
-      await runtime.session.invokeCommand(name, argumentsText);
+      const result = await runtime.session.invokeCommand(name, argumentsText);
       reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-      return { invoked: true, name, catalogVersion: catalog.catalogVersion };
+      return { invoked: true, name, catalogVersion: catalog.catalogVersion, ...(result?.message ? { message: result.message } : {}) };
     },
   );
 
