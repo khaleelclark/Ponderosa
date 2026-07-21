@@ -27,6 +27,7 @@ import { useQueries } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
+import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
@@ -97,7 +98,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
   const [tabMenu, setTabMenu] = useState<{ anchor: HTMLElement; route: Route }>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
-  const starredProjectIds = new Set(preferences.starredProjectIds);
+  const starredResourceIds = starredWorkspaceResources(preferences);
   const filteredSnapshots = useMemo(() => normalizedFilter
     ? snapshots.filter((snapshot) => {
       const searchable = [
@@ -116,11 +117,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     setDraggedProjectId(undefined);
     setDropTarget(undefined);
   };
-  const toggleStar = (projectId: string) => onPreferences({
-    starredProjectIds: starredProjectIds.has(projectId)
-      ? preferences.starredProjectIds.filter((id) => id !== projectId)
-      : [...preferences.starredProjectIds, projectId],
-  });
+  const toggleStar = (projectId: string) => onPreferences(toggleWorkspaceResourceStar(preferences, "project", projectId));
   return <Box sx={{ width: "100%", minWidth: 0, minHeight: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" }, mb: 2 }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -198,9 +195,9 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
               sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
             ><DragIndicatorIcon fontSize="small" /></IconButton>
           </Tooltip>
-          <Tooltip title={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
-            <IconButton aria-label={`${starredProjectIds.has(snapshot.project.id) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
-              {starredProjectIds.has(snapshot.project.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}
+          <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
+            <IconButton aria-label={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
+              {starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}
             </IconButton>
           </Tooltip>
           <Tooltip title={`Project settings for ${snapshot.project.label}`}>

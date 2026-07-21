@@ -64,7 +64,6 @@ import { projectedMessageIdForFocus } from "../messageFocus";
 import { compactViewportQuery } from "../responsive";
 import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChangedFilesPane, ChatPane, Composer, QueuedMessageTray, RunsPane, WorkLogPane, WorkspaceReviewPane } from "./panes";
-import { TokenUsageButton } from "./TokenUsageButton";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
@@ -926,7 +925,6 @@ export function AgentDetail({
             details={<Stack spacing={2} aria-label="Run settings" sx={{ px: 2, py: 1.5 }}>
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
                 <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>Run Settings</Typography>
-                <TokenUsageButton scope="agent" scopeId={agentId} label={detail.agent.title} />
               </Stack>
               <Chip
                 size="small"

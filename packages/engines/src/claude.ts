@@ -8,7 +8,6 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type {
   Adapter,
-  ApiPriceProfile,
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
@@ -20,7 +19,6 @@ import type {
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
-import { claudeApiPriceProfile } from "./api-pricing.js";
 import { mapClaudeEvent } from "./claude-events.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess, type SpawnFn } from "./process.js";
@@ -91,10 +89,6 @@ export class ClaudeAdapter implements Adapter {
 
   defaultEffort(): string {
     return "high";
-  }
-
-  apiPriceProfile(model?: string): ApiPriceProfile | undefined {
-    return claudeApiPriceProfile(model);
   }
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {

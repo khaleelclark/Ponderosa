@@ -44,7 +44,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
-import { TokenUsageButton } from "./components/TokenUsageButton";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
@@ -189,12 +188,6 @@ export default function App({
     queryFn: () => api.listConversations(settingsProjectId!),
     enabled: projectImportOpen && Boolean(settingsProjectId),
     staleTime: 10_000,
-  });
-  const providerUsageQuery = useQuery({
-    queryKey: ["token-usage", "overall", undefined, "all"],
-    queryFn: () => api.getTokenUsage("overall", undefined, {}),
-    enabled: engineStatusOpen,
-    staleTime: 30_000,
   });
   const readinessQuery = useQuery({
     queryKey: ["readiness"],
@@ -410,7 +403,7 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
@@ -596,7 +589,7 @@ export default function App({
     setProfileHandleDraft(preferences.profile.handle);
     setProfileAvatarDraft(preferences.profile.avatarId);
     setProfileUploadError(undefined);
-    navigateWorkspace({ kind: "profile" });
+    setOperatorProfileOpen(true);
   };
   const openProjectSettings = (project: ProjectDto) => {
     setSettingsProjectId(project.id);
@@ -654,9 +647,7 @@ export default function App({
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title={selectedProjectId ? "Shared Browser" : "Select a Project to use its Shared Browser"}><span><IconButton aria-label="Open Shared Browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
-          <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
-            <TokenUsageButton scope="overall" label="Overall" onViewInWorkspace={() => navigateWorkspace({ kind: "usage" })} />
-          </Box>
+          <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={openOperatorProfile} sx={{ ml: .5, p: 0, width: 44, height: 44 }}><OperatorAvatar profile={preferences.profile} size={32} /></IconButton></Tooltip>
           <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
       </AppBar>
@@ -672,6 +663,7 @@ export default function App({
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRoute}
             onCreateProject={() => openProjectCreator()}
+            onCreateChat={() => beginHomeCreate("chat")}
             onCreateAgent={() => beginHomeCreate("agent")}
             onCreateTrigger={() => beginHomeCreate("trigger")}
             onManageProject={openProjectSettings}
@@ -681,7 +673,6 @@ export default function App({
             onSearch={() => setGlobalSearchOpen(true)}
             onOpenNotifications={() => setNotificationPanelOpen(true)}
             onOpenSettings={openSettings}
-            onOpenProfile={openOperatorProfile}
             onOpenEngineStatus={() => setEngineStatusOpen(true)}
             collapsed={sidebarPresentation.collapsed}
             width={sidebarPresentation.width}
@@ -693,6 +684,7 @@ export default function App({
         {!mobileWorkspace ? <WorkspaceTabs
           tabs={workspaceTabs}
           projects={projects}
+          preferences={preferences}
           activeKey={activeWorkspaceTabKey}
           onActivate={activateWorkspaceView}
           notificationCount={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}
@@ -700,7 +692,7 @@ export default function App({
           onClose={closeWorkspaceView}
           onSearch={() => setGlobalSearchOpen(true)}
           onOpenInbox={() => setNotificationPanelOpen(true)}
-          onOpenUsage={(projectId) => navigateWorkspace({ kind: "usage", ...(projectId ? { projectId } : {}) })}
+          onOpenProfile={openOperatorProfile}
           onCloseOthers={closeOtherWorkspaceViews}
           onRename={renameWorkspaceView}
           onReorder={reorderWorkspaceViews}
@@ -837,6 +829,7 @@ export default function App({
           onNavigate={(next) => { setMobileNavOpen(false); navigateWorkspace(next); }}
           onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
           onCreateProject={() => { setMobileNavOpen(false); openProjectCreator(); }}
+          onCreateChat={() => { setMobileNavOpen(false); beginHomeCreate("chat"); }}
           onCreateAgent={() => { setMobileNavOpen(false); beginHomeCreate("agent"); }}
           onCreateTrigger={() => { setMobileNavOpen(false); beginHomeCreate("trigger"); }}
           onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
@@ -846,7 +839,6 @@ export default function App({
           onSearch={() => { setMobileNavOpen(false); setGlobalSearchOpen(true); }}
           onOpenNotifications={() => { setMobileNavOpen(false); setNotificationPanelOpen(true); }}
           onOpenSettings={() => { setMobileNavOpen(false); openSettings(); }}
-          onOpenProfile={() => { setMobileNavOpen(false); openOperatorProfile(); }}
           onOpenEngineStatus={() => { setMobileNavOpen(false); setEngineStatusOpen(true); }}
         />
         </Box>
@@ -1043,8 +1035,6 @@ export default function App({
         networkSecurity={readinessQuery.data?.networkSecurity}
         networkSecurityLoading={readinessQuery.isLoading}
         networkSecurityError={readinessQuery.isError ? String(readinessQuery.error) : undefined}
-        usage={providerUsageQuery.data}
-        usageLoading={providerUsageQuery.isLoading}
         recheckingEngineId={recheckEngine.isPending ? recheckEngine.variables : undefined}
         error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
         onTestAccess={(engine) => {

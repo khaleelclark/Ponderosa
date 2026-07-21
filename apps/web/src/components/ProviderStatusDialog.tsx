@@ -1,7 +1,6 @@
 import { Alert, Box, Button, Chip, Dialog, DialogActions, DialogContent, DialogTitle, Stack, Typography } from "@mui/material";
-import type { EngineDto, NetworkSecurityPostureDto, TokenUsageSummaryDto } from "@ponderosa/core";
+import type { EngineDto, NetworkSecurityPostureDto } from "@ponderosa/core";
 import { engineCanTestAccess, engineStatusPresentation } from "../conversationEngine";
-import { providerUsageSummaryLabel } from "./TokenUsageButton";
 
 export function ProviderStatusDialog({
   open,
@@ -9,8 +8,6 @@ export function ProviderStatusDialog({
   networkSecurity,
   networkSecurityLoading = false,
   networkSecurityError,
-  usage,
-  usageLoading = false,
   recheckingEngineId,
   error,
   onTestAccess,
@@ -22,8 +19,6 @@ export function ProviderStatusDialog({
   networkSecurity?: NetworkSecurityPostureDto;
   networkSecurityLoading?: boolean;
   networkSecurityError?: string;
-  usage?: TokenUsageSummaryDto;
-  usageLoading?: boolean;
   recheckingEngineId?: string;
   error?: string;
   onTestAccess(engine: EngineDto): void;
@@ -60,9 +55,6 @@ export function ProviderStatusDialog({
             <Typography variant="body2" sx={{ mt: 1 }}>{disabled ? "Provider access is inactive while disabled by the operator." : engine.availabilityDetail ?? (engine.available ? "Runtime access is available." : "Runtime access is unavailable.")}</Typography>
             {engine.authDetail ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>{engine.authDetail}</Typography> : null}
             <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>Default: {engine.models.find((model) => model.id === engine.defaultModel)?.label ?? engine.defaultModel ?? "provider default"}{engine.defaultEffort ? ` · ${engine.defaultEffort} effort` : ""}</Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-              {providerUsageSummaryLabel(engine.id, usage, usageLoading)}
-            </Typography>
             {engineCanTestAccess(engine) ? <Button size="small" sx={{ mt: 1 }} disabled={Boolean(recheckingEngineId)} onClick={() => onTestAccess(engine)}>
               {recheckingEngineId === engine.id ? "Testing…" : "Test Access"}
             </Button> : null}

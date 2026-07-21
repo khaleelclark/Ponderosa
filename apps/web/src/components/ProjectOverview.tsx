@@ -16,7 +16,6 @@ import {
 import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
-import { TokenUsageButton } from "./TokenUsageButton";
 import { artifactDisplayLabel } from "./panes";
 
 const attentionAgentStates = new Set(["blocked", "failed", "interrupted", "stalled"]);
@@ -103,7 +102,6 @@ export function ProjectOverview({
           </Box>
         </Stack>
         {work.isError || decisions.isError ? <Alert severity="warning">Some overview details could not be refreshed. Open the linked source view for authoritative state.</Alert> : null}
-        <Box><TokenUsageButton scope="project" scopeId={project.id} label="Project" compact /></Box>
       </Stack>
     </AccordionDetails>
   </Accordion>;

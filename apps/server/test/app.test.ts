@@ -11,10 +11,10 @@ import { gunzipSync } from "node:zlib";
 import Database from "better-sqlite3";
 import WebSocket, { WebSocketServer } from "ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ApiPriceProfile, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions, type UploadedOperatorAvatarDto } from "@ponderosa/core";
+import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions, type UploadedOperatorAvatarDto } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, EventLog, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
-import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, projectedRunCost, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 import { ContextCursorStore } from "../src/context-cursors.js";
@@ -707,14 +707,6 @@ class MockAdapter implements Adapter {
     return [{ id: "high", label: "High" }];
   }
 
-  apiPriceProfile(): ApiPriceProfile {
-    return {
-      id: "mock-model", pricingModel: "mock-model", catalogVersion: "test", effectiveAt: "2026-01-01",
-      sourceUrl: "https://example.test/pricing", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1,
-      cacheWriteInputUsdPerMillion: 1.25, outputUsdPerMillion: 5,
-    };
-  }
-
   async *seed(opts: SeedOptions): AsyncIterable<AgentEvent> {
     this.seeds.push(opts);
     yield { type: "session", sessionId: "sess-1" };
@@ -978,7 +970,6 @@ function stubbornProcessAdapter(children: ChildProcess[], killGraceMs = 80): Ada
     displayName: "Stubborn persistent runtime",
     listModels: () => fallback.listModels(),
     listEfforts: () => fallback.listEfforts(),
-    apiPriceProfile: () => fallback.apiPriceProfile(),
     seed: (opts) => fallback.seed(opts),
     continue: (opts) => fallback.continue(opts),
     openSession: async (opts) => new ClaudeStreamSession({
@@ -1023,7 +1014,6 @@ function stubbornOneShotAdapter(children: ChildProcess[], pidFile: string, killG
     displayName: "Stubborn one-shot runtime",
     listModels: () => fallback.listModels(),
     listEfforts: () => fallback.listEfforts(),
-    apiPriceProfile: () => fallback.apiPriceProfile(),
     seed: execute,
     continue: execute,
   };
@@ -3004,26 +2994,6 @@ describe("interactive browser API", () => {
 });
 
 describe("token usage API", () => {
-  it("applies long-context pricing to individual provider requests", () => {
-    const profile: ApiPriceProfile = {
-      id: "tiered", pricingModel: "tiered", catalogVersion: "test", effectiveAt: "2026-01-01",
-      sourceUrl: "https://example.test/pricing", inputUsdPerMillion: 1, cachedInputUsdPerMillion: 0.1,
-      outputUsdPerMillion: 5,
-      longContext: { inputTokenThreshold: 100, inputMultiplier: 2, outputMultiplier: 1.5 },
-    };
-    const aggregate = { inputTokens: 160, cachedInputTokens: 20, outputTokens: 30, totalTokens: 190 };
-
-    expect(projectedRunCost(aggregate, profile, [
-      { inputTokens: 80, cachedInputTokens: 10, outputTokens: 15, totalTokens: 95 },
-      { inputTokens: 80, cachedInputTokens: 10, outputTokens: 15, totalTokens: 95 },
-    ])?.usd).toBeCloseTo(0.000292);
-    expect(projectedRunCost(aggregate, profile, [
-      { inputTokens: 120, cachedInputTokens: 20, outputTokens: 20, totalTokens: 140 },
-      { inputTokens: 40, cachedInputTokens: 0, outputTokens: 10, totalTokens: 50 },
-    ])?.usd).toBeCloseTo(0.000444);
-    expect(projectedRunCost(aggregate, profile)).toBeUndefined();
-  });
-
   it("reports provider usage at agent, project, and overall scopes after a real run", async () => {
     const { app, project, agent } = await createProjectAndAgent();
     adapter.turnUsage = { inputTokens: 120, cachedInputTokens: 40, cacheWriteInputTokens: 20, outputTokens: 30, reasoningOutputTokens: 10, totalTokens: 150 };
@@ -3037,26 +3007,9 @@ describe("token usage API", () => {
     expect(agentUsage.wakeCauses).toEqual([
       expect.objectContaining({ cause: "human_message", runs: 1, activations: 1 }),
     ]);
-    expect(agentUsage.breakdown).toEqual([expect.objectContaining({ projectId: project.id, agentId: agent.id, runs: 1, usage: expect.objectContaining({ totalTokens: 150 }), pricingAvailableRuns: 1 })]);
-    expect(agentUsage.recentTurns[0]).toMatchObject({ projectId: project.id, agentId: agent.id, executionId: expect.any(String), pricingAvailable: true });
-    expect(agentUsage.projectedApiCost).toMatchObject({
-      usd: 0.000239, basis: "api_list_price_proxy", pricedRuns: 1, unpricedRuns: 0, coverage: 1,
-      components: {
-        uncachedInput: { tokens: 60, usd: 0.00006 },
-        cachedInput: { tokens: 40, usd: 0.000004 },
-        cacheWriteInput: { tokens: 20, usd: 0.000025 },
-        output: { tokens: 30, usd: 0.00015 },
-      },
-      breakdown: [{
-        pricingModel: "mock-model",
-        components: {
-          uncachedInput: { tokens: 60, usd: 0.00006 },
-          cachedInput: { tokens: 40, usd: 0.000004 },
-          cacheWriteInput: { tokens: 20, usd: 0.000025 },
-          output: { tokens: 30, usd: 0.00015 },
-        },
-      }],
-    });
+    expect(agentUsage.breakdown).toEqual([expect.objectContaining({ projectId: project.id, agentId: agent.id, runs: 1, usage: expect.objectContaining({ totalTokens: 150 }) })]);
+    expect(agentUsage.recentTurns[0]).toMatchObject({ projectId: project.id, agentId: agent.id, executionId: expect.any(String) });
+    expect(agentUsage).toMatchObject({ providerRequests: 0, durationMs: expect.any(Number) });
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/usage` })).json()).toMatchObject({ scope: "project", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/usage" })).json()).toMatchObject({ scope: "overall", totalTokens: 150 });
     expect((await app.inject({ method: "GET", url: "/api/usage?from=2099-01-01T00:00:00.000Z" })).json()).toMatchObject({ scope: "overall", finalizedRuns: 0, recentTurns: [], breakdown: [] });
@@ -4199,7 +4152,7 @@ describe("persistent engine steering", () => {
       adapter: {
         id: "codex", displayName: "Retrying one-shot runtime",
         listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
-        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+        seed: execute, continue: execute,
       },
       authStatus: async () => ({ authenticated: true }),
     }];
@@ -4255,7 +4208,7 @@ describe("persistent engine steering", () => {
       adapter: {
         id: "codex", displayName: "Serialized one-shot runtime",
         listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
-        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+        seed: execute, continue: execute,
       },
       authStatus: async () => ({ authenticated: true }),
     }];
@@ -6115,7 +6068,7 @@ describe("server chunk F", () => {
       adapter: {
         id: "codex", displayName: "Deleted one-shot runtime",
         listModels: () => fallback.listModels(), listEfforts: () => fallback.listEfforts(),
-        apiPriceProfile: () => fallback.apiPriceProfile(), seed: execute, continue: execute,
+        seed: execute, continue: execute,
       },
       authStatus: async () => ({ authenticated: true }),
     }];

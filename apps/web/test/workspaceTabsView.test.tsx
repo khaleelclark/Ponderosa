@@ -1,4 +1,4 @@
-import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { act, create } from "react-test-renderer";
@@ -26,6 +26,9 @@ const conversations: ConversationDto[] = [
 const agents: AgentDto[] = [
   { id: "reviewer", projectId: "beta", title: "QA Reviewer", conversationIds: [], activeEngine: "codex", state: {}, createdAt: "2026-07-17T00:00:00.000Z", updatedAt: "2026-07-17T00:00:00.000Z", archived: false },
 ];
+const preferences = {
+  profile: { displayName: "Patrick", handle: "patrick", avatarId: "default-user" },
+} as WorkspacePreferencesDto;
 
 describe("workspace tab bar", () => {
   it("renders and controls resources from different projects", () => {
@@ -47,9 +50,13 @@ describe("workspace tab bar", () => {
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={projects}
+      preferences={preferences}
       activeKey="reviewer-tab"
       onActivate={onActivate}
       onCreate={onCreate}
+      onSearch={vi.fn()}
+      onOpenInbox={vi.fn()}
+      onOpenProfile={vi.fn()}
       onClose={onClose}
       onCloseOthers={onCloseOthers}
       onRename={onRename}
@@ -78,6 +85,7 @@ describe("workspace tab bar", () => {
     expect(onActivate).toHaveBeenCalledWith("release-tab");
     act(() => view.root.findByProps({ "aria-label": "New tab" }).props.onClick());
     expect(onCreate).toHaveBeenCalledOnce();
+    expect(view.root.findByProps({ "aria-label": "Open operator profile" })).toBeTruthy();
 
     const dataTransfer = {
       effectAllowed: "none",
@@ -101,9 +109,13 @@ describe("workspace tab bar", () => {
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={[]}
+      preferences={preferences}
       activeKey="home-tab"
       onActivate={vi.fn()}
       onCreate={vi.fn()}
+      onSearch={vi.fn()}
+      onOpenInbox={vi.fn()}
+      onOpenProfile={vi.fn()}
       onClose={vi.fn()}
       onCloseOthers={vi.fn()}
       onRename={vi.fn()}
@@ -125,9 +137,13 @@ describe("workspace tab bar", () => {
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={[]}
+      preferences={preferences}
       activeKey="active-tab"
       onActivate={vi.fn()}
       onCreate={vi.fn()}
+      onSearch={vi.fn()}
+      onOpenInbox={vi.fn()}
+      onOpenProfile={vi.fn()}
       onClose={vi.fn()}
       onCloseOthers={vi.fn()}
       onRename={vi.fn()}
@@ -155,9 +171,13 @@ describe("workspace tab bar", () => {
     const view = create(<QueryClientProvider client={client}><WorkspaceTabs
       tabs={tabs}
       projects={[]}
+      preferences={preferences}
       activeKey="chat"
       onActivate={vi.fn()}
       onCreate={vi.fn()}
+      onSearch={vi.fn()}
+      onOpenInbox={vi.fn()}
+      onOpenProfile={vi.fn()}
       onClose={vi.fn()}
       onCloseOthers={vi.fn()}
       onRename={vi.fn()}
