@@ -73,7 +73,7 @@ describe("responsive compact controls", () => {
   it("keeps navigation semantic while the spine and one-level panel remain stable", () => {
     expect(sidebar).toContain("SIDEBAR_RAIL_WIDTH");
     expect(sidebar).toContain("SIDEBAR_PANEL_WIDTH");
-    expect(sidebar).toContain('insideProject ? chatsPanel : projectsPanel');
+    expect(sidebar).toContain('showingProjectNavigation && insideProject ? chatsPanel : homePanel');
     expect(sidebar).not.toContain("localStorage");
     expect(sidebar).not.toContain("updateWorkspacePreferences");
     expect(sidebar).not.toContain("preferences.sidebarWidth");

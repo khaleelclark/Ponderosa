@@ -76,12 +76,22 @@ export interface WorkspacePreferencesDto {
   projectOrder: string[];
   /** Stable resource keys arranged by the operator on Home. */
   homeOrder?: string[];
+  /** Sort mode for the mixed Home resource list. */
+  homeSort?: ProjectSort;
   /** Stable conversation IDs in the operator's chosen order. */
   chatOrder?: string[];
+  /** Sort mode shared by Chat navigation and the All Chats workspace. */
+  chatSort?: ProjectSort;
   /** Stable Agent IDs in the operator's chosen order. */
   agentOrder?: string[];
+  /** Sort mode shared by Agent navigation and the All Agents workspace. */
+  agentSort?: ProjectSort;
   /** Stable Trigger IDs in the operator's chosen order. */
   triggerOrder?: string[];
+  /** Sort mode shared by Trigger navigation and the All Triggers workspace. */
+  triggerSort?: ProjectSort;
+  /** Stable namespaced resource keys pinned across Home and noun views. */
+  starredResourceIds?: string[];
   /** Stable project IDs pinned to the Starred section. Unknown/deleted IDs are ignored. */
   starredProjectIds: string[];
   sidebarCollapsed: boolean;
@@ -1370,10 +1380,6 @@ export interface TokenUsageTurnDto {
   startedAt: string;
   completedAt?: string;
   usage?: TokenUsage;
-  /** Omitted when pricing or provider usage is unavailable. */
-  estimatedCostUsd?: number;
-  pricingModel?: string;
-  pricingAvailable: boolean;
 }
 
 export interface TokenUsageBreakdownDto {
@@ -1385,9 +1391,6 @@ export interface TokenUsageBreakdownDto {
   model?: string;
   runs: number;
   usage: TokenUsage;
-  estimatedCostUsd?: number;
-  pricingAvailableRuns: number;
-  unpricedRuns: number;
 }
 
 /** Rebuildable aggregate over finalized canonical runs. */
@@ -1397,6 +1400,10 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   finalizedRuns: number;
   reportedRuns: number;
   unreportedRuns: number;
+  /** Provider requests represented by retained per-request telemetry. */
+  providerRequests?: number;
+  /** Aggregate wall-clock duration of finalized Runs in this scope. */
+  durationMs?: number;
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;
   range?: TokenUsageRangeDto;
@@ -1409,44 +1416,6 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   /** Exact structural Activation kinds attached to finalized Runs. One Run may
    * contribute to several causes; activation counts preserve coalesced wakes. */
   wakeCauses: Array<{ cause: string; runs: number; activations: number }>;
-  projectedApiCost?: ProjectedApiCostDto;
-}
-
-/** One mutually exclusive billed token class. Input totals are normalized into
- * uncached input, cached reads, and cache writes before pricing. */
-export interface ProjectedApiCostComponentDto {
-  tokens: number;
-  usd: number;
-}
-
-export interface ProjectedApiCostComponentsDto {
-  uncachedInput: ProjectedApiCostComponentDto;
-  cachedInput: ProjectedApiCostComponentDto;
-  cacheWriteInput: ProjectedApiCostComponentDto;
-  output: ProjectedApiCostComponentDto;
-}
-
-export interface ProjectedApiCostBreakdownDto {
-  engine: EngineId;
-  requestedModel?: string;
-  pricingModel: string;
-  proxy: boolean;
-  runs: number;
-  usd: number;
-  components: ProjectedApiCostComponentsDto;
-}
-
-/** Informational API-equivalent list-price estimate; never a subscription bill. */
-export interface ProjectedApiCostDto {
-  currency: "USD";
-  usd: number;
-  basis: "api_list_price_proxy";
-  catalogVersion: string;
-  pricedRuns: number;
-  unpricedRuns: number;
-  coverage: number | null;
-  components: ProjectedApiCostComponentsDto;
-  breakdown: ProjectedApiCostBreakdownDto[];
 }
 
 /** Optional engine-reported progress inside a Run; never a Run itself. */

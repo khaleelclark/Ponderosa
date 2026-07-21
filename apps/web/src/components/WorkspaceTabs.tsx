@@ -18,13 +18,13 @@ import {
   Badge, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, DialogTitle,
   IconButton, Menu, MenuItem, Stack, TextField, Tooltip, Typography,
 } from "@mui/material";
-import type { ProjectDto } from "@ponderosa/core";
+import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
-import { routeProjectId } from "../routing";
 import type { WorkspaceTabState } from "../workspaceTabs";
-import { TokenUsageButton } from "./TokenUsageButton";
+import { OperatorAvatar } from "./OperatorAvatar";
+import { operatorInitials } from "./WorkspaceSidebar";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
   if (kind === "home") return <HomeOutlinedIcon fontSize="small" />;
@@ -47,17 +47,18 @@ export function newTabShortcutLabel(platform = typeof navigator === "undefined" 
 }
 
 export function WorkspaceTabs({
-  tabs, projects, activeKey, notificationCount = 0, onActivate, onCreate, onSearch, onOpenInbox, onOpenUsage, onClose, onCloseOthers, onRename, onReorder,
+  tabs, projects, preferences, activeKey, notificationCount = 0, onActivate, onCreate, onSearch, onOpenInbox, onOpenProfile, onClose, onCloseOthers, onRename, onReorder,
 }: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
+  preferences: WorkspacePreferencesDto;
   activeKey: string;
   notificationCount?: number;
   onActivate(key: string): void;
   onCreate(): void;
   onSearch(): void;
   onOpenInbox(): void;
-  onOpenUsage(projectId?: string): void;
+  onOpenProfile(): void;
   onClose(key: string): void;
   onCloseOthers(key: string): void;
   onRename(key: string, title: string): void;
@@ -82,8 +83,6 @@ export function WorkspaceTabs({
   const resourcesByProject = new Map(projectIds.map((projectId, index) => [projectId, {
     conversations: conversationQueries[index]?.data ?? [], agents: agentQueries[index]?.data ?? [],
   }]));
-  const activeRoute = tabs.find((tab) => tab.key === activeKey)?.route ?? { kind: "home" as const };
-  const activeProjectId = routeProjectId(activeRoute);
 
   const beginRename = (key: string, label: string) => {
     setRenameTarget({ key, label });
@@ -203,7 +202,7 @@ export function WorkspaceTabs({
     <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
     <Tooltip title="Search"><IconButton aria-label="Search Ponderosa" onClick={onSearch} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0 }}><SearchIcon fontSize="small" /></IconButton></Tooltip>
     <Tooltip title="Inbox"><IconButton aria-label="Open Inbox" onClick={onOpenInbox} sx={{ width: 36, height: 36, flexShrink: 0 }}><Badge color="error" badgeContent={notificationCount} max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge></IconButton></Tooltip>
-      {activeProjectId ? <TokenUsageButton scope="project" scopeId={activeProjectId} label="Project Provider Activity" compact onViewInWorkspace={() => onOpenUsage(activeProjectId)} /> : <TokenUsageButton scope="overall" label="Provider Activity" compact onViewInWorkspace={() => onOpenUsage()} />}
+      <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={onOpenProfile} sx={{ width: 36, height: 36, ml: .25, p: 0 }}><OperatorAvatar profile={preferences.profile} size={30} fallback={operatorInitials(preferences.profile.displayName)} /></IconButton></Tooltip>
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
       <MenuItem onClick={() => beginRename(contextMenu.key, contextMenu.label)}>Rename Tab</MenuItem>

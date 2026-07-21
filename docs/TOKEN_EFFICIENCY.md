@@ -8,30 +8,16 @@ Optimization starts with provider-measured usage, not estimates derived from vis
 
 - Store input, cached-input, cache-write, output, reasoning, and total tokens independently when the provider exposes them.
 - Store the engine, requested model, and effort on every run so usage remains attributable after agent settings change.
-- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. If a resumed Codex thread does not replay that baseline, derive the Run aggregate only from complete, deduplicated per-request checkpoints that reconcile exactly. Preserve those snapshots as pricing detail, but never add them to an available absolute thread total.
-- Mark unreported runs and unknown price profiles explicitly. Never silently price unknown usage at zero.
-- Display cost only as a dated, projected API-equivalent list-price estimate. Subscription usage, provider discounts, tool fees, and infrastructure cost are different things.
+- Prefer absolute provider thread totals and derive a run delta from the prior absolute checkpoint. If a resumed Codex thread does not replay that baseline, derive the Run aggregate only from complete, deduplicated per-request checkpoints that reconcile exactly. Never add reconciled request snapshots to an available absolute thread total.
+- Mark unreported Runs and unavailable token classes explicitly. Never silently treat missing telemetry as zero usage.
+- Preserve independent overall, Project, Agent, provider, model, and Chat attribution so controlled experiments can compare like with like.
+- Report provider-request counts, aggregate Run duration, wake causes, and cache use alongside token totals. A high token total alone does not prove repeated work or inefficiency.
 
-Cost is the primary user-facing efficiency metric. Raw total-token volume is
-diagnostic evidence, not the headline, because different models and token classes
-have materially different prices. Ponderosa prices each finalized run using the
-model recorded on that run, normalizing provider input into four mutually
-exclusive billable classes:
-
-- uncached input = total input minus cached reads minus cache writes;
-- cached input reads;
-- cache-write input; and
-- output (including any reasoning tokens already counted by the provider as output).
-
-Costs are summed by token class and by pricing model before agent, project, or
-overall totals are displayed. Price tiers defined by provider-request context
-size are applied to each reconciled provider request, not to a run aggregate.
-When an aggregate could cross a request-level tier but its request detail is
-unavailable, exclude it from projected cost instead of guessing. Never apply one
-blended rate to an aggregate containing multiple models, and never charge cached
-or cache-write tokens again as uncached input.
-
-This PR implements that contract for the usage Ponderosa currently receives. The price catalog is code-reviewed and dated rather than fetched during a request, so historical totals do not change unexpectedly when a provider edits its pricing page.
+Ponderosa does not estimate monetary cost. Provider list prices, subscription
+plans, discounts, tool fees, and infrastructure costs change independently, so a
+derived dollar figure creates maintenance work and can be mistaken for a bill.
+Operators can export the retained scoped telemetry and apply the pricing model
+appropriate to a specific experiment when a cost comparison is needed.
 
 ## Safe savings implemented now
 
@@ -76,7 +62,7 @@ Project-owned stable artifacts with targeted retrieval. Further strategies are:
 
 1. Make direct delivery to the actual consumer the default; managers synthesize and decide rather than relay routine messages.
 2. Route bounded, verifiable work to cheaper models, with explicit escalation criteria and a capable model retaining outcome ownership.
-3. Add per-agent and per-project token/cost budgets with warnings and hard opt-in limits.
-4. Benchmark organizations by quality-adjusted cost and latency across multiple tasks, not by raw token totals from one run.
+3. Add explicit experiment budgets only where a durable unit has a clear owner and boundary; do not infer control from ambiguous token estimates.
+4. Benchmark organizations by quality, scoped provider telemetry, and latency across multiple tasks, not by one raw token total.
 
 Avoid heuristic wake suppression, text-inferred scope, mutable shared blackboards, auctions, or secretly replacing an organization with one agent. Those approaches sacrifice auditability or the organizational capability being measured.

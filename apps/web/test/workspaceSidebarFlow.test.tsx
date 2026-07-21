@@ -85,7 +85,9 @@ describe("responsive workspace sidebar flow", () => {
     expect(view.root.findByProps({ "aria-label": "Open Messages" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search recent");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
-    expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
+    expect(JSON.stringify(view.toJSON())).toContain("View Home");
+    expect(JSON.stringify(view.toJSON())).not.toContain("View All Projects");
+    act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
     act(() => view.root.findByProps({ children: "View All Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
@@ -136,7 +138,7 @@ describe("responsive workspace sidebar flow", () => {
     client.clear();
   });
 
-  it("derives the operator avatar from the synced name and makes it actionable", () => {
+  it("derives stable operator initials without rendering profile controls in the noun sidebar", () => {
     expect(operatorInitials("Khaleel Clark")).toBe("KC");
     expect(operatorInitials("Patrick")).toBe("PA");
     expect(operatorInitials("   ")).toBe("U");
@@ -146,7 +148,6 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agents", project.id], []);
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
-    const onOpenProfile = vi.fn();
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
@@ -160,13 +161,9 @@ describe("responsive workspace sidebar flow", () => {
       onPreferences={vi.fn()}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
-      onOpenProfile={onOpenProfile}
     /></QueryClientProvider>);
-    expect(view.root.findByProps({ "aria-label": "Khaleel Clark avatar" })).toBeTruthy();
-    act(() => view.root.findByProps({ "aria-label": "Open operator profile navigation" }).props.onClick());
-    expect(onOpenProfile).not.toHaveBeenCalled();
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Khaleel Clark avatar")).toHaveLength(0);
     expect(onNavigate).not.toHaveBeenCalled();
-    expect(JSON.stringify(view.toJSON())).toContain("Edit Operator Profile");
     view.unmount();
     client.clear();
   });
@@ -183,7 +180,7 @@ describe("responsive workspace sidebar flow", () => {
       projects={projects}
       engines={engineRoster}
       preferences={preferences}
-      route={{ kind: "projects" }}
+      route={{ kind: "allAgents" }}
       notifications={[]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
@@ -192,12 +189,11 @@ describe("responsive workspace sidebar flow", () => {
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
     /></QueryClientProvider>);
-    act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
-    const alphaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/alpha");
-    const betaDestination = view.root.findAll((node) => node.type === "div" && node.props["aria-label"] === "Open agent Reviewer in Website · /repos/beta");
-    expect(alphaDestination).toHaveLength(1);
-    expect(betaDestination).toHaveLength(1);
-    act(() => alphaDestination[0]!.props.onClick());
+    const alphaDestination = view.root.findAll((node) => node.props["aria-label"] === "Open agent Reviewer in Website · /repos/alpha");
+    const betaDestination = view.root.findAll((node) => node.props["aria-label"] === "Open agent Reviewer in Website · /repos/beta");
+    expect(alphaDestination.length).toBeGreaterThan(0);
+    expect(betaDestination.length).toBeGreaterThan(0);
+    act(() => alphaDestination.find((node) => typeof node.props.onClick === "function")!.props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "agent", projectId: "alpha", agentId: "agent-alpha" });
     expect(JSON.stringify(view.toJSON())).toContain("Website · /repos/alpha · codex");
     view.unmount();
@@ -227,8 +223,8 @@ describe("responsive workspace sidebar flow", () => {
     /></QueryClientProvider>);
 
     act(() => view.root.findByProps({ "aria-label": "Unstar Website" }).props.onClick());
-    expect(onPreferences).toHaveBeenCalledWith({ starredProjectIds: [] });
-    const sortProjects = view.root.findByProps({ "aria-label": "Sort projects" });
+    expect(onPreferences).toHaveBeenCalledWith({ starredProjectIds: [], starredResourceIds: [] });
+    const sortProjects = view.root.findByProps({ "aria-label": "Sort resources" });
     expect(sortProjects.props.onClick).toEqual(expect.any(Function));
     expect(JSON.stringify(view.toJSON())).toContain("Recent Activity");
     view.unmount();

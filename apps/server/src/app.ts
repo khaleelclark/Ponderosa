@@ -15,7 +15,6 @@ import webpush from "web-push";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type {
   Adapter,
-  ApiPriceProfile,
   AgentMessageChannel,
   AgentEvent,
   CommunicationEvent,
@@ -77,11 +76,8 @@ import type {
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
-  TokenUsage,
   TokenUsageRangeDto,
-  TokenUsageBreakdownDto,
   TokenUsageSummaryDto,
-  ProjectedApiCostComponentsDto,
   PutConversationDraftRequest,
   DraftAttachmentDto,
   UpdateWorkspacePreferencesRequest,
@@ -1630,10 +1626,6 @@ async function workspaceFile(projectId: string, root: string, input: string | un
   return { projectId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
 }
 
-function roundedUsd(value: number): number {
-  return Math.round((value + Number.EPSILON) * 1_000_000) / 1_000_000;
-}
-
 export function parseTokenUsageRange(query: { from?: string; to?: string }): TokenUsageRangeDto {
   const range: TokenUsageRangeDto = {};
   for (const key of ["from", "to"] as const) {
@@ -1645,41 +1637,6 @@ export function parseTokenUsageRange(query: { from?: string; to?: string }): Tok
   }
   if (range.from && range.to && range.from >= range.to) throw new Error("from must be earlier than to");
   return range;
-}
-
-type RawCostComponents = {
-  [Key in keyof ProjectedApiCostComponentsDto]: { tokens: number; usd: number };
-};
-
-function emptyCostComponents(): RawCostComponents {
-  return {
-    uncachedInput: { tokens: 0, usd: 0 },
-    cachedInput: { tokens: 0, usd: 0 },
-    cacheWriteInput: { tokens: 0, usd: 0 },
-    output: { tokens: 0, usd: 0 },
-  };
-}
-
-function addTokenUsage(target: TokenUsage, source: TokenUsage): void {
-  const keys: Array<keyof TokenUsage> = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
-  for (const key of keys) {
-    const value = source[key];
-    if (value !== undefined) target[key] = (target[key] ?? 0) + value;
-  }
-}
-
-function addCostComponents(target: RawCostComponents, source: RawCostComponents): void {
-  for (const key of Object.keys(target) as Array<keyof RawCostComponents>) {
-    target[key].tokens += source[key].tokens;
-    target[key].usd += source[key].usd;
-  }
-}
-
-function serializedCostComponents(components: RawCostComponents): ProjectedApiCostComponentsDto {
-  return Object.fromEntries(Object.entries(components).map(([key, value]) => [key, {
-    tokens: value.tokens,
-    usd: roundedUsd(value.usd),
-  }])) as unknown as ProjectedApiCostComponentsDto;
 }
 
 /**
@@ -1791,59 +1748,6 @@ export function normalizeExternalCitations(value: unknown, verifiedAt = new Date
     result.set(url.toString(), { url: url.toString(), title, verifiedAt });
   }
   return [...result.values()];
-}
-
-function projectedRequestCost(usage: TokenUsage, profile: ApiPriceProfile): { usd: number; components: RawCostComponents } | undefined {
-  if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
-  const cached = usage.cachedInputTokens ?? 0;
-  const cacheWrite = usage.cacheWriteInputTokens ?? 0;
-  const uncached = usage.inputTokens - cached - cacheWrite;
-  if ([usage.inputTokens, usage.outputTokens, cached, cacheWrite, uncached].some((value) => !Number.isSafeInteger(value) || value < 0)) return undefined;
-  const long = profile.longContext && usage.inputTokens > profile.longContext.inputTokenThreshold
-    ? profile.longContext : undefined;
-  const inputMultiplier = long?.inputMultiplier ?? 1;
-  const outputMultiplier = long?.outputMultiplier ?? 1;
-  const cacheWriteRate = profile.cacheWriteInputUsdPerMillion ?? profile.inputUsdPerMillion;
-  const components: RawCostComponents = {
-    uncachedInput: { tokens: uncached, usd: uncached * profile.inputUsdPerMillion * inputMultiplier / 1_000_000 },
-    cachedInput: { tokens: cached, usd: cached * profile.cachedInputUsdPerMillion * inputMultiplier / 1_000_000 },
-    cacheWriteInput: { tokens: cacheWrite, usd: cacheWrite * cacheWriteRate * inputMultiplier / 1_000_000 },
-    output: { tokens: usage.outputTokens, usd: usage.outputTokens * profile.outputUsdPerMillion * outputMultiplier / 1_000_000 },
-  };
-  return { usd: Object.values(components).reduce((total, item) => total + item.usd, 0), components };
-}
-
-/** Price request-tiered models per provider request, never from an aggregate guess. */
-export function projectedRunCost(
-  usage: TokenUsage,
-  profile: ApiPriceProfile,
-  providerRequestUsage?: TokenUsage[],
-): { usd: number; components: RawCostComponents } | undefined {
-  if (usage.inputTokens === undefined || usage.outputTokens === undefined) return undefined;
-  const requiresRequestGranularity = Boolean(
-    profile.longContext && usage.inputTokens > profile.longContext.inputTokenThreshold,
-  );
-  if (!requiresRequestGranularity) return projectedRequestCost(usage, profile);
-  if (!providerRequestUsage?.length) return undefined;
-
-  const reconciledKeys: Array<keyof TokenUsage> = [
-    "inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens",
-  ];
-  for (const key of reconciledKeys) {
-    const aggregateValue = usage[key] ?? 0;
-    const requestValue = providerRequestUsage.reduce((total, request) => total + (request[key] ?? 0), 0);
-    if (aggregateValue !== requestValue) return undefined;
-  }
-
-  const components = emptyCostComponents();
-  let usd = 0;
-  for (const request of providerRequestUsage) {
-    const cost = projectedRequestCost(request, profile);
-    if (!cost) return undefined;
-    usd += cost.usd;
-    addCostComponents(components, cost.components);
-  }
-  return { usd, components };
 }
 
 export interface PonderosaServer extends FastifyInstance {
@@ -2070,91 +1974,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }) : undefined;
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
-  const projectedUsage = (
+  const tokenUsage = (
     scope: { type: "overall" } | { type: "project" | "agent"; id: string },
     range: TokenUsageRangeDto = {},
-  ): TokenUsageSummaryDto => {
-    const summary = store.getTokenUsage(scope, range);
-    const grouped = new Map<string, { engine: string; requestedModel?: string; profile: ApiPriceProfile; runs: number; usd: number; components: RawCostComponents }>();
-    const usageGrouped = new Map<string, TokenUsageBreakdownDto>();
-    const recentTurns: TokenUsageSummaryDto["recentTurns"] = [];
-    const components = emptyCostComponents();
-    let pricedRuns = 0;
-    for (const run of store.getMeteredRuns(scope, range)) {
-      const profile = engines.get(run.engine)?.adapter.apiPriceProfile?.(run.model);
-      const cost = profile ? projectedRunCost(run.usage, profile, run.providerRequestUsage) : undefined;
-      const usageKey = [run.projectId, run.conversationId ?? "", run.agentId, run.engine, run.model ?? ""].join("\0");
-      const usageCurrent: TokenUsageBreakdownDto = usageGrouped.get(usageKey) ?? {
-        projectId: run.projectId,
-        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-        agentId: run.agentId,
-        agentTitle: run.agentTitle,
-        engine: run.engine as TokenUsageBreakdownDto["engine"],
-        ...(run.model ? { model: run.model } : {}),
-        runs: 0,
-        usage: {},
-        pricingAvailableRuns: 0,
-        unpricedRuns: 0,
-      };
-      usageCurrent.runs += 1;
-      addTokenUsage(usageCurrent.usage, run.usage);
-      if (cost && profile) {
-        pricedRuns += 1;
-        usageCurrent.pricingAvailableRuns += 1;
-        usageCurrent.estimatedCostUsd = roundedUsd((usageCurrent.estimatedCostUsd ?? 0) + cost.usd);
-        const key = `${run.engine}\0${run.model ?? ""}\0${profile.pricingModel}`;
-        const current = grouped.get(key) ?? { engine: run.engine, requestedModel: run.model, profile, runs: 0, usd: 0, components: emptyCostComponents() };
-        current.runs += 1;
-        current.usd += cost.usd;
-        addCostComponents(current.components, cost.components);
-        addCostComponents(components, cost.components);
-        grouped.set(key, current);
-      } else {
-        usageCurrent.unpricedRuns += 1;
-      }
-      usageGrouped.set(usageKey, usageCurrent);
-      recentTurns.push({
-        projectId: run.projectId,
-        ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-        agentId: run.agentId,
-        agentTitle: run.agentTitle,
-        executionId: run.executionId,
-        engine: run.engine as TokenUsageBreakdownDto["engine"],
-        ...(run.model ? { model: run.model } : {}),
-        startedAt: run.startedAt,
-        ...(run.completedAt ? { completedAt: run.completedAt } : {}),
-        usage: run.usage,
-        ...(cost && profile ? { estimatedCostUsd: roundedUsd(cost.usd), pricingModel: profile.pricingModel } : {}),
-        pricingAvailable: Boolean(cost && profile),
-      });
-    }
-    const costBreakdown = [...grouped.values()].map((item) => ({
-      engine: item.engine,
-      ...(item.requestedModel ? { requestedModel: item.requestedModel } : {}),
-      pricingModel: item.profile.pricingModel,
-      proxy: Boolean(item.profile.proxy),
-      runs: item.runs,
-      usd: roundedUsd(item.usd),
-      components: serializedCostComponents(item.components),
-    })).sort((a, b) => b.usd - a.usd);
-    const catalogVersion = [...grouped.values()].map((item) => item.profile.catalogVersion).sort().at(-1) ?? "2026-07-13";
-    return {
-      ...summary,
-      breakdown: [...usageGrouped.values()].sort((a, b) => (b.estimatedCostUsd ?? 0) - (a.estimatedCostUsd ?? 0) || b.runs - a.runs),
-      recentTurns: recentTurns.sort((a, b) => b.startedAt.localeCompare(a.startedAt)).slice(0, 10),
-      projectedApiCost: {
-        currency: "USD",
-        usd: roundedUsd(costBreakdown.reduce((total, item) => total + item.usd, 0)),
-        basis: "api_list_price_proxy",
-        catalogVersion,
-        pricedRuns,
-        unpricedRuns: summary.finalizedRuns - pricedRuns,
-        coverage: summary.finalizedRuns ? pricedRuns / summary.finalizedRuns : null,
-        components: serializedCostComponents(components),
-        breakdown: costBreakdown,
-      },
-    };
-  };
+  ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();
   type ManagementOperation = {
     kind: "create_agent" | "rename_agent" | "stop_agent" | "delete_agent" | "set_manager";
@@ -8426,13 +8249,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
-    try { return projectedUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    try { return projectedUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
@@ -10728,7 +10551,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
     if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    try { return projectedUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
+    try { return tokenUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
     catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
   });
 
@@ -12645,6 +12468,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};
     if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
+    for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort], ["trigger", patch.triggerSort]] as const) {
+      if (sort !== undefined && !["last_used", "alphabetical", "custom"].includes(sort)) return reply.code(400).send({ error: `invalid ${label} sort` });
+    }
     if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
       return reply.code(400).send({ error: "invalid custom project order" });
     }
@@ -12655,6 +12481,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     if (patch.starredProjectIds !== undefined && (!Array.isArray(patch.starredProjectIds) || patch.starredProjectIds.length > 10_000 || patch.starredProjectIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.starredProjectIds).size !== patch.starredProjectIds.length)) {
       return reply.code(400).send({ error: "invalid starred projects" });
+    }
+    if (patch.starredResourceIds !== undefined && (!Array.isArray(patch.starredResourceIds) || patch.starredResourceIds.length > 10_000 || patch.starredResourceIds.some((id) => typeof id !== "string" || id.length > 240 || !/^(?:project|conversation|agent|trigger):[^:]+$/u.test(id)) || new Set(patch.starredResourceIds).size !== patch.starredResourceIds.length)) {
+      return reply.code(400).send({ error: "invalid starred resources" });
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
     if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });

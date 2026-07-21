@@ -47,8 +47,11 @@ import { api } from "../api";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { routeProjectId, type Route } from "../routing";
+import {
+  resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
+  toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
+} from "../resourcePreferences";
 import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
-import { OperatorAvatar } from "./OperatorAvatar";
 import {
   clampWorkspaceSidebarWidth,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
@@ -189,6 +192,12 @@ export function reorderStableIds(current: readonly string[] | undefined, visible
   return ordered;
 }
 
+function SidebarSortControl({ sort, onSort }: { sort: WorkspacePreferencesDto["projectSort"]; onSort(sort: WorkspacePreferencesDto["projectSort"]): void }): JSX.Element {
+  const [anchor, setAnchor] = useState<HTMLElement>();
+  const label = sort === "alphabetical" ? "A–Z" : sort === "custom" ? "Custom" : "Recent Activity";
+  return <><Button fullWidth color="inherit" aria-label="Sort resources" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{label}</Box></Typography></Button>{anchor ? <Menu anchorEl={anchor} open onClose={() => setAnchor(undefined)}><MenuItem selected={sort === "last_used"} onClick={() => { onSort("last_used"); setAnchor(undefined); }}>Recent Activity</MenuItem><MenuItem selected={sort === "alphabetical"} onClick={() => { onSort("alphabetical"); setAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={sort === "custom"} onClick={() => { onSort("custom"); setAnchor(undefined); }}>Custom Order</MenuItem></Menu> : null}</>;
+}
+
 function RailButton({ label, selected = false, badge, badgeColor = "primary", children, onClick }: {
   label: string;
   selected?: boolean;
@@ -223,6 +232,7 @@ export function WorkspaceSidebar({
   onNavigate,
   onOpenInNewTab,
   onCreateProject,
+  onCreateChat,
   onCreateAgent,
   onCreateTrigger,
   onManageProject,
@@ -232,7 +242,6 @@ export function WorkspaceSidebar({
   onSearch,
   onOpenNotifications,
   onOpenSettings,
-  onOpenProfile,
   onOpenEngineStatus,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
@@ -248,6 +257,7 @@ export function WorkspaceSidebar({
   onNavigate(route: Route): void;
   onOpenInNewTab?(route: Route): void;
   onCreateProject(): void;
+  onCreateChat?(): void;
   onCreateAgent?(): void;
   onCreateTrigger?(): void;
   onManageProject(project: ProjectDto): void;
@@ -257,7 +267,6 @@ export function WorkspaceSidebar({
   onSearch?(): void;
   onOpenNotifications?(): void;
   onOpenSettings?(): void;
-  onOpenProfile?(): void;
   onOpenEngineStatus?(): void;
   collapsed?: boolean;
   width?: number;
@@ -277,26 +286,33 @@ export function WorkspaceSidebar({
   const counts = workspaceCounts(snapshots, notifications);
   const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
   const insideProject = Boolean(selected && ["project", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind));
-  const [sidebarSection, setSidebarSection] = useState<"home" | "project" | "projects" | "agents" | "triggers" | "wiki" | "settings" | "profile">(() => route.kind === "allAgents" ? "agents" : route.kind === "allTriggers" ? "triggers" : route.kind === "wiki" ? "wiki" : route.kind === "settings" || route.kind === "usage" ? "settings" : route.kind === "profile" ? "profile" : insideProject ? "project" : "home");
+  const [sidebarSection, setSidebarSection] = useState<"home" | "project" | "projects" | "chats" | "agents" | "triggers" | "wiki" | "settings">(() => route.kind === "allChats" ? "chats" : route.kind === "allAgents" ? "agents" : route.kind === "allTriggers" ? "triggers" : route.kind === "wiki" ? "wiki" : route.kind === "settings" || route.kind === "usage" ? "settings" : insideProject ? "project" : "home");
   const [filter, setFilter] = useState("");
   const [draggedResource, setDraggedResource] = useState<{ kind: "home" | "chat" | "agent" | "trigger"; id: string }>();
   const [menu, setMenu] = useState<{ anchor: HTMLElement; route: Route; conversation?: ConversationDto }>();
   useEffect(() => {
-    if (route.kind !== "wiki") return;
-    setSidebarSection("wiki");
+    const section = route.kind === "allChats" ? "chats"
+      : route.kind === "allAgents" ? "agents"
+        : route.kind === "allTriggers" ? "triggers"
+          : route.kind === "projects" ? "projects"
+            : route.kind === "wiki" ? "wiki"
+              : route.kind === "settings" || route.kind === "usage" ? "settings"
+                : undefined;
+    if (!section) return;
+    setSidebarSection(section);
     setFilter("");
   }, [route.kind]);
 
-  const [sortMenuAnchor, setSortMenuAnchor] = useState<HTMLElement>();
+  const [createMenuAnchor, setCreateMenuAnchor] = useState<HTMLElement>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const showingAgents = sidebarSection === "agents";
+  const showingChats = sidebarSection === "chats";
   const showingProjects = sidebarSection === "projects";
   const showingProjectNavigation = sidebarSection === "project";
   const showingTriggers = sidebarSection === "triggers";
   const showingHome = sidebarSection === "home";
   const showingWiki = sidebarSection === "wiki";
   const showingSettings = sidebarSection === "settings";
-  const showingProfile = sidebarSection === "profile";
   const allTriggersQuery = useQuery({
     queryKey: ["triggers"],
     queryFn: () => api.listAllTriggers(),
@@ -321,6 +337,7 @@ export function WorkspaceSidebar({
     if (!drawer && collapsed) onCollapsedChange?.(false);
   };
   const showAgents = () => revealSection("agents");
+  const showChats = () => revealSection("chats");
   const showProjects = () => revealSection("projects");
   const showHome = () => revealSection("home");
   const openAllProjects = () => {
@@ -371,6 +388,7 @@ export function WorkspaceSidebar({
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 40, height: 40, mb: 2.5, borderRadius: 1.25, objectFit: "contain" }} /></Tooltip>
       <RailButton label="Home" selected={showingHome} onClick={showHome}><HomeOutlinedIcon /></RailButton>
       <RailButton label="Projects" selected={showingProjects || showingProjectNavigation} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
+      <RailButton label="Chats" selected={showingChats} onClick={showChats}><ChatBubbleOutlineIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><PersonOutlineIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
       <RailButton label="Wiki" selected={showingWiki} onClick={showWiki}><MenuBookOutlinedIcon /></RailButton>
@@ -379,50 +397,36 @@ export function WorkspaceSidebar({
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
       {!drawer && onCollapsedChange ? <RailButton label={collapsed ? "Expand sidebar" : "Collapse sidebar"} onClick={() => onCollapsedChange(!collapsed)}>{collapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}</RailButton> : null}
       <RailButton label="Settings" selected={showingSettings} onClick={() => revealSection("settings")}><SettingsOutlinedIcon /></RailButton>
-      <Tooltip title="Operator Profile" placement="right"><IconButton aria-label="Open operator profile navigation" onClick={() => revealSection("profile")} sx={{ width: 46, height: 46, borderRadius: "50%", p: 0, bgcolor: showingProfile ? "action.selected" : "transparent" }}><Box sx={{ position: "relative", width: 42, height: 42 }}><OperatorAvatar profile={preferences.profile} size={42} fallback={operatorInitials(preferences.profile.displayName)} /><Box sx={{ position: "absolute", right: -1, bottom: 1, width: 10, height: 10, borderRadius: "50%", bgcolor: "success.main", border: 2, borderColor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5" }} /></Box></IconButton></Tooltip>
     </Stack>
   </Box>;
 
   const projectList = snapshots.filter((snapshot) => !normalizedFilter || `${snapshot.project.label} ${snapshot.project.hostPath}`.toLocaleLowerCase().includes(normalizedFilter));
-  const starredProjectIds = new Set(preferences.starredProjectIds);
-  const starred = projectList.filter((snapshot) => starredProjectIds.has(snapshot.project.id));
-  const remaining = projectList.filter((snapshot) => !starredProjectIds.has(snapshot.project.id));
+  const starredResourceIds = starredWorkspaceResources(preferences);
   const homeAgentDestinations = new Map(snapshots.flatMap((snapshot) => snapshot.agents.map((agent) => [agent.id, { agent, project: snapshot.project }] as const)));
-  const homeResources = orderByStableIds([
+  const allHomeResources = [
     ...snapshots.map((snapshot) => ({ id: `project:${snapshot.project.id}`, title: snapshot.project.label, detail: "Project", updatedAt: snapshot.project.lastUsedAt ?? snapshot.project.createdAt, route: { kind: "project", projectId: snapshot.project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
     ...snapshots.flatMap((snapshot) => snapshot.conversations.filter((conversation) => !conversation.archived).map((conversation) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${snapshot.project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: snapshot.project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> }))),
     ...snapshots.flatMap((snapshot) => snapshot.agents.filter((agent) => !agent.archived).map((agent) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${snapshot.project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: snapshot.project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> }))),
     ...(allTriggersQuery.data ?? []).flatMap((trigger) => { const destination = homeAgentDestinations.get(trigger.agentId); return destination ? [{ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${destination.project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> }] : []; }),
-  ].filter((item) => !normalizedFilter || `${item.title} ${item.detail}`.toLocaleLowerCase().includes(normalizedFilter)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 18), preferences.homeOrder, (item) => item.id);
-  const sortLabel = preferences.projectSort === "alphabetical" ? "A–Z" : preferences.projectSort === "custom" ? "Custom" : "Recent Activity";
-  const toggleStar = (projectId: string) => onPreferences({
-    starredProjectIds: starredProjectIds.has(projectId)
-      ? preferences.starredProjectIds.filter((id) => id !== projectId)
-      : [...preferences.starredProjectIds, projectId],
-  });
+  ].filter((item) => !normalizedFilter || `${item.title} ${item.detail}`.toLocaleLowerCase().includes(normalizedFilter));
+  const homeResources = sortWorkspaceResources(allHomeResources, workspaceResourceSort(preferences, "home"), preferences.homeOrder, (item) => item.id, (item) => item.title, (item) => item.updatedAt);
+  const starredHomeResources = homeResources.filter((item) => starredResourceIds.has(item.id));
+  const recentHomeResources = homeResources.filter((item) => !starredResourceIds.has(item.id)).slice(0, 18);
+  const toggleStar = (kind: "project" | "conversation" | "agent" | "trigger", id: string) => onPreferences(toggleWorkspaceResourceStar(preferences, kind, id));
 
   const sidebarSurface = (theme: { palette: { mode: "light" | "dark" } }) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5";
-  const projectsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>{showingProjects ? "Projects" : "Home"}</Typography><Typography variant="caption" color="text.secondary">{projects.length} {projects.length === 1 ? "Project" : "Projects"}</Typography></Stack>
-    <Box sx={{ px: 1.75, pb: 1.5 }}><TextField
-      fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={showingHome ? "Search recent" : "Search projects"}
-      inputProps={{ "aria-label": showingHome ? "Search recent" : "Search projects" }}
-      InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
-    /></Box>
-    <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
-      {!showingProjects ? <List disablePadding sx={{ mb: 1.5 }}><ListItemButton aria-label="Open Messages" selected={route.kind === "allChat"} onClick={() => showNavigation({ kind: "allChat" })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "allChat" } }); }} sx={{ borderRadius: 1, px: 1, minHeight: 48 }}><ListItemIcon sx={{ minWidth: 38 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon><ListItemText primary="Messages" secondary="Everything sent to or from you" primaryTypographyProps={{ fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true }} /></ListItemButton></List> : null}
-      {showingHome ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Recent</Typography><List disablePadding sx={{ mt: .5 }}>{homeResources.map((item) => <ListItemButton key={item.id} draggable onDragStart={() => setDraggedResource({ kind: "home", id: item.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "home") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "home") onPreferences({ homeOrder: reorderStableIds(preferences.homeOrder, homeResources.map((resource) => resource.id), draggedResource.id, item.id) }); setDraggedResource(undefined); }} onClick={() => onNavigate(item.route)} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: item.route }); }} sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25 }}><ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon><ListItemText primary={item.title} secondary={item.detail} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton>)}</List>{homeResources.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>Your recent work will appear here.</Typography> : null}</Box> : null}
-      {starred.length ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography><List disablePadding sx={{ mt: .5 }}>{starred.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ mb: .35, borderRadius: 1, overflow: "hidden", bgcolor: snapshot.project.id === selectedProjectId ? "action.selected" : "transparent", "&:hover": { bgcolor: "action.hover" } }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} selected={snapshot.project.id === selectedProjectId} onClick={() => openProject(snapshot)} sx={{ minWidth: 0, px: 1 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} secondary={`${snapshot.conversations.filter((item) => !item.archived).length} active chats`} primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }} secondaryTypographyProps={{ noWrap: true }} /></ListItemButton><Tooltip title={`Unstar ${snapshot.project.label}`}><IconButton size="small" aria-label={`Unstar ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)} sx={{ color: "primary.light" }}><StarRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box> : null}
-      <Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>All Projects</Typography><List disablePadding sx={{ mt: .5 }}>{remaining.map((snapshot) => <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ alignItems: "center" }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }} /><Typography variant="caption" color="text.secondary" sx={{ ml: 2, minWidth: 24, textAlign: "right", flexShrink: 0 }}>{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton><Tooltip title={`Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`Star ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}><StarBorderRoundedIcon fontSize="small" /></IconButton></Tooltip></Stack>)}</List></Box>
-      {projectList.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No projects match “{filter.trim()}”.</Typography> : null}
-    </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View All Projects</Button><Button fullWidth color="inherit" aria-label="Sort projects" endIcon={<ExpandMoreIcon fontSize="small" />} onClick={(event) => setSortMenuAnchor(event.currentTarget)} sx={{ mt: 0.5, px: .75, justifyContent: "space-between", color: "text.secondary" }}><Typography variant="caption">Sort: <Box component="span" sx={{ color: "text.primary" }}>{sortLabel}</Box></Typography></Button>{sortMenuAnchor ? <Menu anchorEl={sortMenuAnchor} open onClose={() => setSortMenuAnchor(undefined)}><MenuItem selected={preferences.projectSort === "last_used"} onClick={() => { onPreferences({ projectSort: "last_used" }); setSortMenuAnchor(undefined); }}>Recent Activity</MenuItem><MenuItem selected={preferences.projectSort === "alphabetical"} onClick={() => { onPreferences({ projectSort: "alphabetical" }); setSortMenuAnchor(undefined); }}>Alphabetical (A–Z)</MenuItem><MenuItem selected={preferences.projectSort === "custom"} onClick={() => { onPreferences({ projectSort: "custom" }); setSortMenuAnchor(undefined); }}>Custom Order</MenuItem></Menu> : null}</Box>
-  </Box>;
+  const resourceRows = (items: typeof homeResources) => <List disablePadding sx={{ mt: .5 }}>{items.map((item) => <Stack key={item.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "home", id: item.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "home") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "home") onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, homeResources.map((resource) => resource.id), draggedResource.id, item.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: item.route }); }} sx={{ alignItems: "center" }}><ListItemButton onClick={() => onNavigate(item.route)} sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon><ListItemText primary={item.title} secondary={item.detail} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton><Tooltip title={starredResourceIds.has(item.id) ? `Unstar ${item.title}` : `Star ${item.title}`}><IconButton size="small" onClick={() => { const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string]; toggleStar(kind, id); }}>{starredResourceIds.has(item.id) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>)}</List>;
+  const homePanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Home</Typography></Stack><Box sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search recent" inputProps={{ "aria-label": "Search recent" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} /></Box><Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}><List disablePadding sx={{ mb: 1.5 }}><ListItemButton aria-label="Open Messages" selected={route.kind === "allChat"} onClick={() => showNavigation({ kind: "allChat" })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "allChat" } }); }} sx={{ borderRadius: 1, px: 1, minHeight: 48 }}><ListItemIcon sx={{ minWidth: 38 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon><ListItemText primary="Messages" secondary="Everything sent to or from you" primaryTypographyProps={{ fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true }} /></ListItemButton></List>{starredHomeResources.length ? <Box component="section" sx={{ mb: 2 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Starred</Typography>{resourceRows(starredHomeResources)}</Box> : null}<Box component="section"><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Recent</Typography>{resourceRows(recentHomeResources)}{recentHomeResources.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>Your recent work will appear here.</Typography> : null}</Box></Box><Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={(event) => setCreateMenuAnchor(event.currentTarget)} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New</Button><Button fullWidth color="inherit" startIcon={<HomeOutlinedIcon />} onClick={() => onNavigate({ kind: "home" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View Home</Button><SidebarSortControl sort={workspaceResourceSort(preferences, "home")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("home", sort))} />{createMenuAnchor ? <Menu anchorEl={createMenuAnchor} open onClose={() => setCreateMenuAnchor(undefined)}><MenuItem onClick={() => { setCreateMenuAnchor(undefined); onCreateProject(); }}>New Project</MenuItem><MenuItem disabled={!projects.length || !onCreateChat} onClick={() => { setCreateMenuAnchor(undefined); onCreateChat?.(); }}>New Chat</MenuItem><MenuItem disabled={!projects.length || !onCreateAgent} onClick={() => { setCreateMenuAnchor(undefined); onCreateAgent?.(); }}>New Agent</MenuItem><MenuItem disabled={!projects.length || !onCreateTrigger} onClick={() => { setCreateMenuAnchor(undefined); onCreateTrigger?.(); }}>New Trigger</MenuItem></Menu> : null}</Box></Box>;
+  const projectsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Projects</Typography><Typography variant="caption" color="text.secondary">{projects.length} total</Typography></Stack><Box sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search projects" inputProps={{ "aria-label": "Search projects" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} /></Box><Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}><List disablePadding>{projectList.map((snapshot) => { const key = resourcePreferenceKey("project", snapshot.project.id); return <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: snapshot.project.id } }); }} sx={{ alignItems: "center" }}><ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1, px: 1, minHeight: 48, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} primaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }} /><Typography variant="caption" color="text.secondary" sx={{ ml: 2, minWidth: 24, textAlign: "right", flexShrink: 0 }}>{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton><Tooltip title={starredResourceIds.has(key) ? `Unstar ${snapshot.project.label}` : `Star ${snapshot.project.label}`}><IconButton size="small" onClick={() => toggleStar("project", snapshot.project.id)}>{starredResourceIds.has(key) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>; })}</List>{projectList.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No projects match “{filter.trim()}”.</Typography> : null}</Box><Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Project</Button><Button fullWidth color="inherit" startIcon={<FolderOutlinedIcon />} onClick={openAllProjects} sx={{ mt: 0.5, justifyContent: "flex-start", color: "text.secondary" }}>View All Projects</Button><SidebarSortControl sort={preferences.projectSort} onSort={(sort) => onPreferences({ projectSort: sort })} /></Box></Box>;
+
+  const allChatRows = snapshots.flatMap((snapshot) => snapshot.conversations.filter((conversation) => !conversation.archived).map((conversation) => ({ project: snapshot.project, conversation })));
+  const chatRows = sortWorkspaceResources(allChatRows.filter(({ project: chatProject, conversation }) => !normalizedFilter || `${conversation.title} ${chatProject.label}`.toLocaleLowerCase().includes(normalizedFilter)), workspaceResourceSort(preferences, "chat"), preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
+  const globalChatsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Chats</Typography><Typography variant="caption" color="text.secondary">{allChatRows.length} total</Typography></Stack><Box sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search chats" inputProps={{ "aria-label": "Search chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} /></Box><Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}><List disablePadding>{chatRows.map(({ project: chatProject, conversation }) => { const key = resourcePreferenceKey("conversation", conversation.id); return <Stack key={conversation.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "chat", id: conversation.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "chat") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, allChatRows.map((row) => row.conversation.id), draggedResource.id, conversation.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation, route: { kind: "conversation", projectId: chatProject.id, conversationId: conversation.id } }); }}><ListItemButton onClick={() => openChat(chatProject, conversation)} sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon><ListItemText primary={conversation.title} secondary={chatProject.label} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton><Tooltip title={starredResourceIds.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`}><IconButton size="small" onClick={() => toggleStar("conversation", conversation.id)}>{starredResourceIds.has(key) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>; })}</List>{chatRows.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{filter.trim() ? `No chats match “${filter.trim()}”.` : "No Project Chats yet."}</Typography> : null}</Box><Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={() => onCreateChat?.()} disabled={!projects.length} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Chat</Button><Button fullWidth color="inherit" startIcon={<ChatBubbleOutlineIcon />} onClick={() => onNavigate({ kind: "allChats" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Chats</Button><SidebarSortControl sort={workspaceResourceSort(preferences, "chat")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("chat", sort))} /></Box></Box>;
 
   const allAgentRows = workspaceAgents(snapshots);
-  const agentRows = orderByStableIds(allAgentRows.filter(({ agent, project }) => !normalizedFilter
+  const agentRows = sortWorkspaceResources(allAgentRows.filter(({ agent, project }) => !normalizedFilter
     || `${agent.title} ${project.label} ${project.hostPath} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter)),
-  preferences.agentOrder, (row) => row.agent.id);
+  workspaceResourceSort(preferences, "agent"), preferences.agentOrder, (row) => row.agent.id, (row) => row.agent.title, (row) => row.agent.updatedAt);
   const agentsPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
     <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}>
       <Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Agents</Typography>
@@ -442,7 +446,7 @@ export function WorkspaceSidebar({
         onDragOver={(event) => { if (draggedResource?.kind === "agent") event.preventDefault(); }}
         onDrop={(event) => {
           event.preventDefault();
-          if (draggedResource?.kind === "agent") onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, allAgentRows.map((row) => row.agent.id), draggedResource.id, agent.id) });
+          if (draggedResource?.kind === "agent") onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, allAgentRows.map((row) => row.agent.id), draggedResource.id, agent.id) });
           setDraggedResource(undefined);
         }}
         aria-label={`Open agent ${agent.title} in ${projectDisambiguator(agentProject, projects)}`}
@@ -459,15 +463,16 @@ export function WorkspaceSidebar({
           secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
         />
         <Box title={agentStatusLabel(status)} aria-label={agentStatusLabel(status)} sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: agentStatusColor(status) === "default" ? "text.disabled" : `${agentStatusColor(status)}.main`, flex: "0 0 auto" }} />
+        <IconButton component="span" size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("agent", agent.id)) ? "Unstar" : "Star"} ${agent.title}`} onClick={(event) => { event.stopPropagation(); toggleStar("agent", agent.id); }}>{starredResourceIds.has(resourcePreferenceKey("agent", agent.id)) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton>
       </ListItemButton>)}</List>
       {agentRows.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{filter.trim() ? `No agents match “${filter.trim()}”.` : "No active agents."}</Typography> : null}
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={() => onCreateAgent?.()} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Agent</Button><Button fullWidth color="inherit" startIcon={<GroupsOutlinedIcon />} onClick={() => onNavigate({ kind: "allAgents" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Agents</Button><Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1, pt: 1 }}>Drag Agents to set a custom order.</Typography></Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={() => onCreateAgent?.()} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Agent</Button><Button fullWidth color="inherit" startIcon={<GroupsOutlinedIcon />} onClick={() => onNavigate({ kind: "allAgents" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Agents</Button><SidebarSortControl sort={workspaceResourceSort(preferences, "agent")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("agent", sort))} /></Box>
   </Box>;
 
   const triggerDestinations = workspaceAgents(snapshots);
   const triggerAgentById = new Map(triggerDestinations.map((destination) => [destination.agent.id, destination] as const));
-  const filteredTriggers = orderByStableIds((allTriggersQuery.data ?? []).filter((trigger) => {
+  const filteredTriggers = sortWorkspaceResources((allTriggersQuery.data ?? []).filter((trigger) => {
     const destination = triggerAgentById.get(trigger.agentId);
     return !normalizedFilter || [
       trigger.name,
@@ -476,7 +481,7 @@ export function WorkspaceSidebar({
       destination?.agent.title,
       destination?.project.label,
     ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter);
-  }), preferences.triggerOrder, (trigger) => trigger.id);
+  }), workspaceResourceSort(preferences, "trigger"), preferences.triggerOrder, (trigger) => trigger.id, (trigger) => trigger.name, (trigger) => trigger.updatedAt);
   const triggerManagers = triggerDestinations.filter(({ agent, project: triggerProject }) => !normalizedFilter
     || `${agent.title} ${triggerProject.label} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter));
   const triggersPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
@@ -506,7 +511,7 @@ export function WorkspaceSidebar({
             onDragOver={(event) => { if (draggedResource?.kind === "trigger") event.preventDefault(); }}
             onDrop={(event) => {
               event.preventDefault();
-              if (draggedResource?.kind === "trigger") onPreferences({ triggerOrder: reorderStableIds(preferences.triggerOrder, (allTriggersQuery.data ?? []).map((item) => item.id), draggedResource.id, trigger.id) });
+              if (draggedResource?.kind === "trigger") onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, (allTriggersQuery.data ?? []).map((item) => item.id), draggedResource.id, trigger.id) });
               setDraggedResource(undefined);
             }}
             aria-label={`Manage trigger ${trigger.name}`}
@@ -517,6 +522,7 @@ export function WorkspaceSidebar({
             <ListItemIcon sx={{ minWidth: 38 }}><BoltOutlinedIcon sx={{ fontSize: 18 }} /></ListItemIcon>
             <ListItemText primary={trigger.name} secondary={`${destination.project.label} · ${destination.agent.title} · ${trigger.sourceKind}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
             <Box title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled" }} />
+            <IconButton component="span" size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)) ? "Unstar" : "Star"} ${trigger.name}`} onClick={(event) => { event.stopPropagation(); toggleStar("trigger", trigger.id); }}>{starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton>
           </ListItemButton>;
         })}</List>
         {!allTriggersQuery.isLoading && filteredTriggers.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 1 }}>{filter.trim() ? "No configured triggers match." : "No triggers configured yet."}</Typography> : null}
@@ -536,7 +542,7 @@ export function WorkspaceSidebar({
         </ListItemButton>)}</List>
       </Box>
     </Box>
-    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={() => onCreateTrigger?.()} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Trigger</Button><Button fullWidth color="inherit" startIcon={<BoltOutlinedIcon />} onClick={() => onNavigate({ kind: "allTriggers" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Triggers</Button><Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1, pt: 1 }}>Drag Triggers to set a custom order.</Typography></Box>
+    <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="outlined" startIcon={<AddIcon />} onClick={() => onCreateTrigger?.()} sx={{ justifyContent: "flex-start", bgcolor: "background.paper" }}>New Trigger</Button><Button fullWidth color="inherit" startIcon={<BoltOutlinedIcon />} onClick={() => onNavigate({ kind: "allTriggers" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Triggers</Button><SidebarSortControl sort={workspaceResourceSort(preferences, "trigger")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("trigger", sort))} /></Box>
   </Box>;
 
   const wikiSections = (wikiIndexQuery.data?.sections ?? []).map((section) => ({
@@ -568,8 +574,7 @@ export function WorkspaceSidebar({
   const selectedHealth = selectedProjectIndex >= 0 ? healthQueries[selectedProjectIndex]?.data?.agents : undefined;
   const projectHealth = projectHealthPresentation(selectedHealth, project?.agents ?? [], engines);
   const projectHealthTooltip = projectHealthDetail(selectedHealth, project?.agents ?? [], engines);
-  const activeConversations = orderByStableIds((project?.conversations ?? []).filter((conversation) => !conversation.archived)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)), preferences.chatOrder, (conversation) => conversation.id);
+  const activeConversations = sortWorkspaceResources((project?.conversations ?? []).filter((conversation) => !conversation.archived), workspaceResourceSort(preferences, "chat"), preferences.chatOrder, (conversation) => conversation.id, (conversation) => conversation.title, (conversation) => conversation.updatedAt);
   const filteredConversations = activeConversations.filter((conversation) => !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
   const grouped = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({ group, conversations: filteredConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group) }));
 
@@ -586,10 +591,10 @@ export function WorkspaceSidebar({
           onDragOver={(event) => { if (draggedResource?.kind === "chat") event.preventDefault(); }}
           onDrop={(event) => {
             event.preventDefault();
-            if (draggedResource?.kind === "chat") onPreferences({ chatOrder: reorderStableIds(preferences.chatOrder, activeConversations.map((item) => item.id), draggedResource.id, conversation.id) });
+            if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, activeConversations.map((item) => item.id), draggedResource.id, conversation.id) });
             setDraggedResource(undefined);
           }}
-          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation, route: { kind: "conversation", projectId: project.project.id, conversationId: conversation.id } }); }} sx={{ alignItems: "center" }}><ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project.project, conversation)} sx={{ borderRadius: 1, px: 1, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center" }}><ChatBubbleOutlineIcon sx={{ fontSize: 16 }} /></Box></ListItemIcon><ListItemText primary={title} secondary={`${unread.get(conversation.id) ? `${unread.get(conversation.id)} unread · ` : ""}${relativeChatTime(conversation.updatedAt)}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />{unread.get(conversation.id) ? <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.light" }} /> : null}</ListItemButton></Stack>;
+          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, conversation, route: { kind: "conversation", projectId: project.project.id, conversationId: conversation.id } }); }} sx={{ alignItems: "center" }}><ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project.project, conversation)} sx={{ borderRadius: 1, px: 1, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center" }}><ChatBubbleOutlineIcon sx={{ fontSize: 16 }} /></Box></ListItemIcon><ListItemText primary={title} secondary={`${unread.get(conversation.id) ? `${unread.get(conversation.id)} unread · ` : ""}${relativeChatTime(conversation.updatedAt)}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />{unread.get(conversation.id) ? <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.light" }} /> : null}</ListItemButton><Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`}><IconButton size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>;
       })}</List></Box> : null)}
       {filteredConversations.length === 0 ? filter.trim() ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No Project Chats match “{filter.trim()}”.</Typography> : <Stack spacing={.75} sx={{ p: 2, textAlign: "center", alignItems: "center" }}><Typography variant="subtitle2" fontWeight={750}>No Project Chats Yet</Typography><Typography variant="body2" color="text.secondary">Project Chats are shared spaces where you and your Agents prompt, plan, and coordinate work. Create one to get started.</Typography></Stack> : null}
     </Box>
@@ -599,12 +604,12 @@ export function WorkspaceSidebar({
       <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "allAgents" && route.filterProjectId === project.project.id ? "page" : undefined} onClick={() => onNavigate({ kind: "allAgents", filterProjectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "allAgents", filterProjectId: project.project.id } }); }} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "allAgents" && route.filterProjectId === project.project.id ? "text.primary" : "text.secondary", bgcolor: route.kind === "allAgents" && route.filterProjectId === project.project.id ? "action.selected" : "transparent" }}>Project Agents</Button>
       <Button fullWidth color="inherit" aria-label="Open Shared Browser" aria-current={route.kind === "browser" ? "page" : undefined} onClick={() => onNavigate({ kind: "browser", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "browser", projectId: project.project.id } }); }} startIcon={<LanguageIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "browser" ? "text.primary" : "text.secondary", bgcolor: route.kind === "browser" ? "action.selected" : "transparent" }}>Shared Browser</Button>
       <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.project.id } }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project Overview</Button>
+      <SidebarSortControl sort={workspaceResourceSort(preferences, "chat")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("chat", sort))} />
     </Box>
   </Box> : null;
 
-  const settingsPanel = <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}><SettingsOutlinedIcon sx={{ mr: 1 }} /><Typography variant="h6" fontWeight={800}>Settings</Typography></Stack><List sx={{ px: 1.25 }}><ListItemButton selected={route.kind === "settings" && (route.section ?? "general") === "general"} onClick={() => onNavigate({ kind: "settings", section: "general" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SettingsOutlinedIcon /></ListItemIcon><ListItemText primary="General" secondary="Appearance and Agent defaults" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "providers"} onClick={() => onNavigate({ kind: "settings", section: "providers" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SmartToyOutlinedIcon /></ListItemIcon><ListItemText primary="AI Providers" secondary="Availability, models, and reasoning" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "notifications"} onClick={() => onNavigate({ kind: "settings", section: "notifications" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><NotificationsNoneOutlinedIcon /></ListItemIcon><ListItemText primary="Notifications" secondary="In-app and browser attention" /></ListItemButton><ListItemButton selected={route.kind === "usage"} onClick={() => onNavigate({ kind: "usage" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon><ListItemText primary="Provider Activity" secondary="Run telemetry and estimates" /></ListItemButton></List></Box>;
-  const profilePanel = <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", bgcolor: sidebarSurface }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}><OperatorAvatar profile={preferences.profile} size={42} /><Box sx={{ minWidth: 0 }}><Typography variant="h6" fontWeight={800} noWrap>{preferences.profile.displayName}</Typography><Typography variant="caption" color="text.secondary">#{preferences.profile.handle}</Typography></Box></Stack><List sx={{ px: 1.25 }}><ListItemButton selected={route.kind === "profile"} onClick={() => onNavigate({ kind: "profile" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><PersonOutlineIcon /></ListItemIcon><ListItemText primary="Edit Operator Profile" secondary="Name, handle, and picture" /></ListItemButton><ListItemButton onClick={() => revealSection("settings")} sx={{ borderRadius: 1.25 }}><ListItemIcon><SettingsOutlinedIcon /></ListItemIcon><ListItemText primary="Workspace Settings" /></ListItemButton></List></Box>;
-  const panel = showingAgents ? agentsPanel : showingTriggers ? triggersPanel : showingWiki ? wikiPanel : showingSettings ? settingsPanel : showingProfile ? profilePanel : showingProjects ? projectsPanel : showingProjectNavigation && insideProject ? chatsPanel : projectsPanel;
+  const settingsPanel = <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}><SettingsOutlinedIcon sx={{ mr: 1 }} /><Typography variant="h6" fontWeight={800}>Settings</Typography></Stack><List sx={{ px: 1.25 }}><ListItemButton selected={route.kind === "settings" && (route.section ?? "general") === "general"} onClick={() => onNavigate({ kind: "settings", section: "general" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SettingsOutlinedIcon /></ListItemIcon><ListItemText primary="General" secondary="Appearance and Agent defaults" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "providers"} onClick={() => onNavigate({ kind: "settings", section: "providers" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SmartToyOutlinedIcon /></ListItemIcon><ListItemText primary="AI Providers" secondary="Availability, models, and reasoning" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "notifications"} onClick={() => onNavigate({ kind: "settings", section: "notifications" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><NotificationsNoneOutlinedIcon /></ListItemIcon><ListItemText primary="Notifications" secondary="In-app and browser attention" /></ListItemButton><ListItemButton selected={route.kind === "usage"} onClick={() => onNavigate({ kind: "usage" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon><ListItemText primary="Provider Activity" secondary="Tokens and Run telemetry" /></ListItemButton></List></Box>;
+  const panel = showingAgents ? agentsPanel : showingChats ? globalChatsPanel : showingTriggers ? triggersPanel : showingWiki ? wikiPanel : showingSettings ? settingsPanel : showingProjects ? projectsPanel : showingProjectNavigation && insideProject ? chatsPanel : homePanel;
   const [resizing, setResizing] = useState(false);
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;

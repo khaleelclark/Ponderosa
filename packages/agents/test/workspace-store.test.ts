@@ -16,7 +16,7 @@ function fixture() {
 describe("WorkspaceStore canonical replay", () => {
   it("persists synced preferences and revisioned drafts with deterministic conflicts", () => {
     const { dir, store } = fixture();
-    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], homeOrder: ["agent:a", "project:two"], chatOrder: ["chat-b"], agentOrder: ["a"], triggerOrder: ["t"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
+    store.updatePreferences({ projectSort: "custom", projectOrder: ["two", "one"], homeSort: "custom", homeOrder: ["agent:a", "project:two"], chatSort: "alphabetical", chatOrder: ["chat-b"], agentSort: "custom", agentOrder: ["a"], triggerSort: "last_used", triggerOrder: ["t"], starredResourceIds: ["agent:a", "project:two"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
     const first = store.putDraft("chat", { text: "first", attachmentIds: ["asset"], expectedRevision: 0, clientId: "tab-a" });
     expect(first.revision).toBe(1);
     let conflict: unknown;
@@ -25,7 +25,7 @@ describe("WorkspaceStore canonical replay", () => {
 
     const restarted = new WorkspaceStore(dir);
     expect(restarted.instanceId()).toBe(store.instanceId());
-    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], homeOrder: ["agent:a", "project:two"], chatOrder: ["chat-b"], agentOrder: ["a"], triggerOrder: ["t"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
+    expect(restarted.getPreferences()).toMatchObject({ projectSort: "custom", projectOrder: ["two", "one"], homeSort: "custom", homeOrder: ["agent:a", "project:two"], chatSort: "alphabetical", chatOrder: ["chat-b"], agentSort: "custom", agentOrder: ["a"], triggerSort: "last_used", triggerOrder: ["t"], starredResourceIds: ["agent:a", "project:two"], starredProjectIds: ["two"], sidebarWidth: 340, maxConcurrentAgentRuns: 5, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
     expect(restarted.getDraft("chat")).toEqual(first);
     expect(restarted.listDraftConflicts("chat").conflicts).toEqual([expect.objectContaining({ current: first, displaced: expect.objectContaining({ text: "stale" }) })]);
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));

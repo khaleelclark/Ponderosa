@@ -48,27 +48,6 @@ export interface EffortOption {
   label: string;
 }
 
-/** Public API list-price proxy for one subscription-authenticated runtime model. */
-export interface ApiPriceProfile {
-  id: string;
-  /** Exact API model used for the price, or the explicit proxy model for an alias. */
-  pricingModel: string;
-  catalogVersion: string;
-  effectiveAt: string;
-  sourceUrl: string;
-  inputUsdPerMillion: number;
-  cachedInputUsdPerMillion: number;
-  cacheWriteInputUsdPerMillion?: number;
-  outputUsdPerMillion: number;
-  /** True when the selected runtime alias is priced through a documented proxy model. */
-  proxy?: boolean;
-  longContext?: {
-    inputTokenThreshold: number;
-    inputMultiplier: number;
-    outputMultiplier: number;
-  };
-}
-
 /** Options shared by both `seed()` and `continue()`. */
 export interface RunOptionsBase {
   agentId: string;
@@ -279,9 +258,6 @@ export interface Adapter {
   defaultModel?(): string | undefined;
   /** Concrete adapter-owned fallback for the selected model. */
   defaultEffort?(model?: string): string | undefined;
-
-  /** API list-price proxy only; Ponderosa never calls a provider billing API. */
-  apiPriceProfile?(model?: string): ApiPriceProfile | undefined;
 
   /** Open the V1 persistent runtime. Required by steer-capable adapters. */
   openSession?(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession>;

@@ -14,7 +14,6 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type {
   Adapter,
-  ApiPriceProfile,
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
@@ -26,7 +25,6 @@ import type {
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
-import { codexApiPriceProfile } from "./api-pricing.js";
 import { mapCodexEvent } from "./events.js";
 import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./process.js";
 import { discoverCliMcps, parseCodexMcpList } from "./capabilities.js";
@@ -186,10 +184,6 @@ export class CodexAdapter implements Adapter {
     const selectedModel = this.listModels().find((option) => option.id === (model ?? this.defaultModel()));
     const efforts = this.listEfforts(selectedModel?.id);
     return selectedModel?.defaultEffort ?? efforts.find((option) => option.id === "medium")?.id ?? efforts[0]?.id;
-  }
-
-  apiPriceProfile(model?: string): ApiPriceProfile | undefined {
-    return codexApiPriceProfile(model);
   }
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {

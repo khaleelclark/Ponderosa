@@ -3893,6 +3893,17 @@ export class AgentStore {
     const rows = this.getUsageRows(scope, range);
     const finalizedRuns = rows.length;
     const reportedRuns = rows.filter((row) => row.totalTokens !== undefined).length;
+    const providerRequests = rows.reduce((total, row) => {
+      if (!row.providerRequestUsageJson) return total;
+      try {
+        const parsed = JSON.parse(row.providerRequestUsageJson) as unknown;
+        return total + (Array.isArray(parsed) ? parsed.length : 0);
+      } catch { return total; }
+    }, 0);
+    const durationMs = rows.reduce((total, row) => {
+      if (!row.completedAt) return total;
+      return total + Math.max(0, new Date(row.completedAt).getTime() - new Date(row.startedAt).getTime());
+    }, 0);
     const keys: TokenUsageMetric[] = ["inputTokens", "cachedInputTokens", "cacheWriteInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"];
     const totals: TokenUsage = {};
     const metricAvailability = Object.fromEntries(keys.map((key) => [key, rows.some((row) => row.usage[key] !== undefined) ? "available" : "unavailable"])) as Record<TokenUsageMetric, "available" | "unavailable">;
@@ -3915,8 +3926,6 @@ export class AgentStore {
         ...(row.model ? { model: row.model } : {}),
         runs: 0,
         usage: {},
-        pricingAvailableRuns: 0,
-        unpricedRuns: 0,
       };
       current.runs += 1;
       for (const keyName of keys) {
@@ -3932,6 +3941,8 @@ export class AgentStore {
       finalizedRuns,
       reportedRuns,
       unreportedRuns: finalizedRuns - reportedRuns,
+      providerRequests,
+      durationMs,
       coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
       ...(range.from || range.to ? { range } : {}),
       metricAvailability,
@@ -3952,7 +3963,6 @@ export class AgentStore {
           startedAt: row.startedAt,
           ...(row.completedAt ? { completedAt: row.completedAt } : {}),
           usage: row.usage,
-          pricingAvailable: false,
         })),
     };
   }

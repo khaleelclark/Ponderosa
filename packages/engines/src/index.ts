@@ -20,7 +20,6 @@ export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLin
 export { codexAuthStatus, codexHome, claudeAuthStatus, claudeAvailabilityStatus } from "./auth.js";
 export { shouldRolloverEngineSession, classifyProviderFailure } from "./session-recovery.js";
 export type { ProviderFailureKind } from "./session-recovery.js";
-export { codexApiPriceProfile, claudeApiPriceProfile } from "./api-pricing.js";
 export { composerCapabilities, discoverEnginePlugins, discoverMarkdownCommands, parseClaudeMcpList, parseCodexMcpList } from "./capabilities.js";
 
 // Re-export the Adapter contract from core so consumers import engines in one place.
