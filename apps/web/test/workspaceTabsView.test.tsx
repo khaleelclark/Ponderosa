@@ -95,6 +95,27 @@ describe("workspace tab bar", () => {
     client.clear();
   });
 
+  it("omits the close icon when only one tab remains", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const tabs = openWorkspaceTab([], { kind: "allChat" }, 1, "home-tab");
+    const view = create(<QueryClientProvider client={client}><WorkspaceTabs
+      tabs={tabs}
+      projects={[]}
+      activeKey="home-tab"
+      onActivate={vi.fn()}
+      onCreate={vi.fn()}
+      onClose={vi.fn()}
+      onCloseOthers={vi.fn()}
+      onRename={vi.fn()}
+      onReorder={vi.fn()}
+    /></QueryClientProvider>);
+
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Close Home")).toHaveLength(0);
+    expect(view.root.findByProps({ "aria-label": "Open Home in Ponderosa" })).toBeTruthy();
+    view.unmount();
+    client.clear();
+  });
+
   it("visibly presents an inactive close control for native and MUI focus-visible states", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const tabs = openWorkspaceTab(
@@ -114,7 +135,7 @@ describe("workspace tab bar", () => {
     /></QueryClientProvider>);
 
     const inactiveClose = view.root.findByProps({ "aria-label": "Close Projects" });
-    expect(inactiveClose.props.disabled).toBe(false);
+    expect(inactiveClose.props.disabled).toBeUndefined();
     expect(inactiveClose.props.sx.opacity).toEqual({ xs: 0.45, md: 0 });
     expect(inactiveClose.props.sx["&:focus-visible, &.Mui-focusVisible"]).toEqual({
       color: "text.primary",

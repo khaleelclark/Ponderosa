@@ -163,8 +163,8 @@ export function WorkspaceTabs({
               </Typography>
             </ButtonBase>
           </Tooltip>
-          <IconButton
-            size="small" aria-label={`Close ${label}`} disabled={tabs.length === 1}
+          {tabs.length > 1 ? <IconButton
+            size="small" aria-label={`Close ${label}`}
             onClick={(event) => { event.stopPropagation(); onClose(tab.key); }}
             sx={{
               width: { xs: 36, md: 28 }, minWidth: { xs: 36, md: 28 }, height: { xs: 36, md: 28 }, alignSelf: "center", mr: 0.25, color: "text.secondary",
@@ -172,7 +172,7 @@ export function WorkspaceTabs({
               "&:focus-visible, &.Mui-focusVisible": { color: "text.primary", opacity: 1 },
               "@container (max-width: 86px)": { display: "none" },
             }}
-          ><CloseIcon sx={{ fontSize: 14 }} /></IconButton>
+          ><CloseIcon sx={{ fontSize: 14 }} /></IconButton> : null}
         </Box>;
       })}
     </Stack>

@@ -190,8 +190,10 @@ usage demonstrates that the flexibility/safety tradeoff requires it.
 Home combines All Chat with a collapsible, resizable explorer-style Project
 sidebar rather than presenting them as competing destinations. Project sorting
 is either Last used or Alphabetical and is a synced server preference. Selecting
-a Project opens its Project Overview; selecting a Project chat opens that chat.
-The Wiki reuses the same sidebar surface for its article navigation instead of
+a Home navigation icon reveals that sidebar without replacing the current tab;
+content changes only when the operator selects All Chat, a Project, or another
+explicit destination. Selecting a Project opens its Project Overview; selecting
+a Project chat opens that chat. The Wiki reuses the same sidebar surface instead of
 nesting a second documentation sidebar inside the content view.
 Semantic navigation preferences—including project sorting, custom project order,
 and the last-used Project chat—remain server-synced so navigation is coherent

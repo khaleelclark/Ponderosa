@@ -292,7 +292,6 @@ export function WorkspaceSidebar({
   const showHome = () => {
     setSidebarSection("projects");
     setFilter("");
-    onNavigate({ kind: "allChat" });
   };
   const openAllProjects = () => {
     showProjects();
