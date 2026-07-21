@@ -6,7 +6,7 @@ import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import { Box, Button, ButtonBase, Chip, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQueries } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { engineAvailabilityPresentation } from "../conversationEngine";
@@ -55,8 +55,10 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const conversationQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["conversations", project.id], queryFn: () => api.listConversations(project.id), staleTime: 10_000 })) });
   const agentQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agents", project.id], queryFn: () => api.listAgents(project.id), staleTime: 5_000 })) });
   const healthQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agent-health", project.id], queryFn: () => api.getAgentHealth(project.id), staleTime: 5_000 })) });
+  const triggersQuery = useQuery({ queryKey: ["triggers"], queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const conversations = conversationQueries.flatMap((query, index) => (query.data ?? []).map((conversation) => ({ conversation, project: projects[index]! })));
   const agents = agentQueries.flatMap((query, index) => (query.data ?? []).map((agent) => ({ agent, project: projects[index]! })));
+  const agentDestinations = new Map(agents.map(({ agent, project }) => [agent.id, { agent, project }] as const));
   const activeAgents = healthQueries.reduce((count, query) => count + (query.data?.agents ?? []).filter((item) => item.status === "running" || item.status === "compacting").length, 0);
   const needsAttention = notifications.filter((item) => !item.readAt && (item.severity === "urgent" || item.severity === "attention")).length;
   const unread = notifications.filter((item) => !item.readAt).length;
@@ -66,6 +68,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     ...projects.map((project) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
     ...conversations.filter(({ conversation }) => !conversation.archived).map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
     ...agents.filter(({ agent }) => !agent.archived).map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <PersonOutlineIcon fontSize="small" /> })),
+    ...(triggersQuery.data ?? []).flatMap((trigger) => { const destination = agentDestinations.get(trigger.agentId); return destination ? [{ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${destination.project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> }] : []; }),
   ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 10);
   const recent = orderHomeResources(recentByActivity, preferences.homeOrder);
 
@@ -95,7 +98,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
       {starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((project) => <Chip key={project.id} clickable icon={<FolderOutlinedIcon />} label={project.label} onClick={() => onNavigate({ kind: "project", projectId: project.id })} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: { kind: "project", projectId: project.id } }); }} />)}</Stack></Box> : null}
 
       <Box component="section">
-        <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "projects" })}>View All</Button></Stack>
+        <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "allChats" })}>View All Chats</Button></Stack>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
           {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeOrder: reorderHomeResources(preferences.homeOrder, recent.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
           {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}

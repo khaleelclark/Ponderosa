@@ -55,6 +55,8 @@ import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection
 import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
 import { HomeView } from "./components/HomeView";
+import { AllAgentsWorkspace, AllChatsWorkspace, AllTriggersWorkspace, ProviderActivityWorkspace } from "./components/WorkspaceResourceViews";
+import { OperatorProfileWorkspace, WorkspaceSettingsView } from "./components/WorkspaceSettingsView";
 import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
@@ -282,7 +284,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (route.kind === "home" || route.kind === "projects" || route.kind === "allChat" || route.kind === "allAgents" || route.kind === "wiki") return;
+    if (["home", "projects", "allChat", "allChats", "allAgents", "allTriggers", "settings", "profile", "usage", "wiki"].includes(route.kind)) return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
@@ -587,14 +589,14 @@ export default function App({
   const openSettings = () => {
     setGlobalInstructionsDraft(preferences.globalInstructions);
     setMaxConcurrentAgentRunsDraft(String(preferences.maxConcurrentAgentRuns));
-    setNotificationSettingsOpen(true);
+    navigateWorkspace({ kind: "settings", section: "general" });
   };
   const openOperatorProfile = () => {
     setProfileNameDraft(preferences.profile.displayName);
     setProfileHandleDraft(preferences.profile.handle);
     setProfileAvatarDraft(preferences.profile.avatarId);
     setProfileUploadError(undefined);
-    setOperatorProfileOpen(true);
+    navigateWorkspace({ kind: "profile" });
   };
   const openProjectSettings = (project: ProjectDto) => {
     setSettingsProjectId(project.id);
@@ -653,7 +655,7 @@ export default function App({
           <Tooltip title={selectedProjectId ? "Shared Browser" : "Select a Project to use its Shared Browser"}><span><IconButton aria-label="Open Shared Browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
-            <TokenUsageButton scope="overall" label="Overall" />
+            <TokenUsageButton scope="overall" label="Overall" onViewInWorkspace={() => navigateWorkspace({ kind: "usage" })} />
           </Box>
           <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
@@ -670,6 +672,8 @@ export default function App({
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRoute}
             onCreateProject={() => openProjectCreator()}
+            onCreateAgent={() => beginHomeCreate("agent")}
+            onCreateTrigger={() => beginHomeCreate("trigger")}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
@@ -696,6 +700,7 @@ export default function App({
           onClose={closeWorkspaceView}
           onSearch={() => setGlobalSearchOpen(true)}
           onOpenInbox={() => setNotificationPanelOpen(true)}
+          onOpenUsage={(projectId) => navigateWorkspace({ kind: "usage", ...(projectId ? { projectId } : {}) })}
           onCloseOthers={closeOtherWorkspaceViews}
           onRename={renameWorkspaceView}
           onReorder={reorderWorkspaceViews}
@@ -723,15 +728,6 @@ export default function App({
               Ponderosa could not load its workspace data. Check the server connection and try again.
             </Alert>
           </Box>
-        ) : projects.length === 0 && !projectsQuery.isLoading ? (
-          <Box sx={{ minHeight: 0, display: "grid", placeItems: "center", p: 2 }}>
-            <Stack spacing={1.5} sx={{ alignItems: "center", maxWidth: 480, textAlign: "center", p: { xs: 2.5, sm: 4 }, border: 1, borderColor: "divider", borderRadius: 3, bgcolor: "background.paper" }}>
-              <Box component="img" src={appIconSource} alt="" sx={{ width: 56, height: 56, borderRadius: 2, objectFit: "contain" }} />
-              <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
-              <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={() => openProjectCreator(!preferences.onboardingCompletedAt)}>Create Your First Project</Button>
-            </Stack>
-          </Box>
         ) : route.kind === "home" ? (
           <HomeView
             projects={projects}
@@ -749,7 +745,7 @@ export default function App({
           />
         ) : route.kind === "allChat" ? (
           <AllChatView onNavigate={navigateWorkspace} />
-        ) : route.kind === "projects" || route.kind === "allAgents" ? (
+        ) : route.kind === "projects" ? (
           <AllProjectsView
             projects={projects}
             preferences={preferences}
@@ -759,6 +755,48 @@ export default function App({
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
           />
+        ) : route.kind === "allAgents" ? (
+          <AllAgentsWorkspace
+            projects={projects}
+            filterProjectId={route.filterProjectId}
+            preferences={preferences}
+            onPreferences={savePreferences}
+            onNavigate={navigateWorkspace}
+            onOpenInNewTab={openWorkspaceRoute}
+            onCreate={(projectId) => projectId ? createHomeAgent(projectId) : beginHomeCreate("agent")}
+          />
+        ) : route.kind === "allChats" ? (
+          <AllChatsWorkspace
+            projects={projects}
+            filterProjectId={route.filterProjectId}
+            preferences={preferences}
+            onPreferences={savePreferences}
+            onNavigate={navigateWorkspace}
+            onOpenInNewTab={openWorkspaceRoute}
+            onCreate={(projectId) => projectId ? void createHomeChat(projectId) : beginHomeCreate("chat")}
+          />
+        ) : route.kind === "allTriggers" ? (
+          <AllTriggersWorkspace
+            projects={projects}
+            preferences={preferences}
+            onPreferences={savePreferences}
+            onNavigate={navigateWorkspace}
+            onOpenInNewTab={openWorkspaceRoute}
+            onCreate={(projectId) => projectId ? void createHomeTrigger(projectId) : beginHomeCreate("trigger")}
+          />
+        ) : route.kind === "settings" ? (
+          <WorkspaceSettingsView
+            preferences={preferences}
+            engines={engines}
+            colorMode={colorMode}
+            onToggleColorMode={onToggleColorMode}
+            onPreferences={savePreferences}
+            section={route.section}
+          />
+        ) : route.kind === "profile" ? (
+          <OperatorProfileWorkspace preferences={preferences} onPreferences={savePreferences} />
+        ) : route.kind === "usage" ? (
+          <ProviderActivityWorkspace projects={projects} projectId={route.projectId} />
         ) : selectedProjectId ? (
           <ProjectShell
             projectId={selectedProjectId}
@@ -799,6 +837,8 @@ export default function App({
           onNavigate={(next) => { setMobileNavOpen(false); navigateWorkspace(next); }}
           onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
           onCreateProject={() => { setMobileNavOpen(false); openProjectCreator(); }}
+          onCreateAgent={() => { setMobileNavOpen(false); beginHomeCreate("agent"); }}
+          onCreateTrigger={() => { setMobileNavOpen(false); beginHomeCreate("trigger"); }}
           onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
           onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}

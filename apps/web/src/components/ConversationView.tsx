@@ -295,6 +295,7 @@ export function ConversationView({
   onOpenWorkLog,
   onOpenRosterAgent,
   onOpenRosterAgentInNewTab,
+  onOpenProjectAgents,
   initialAgentsOpen = false,
   onInitialAgentsOpenConsumed,
   onOpenReview,
@@ -315,6 +316,7 @@ export function ConversationView({
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   onOpenRosterAgentInNewTab?(agentId: string): void;
+  onOpenProjectAgents(): void;
   initialAgentsOpen?: boolean;
   onInitialAgentsOpenConsumed?(): void;
   onOpenReview?(agentId: string): void;
@@ -1091,9 +1093,9 @@ export function ConversationView({
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Project Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "main"} aria-label="Switch to project chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Project Chat</Button>
+          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentsOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); setAgentsOpen(true); }} aria-pressed={agentsOpen} aria-label={`View ${agents.length} agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary", "&::after": agentsOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Agents</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
         </Stack>
         </Collapse>
       </Box>

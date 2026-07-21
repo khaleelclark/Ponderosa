@@ -248,6 +248,7 @@ export function ProjectShell({
         onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
         onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
+        onOpenProjectAgents={() => navigate({ kind: "allAgents", filterProjectId: projectId })}
         initialAgentsOpen={reopenRoster}
         onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
         onOpenReview={openAgentReview}

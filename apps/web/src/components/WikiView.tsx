@@ -40,8 +40,8 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
     navigate({ kind: "wiki", articleId: candidate.id });
   };
 
-  return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-    <Paper square elevation={0} sx={{ px: { xs: 2, md: 3 }, py: 1.5, borderBottom: 1, borderColor: "divider", zIndex: 2 }}>
+  return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
+    <Paper aria-hidden square elevation={0} sx={{ display: "none" }}>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" } }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: { sm: 230 } }}>
           <MenuBookOutlinedIcon color="primary" />

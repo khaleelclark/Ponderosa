@@ -34,7 +34,12 @@ export type Route =
   | { kind: "home" }
   | { kind: "projects" }
   | { kind: "allChat" }
-  | { kind: "allAgents" }
+  | { kind: "allChats"; filterProjectId?: string }
+  | { kind: "allAgents"; filterProjectId?: string }
+  | { kind: "allTriggers" }
+  | { kind: "settings"; section?: "general" | "providers" | "notifications" }
+  | { kind: "profile" }
+  | { kind: "usage"; projectId?: string }
   | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
@@ -63,8 +68,15 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts.length === 0) return { kind: "home" };
   if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
-  if (parts.length === 1 && parts[0] === "chats") return { kind: "allChat" };
-  if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents" };
+  if (parts.length === 1 && parts[0] === "chats") return { kind: "allChats", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };
+  if (parts.length === 1 && parts[0] === "agents") return { kind: "allAgents", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };
+  if (parts.length === 1 && parts[0] === "triggers") return { kind: "allTriggers" };
+  if (parts[0] === "settings") {
+    const section = parts[1];
+    return { kind: "settings", ...(["general", "providers", "notifications"].includes(section ?? "") ? { section: section as "general" | "providers" | "notifications" } : {}) };
+  }
+  if (parts.length === 1 && parts[0] === "profile") return { kind: "profile" };
+  if (parts.length === 1 && parts[0] === "usage") return { kind: "usage", ...(query.get("project") ? { projectId: query.get("project")! } : {}) };
   if (parts[0] === "wiki") return { kind: "wiki", ...(parts[1] ? { articleId: decodeURIComponent(parts[1]) } : {}) };
   if (parts[0] !== "projects" || !parts[1]) {
     return { kind: "home" };
@@ -111,8 +123,18 @@ export function routeToPath(route: Route): string {
       return "/projects";
     case "allChat":
       return "/messages";
+    case "allChats":
+      return `/chats${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`;
     case "allAgents":
-      return "/agents";
+      return `/agents${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`;
+    case "allTriggers":
+      return "/triggers";
+    case "settings":
+      return `/settings${route.section ? `/${route.section}` : ""}`;
+    case "profile":
+      return "/profile";
+    case "usage":
+      return `/usage${route.projectId ? `?project=${encodeURIComponent(route.projectId)}` : ""}`;
     case "wiki":
       return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
     case "project":
