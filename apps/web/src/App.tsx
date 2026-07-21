@@ -1,4 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
@@ -8,6 +10,9 @@ import CloseIcon from "@mui/icons-material/Close";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import PhotoCameraOutlinedIcon from "@mui/icons-material/PhotoCameraOutlined";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   AppBar,
   Box,
@@ -145,6 +150,9 @@ export default function App({
   const [projectDefaultModel, setProjectDefaultModel] = useState("");
   const [projectDefaultEffort, setProjectDefaultEffort] = useState("");
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [onboardingProjectCreation, setOnboardingProjectCreation] = useState(false);
+  const [onboardingCompleteOpen, setOnboardingCompleteOpen] = useState(false);
+  const onboardingPrompted = useRef(false);
   const [notificationSettingsOpen, setNotificationSettingsOpen] = useState(false);
   const [operatorProfileOpen, setOperatorProfileOpen] = useState(false);
   const [globalInstructionsDraft, setGlobalInstructionsDraft] = useState("");
@@ -319,6 +327,13 @@ export default function App({
       setProjectDefaultEngine("");
       setProjectDefaultModel("");
       setProjectDefaultEffort("");
+      if (onboardingProjectCreation) {
+        const completedAt = new Date().toISOString();
+        queryClient.setQueryData(["workspace-preferences"], (current: import("@ponderosa/core").WorkspacePreferencesDto | undefined) => current ? { ...current, onboardingCompletedAt: completedAt } : current);
+        void api.updateWorkspacePreferences({ onboardingCompletedAt: completedAt }).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
+        setOnboardingProjectCreation(false);
+        setOnboardingCompleteOpen(true);
+      }
       navigate(project.lastConversationId ? { kind: "conversation", projectId: project.id, conversationId: project.lastConversationId } : { kind: "project", projectId: project.id });
     },
   });
@@ -393,11 +408,30 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
   };
+  const openProjectCreator = (onboarding = false) => {
+    setOnboardingProjectCreation(onboarding);
+    if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? "");
+    setProjectDialogOpen(true);
+  };
+  const closeProjectCreator = () => {
+    setProjectDialogOpen(false);
+    setOnboardingProjectCreation(false);
+  };
+
+  useEffect(() => {
+    if (!projectsQuery.isSuccess || !preferencesQuery.isSuccess || !enginesQuery.isSuccess || onboardingPrompted.current) return;
+    if (projects.length > 0 || preferences.onboardingCompletedAt) return;
+    onboardingPrompted.current = true;
+    setOnboardingProjectCreation(true);
+    setProjectDefaultEngine((current) => current || engines.find(engineIsAvailable)?.id || "");
+    setProjectDialogOpen(true);
+  }, [engines, enginesQuery.isSuccess, preferences.onboardingCompletedAt, preferencesQuery.isSuccess, projects.length, projectsQuery.isSuccess]);
+
 
   useEffect(() => {
     const families = {
@@ -556,7 +590,7 @@ export default function App({
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
           <Box component="img" src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }, height: { xs: 26, sm: 28 }, mr: { xs: 0.75, sm: 1 }, borderRadius: 1, objectFit: "contain", flexShrink: 0 }} />
-          <ButtonBase aria-label="Open All Chat" onClick={() => navigateWorkspace({ kind: "allChat" })} sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", borderRadius: 1 }}>
+          <ButtonBase aria-label="Open Home" onClick={() => navigateWorkspace({ kind: "allChat" })} sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", borderRadius: 1 }}>
             <Typography variant="h6" component="h1" sx={{ fontWeight: 800, minWidth: 0 }} noWrap>Ponderosa</Typography>
           </ButtonBase>
           <Tooltip title={`${engineAvailability.label}. Click for provider details.`} arrow enterTouchDelay={0}>
@@ -573,7 +607,7 @@ export default function App({
           </Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title={selectedProjectId ? "Project browser" : "Select a Project to use its browser"}><span><IconButton aria-label="Open Project browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
-          <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
+          <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Box sx={{ ml: 1, display: { xs: "none", sm: "block" } }}>
             <TokenUsageButton scope="overall" label="Overall" />
           </Box>
@@ -591,7 +625,7 @@ export default function App({
             notifications={notificationsQuery.data ?? []}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRoute}
-            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
+            onCreateProject={() => openProjectCreator()}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
@@ -648,7 +682,7 @@ export default function App({
               <Box component="img" src={appIconSource} alt="" sx={{ width: 56, height: 56, borderRadius: 2, objectFit: "contain" }} />
               <Typography variant="h5" component="h2" fontWeight={800}>Start your first project</Typography>
               <Typography color="text.secondary">Choose a working folder, then chat normally. Ponderosa handles agents and orchestration behind the conversation.</Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}>New Project</Button>
+              <Button variant="contained" startIcon={<AddIcon />} onClick={() => openProjectCreator(!preferences.onboardingCompletedAt)}>Create Your First Project</Button>
             </Stack>
           </Box>
         ) : route.kind === "allChat" ? (
@@ -658,7 +692,7 @@ export default function App({
             projects={projects}
             preferences={preferences}
             onNavigate={navigateWorkspace}
-            onCreateProject={() => { if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
+            onCreateProject={() => openProjectCreator()}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
           />
@@ -701,7 +735,7 @@ export default function App({
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); navigateWorkspace(next); }}
           onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
-          onCreateProject={() => { setMobileNavOpen(false); if (!projectDefaultEngine) setProjectDefaultEngine(engines.find(engineIsAvailable)?.id ?? ""); setProjectDialogOpen(true); }}
+          onCreateProject={() => { setMobileNavOpen(false); openProjectCreator(); }}
           onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
           onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
@@ -794,12 +828,13 @@ export default function App({
         }}
       />
 
-      <Dialog open={projectDialogOpen} onClose={() => setProjectDialogOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>New Project</DialogTitle>
+      <Dialog open={projectDialogOpen} onClose={closeProjectCreator} fullWidth maxWidth="sm">
+        <DialogTitle>{onboardingProjectCreation ? "Welcome to Ponderosa" : "New Project"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
+            {onboardingProjectCreation ? <Alert severity="info">Create your first Project to start prompting. You can change these choices later in Project Settings.</Alert> : null}
             <TextField
-              label="Label"
+              label="Project Name"
               value={projectLabel}
               onChange={(event) => setProjectLabel(event.target.value)}
               autoFocus
@@ -809,16 +844,19 @@ export default function App({
             <FormControl fullWidth><InputLabel id="project-default-engine-label">Default AI provider</InputLabel><Select labelId="project-default-engine-label" label="Default AI provider" value={projectDefaultEngine} onChange={(event) => { setProjectDefaultEngine(event.target.value); setProjectDefaultModel(""); setProjectDefaultEffort(""); }}>
               {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : engine.authenticated ? " — Unavailable" : " — Not Signed In"}</MenuItem>)}
             </Select></FormControl>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-              <FormControl fullWidth><InputLabel id="project-default-model-label">Default model</InputLabel><Select labelId="project-default-model-label" label="Default model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
-                <MenuItem value="">Automatic Default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
-                {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-              </Select></FormControl>
-              <FormControl fullWidth><InputLabel id="project-default-effort-label">Default reasoning</InputLabel><Select labelId="project-default-effort-label" label="Default reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
-                <MenuItem value="">Automatic Default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
-                {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-              </Select></FormControl>
-            </Stack>
+            <Accordion disableGutters elevation={0} sx={{ border: 1, borderColor: "divider", borderRadius: "8px !important", "&::before": { display: "none" } }}>
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}><Box><Typography variant="subtitle2">Advanced Settings</Typography><Typography variant="caption" color="text.secondary">Optional model and reasoning overrides</Typography></Box></AccordionSummary>
+              <AccordionDetails><Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
+                <FormControl fullWidth><InputLabel id="project-default-model-label">Default Model</InputLabel><Select labelId="project-default-model-label" label="Default Model" value={projectDefaultModel} onChange={(event) => { setProjectDefaultModel(event.target.value); setProjectDefaultEffort(""); }}>
+                  <MenuItem value="">Automatic Default — {newProjectEngine?.models.find((option) => option.id === newProjectInherited.model)?.label ?? newProjectInherited.model}</MenuItem>
+                  {(newProjectEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select></FormControl>
+                <FormControl fullWidth><InputLabel id="project-default-effort-label">Default Reasoning</InputLabel><Select labelId="project-default-effort-label" label="Default Reasoning" value={projectDefaultEffort} onChange={(event) => setProjectDefaultEffort(event.target.value)}>
+                  <MenuItem value="">Automatic Default — {newProjectEfforts.find((option) => option.id === newProjectInherited.effort)?.label ?? newProjectInherited.effort}</MenuItem>
+                  {newProjectEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select></FormControl>
+              </Stack></AccordionDetails>
+            </Accordion>
             {engines.filter(engineCanTestAccess).map((engine) => <Alert
               key={engine.id}
               severity="warning"
@@ -851,14 +889,28 @@ export default function App({
           </Stack>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setProjectDialogOpen(false)}>Cancel</Button>
+          <Button onClick={closeProjectCreator}>{onboardingProjectCreation ? "Not Now" : "Cancel"}</Button>
           <Button
             variant="contained"
             disabled={projectCreationDisabled({ label: projectLabel, mode: projectFolderMode, existingPath: projectPath, defaultEngine: projectDefaultEngine, pending: createProject.isPending })}
             onClick={() => createProject.mutate()}
           >
-            Create
+            {onboardingProjectCreation ? "Create Project and Continue" : "Create"}
           </Button>
+        </DialogActions>
+      </Dialog>
+      <Dialog open={onboardingCompleteOpen} onClose={() => setOnboardingCompleteOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>You’re Ready to Build</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ alignItems: "center", textAlign: "center", pt: 1 }}>
+            <Box sx={{ width: 56, height: 56, borderRadius: "50%", display: "grid", placeItems: "center", bgcolor: "action.selected", color: "primary.main" }}><MenuBookOutlinedIcon fontSize="large" /></Box>
+            <Typography>You’re all set. Have fun prompting, creating Agents, and building organizations.</Typography>
+            <Alert severity="info" icon={<MenuBookOutlinedIcon />}>Need help? Open the Wiki anytime using the book icon in the sidebar.</Alert>
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button startIcon={<MenuBookOutlinedIcon />} onClick={() => { setOnboardingCompleteOpen(false); navigateWorkspace({ kind: "wiki" }); }}>Open Wiki</Button>
+          <Button autoFocus variant="contained" onClick={() => setOnboardingCompleteOpen(false)}>Start Prompting</Button>
         </DialogActions>
       </Dialog>
       <HostFolderPicker open={folderPickerOpen} initialPath={projectPath || undefined} onClose={() => setFolderPickerOpen(false)} onChoose={(path) => {

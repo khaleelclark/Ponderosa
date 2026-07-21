@@ -23,7 +23,7 @@ const engineRoster: EngineDto[] = [
 const preferences: WorkspacePreferencesDto = {
   projectSort: "last_used", projectOrder: [], starredProjectIds: ["alpha"], sidebarCollapsed: false, sidebarWidth: 320,
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
-  fontFamily: "inter", providerAvailability: {}, globalInstructions: "", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: "2026-07-17T00:00:00.000Z",
+  fontFamily: "inter", providerAvailability: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, onboardingCompletedAt: "2026-07-17T00:00:00.000Z", profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: "2026-07-17T00:00:00.000Z",
 };
 describe("responsive workspace sidebar flow", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -73,23 +73,24 @@ describe("responsive workspace sidebar flow", () => {
 
     expect(view.root.findAll((node) => node.type === "div" && node.props["data-testid"] === "workspace-navigation-scroll")).toHaveLength(1);
     const rendered = JSON.stringify(view.toJSON());
-    expect(view.root.findAll((node) => node.props["aria-label"] === "Home")).toHaveLength(0);
-    expect(view.root.findByProps({ "aria-label": "All Chat" })).toBeTruthy();
+    expect(view.root.findByProps({ "aria-label": "Home" })).toBeTruthy();
+    expect(view.root.findAll((node) => node.props["aria-label"] === "Projects")).toHaveLength(0);
     expect(rendered).toContain("Search Project Chats");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
     expect(view.root.findAll((node) => node.props.color === "info" && node.props.badgeContent === 1)).toHaveLength(1);
     expect(view.root.findAll((node) => node.props.color === "error" && node.props.badgeContent === 1)).toHaveLength(1);
 
-    act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
-    expect(onNavigate).not.toHaveBeenCalledWith({ kind: "projects" });
+    act(() => view.root.findByProps({ "aria-label": "Home" }).props.onClick());
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "allChat" });
+    expect(view.root.findByProps({ "aria-label": "Open All Chat" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search projects");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View All Projects");
     act(() => view.root.findByProps({ children: "View All Projects" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" });
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project overview" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project agents" }).props.onClick());

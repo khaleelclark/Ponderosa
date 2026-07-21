@@ -1081,7 +1081,7 @@ describe("runtime settings API", () => {
 
     const initial = await app.inject({ method: "GET", url: "/api/workspace/preferences" });
     expect(initial.statusCode).toBe(200);
-    expect(initial.json()).toMatchObject({ maxConcurrentAgentRuns: 8 });
+    expect(initial.json()).toMatchObject({ maxConcurrentAgentRuns: 8, onboardingCompletedAt: null });
 
     for (const maxConcurrentAgentRuns of [0, 65, 1.5, "4"]) {
       const rejected = await app.inject({
@@ -1093,14 +1093,21 @@ describe("runtime settings API", () => {
       expect(rejected.json()).toMatchObject({ error: expect.stringContaining("integer from 1 to 64") });
     }
 
+    const invalidOnboarding = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: { onboardingCompletedAt: "not-a-date" },
+    });
+    expect(invalidOnboarding.statusCode).toBe(400);
+
     const updated = await app.inject({
       method: "PATCH",
       url: "/api/workspace/preferences",
-      payload: { maxConcurrentAgentRuns: 3 },
+      payload: { maxConcurrentAgentRuns: 3, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" },
     });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json()).toMatchObject({ maxConcurrentAgentRuns: 3 });
-    expect(new WorkspaceStore(dataDir).getPreferences()).toMatchObject({ maxConcurrentAgentRuns: 3 });
+    expect(updated.json()).toMatchObject({ maxConcurrentAgentRuns: 3, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
+    expect(new WorkspaceStore(dataDir).getPreferences()).toMatchObject({ maxConcurrentAgentRuns: 3, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
     await app.close();
   });
 });

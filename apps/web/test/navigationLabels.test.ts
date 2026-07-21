@@ -40,10 +40,10 @@ describe("launch navigation labels", () => {
     ]) expect(sources).not.toContain(retiredLabel);
   });
 
-  it("does not reintroduce Home as a route or navigation destination", () => {
+  it("presents the canonical All Chat route as Home without adding a duplicate route", () => {
     const routing = readSource("../src/routing.ts");
     const sidebar = readSource("../src/components/WorkspaceSidebar.tsx");
     expect(routing).not.toContain('| { kind: "home" }');
-    expect(sidebar).not.toContain('label="Home"');
+    expect(sidebar).toContain('label="Home"');
   });
 });

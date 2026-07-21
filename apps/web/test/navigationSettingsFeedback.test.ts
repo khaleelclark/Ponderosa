@@ -30,7 +30,8 @@ describe("navigation and settings feedback", () => {
   it("allows Project titles and Wiki content to consume their available width", () => {
     expect(sidebar).toContain('overflowWrap: "anywhere"');
     expect(overview).toContain('primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }}');
-    expect(wiki).toContain('xl: "270px minmax(0, 1fr) 280px"');
+    expect(wiki).toContain('xl: "minmax(0, 1fr) 280px"');
+    expect(wiki).not.toContain('md: "250px minmax(0, 1fr)"');
     expect(wiki).not.toContain('minmax(0, 820px)');
   });
 
