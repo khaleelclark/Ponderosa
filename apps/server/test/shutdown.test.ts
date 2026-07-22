@@ -10,15 +10,20 @@ describe("OS shutdown handlers", () => {
     };
     let release!: () => void;
     const barrier = new Promise<void>((resolve) => { release = resolve; });
-    const close = vi.fn(() => barrier);
+    const order: string[] = [];
+    const prepareForShutdown = vi.fn(() => { order.push("prepare"); });
+    const close = vi.fn(() => { order.push("close"); return barrier; });
     const dispose = installProcessShutdownHandlers({
       close,
+      prepareForShutdown,
       log: { info: vi.fn(), error: vi.fn() },
     } as never, host);
 
     listeners.get("SIGTERM")!("SIGTERM");
     listeners.get("SIGINT")!("SIGINT");
     expect(close).toHaveBeenCalledTimes(1);
+    expect(prepareForShutdown).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["prepare", "close"]);
     release();
     await barrier;
     dispose();

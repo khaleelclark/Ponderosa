@@ -14,7 +14,10 @@ export interface ProcessSignalHost {
  * provider termination barrier has settled and all server resources are closed.
  */
 export function installProcessShutdownHandlers(
-  app: Pick<FastifyInstance, "close" | "log"> & { retryProviderRuntimeShutdown?: () => Promise<void> },
+  app: Pick<FastifyInstance, "close" | "log"> & {
+    prepareForShutdown?: () => void;
+    retryProviderRuntimeShutdown?: () => Promise<void>;
+  },
   host: ProcessSignalHost = process,
 ): () => void {
   let shutdown: Promise<void> | undefined;
@@ -27,6 +30,7 @@ export function installProcessShutdownHandlers(
       if (!fastifyCloseAttempted) {
         fastifyCloseAttempted = true;
         try {
+          app.prepareForShutdown?.();
           await app.close();
         } catch (error) {
           const providerRuntimeOnly = (error as { providerRuntimeOnly?: unknown } | null)?.providerRuntimeOnly === true;
