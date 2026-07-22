@@ -152,6 +152,12 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   interrupt(): Promise<void>;
 }
 
+export interface ProviderRootExitDetail {
+  exitCode?: number | null;
+  signal?: string | null;
+  stderr?: string;
+}
+
 export interface OpenRuntimeSessionOptions {
   agentId: string;
   cwd: string;
@@ -169,7 +175,7 @@ export interface OpenRuntimeSessionOptions {
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
   /** Exactly-once notification that the persistent provider root exited or
    * failed to spawn. The host revokes any active Run before draining output. */
-  onRuntimeRootExit: () => void;
+  onRuntimeRootExit: (detail?: ProviderRootExitDetail) => void;
   /** Provider-native catalog notifications invalidate the host projection. */
   onCapabilitiesChanged?: () => void;
   signal: AbortSignal;

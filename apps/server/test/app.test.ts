@@ -1103,6 +1103,63 @@ describe("runtime settings API", () => {
 });
 
 describe("notification panel actions", () => {
+  it("reconciles a terminal user message once to its exact Chat and excludes internal Collaboration", async () => {
+    const project = store.createProject({ label: "Delivery attention", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Release chat" });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const userCommunication: CommunicationEvent = {
+      eventId: "failed-user-message", schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: recipient.id },
+      text: "Please deliver this", createdAt: "2026-07-21T20:00:00.000Z",
+    };
+    coordination.recordRuntimeCommunication({
+      id: userCommunication.eventId, projectId: project.id, sender: userCommunication.sender,
+      intent: userCommunication.intent, audience: userCommunication.audience,
+      payload: { communication: userCommunication }, scopeKey: `conversation:${conversation.id}`,
+      activation: { agentId: recipient.id, kind: "human_message", priority: 100, dispatchPolicy: "next_run", promptClass: "human" },
+      now: userCommunication.createdAt,
+    });
+    const collaboration: CommunicationEvent = {
+      eventId: "failed-collaboration", schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "agent", agentId: sender.id }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Internal handoff",
+      createdAt: "2026-07-21T20:00:01.000Z",
+    };
+    coordination.recordRuntimeCommunication({
+      id: collaboration.eventId, projectId: project.id, sender: collaboration.sender,
+      intent: collaboration.intent, audience: collaboration.audience,
+      payload: { communication: collaboration }, scopeKey: `conversation:${conversation.id}`,
+      activation: { agentId: recipient.id, kind: "ordinary_message", priority: 50, dispatchPolicy: "next_run", promptClass: "ordinary" },
+      now: collaboration.createdAt,
+    });
+    const lease = coordination.leaseNextRun({ workerId: "notification-test", now: "2026-07-21T20:01:00.000Z" })!;
+    expect(coordination.failRun({
+      runId: lease.runId, fencingToken: lease.fencingToken, workerId: "notification-test",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "recipient runtime is unavailable", now: "2026-07-21T20:01:01.000Z",
+    })).toBe("terminal");
+    const collaborationLease = coordination.leaseNextRun({ workerId: "notification-test-2", now: "2026-07-21T20:01:02.000Z" });
+    if (collaborationLease) expect(coordination.failRun({
+      runId: collaborationLease.runId, fencingToken: collaborationLease.fencingToken, workerId: "notification-test-2",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "internal delivery failed", now: "2026-07-21T20:01:03.000Z",
+    })).toBe("terminal");
+    expect(coordination.terminalActivations(project.id)).toHaveLength(2);
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0 } });
+    const first = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
+      category?: string; severity?: string; conversationId?: string; communicationEventId?: string; body: string;
+    }>>();
+    expect(first).toEqual([expect.objectContaining({
+      category: "communication", severity: "urgent", conversationId: conversation.id,
+      communicationEventId: userCommunication.eventId, body: expect.stringContaining("recipient runtime is unavailable"),
+    })]);
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toHaveLength(1);
+    await app.close();
+  });
+
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Release chat" });
@@ -3982,6 +4039,37 @@ describe("persistent engine steering", () => {
     expect(rejected.statusCode).toBe(401);
     await vi.waitFor(() => expect(persistent.closed).toBe(1));
     await vi.waitFor(() => expect(new CoordinationV3Store(store.sqlite).agentSnapshot(agent.id).activeRun).toBeUndefined());
+    await app.close();
+  });
+
+  it("retries an Activation on a fresh persistent session after a pre-submission root exit", async () => {
+    const persistent = new SteerableMockAdapter();
+    let releaseOpening!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpening = resolve; });
+    persistent.completeStartedTurns = true;
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
+    const project = store.createProject({ label: "Pre-submit root exit", hostPath: repoDir });
+    const agent = store.createAgent(project.id, { title: "Retry safely", engine: "codex" });
+
+    expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Retry this exactly once safely" },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    persistent.openedOptions[0]!.onRuntimeRootExit({ exitCode: 17, signal: null, stderr: "bounded failure" });
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    releaseOpening();
+    await vi.waitFor(() => expect(persistent.opened).toBe(2));
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+    expect(store.sqlite.prepare(`
+      SELECT status, prompt_injection_state, provider_failure_json FROM scheduler_runs
+      ORDER BY created_at LIMIT 1
+    `).get()).toMatchObject({
+      status: "failed",
+      prompt_injection_state: "not_injected",
+      provider_failure_json: expect.stringContaining('"exitCode":17'),
+    });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
     await app.close();
   });
 
@@ -8913,6 +9001,14 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT continuation_request_ids_json AS continuations FROM coordination_joins WHERE id = 'inner-join'
     `).get()).toEqual({ continuations: '["delivery-work"]' });
+    const progress = await persistent.openedOptions[1]!.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { updateId: "delivery-progress", kind: "progress", text: "Integration is continuing." },
+    });
+    expect(progress.success, progress.text).toBe(true);
+    expect(JSON.parse(progress.text)).toMatchObject({ state: "waiting_dependency" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'delivery-work'").get())
+      .toEqual({ state: "waiting_dependency" });
     persistent.completeTurn(1);
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM coordination_request_updates
@@ -8945,6 +9041,68 @@ describe("server chunk F", () => {
       SELECT COUNT(*) AS count FROM scheduler_runs WHERE status = 'outcome_unknown'
     `).get()).toEqual({ count: 0 });
     persistent.completeTurn(4);
+    await app.close();
+  });
+
+  it("accepts one Forge late result after Saratoga outcome uncertainty without reopening the old Join", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 4, leaseMs: 1_000 },
+      executionLeaseScheduling: { leaseMs: 5_000, heartbeatMs: 100 },
+    });
+    const project = store.createProject({ label: "Saratoga", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Forge" });
+    const requester = store.createAgent(project.id, { title: "Saratoga", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Forge", engine: "codex", conversationId: conversation.id });
+    await app.inject({ method: "POST", url: `/api/agents/${requester.id}/messages`, payload: {
+      text: "Ask Forge", sourceChannel: "main", sourceConversationId: conversation.id,
+    } });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const coordinated = await persistent.openedOptions[0]!.handleDynamicToolCall!({
+      name: "ponderosa_coordinate", arguments: {
+        idempotencyKey: "saratoga-forge-late", requests: [{
+          requestId: "forge-late-request", recipientAgentId: recipient.id,
+          text: "Finish the Forge result.", lifetime: { kind: "indefinite" },
+        }], join: { id: "saratoga-forge-join", mode: "all" },
+      },
+    });
+    expect(coordinated.success, coordinated.text).toBe(true);
+    persistent.completeTurn(0);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    const recipientRuntime = persistent.openedOptions[1]!;
+    const recipientRun = store.sqlite.prepare(`
+      SELECT id, fencing_token FROM scheduler_runs
+      WHERE agent_id = ? AND status = 'running'
+    `).get(recipient.id) as { id: string; fencing_token: number };
+    expect(new CoordinationV3Store(store.sqlite).failRun({
+      runId: recipientRun.id, fencingToken: recipientRun.fencing_token,
+      workerId: `server:${process.pid}`, sameRunResumable: false,
+    })).toBe("outcome_unknown");
+
+    const args = {
+      updateId: "forge-late-result", kind: "completed",
+      text: "Forge finished; audit current state and do not repeat it.",
+    };
+    const late = await recipientRuntime.handleDynamicToolCall!({ name: "ponderosa_update_request", arguments: args });
+    expect(late.success, late.text).toBe(true);
+    expect(JSON.parse(late.text)).toMatchObject({
+      requestId: "forge-late-request", state: "outcome_unknown", replayed: false,
+    });
+    const replay = await recipientRuntime.handleDynamicToolCall!({ name: "ponderosa_update_request", arguments: args });
+    expect(replay.success, replay.text).toBe(true);
+    expect(JSON.parse(replay.text)).toMatchObject({ replayed: true });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_requests WHERE id = 'forge-late-request'").get())
+      .toEqual({ state: "outcome_unknown" });
+    expect(store.sqlite.prepare("SELECT state FROM coordination_joins WHERE id = 'saratoga-forge-join'").get())
+      .toEqual({ state: "impossible" });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_request_late_results").get())
+      .toEqual({ count: 1 });
+    expect(store.sqlite.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_late_result'
+    `).get(requester.id)).toEqual({ count: 1 });
     await app.close();
   });
 

@@ -15,7 +15,7 @@ describe("navigation and settings feedback", () => {
   });
 
   it("keeps keyboard helpers out of local Project-chat search and mobile navigation", () => {
-    const projectSearch = sidebar.slice(sidebar.indexOf('placeholder="Search Project Chats"'), sidebar.indexOf("New Project Chat"));
+    const projectSearch = sidebar.slice(sidebar.indexOf('placeholder="Search Chats"'), sidebar.indexOf("New Chat"));
     expect(projectSearch).not.toContain("component=\"kbd\"");
     expect(sidebar).not.toContain('<SearchIcon /></RailButton>');
     expect(sidebar).not.toContain('component="kbd"');

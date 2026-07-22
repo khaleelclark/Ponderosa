@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
-import type { RuntimeProcessHandle } from "@ponderosa/core";
+import type { ProviderRootExitDetail, RuntimeProcessHandle } from "@ponderosa/core";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, processGroupAlive, terminateProcessGroup } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
@@ -58,7 +58,7 @@ export interface JsonRpcProcessOptions {
   killGraceMs?: number;
   /** Register authority immediately after spawn, before transport setup. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
-  onRuntimeRootExit: () => void;
+  onRuntimeRootExit: (detail?: ProviderRootExitDetail) => void;
   handleServerRequest?: (method: string, params: unknown) => Promise<unknown>;
   /** Observe provider notifications even while the Agent has no active turn and
    * the event iterator is not currently being pulled. */
@@ -87,10 +87,10 @@ export class JsonRpcProcess {
     });
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
-    const reportRootExit = () => {
+    const reportRootExit = (detail?: ProviderRootExitDetail) => {
       if (rootExitReported) return;
       rootExitReported = true;
-      opts.onRuntimeRootExit?.();
+      opts.onRuntimeRootExit?.(detail);
     };
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
@@ -126,11 +126,11 @@ export class JsonRpcProcess {
       const tail = lines.flush();
       if (tail !== undefined) this.receive(tail);
     });
-    const rootExited = () => {
+    const rootExited = (code?: number | null, signal?: NodeJS.Signals | null) => {
       // Host-initiated rollover, replacement, cancellation, and shutdown are
       // expected closes. Only an independently exiting root is a crash that
       // fences the active Run through onRuntimeRootExit.
-      if (!this.closed) reportRootExit();
+      if (!this.closed) reportRootExit({ exitCode: code, signal, stderr: this.stderrTail });
       // A descendant outside the owned process group can inherit stdout and
       // otherwise keep the provider event stream open forever. Allow already
       // buffered output to drain briefly, then close the transport locally.

@@ -64,9 +64,8 @@ export function engineAvailabilityPresentation(engines: EngineDto[]): {
     disabledSummary,
   ].filter(Boolean).join(" ");
 
-  return available.length > 0
-    ? { label: "Engine ready", severity: "success", detail }
-    : { label: "Needs attention", severity: "warning", detail };
+  if (unavailable.length > 0) return { label: "Needs attention", severity: "warning", detail };
+  return { label: "Engine ready", severity: "success", detail };
 }
 
 /**

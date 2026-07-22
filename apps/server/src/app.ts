@@ -73,6 +73,7 @@ import type {
   MessageReferenceDto,
   RuntimeProcessHandle,
   RuntimeSession,
+  ProviderRootExitDetail,
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
   TeamDirectoryDto,
@@ -2098,7 +2099,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
   const createOperationalNotification = (input: {
     dedupeKey: string;
-    category: "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
+    category: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
     severity: "info" | "attention" | "urgent";
     title: string;
     body: string;
@@ -2117,6 +2118,32 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const cursor = workspace.cursor();
     workspace.setNotificationStatus(current.id, "resolved");
     publishWorkspaceSince(cursor);
+  };
+  const reconcileCommunicationFailureNotifications = (): void => {
+    for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
+      if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
+      // Intent, not priority or rendered text, keeps internal Collaboration out
+      // of the operator notification tree.
+      if (!failure.communicationEventId || failure.communicationIntent === "collaboration") continue;
+      const conversationId = failure.scopeKey?.startsWith("conversation:")
+        ? failure.scopeKey.slice("conversation:".length)
+        : undefined;
+      const conversation = conversationId ? store.getConversation(conversationId) : undefined;
+      const issue = failure.lastDeliveryError ?? failure.outcome.replaceAll("_", " ");
+      createOperationalNotification({
+        dedupeKey: `communication-delivery:${failure.id}:${failure.outcome}`,
+        category: "communication",
+        severity: "urgent",
+        title: "Message delivery needs your help",
+        body: `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
+        projectId: failure.projectId,
+        ...(conversation ? { conversationId: conversation.id } : {}),
+        ...(failure.communicationEventId ? { communicationEventId: failure.communicationEventId } : {}),
+        action: conversation
+          ? { kind: "open_conversation", targetId: conversation.id }
+          : { kind: "open_project", targetId: failure.projectId },
+      });
+    }
   };
   const reconcileTriggerOperationalNotifications = (): void => {
     const triggers = coordinationV3.listTriggerDefinitions();
@@ -2410,14 +2437,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
-    if (denial) createOperationalNotification({
+    if (denial && providerEnabled(engineId)) createOperationalNotification({
       dedupeKey: `provider:${engineId}:unavailable`,
       category: "provider",
-      severity: "urgent",
+      severity: "attention",
       title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
       body: `${denial.detail ?? "The provider rejected runtime access."} Queued work is held until access is explicitly rechecked or a successful authorized Run proves recovery.`,
       action: { kind: "open_settings", targetId: engineId },
     });
+    if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);
   }
   const runtimeFailureDetail = (engineId: string): string | undefined => {
     const denial = engineAvailability.denial(engineId);
@@ -3134,7 +3162,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return operation;
   }
 
-  function persistentRootExited(agentId: string, identity: object): void {
+  function persistentRootExited(agentId: string, identity: object, detail?: ProviderRootExitDetail): void {
     const authority = runtimeAuthority(agentId);
     const runtime = authority?.reusable;
     if (runtime?.identity === identity) {
@@ -3166,13 +3194,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
     publish(agentId, lifecycle);
     try {
+      const promptInjectionState = coordinationV3.agentSnapshot(agentId).activeRun?.promptInjectionState ?? "not_injected";
       coordinationV3.failRun({
         runId: run.v3SchedulerRunId!,
         fencingToken: run.v3FencingToken!,
         workerId: coordinationV3WorkerId,
         sameRunResumable: false,
-        retryable: false,
+        retryable: true,
         error: "persistent provider root exited",
+        failureDetail: {
+          phase: promptInjectionState === "not_injected" ? "before_prompt_submission" : "provider_execution",
+          promptInjectionState,
+          ...detail,
+          message: "persistent provider root exited",
+        },
       });
     } catch { /* cancellation/deletion may already have advanced the fence */ }
     publishMessageDeliveryChanged(agentId);
@@ -3360,7 +3395,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     run && run.runId === capability.runId && run.messageCapability &&
     run.v3SchedulerRunId === capability.v3SchedulerRunId &&
     run.v3FencingToken === capability.v3FencingToken &&
-    coordinationV3.ownsRunForCleanup(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId),
+    (coordinationV3.ownsRunForCleanup(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId) ||
+      coordinationV3.ownsOutcomeUnknownRun(capability.v3SchedulerRunId, capability.v3FencingToken, coordinationV3WorkerId)),
   );
 
   function ownsActiveRun(agentId: string, run: ActiveRun): boolean {
@@ -11944,7 +11980,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 };
               },
               onRuntimeSpawned,
-              onRuntimeRootExit: () => persistentRootExited(agent.id, identity),
+              onRuntimeRootExit: (detail) => persistentRootExited(agent.id, identity, detail),
               onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
               signal: controller.signal,
             });
@@ -12320,10 +12356,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   detail: runError,
                   source: "provider_run",
                 });
-                createOperationalNotification({
+                if (providerEnabled(agent.activeEngine)) createOperationalNotification({
                   dedupeKey: `provider:${agent.activeEngine}:unavailable`,
                   category: "provider",
-                  severity: "urgent",
+                  severity: "attention",
                   title: `${engines.get(agent.activeEngine)?.adapter.displayName ?? agent.activeEngine} stopped accepting work`,
                   body: `${runError} Queued Runs using this provider are now held.`,
                   projectId: agent.projectId,
@@ -12363,6 +12399,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
                 retryable: failureKind !== "authentication",
                 error: `[${failureKind}] ${runError}`,
+                failureDetail: {
+                  phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
+                  promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
+                    ?? (v3PromptInjected ? "injected" : "not_injected"),
+                  message: runError,
+                },
               });
               }
               else coordinationV3!.completeRun(activeRun.v3SchedulerRunId, activeRun.v3FencingToken);
@@ -12615,7 +12657,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(204).send();
   });
 
-  app.get("/api/notifications", async () => workspace.listNotifications());
+  app.get("/api/notifications", async () => {
+    reconcileCommunicationFailureNotifications();
+    return workspace.listNotifications();
+  });
   app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
     const status = request.query.status;
     if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
@@ -13825,7 +13870,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     } else createOperationalNotification({
       dedupeKey: `provider:${request.params.id}:unavailable`,
       category: "provider",
-      severity: "urgent",
+      severity: "attention",
       title: `${registration.adapter.displayName} is unavailable`,
       body: result.detail ?? "The provider rejected the explicit access test. Queued work remains held.",
       action: { kind: "open_settings", targetId: request.params.id },

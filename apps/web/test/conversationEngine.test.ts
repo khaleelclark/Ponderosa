@@ -35,8 +35,8 @@ describe("Project chat engine initialization", () => {
       { ...engine("codex", true), displayName: "Codex" },
       { ...engine("claude", true), displayName: "Claude", available: false, availabilityDetail: "Subscription access is inactive." },
     ]);
-    expect(presentation.label).toBe("Engine ready");
-    expect(presentation.severity).toBe("success");
+    expect(presentation.label).toBe("Needs attention");
+    expect(presentation.severity).toBe("warning");
     expect(presentation.detail).toContain("1 of 2 enabled engines ready");
     expect(presentation.detail).toContain("Claude is unavailable: Subscription access is inactive.");
   });

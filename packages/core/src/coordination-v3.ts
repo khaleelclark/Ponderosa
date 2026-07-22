@@ -66,6 +66,8 @@ export interface CoordinationRequestSnapshot {
   state: CoordinationRequestState;
   version: number;
   openQuestionUpdateId?: string;
+  /** An open Join owned by this Request remains the authority for suspension. */
+  ownsUnresolvedJoin?: boolean;
 }
 
 export interface CoordinationRequestTransition {
@@ -111,7 +113,12 @@ export function reduceCoordinationRequest(
       if (current.state === "awaiting_answer") {
         throw new CoordinationTransitionError("answer or a terminal update is required while awaiting an answer");
       }
-      return { state: "in_progress", version: current.version + 1 };
+      return {
+        state: current.state === "waiting_dependency" && current.ownsUnresolvedJoin
+          ? "waiting_dependency"
+          : "in_progress",
+        version: current.version + 1,
+      };
     case "waiting_dependency":
       if (current.state === "awaiting_answer") {
         throw new CoordinationTransitionError("answer or a terminal update is required while awaiting an answer");

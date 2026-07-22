@@ -1,8 +1,7 @@
-import type { ArtifactContentDto, ArtifactDto } from "@ponderosa/core";
+import type { ArtifactDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../src/api";
 import { copyText } from "../src/clipboard";
 import { ArtifactsPane, EventLine } from "../src/components/panes";
 
@@ -31,23 +30,15 @@ describe("command activity copy", () => {
     view.unmount();
   });
 
-  it("uses the Agent code-block copy control for commands in Files & Results", async () => {
-    const command = "pnpm --filter @ponderosa/web test";
+  it("keeps command artifacts out of Files & Results because Activity owns them", async () => {
     const artifact = {
       id: "command-artifact",
       agentId: "agent-1",
       kind: "log",
       path: "000001-command.md",
-      summary: command,
+      summary: "pnpm --filter @ponderosa/web test",
       createdAt: "2026-07-20T12:00:00.000Z",
     } satisfies ArtifactDto;
-    const content = {
-      ...artifact,
-      content: `# Command\n\n\`\`\`bash\n${command}\n\`\`\`\n\ncwd: \`/repo\`\n`,
-      contentType: "markdown",
-    } satisfies ArtifactContentDto;
-    vi.spyOn(api, "getArtifact").mockResolvedValue(content);
-    vi.mocked(copyText).mockResolvedValue();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
 
@@ -60,10 +51,7 @@ describe("command activity copy", () => {
         onOpenRun={vi.fn()}
       /></QueryClientProvider>);
     });
-    await vi.waitFor(() => expect(view.root.findByProps({ "aria-label": "Copy code" })).toBeTruthy());
-    await act(async () => view.root.findByProps({ "aria-label": "Copy code" }).props.onClick());
-
-    expect(copyText).toHaveBeenCalledWith(command);
+    expect(JSON.stringify(view.toJSON())).toContain("command output is available in Activity");
     view.unmount();
     client.clear();
   });

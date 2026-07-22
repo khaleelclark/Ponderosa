@@ -44,8 +44,10 @@ export function notificationsNewestFirst(notifications: WorkspaceNotificationDto
   return [...notifications].sort(compareNotificationsNewestFirst);
 }
 
-export function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions"): WorkspaceNotificationDto[] {
-  return filter === "mentions" ? notifications.filter((item) => item.kind === "mentions") : notifications;
+export function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
+  if (filter === "mentions") return notifications.filter((item) => item.kind === "mentions");
+  if (filter === "urgent") return notifications.filter((item) => item.severity === "urgent" && (item.status ?? "open") === "open");
+  return notifications;
 }
 
 export function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
@@ -85,7 +87,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<"read" | "clear">();
   const [pendingProjectId, setPendingProjectId] = useState<string>();
-  const [filter, setFilter] = useState<"all" | "mentions">("all");
+  const [filter, setFilter] = useState<"all" | "mentions" | "urgent">("all");
   const [error, setError] = useState<string>();
   const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
   const [agentWorkTarget, setAgentWorkTarget] = useState<{ projectId: string; conversationId?: string; focusId?: string }>();
@@ -212,8 +214,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
     </DialogTitle>
-    <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
+    <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="all" label={`All (${notifications.length})`} sx={{ minHeight: 42 }} />
+      <Tab value="urgent" label={`Urgent (${notifications.filter((item) => item.severity === "urgent" && (item.status ?? "open") === "open").length})`} sx={{ minHeight: 42 }} />
       <Tab value="mentions" label={`Mentions (${notifications.filter((item) => item.kind === "mentions").length})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
@@ -257,7 +260,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "No urgent issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Communication failures and critical issues needing intervention will appear here." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>

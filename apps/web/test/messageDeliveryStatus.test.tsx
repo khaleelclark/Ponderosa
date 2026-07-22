@@ -41,7 +41,7 @@ describe("message delivery status", () => {
     }]);
     expect(html).toContain("Undelivered to Manager");
     expect(html).not.toContain("Let Current Run Finish");
-    expect(html).toContain("Retry");
+    expect(html).toContain("Try Delivery Again");
   });
 
   it("links compact status text to the recipient's direct chat", () => {

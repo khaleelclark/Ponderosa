@@ -366,6 +366,9 @@ export interface TerminalActivationV3View {
   projectId: string;
   agentId: string;
   kind: string;
+  scopeKey?: string;
+  communicationEventId?: string;
+  communicationIntent?: string;
   outcome: ActivationTerminalOutcome;
   deliveryFailures: number;
   lastDeliveryError?: string;
@@ -1061,7 +1064,9 @@ export class CoordinationV3Store {
   requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
     const row = this.sqlite.prepare(`
       SELECT request_id FROM coordination_request_updates WHERE id = ?
-    `).get(updateId) as { request_id: string } | undefined;
+      UNION ALL SELECT request_id FROM coordination_request_late_results WHERE id = ?
+      LIMIT 1
+    `).get(updateId, updateId) as { request_id: string } | undefined;
     return row ? this.getRequest(row.request_id) : undefined;
   }
 
@@ -1381,13 +1386,23 @@ export class CoordinationV3Store {
 
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, kind, terminal_outcome, delivery_failures,
+      SELECT id, project_id, agent_id, kind, scope_key, terminal_outcome, delivery_failures,
+        (SELECT COALESCE(json_extract(runtime.payload_json, '$.communication.eventId'), runtime.id)
+          FROM activation_sources source
+          JOIN runtime_communications runtime ON runtime.id = source.source_id
+          WHERE source.activation_id = agent_activations.id AND source.source_kind = 'communication'
+          ORDER BY runtime.created_at, runtime.id LIMIT 1) AS communication_event_id,
+        (SELECT runtime.intent FROM activation_sources source
+          JOIN runtime_communications runtime ON runtime.id = source.source_id
+          WHERE source.activation_id = agent_activations.id AND source.source_kind = 'communication'
+          ORDER BY runtime.created_at, runtime.id LIMIT 1) AS communication_intent,
         last_delivery_error, terminal_at
       FROM agent_activations
       WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
       ORDER BY terminal_at DESC, id DESC LIMIT ?
     `).all(projectId ?? null, projectId ?? null, Math.max(1, Math.min(limit, 500))) as Array<{
-      id: string; project_id: string; agent_id: string; kind: string;
+      id: string; project_id: string; agent_id: string; kind: string; scope_key: string | null;
+      communication_event_id: string | null; communication_intent: string | null;
       terminal_outcome: ActivationTerminalOutcome; delivery_failures: number;
       last_delivery_error: string | null; terminal_at: string;
     }>;
@@ -1396,6 +1411,9 @@ export class CoordinationV3Store {
       projectId: row.project_id,
       agentId: row.agent_id,
       kind: row.kind,
+      ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
+      ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
+      ...(row.communication_intent ? { communicationIntent: row.communication_intent } : {}),
       outcome: row.terminal_outcome,
       deliveryFailures: row.delivery_failures,
       ...(row.last_delivery_error ? { lastDeliveryError: row.last_delivery_error } : {}),
@@ -2450,6 +2468,17 @@ export class CoordinationV3Store {
     return Boolean(row);
   }
 
+  /** A provider may deliver one terminal handoff after an injected Run became
+   * uncertain. This identifies that exact fenced generation; updateRequest
+   * still restricts the mutation to a recipient-authored late result. */
+  ownsOutcomeUnknownRun(runId: string, fencingToken: number, workerId?: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_runs
+      WHERE id = ? AND fencing_token = ? AND status = 'outcome_unknown'
+        AND (? IS NULL OR lease_owner = ?)
+    `).get(runId, fencingToken, workerId ?? null, workerId ?? null));
+  }
+
   schedulerMetrics(): {
     pendingActivations: number;
     activeRuns: number;
@@ -2744,16 +2773,23 @@ export class CoordinationV3Store {
             CASE source.source_kind
               WHEN 'request' THEN 'request'
               WHEN 'request_update' THEN 'request'
+              WHEN 'late_result' THEN 'request'
               WHEN 'join' THEN 'join'
               WHEN 'trigger_occurrence' THEN 'trigger'
             END,
-            CASE WHEN source.source_kind = 'request_update' THEN request_update.request_id ELSE source.source_id END
+            CASE
+              WHEN source.source_kind = 'request_update' THEN request_update.request_id
+              WHEN source.source_kind = 'late_result' THEN late_result.request_id
+              ELSE source.source_id
+            END
           FROM activation_sources source
           JOIN agent_activations activation ON activation.id = source.activation_id
           LEFT JOIN coordination_request_updates request_update
             ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+          LEFT JOIN coordination_request_late_results late_result
+            ON source.source_kind = 'late_result' AND late_result.id = source.source_id
           WHERE activation.project_id = @projectId AND (@scopeKey IS NULL OR activation.scope_key = @scopeKey)
-            AND source.source_kind IN ('request', 'request_update', 'join', 'trigger_occurrence')
+            AND source.source_kind IN ('request', 'request_update', 'late_result', 'join', 'trigger_occurrence')
           UNION ALL
           SELECT 'activation', mapping.source_activation_id, 'activation', mapping.recovery_activation_id
           FROM scheduler_steering_recovery_activations mapping
@@ -2890,7 +2926,7 @@ export class CoordinationV3Store {
 
     const activationSelection = selection("activation", "id");
     const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, agent_id, state, created_at, updated_at
+      SELECT id, agent_id, kind, state, created_at, updated_at
       FROM agent_activations
       WHERE project_id = ? AND (? IS NULL OR scope_key = ?) ${activationSelection.sql}
       ORDER BY CASE WHEN state IN ('pending', 'retry_pending', 'attached') THEN 0 ELSE 1 END,
@@ -2899,11 +2935,14 @@ export class CoordinationV3Store {
       input.projectId, scopeKey ?? null, scopeKey ?? null,
       ...activationSelection.params, queryLimit,
     ) as Array<{
-      id: string; agent_id: string; state: string; created_at: string; updated_at: string;
+      id: string; agent_id: string; kind: string; state: string; created_at: string; updated_at: string;
     }>);
     for (const row of activationRows) add({
       id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
-      title: "Queued wake-up", summary: ["pending", "retry_pending", "attached"].includes(row.state)
+      title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued wake-up",
+      summary: row.kind === "coordination_late_result"
+        ? "A recipient finished after the original outcome became uncertain. Audit current state; do not redo the work."
+        : ["pending", "retry_pending", "attached"].includes(row.state)
         ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
           : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
       agentIds: [row.agent_id], relatedItemIds: [],
@@ -3016,11 +3055,14 @@ export class CoordinationV3Store {
 
     const activationLinkSelection = linkedSelection("source.activation_id", loadedActivationIds);
     const activationLinks = this.sqlite.prepare(`
-      SELECT source.activation_id, source.source_kind, source.source_id, request_update.request_id
+      SELECT source.activation_id, source.source_kind, source.source_id,
+        COALESCE(request_update.request_id, late_result.request_id) AS request_id
       FROM activation_sources source
       JOIN agent_activations activation ON activation.id = source.activation_id
       LEFT JOIN coordination_request_updates request_update
         ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+      LEFT JOIN coordination_request_late_results late_result
+        ON source.source_kind = 'late_result' AND late_result.id = source.source_id
       WHERE activation.project_id = ? AND (? IS NULL OR activation.scope_key = ?)
         ${activationLinkSelection.sql}
     `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...activationLinkSelection.params) as Array<{
@@ -3030,6 +3072,7 @@ export class CoordinationV3Store {
       const sourceKind = row.source_kind === "trigger_occurrence" ? "trigger" : row.source_kind;
       if (["request", "join", "trigger"].includes(sourceKind)) relate(`activation:${row.activation_id}`, `${sourceKind}:${row.source_id}`);
       if (row.source_kind === "request_update" && row.request_id) relate(`activation:${row.activation_id}`, `request:${row.request_id}`);
+      if (row.source_kind === "late_result" && row.request_id) relate(`activation:${row.activation_id}`, `request:${row.request_id}`);
       const activationItem = items.get(`activation:${row.activation_id}`);
       if (activationItem && !activationItem.referenceIds.includes(row.source_id)) activationItem.referenceIds.push(row.source_id);
     }
@@ -3126,6 +3169,7 @@ export class CoordinationV3Store {
       const row = this.sqlite.prepare(`
         SELECT scheduler.id, scheduler.status, scheduler.fencing_token, scheduler.prompt_injection_state,
           scheduler.context_disposition, scheduler.lease_expires_at, scheduler.terminal_at,
+          scheduler.provider_failure_json,
           provider.execution_id, provider.prompt_hash, execution.status AS execution_status,
           execution.wake_cause, execution.completed_at
         FROM scheduler_runs scheduler
@@ -3137,11 +3181,13 @@ export class CoordinationV3Store {
         id: string; status: string; fencing_token: number; prompt_injection_state: string; context_disposition: string;
         lease_expires_at: string; terminal_at: string | null; execution_id: string | null; prompt_hash: string | null;
         execution_status: string | null; wake_cause: string | null; completed_at: string | null;
+        provider_failure_json: string | null;
       } | undefined;
       return row ? inspectorDetails(["Execution Run ID", row.execution_id], ["Scheduler Run ID", row.id],
         ["Scheduler status", row.status], ["Execution projection status", row.execution_status], ["Wake cause", row.wake_cause],
         ["Fence", row.fencing_token], ["Prompt injection", row.prompt_injection_state],
         ["Provider context", row.context_disposition], ["Prompt hash", row.prompt_hash],
+        ["Provider failure", inspectorJson(row.provider_failure_json)],
         ["Lease expires", row.lease_expires_at], ["Scheduler terminal time", row.terminal_at],
         ["Execution completed time", row.completed_at]) : undefined;
     }
@@ -3262,6 +3308,78 @@ export class CoordinationV3Store {
         };
       }
 
+      const existingLate = this.sqlite.prepare(`
+        SELECT request_id, actor_agent_id, payload_hash
+        FROM coordination_request_late_results WHERE id = ?
+      `).get(input.updateId) as { request_id: string; actor_agent_id: string; payload_hash: string } | undefined;
+      if (existingLate) {
+        if (existingLate.request_id !== input.requestId || input.actor.kind !== "agent" ||
+            existingLate.actor_agent_id !== input.actor.id || existingLate.payload_hash !== hash) {
+          throw new Error("request update idempotency collision");
+        }
+        return { requestId: request.id, state: request.state, version: request.version, replayed: true };
+      }
+
+      const lateTerminal = request.state === "outcome_unknown" &&
+        (input.kind === "completed" || input.kind === "blocked" || input.kind === "failed") &&
+        input.actor.kind === "agent" && input.actor.id === request.recipient_agent_id;
+      if (lateTerminal) {
+        if (!input.runAuthorization) throw new Error("late result requires authorization from the original outcome-unknown run");
+        const authorized = this.sqlite.prepare(`
+            SELECT 1 FROM scheduler_runs run
+            WHERE run.id = ? AND run.agent_id = ? AND run.fencing_token = ?
+              AND run.status = 'outcome_unknown'
+              AND EXISTS (
+                SELECT 1 FROM scheduler_run_activations attached
+                JOIN activation_sources source ON source.activation_id = attached.activation_id
+                LEFT JOIN coordination_request_updates request_update
+                  ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+                WHERE attached.run_id = run.id AND (
+                  (source.source_kind = 'request' AND source.source_id = ?)
+                  OR (source.source_kind = 'request_update' AND request_update.request_id = ?)
+                  OR (source.source_kind = 'join' AND EXISTS (
+                    SELECT 1 FROM coordination_joins join_record,
+                      json_each(join_record.continuation_request_ids_json) continuation
+                    WHERE join_record.id = source.source_id AND continuation.value = ?
+                  ))
+                )
+              )
+        `).get(input.runAuthorization.runId, input.runAuthorization.agentId,
+          input.runAuthorization.fencingToken, request.id, request.id, request.id);
+        if (!authorized) throw new Error("late result is not authorized by the original outcome-unknown run");
+        this.requireRuntimeArtifacts(request.project_id, artifacts, "late request result");
+        this.sqlite.prepare(`
+          INSERT INTO coordination_request_late_results (
+            id, request_id, kind, actor_agent_id, payload_json, payload_hash, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(input.updateId, request.id, input.kind, input.actor.id,
+          stableJson(input.payload ?? null), hash, now);
+        const insertArtifact = this.sqlite.prepare(`
+          INSERT INTO runtime_artifacts (
+            id, owner_kind, owner_id, project_id, role, title, media_type,
+            blob_path, blob_hash, byte_length, origin_agent_id, execution_id, created_at
+          ) VALUES (?, 'request_update', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const artifact of artifacts) insertArtifact.run(
+          artifact.id, input.updateId, request.project_id, artifact.role, artifact.title, artifact.mediaType,
+          artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
+          artifact.originAgentId ?? null, artifact.executionId ?? null, now,
+        );
+        if (request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) this.createActivation({
+          projectId: request.project_id, agentId: request.requester_agent_id,
+          scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
+          kind: "coordination_late_result", priority: PRIORITY.actionable,
+          dedupeKey: `request:${request.id}:late-result:${input.updateId}`,
+          payload: {
+            requestId: request.id, originalState: request.state,
+            lateResult: { updateId: input.updateId, kind: input.kind, update: input.payload ?? null },
+            recoveryInstruction: "Audit current state and incorporate this late handoff; do not redo the original work.",
+          },
+          sourceKind: "late_result", sourceId: input.updateId, now,
+        });
+        return { requestId: request.id, state: request.state, version: request.version, replayed: false };
+      }
+
       if (input.runAuthorization) {
         this.requireAuthorizedRun(input.runAuthorization);
         const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
@@ -3277,11 +3395,21 @@ export class CoordinationV3Store {
       this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
 
       this.authorizeUpdate(request, input.kind, input.actor);
+      const ownsUnresolvedJoin = Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM coordination_joins
+        WHERE state = 'open'
+          AND EXISTS (
+            SELECT 1 FROM json_each(continuation_request_ids_json)
+            WHERE value = ?
+          )
+        LIMIT 1
+      `).get(request.id));
       const next = reduceCoordinationRequest(
         {
           state: request.state,
           version: request.version,
           ...(request.open_question_update_id ? { openQuestionUpdateId: request.open_question_update_id } : {}),
+          ownsUnresolvedJoin,
         },
         {
           kind: input.kind,
@@ -4370,10 +4498,26 @@ export class CoordinationV3Store {
     /** Explicit provider rejection proves the prompt did not execute despite submission. */
     confirmedNotExecuted?: boolean;
     failureKind?: "capacity" | "rate_limit" | "authentication" | "context" | "unknown";
+    failureDetail?: {
+      phase: string;
+      promptInjectionState: "not_injected" | "injecting" | "injected";
+      exitCode?: number | null;
+      signal?: string | null;
+      stderr?: string;
+      message?: string;
+    };
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
       const run = this.getFencedRun(input.runId, input.fencingToken);
+      if (input.failureDetail) this.sqlite.prepare(`
+        UPDATE scheduler_runs SET provider_failure_json = ?
+        WHERE id = ? AND fencing_token = ?
+      `).run(stableJson({
+        ...input.failureDetail,
+        ...(input.failureDetail.stderr ? { stderr: input.failureDetail.stderr.slice(-8_192) } : {}),
+        ...(input.failureDetail.message ? { message: input.failureDetail.message.slice(0, 2_000) } : {}),
+      }), input.runId, input.fencingToken);
       const disposition = input.confirmedNotExecuted ? "retry" : activationRetryDisposition({
         promptInjectionState: run.prompt_injection_state as "not_injected" | "injecting" | "injected",
         sameRunResumable: input.sameRunResumable,

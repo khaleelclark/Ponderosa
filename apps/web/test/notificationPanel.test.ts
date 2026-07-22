@@ -49,6 +49,13 @@ describe("notification panel grouping", () => {
     expect(filterNotifications([mention, response], "all")).toEqual([mention, response]);
   });
 
+  it("shows only open urgent intervention items in the Urgent filter", () => {
+    const urgent = { ...notification("urgent", "project-a", "chat-a", "2026-07-16T03:00:00.000Z"), severity: "urgent" as const, status: "open" as const };
+    const resolved = { ...urgent, id: "resolved", status: "resolved" as const };
+    const attention = { ...urgent, id: "attention", severity: "attention" as const };
+    expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([urgent]);
+  });
+
   it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {
     const theme = createPonderosaTheme(mode);
     expect(contrastRatio(theme.palette.text.secondary, theme.palette.action.hover)).toBeGreaterThanOrEqual(4.5);

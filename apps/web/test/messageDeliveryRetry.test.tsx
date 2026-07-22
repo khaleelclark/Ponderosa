@@ -49,11 +49,11 @@ describe("message delivery retry", () => {
 
     const buttonNamed = (name: string) => view.root.findAllByType(Button)
       .find((button) => button.props.children === name)!;
-    await act(async () => { buttonNamed("Retry").props.onClick(); });
-    expect(JSON.stringify(view.toJSON())).toContain("may have reached the provider");
+    await act(async () => { buttonNamed("Try Delivery Again").props.onClick(); });
+    expect(JSON.stringify(view.toJSON())).toContain("could not confirm whether the provider received");
     expect(retry).not.toHaveBeenCalled();
 
-    await act(async () => { await buttonNamed("Retry Anyway").props.onClick(); });
+    await act(async () => { await buttonNamed("Try Again Anyway").props.onClick(); });
     expect(retry).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledWith("project-a", "uncertain-activation", {
       idempotencyKey: "operator-delivery-retry:uncertain-activation",

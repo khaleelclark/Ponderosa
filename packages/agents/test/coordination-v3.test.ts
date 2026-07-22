@@ -58,6 +58,13 @@ describe("Communication V3 request reducer", () => {
       .toBe("blocked");
   });
 
+  it("keeps progress suspended while the request owns an unresolved Join", () => {
+    expect(reduceCoordinationRequest(
+      { state: "waiting_dependency", version: 2, ownsUnresolvedJoin: true },
+      { kind: "progress", updateId: "still-working" },
+    )).toEqual({ state: "waiting_dependency", version: 3 });
+  });
+
   it("rejects mutation after terminal state", () => {
     expect(() => reduceCoordinationRequest(
       { state: "completed", version: 2 },

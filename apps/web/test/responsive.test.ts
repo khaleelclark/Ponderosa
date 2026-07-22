@@ -43,7 +43,7 @@ describe("responsive compact controls", () => {
     expect(app).toContain('aria-label="Close workspace navigation"');
     expect(app).toContain("setMobileNavOpen(false); navigateWorkspace(next)");
     expect(sidebar).toContain('aria-label="Primary navigation"');
-    expect(sidebar).toContain('placeholder="Search Project Chats"');
+    expect(sidebar).toContain('placeholder="Search Chats"');
     expect(sidebar).toContain("drawer?: boolean");
     expect(sidebar).toContain('width: 48');
     expect(sidebar).toContain('onContextMenu={(event)');
