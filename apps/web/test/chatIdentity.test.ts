@@ -42,7 +42,7 @@ describe("individual chat sender identity", () => {
     expect(html).not.toContain("<script>");
   });
 
-  it("uses an accessible fallback without disturbing reply, attachment, or timestamp actions", () => {
+  it("uses an accessible fallback without disturbing attachment or timestamp actions", () => {
     const assistant = {
       ...message("2", "assistant", "See the attachment."),
       replyTo: { messageId: "1", text: "Original request" },
@@ -51,14 +51,13 @@ describe("individual chat sender identity", () => {
     const html = renderToStaticMarkup(createElement(ChatPane, {
       agentName: "   ",
       messages: [message("1", "user", "Original request"), assistant],
-      onReply: () => undefined,
     }));
 
     expect(html).toContain('aria-label="Agent message"');
     expect(html).toContain(">Agent</div>");
     expect(html).toContain('aria-label="Go to replied-to message"');
     expect(html).toContain('aria-label="Download result.png"');
-    expect(html).toContain('aria-label="Reply to message"');
+    expect(html).not.toContain('aria-label="Reply to message"');
     expect(html).toContain("<time");
   });
 

@@ -48,8 +48,6 @@ import type {
   ImageAttachmentDto,
   CreateDirectReplyRequest,
   CreateMultiAgentDirectMessageRequest,
-  CreateUserReactionRequest,
-  CreateUserReactionResponse,
   DirectReplyResponse,
   MultiAgentDirectMessageResponse,
   LetCurrentRunFinishRequest,
@@ -157,7 +155,6 @@ import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
-import { UserReactionStore } from "./user-reactions.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
@@ -969,13 +966,6 @@ function stripLeadingScopeTag(text: string, tag: "broadcast" | "user"): string {
 
 function renderScopedMessage(tag: "broadcast" | "user", text: string): string {
   return `#${tag} ${stripLeadingScopeTag(text, tag)}`.trimEnd();
-}
-
-function isSingleEmoji(input: string): boolean {
-  const value = input.trim();
-  if (!value) return false;
-  const graphemes = [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(value)];
-  return graphemes.length === 1 && /(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[#*0-9]\uFE0F?\u20E3)/u.test(value);
 }
 
 function inboundContext(
@@ -2030,7 +2020,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // Agent asset authority or scheduling state until a separately fenced send.
     return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
-      pathname === "/api/user-reactions" ||
       /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|direct-replies|collaboration\/messages)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
@@ -2093,7 +2082,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const oneShotRuntime = (agentId: string, runId: string): OneShotRuntimeTeardown | undefined =>
     runtimeAuthority(agentId)?.oneShots.get(runId);
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
-  const userReactions = new UserReactionStore(opts.dataDir);
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
   const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
@@ -3964,7 +3952,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       rejectLinkPreviewUpgrade(socket, 400, "malformed preview upgrade");
     }
   };
-  function withMessagePresentation<T extends { communicationEventId?: string; text: string; reactions?: import("@ponderosa/core").MessageReactionDto[]; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[] }>(projectId: string, messages: T[]): T[] {
+  function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[] }>(projectId: string, messages: T[]): T[] {
     const projectAgents = store.listAgents(projectId);
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
@@ -3978,7 +3966,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(projectId, message.communicationEventId);
       return {
         ...message,
-        reactions: userReactions.forCommunication(message.communicationEventId),
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
         ...(agentMentions.length ? { agentMentions } : {}),
       };
@@ -8161,7 +8148,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         subscribers.delete(agentId);
         scheduledSessionRollovers.delete(agentId);
       }
-      userReactions.deleteProject(project.id);
       contextCursors.deleteAgents(agentIds);
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
@@ -8711,104 +8697,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     },
   );
-
-
-  app.post<{ Body: CreateUserReactionRequest }>("/api/user-reactions", async (request, reply) => {
-    const projectId = request.body?.projectId?.trim() ?? "";
-    const communicationEventId = request.body?.communicationEventId?.trim() ?? "";
-    const emoji = request.body?.emoji?.trim() ?? "";
-    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    if (!projectId || !communicationEventId) return reply.code(400).send({ error: "projectId and communicationEventId are required" });
-    if (deletingProjectIds.has(projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    if (!isSingleEmoji(emoji)) return reply.code(400).send({ error: "emoji must be one emoji grapheme" });
-    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    const communication = store.getCommunicationEvent(projectId, communicationEventId);
-    if (!communication || communication.sender.kind !== "agent") return reply.code(404).send({ error: "agent-authored message not found" });
-    const target = store.getAgent(communication.sender.agentId);
-    if (!target || target.archived || target.projectId !== projectId) return reply.code(404).send({ error: "message author not found" });
-    const id = `reaction-${createHash("sha256").update(`${projectId}\0${idempotencyKey}`).digest("hex")}`;
-    const existing = coordinationV3.runtimeCommunication(id);
-    const event = {
-      id,
-      idempotencyKey,
-      projectId,
-      communicationEventId,
-      targetAuthorAgentId: target.id,
-      emoji,
-      replyTo: {
-        messageId: communicationEventId,
-        text: communication.text,
-        role: "assistant" as const,
-        authorAgentId: target.id,
-      },
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-    };
-    const reactionText = `the user reacted with ${emoji}`;
-    const reactionCommunication: CommunicationEvent = {
-      eventId: id,
-      schemaVersion: 2,
-      projectId,
-      ...(target.conversationId ? { conversationId: target.conversationId } : {}),
-      sender: { kind: "user", userId: "local-operator" },
-      intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
-      text: reactionText,
-      createdAt: event.createdAt,
-      idempotencyKey,
-    };
-    let intake;
-    try {
-      intake = coordinationV3.recordRuntimeCommunication({
-        id,
-        projectId,
-        sender: reactionCommunication.sender,
-        intent: reactionCommunication.intent,
-        audience: reactionCommunication.audience,
-        payload: {
-          communication: reactionCommunication,
-          dispatch: {
-            conversationId: target.conversationId ?? null,
-            sourceConversationId: target.conversationId ?? null,
-            sourceChannel: null,
-            shareWithOrganization: false,
-            text: reactionText,
-            communicationEventId: reactionCommunication.eventId,
-            replyToMessageId: event.replyTo.messageId,
-          },
-          reaction: event,
-          notification: { text: reactionText, reactedTo: event.replyTo },
-        },
-        activation: {
-          agentId: target.id,
-          kind: "human_message",
-          priority: 100,
-          dispatchPolicy: "steer_or_run",
-          promptClass: "human",
-        },
-        now: event.createdAt,
-      });
-      recordCommunication(reactionCommunication);
-      userReactions.record(event);
-      if (!intake.replayed) {
-        const stored = store.appendEvent(target.id, {
-          type: "user_message", text: reactionText, communicationEventId: reactionCommunication.eventId, replyTo: event.replyTo,
-        });
-        publish(target.id, stored);
-      }
-    } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "reaction conflict" });
-    }
-    publishCoordinationV3Changed(target.id);
-    coordinationV3Scheduler.notify();
-    return {
-      replayed: intake.replayed,
-      queued: true,
-      targetAuthorAgentId: target.id,
-      reactions: userReactions.forCommunication(communicationEventId),
-    } satisfies CreateUserReactionResponse;
-  });
-
-
   app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
     "/api/conversations/:id/direct-replies",
     async (request, reply) => {
@@ -13177,6 +13065,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     async (request, reply) => {
       const agent = store.getAgent(request.params.id);
       if (!agent) return reply.code(404).send({ error: "agent not found" });
+      const project = store.getProject(agent.projectId);
+      if (!project) return reply.code(404).send({ error: "project not found" });
+      const engine = engines.get(agent.activeEngine);
+      if (!engine) return reply.code(400).send({ error: "unknown engine" });
       if (activeRuns.has(agent.id)) {
         return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
       }
@@ -13185,21 +13077,111 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
         return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
       }
-      const runtime = reusableRuntime(agent.id);
-      if (!runtime?.session.capabilities || !runtime.session.invokeCommand) {
-        return reply.code(409).send({ error: "this agent has no live provider session for structured commands" });
+      const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
+        if (!session.capabilities || !session.invokeCommand) {
+          throw new Error("this provider does not support structured runtime commands");
+        }
+        const catalog = await session.capabilities();
+        const command = catalog.commands.find((candidate) => candidate.name === name);
+        if (!command || command.invocation !== "runtime" || command.status !== "available") {
+          const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
+          Object.assign(error, { catalogVersion: catalog.catalogVersion });
+          throw error;
+        }
+        const result = await session.invokeCommand(name, argumentsText);
+        return { catalog, ...(result?.message ? { message: result.message } : {}) };
+      };
+      const liveRuntime = reusableRuntime(agent.id);
+      if (liveRuntime) {
+        try {
+          const result = await invoke(liveRuntime.session);
+          reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
+          return {
+            invoked: true,
+            name,
+            catalogVersion: result.catalog.catalogVersion,
+            ...(result.message ? { message: result.message } : {}),
+          };
+        } catch (error) {
+          const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
+            ? (error as { catalogVersion?: string }).catalogVersion : undefined;
+          return reply.code(409).send({ error: error instanceof Error ? error.message : "provider command failed", ...(catalogVersion ? { catalogVersion } : {}) });
+        }
       }
-      const catalog = await runtime.session.capabilities();
-      const command = catalog.commands.find((candidate) => candidate.name === name);
-      if (!command || command.invocation !== "runtime" || command.status !== "available") {
-        return reply.code(409).send({
-          error: command?.unavailableReason ?? `the provider no longer advertises /${name}`,
-          catalogVersion: catalog.catalogVersion,
+      if (!engine.adapter.openSession) {
+        return reply.code(409).send({ error: "this provider cannot open a command-only session" });
+      }
+
+      // Read-only provider commands such as /status should work before an Agent
+      // has a warm runtime. Open a short-lived provider session, invoke exactly
+      // one structured command, and close it without creating a chat message,
+      // Activation, or provider turn. The authority registry makes Project
+      // deletion and daemon shutdown wait for the transient process as well.
+      const latestRun = store.getRuns(agent.id).at(-1);
+      const selection = concreteRuntimeSelection(engine.adapter, [
+        { model: latestRun?.model ?? agent.model ?? agent.presetSnapshot?.model, effort: latestRun?.effort ?? agent.effort ?? agent.presetSnapshot?.effort },
+        project.defaultEngine === agent.activeEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+        workspace.getPreferences().engineDefaults?.[agent.activeEngine],
+      ]);
+      const persisted = store.resumeSessionState(agent.id);
+      const resumeSessionId = persisted?.toolContractHash === PROVIDER_TOOL_CONTRACT_HASH ? persisted.sessionId : undefined;
+      const authority: CapabilityDiscoveryAuthority = {
+        projectId: project.id,
+        engineId: engine.adapter.id,
+        key: `provider-command:${agent.id}:${randomUUID()}`,
+        controller: new AbortController(),
+        processes: new Set(),
+        settled: false,
+      };
+      const registerProcess = (handle: RuntimeProcessHandle): void => {
+        const state: CapabilityDiscoveryProcess = { handle };
+        authority.processes.add(state);
+        if (closed || deletingProjectIds.has(project.id) || deletingAgentIds.has(agent.id) || authority.controller.signal.aborted) {
+          void closeCapabilityDiscoveryProcess(state).catch((error) => {
+            app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+          });
+        }
+      };
+      let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
+      const operation = Promise.resolve().then(async () => {
+        const session = await engine.adapter.openSession!({
+          agentId: agent.id,
+          cwd: project.hostPath,
+          ...(resumeSessionId ? { resumeSessionId } : {}),
+          history: [],
+          model: selection.model,
+          effort: selection.effort,
+          onRuntimeSpawned: registerProcess,
+          onRuntimeRootExit: () => undefined,
+          onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engine.adapter.id),
+          signal: authority.controller.signal,
         });
+        invocation = await invoke(session);
+        return invocation.catalog;
+      });
+      authority.operation = operation;
+      engineCapabilityDiscoveryAuthorities.add(authority);
+      try {
+        await operation;
+        reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
+        return {
+          invoked: true,
+          name,
+          catalogVersion: invocation?.catalog.catalogVersion,
+          ...(invocation?.message ? { message: invocation.message } : {}),
+        };
+      } catch (error) {
+        const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
+          ? (error as { catalogVersion?: string }).catalogVersion : undefined;
+        return reply.code(409).send({ error: error instanceof Error ? error.message : "provider command failed", ...(catalogVersion ? { catalogVersion } : {}) });
+      } finally {
+        authority.settled = true;
+        try {
+          await closeCapabilityDiscoveryAuthority(authority);
+        } catch (error) {
+          app.log.error({ err: error, agentId: agent.id }, "transient provider-command process cleanup remains pending");
+        }
       }
-      const result = await runtime.session.invokeCommand(name, argumentsText);
-      reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
-      return { invoked: true, name, catalogVersion: catalog.catalogVersion, ...(result?.message ? { message: result.message } : {}) };
     },
   );
 

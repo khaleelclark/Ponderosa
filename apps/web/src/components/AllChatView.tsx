@@ -186,7 +186,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
                 <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
-                  <ChatMessageBody text={item.text} collapseLongMessage={fromUser} projectId={item.project.id} operatorHandle={workspacePreferences.data?.profile.handle} />
+                  <ChatMessageBody text={item.text} collapseLongMessage projectId={item.project.id} operatorHandle={workspacePreferences.data?.profile.handle} />
                 </Box>
                 {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
                 <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>

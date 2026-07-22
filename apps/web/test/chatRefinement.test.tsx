@@ -80,9 +80,7 @@ describe("chat interaction refinement", () => {
         agentIdForHandle={() => undefined}
         onOpenAgent={vi.fn()}
         onOpenReview={vi.fn()}
-        onReply={vi.fn()}
-        onDirectReply={vi.fn()}
-        onReact={vi.fn()}
+        projectId="project-1"
       />,
     );
     expect(html).toContain("src/app.ts");

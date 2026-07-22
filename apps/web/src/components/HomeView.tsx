@@ -2,7 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import { Box, Button, ButtonBase, Chip, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
@@ -68,7 +68,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const allResources: RecentResource[] = [
     ...projects.map((project) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),
     ...conversations.filter(({ conversation }) => !conversation.archived).map(({ conversation, project }) => ({ id: `conversation:${conversation.id}`, title: conversation.title, detail: `${project.label} · Chat`, updatedAt: conversation.updatedAt, route: { kind: "conversation", projectId: project.id, conversationId: conversation.id } as Route, icon: <ChatBubbleOutlineIcon fontSize="small" /> })),
-    ...agents.filter(({ agent }) => !agent.archived).map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <PersonOutlineIcon fontSize="small" /> })),
+    ...agents.filter(({ agent }) => !agent.archived).map(({ agent, project }) => ({ id: `agent:${agent.id}`, title: agent.title, detail: `${project.label} · Agent`, updatedAt: agent.updatedAt, route: { kind: "agent", projectId: project.id, agentId: agent.id } as Route, icon: <SmartToyOutlinedIcon fontSize="small" /> })),
     ...(triggersQuery.data ?? []).flatMap((trigger) => { const destination = agentDestinations.get(trigger.agentId); return destination ? [{ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${destination.project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> }] : []; }),
   ];
   const starredIds = starredWorkspaceResources(preferences);
@@ -96,9 +96,9 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
         <Box sx={{ mb: 1.5 }}><Typography variant="h6" fontWeight={800}>Create</Typography><Typography variant="body2" color="text.secondary">Start with the thing you want; Ponderosa will ask for its scope next.</Typography></Box>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1 }}>
           <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} onClick={onCreateProject}>New Project</Button>
-          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateChat}>New Chat</Button>
-          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateAgent}>New Agent</Button>
-          <Button fullWidth size="large" variant="outlined" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateTrigger}>New Trigger</Button>
+          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateChat}>New Chat</Button>
+          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateAgent}>New Agent</Button>
+          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateTrigger}>New Trigger</Button>
         </Box>
       </Paper>
 

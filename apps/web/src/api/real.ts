@@ -45,8 +45,6 @@ import type {
   CreateProjectRequest,
   CreateTriggerRequest,
   CreateTriggerResponse,
-  CreateUserReactionRequest,
-  CreateUserReactionResponse,
   DecisionDto,
   DirectReplyResponse,
   DraftAttachmentDto,
@@ -378,12 +376,6 @@ export const realApi = {
   },
   correctConversationMessage(conversationId: string, messageId: string, request: CorrectConversationMessageRequest): Promise<CorrectConversationMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/corrections`, {
-      method: "POST",
-      body: JSON.stringify(request),
-    });
-  },
-  sendUserReaction(request: CreateUserReactionRequest): Promise<CreateUserReactionResponse> {
-    return requestJson("/api/user-reactions", {
       method: "POST",
       body: JSON.stringify(request),
     });

@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
-import { copyText } from "../src/clipboard";
 import {
   createdFileUnifiedDiff,
   isTextArtifactPreview,
@@ -14,8 +13,6 @@ import {
   ProjectArtifactsView,
   recordedArtifactDiff,
 } from "../src/components/ProjectArtifactsView";
-
-vi.mock("../src/clipboard", () => ({ copyText: vi.fn() }));
 
 vi.mock("@mui/material", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mui/material")>();
@@ -55,7 +52,7 @@ describe("project artifacts view", () => {
     expect(recordedArtifactDiff({ ...artifact("diff.patch"), kind: "diff", summary: "edit src/a.ts" }, "raw current file body")).toBeUndefined();
   });
 
-  it("indexes files, results, and copyable commands without changing command text", async () => {
+  it("indexes files and results while leaving command history out of Project Overview", async () => {
     const agent = {
       id: "agent-1",
       projectId: "project-1",
@@ -124,24 +121,14 @@ describe("project artifacts view", () => {
     expect(JSON.stringify(view.toJSON())).toContain("Web tests passed");
     expect(JSON.stringify(view.toJSON())).toContain("Modified & Created Files");
     expect(JSON.stringify(view.toJSON())).toContain("Results");
-    expect(JSON.stringify(view.toJSON())).toContain("Commands");
     expect(JSON.stringify(view.toJSON())).toContain("Project overview");
     expect(JSON.stringify(view.toJSON())).toContain("Ship a durable Agent organization.");
     expect(JSON.stringify(view.toJSON())).toContain("Download");
-    expect(JSON.stringify(view.toJSON())).toContain("pnpm test");
+    expect(JSON.stringify(view.toJSON())).not.toContain("Commands");
+    expect(JSON.stringify(view.toJSON())).not.toContain("pnpm test");
     expect(projectArtifactGroup("diff")).toBe("Modified & Created Files");
     expect(projectArtifactGroup("test_report")).toBe("Results");
-    expect(projectArtifactGroup("log")).toBe("Commands");
-    vi.mocked(copyText).mockResolvedValue();
-    await act(async () => view.root.findByProps({ "aria-label": "Copy command" }).props.onClick({ preventDefault: vi.fn(), stopPropagation: vi.fn() }));
-    expect(copyText).toHaveBeenCalledWith("pnpm test");
-    expect(view.root.findByProps({ "aria-live": "polite" }).props.children).toBe("Command copied");
-    vi.mocked(copyText).mockRejectedValueOnce(new Error("clipboard denied"));
-    await act(async () => view.root.findByProps({ "aria-label": "Copy command" }).props.onClick({ preventDefault: vi.fn(), stopPropagation: vi.fn() }));
-    expect(view.root.findByProps({ "aria-live": "polite" }).props.children).toBe("Copy command failed");
-    act(() => view.root.findByProps({ "aria-label": "Open Command · pnpm test from Cabrillo" }).props.onClick());
-    await act(async () => view.root.findByProps({ "aria-label": "Copy code" }).props.onClick());
-    expect(copyText).toHaveBeenLastCalledWith("pnpm test");
+    expect(projectArtifactGroup("log")).toBeUndefined();
     act(() => view.root.findByProps({ "aria-label": "Open Accessibility audit from Cabrillo" }).props.onClick());
     expect(onOpenArtifact).toHaveBeenCalledWith(agent.id, artifact.id);
     const previewButton = view.root.findByProps({ "aria-label": "Preview Final report.pdf" });
@@ -153,7 +140,7 @@ describe("project artifacts view", () => {
     act(() => view.root.findByProps({ labelId: "project-file-category-label" }).props.onChange({ target: { value: "code" } }));
     expect(JSON.stringify(view.toJSON())).toContain("Edit · app.ts");
     expect(JSON.stringify(view.toJSON())).not.toContain("Accessibility audit");
-    expect(JSON.stringify(view.toJSON())).toContain("pnpm test");
+    expect(JSON.stringify(view.toJSON())).not.toContain("pnpm test");
     expect(projectArtifactsSource).toContain('sandbox="allow-scripts"');
     expect(projectArtifactsSource).not.toContain("allow-same-origin");
     expect(projectArtifactsSource).toContain('referrerPolicy="no-referrer"');

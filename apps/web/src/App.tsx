@@ -3,7 +3,6 @@ import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SettingsIcon from "@mui/icons-material/Settings";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
-import LanguageIcon from "@mui/icons-material/Language";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
@@ -645,7 +644,6 @@ export default function App({
             />
           </Tooltip>
           <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
-          <Tooltip title={selectedProjectId ? "Shared Browser" : "Select a Project to use its Shared Browser"}><span><IconButton aria-label="Open Shared Browser" disabled={!selectedProjectId} onClick={() => openProjectBrowser()} sx={{ minWidth: 44, minHeight: 44 }}><LanguageIcon /></IconButton></span></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={openOperatorProfile} sx={{ ml: .5, p: 0, width: 44, height: 44 }}><OperatorAvatar profile={preferences.profile} size={32} /></IconButton></Tooltip>
           <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>

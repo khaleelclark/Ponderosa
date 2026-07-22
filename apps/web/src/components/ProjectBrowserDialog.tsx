@@ -165,9 +165,9 @@ export function ProjectBrowserDialog({
     <DialogTitle id="project-browser-title">
       <Stack spacing={.25}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-          <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Shared Browser</Typography>
+          <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
           {session ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
-          {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Shared Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
+          {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
         </Stack>
         <Typography variant="caption" color="text.secondary">Persistent across agent Runs until closed or the server restarts</Typography>
       </Stack>
@@ -176,15 +176,15 @@ export function ProjectBrowserDialog({
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr) auto auto", sm: "minmax(0, 1fr) auto auto auto" }, gap: 1 }}>
         <TextField size="small" fullWidth label="Address" value={address} onChange={(event) => setAddress(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitAddress(); }} sx={{ gridColumn: { xs: "1 / -1", sm: "auto" } }} />
         <Button variant="contained" disabled={!address.trim() || openBrowser.isPending || navigate.isPending || session?.controlOwner === "agent"} onClick={submitAddress}>Go</Button>
-        <Tooltip title="Restart Browser Process"><span><IconButton aria-label="Reconnect Shared Browser" disabled={!session || reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Restart Browser Process"><span><IconButton aria-label="Reconnect Interactive Browser" disabled={!session || reconnect.isPending} onClick={() => reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
         <Button color="inherit" disabled={!session || session.status === "closed" || close.isPending} onClick={() => close.mutate()}>Close Browser</Button>
       </Box>
 
       <Box sx={{ minHeight: 0, aspectRatio: { xs: `${VIEWPORT.width} / ${VIEWPORT.height}`, sm: "auto" }, display: "grid", placeItems: "center", bgcolor: "grey.950", borderRadius: 1, overflow: "hidden", border: 1, borderColor: operator ? "success.main" : "warning.main" }}>
         {session?.status === "opening" || openBrowser.isPending ? <Stack spacing={1} alignItems="center"><CircularProgress /><Typography color="grey.300">Starting browser…</Typography></Stack> : null}
         {session?.status === "failed" ? <Alert severity="error">{session.failure ?? "Browser failed to start."}</Alert> : null}
-        {(!session || missing || session.status === "closed") && !openBrowser.isPending ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Shared Browser is open.</Typography><Button variant="contained" onClick={() => openBrowser.mutate(address.trim() || undefined)}>Open Browser</Button></Stack> : null}
-        {session?.status === "ready" && frameUrl ? <Box component="img" src={frameUrl} alt={`Shared Browser viewport: ${session.title ?? session.url ?? "page"}`} tabIndex={operator ? 0 : -1}
+        {(!session || missing || session.status === "closed") && !openBrowser.isPending ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Interactive Browser is open.</Typography><Button variant="contained" onClick={() => openBrowser.mutate(address.trim() || undefined)}>Open Browser</Button></Stack> : null}
+        {session?.status === "ready" && frameUrl ? <Box component="img" src={frameUrl} alt={`Interactive Browser viewport: ${session.title ?? session.url ?? "page"}`} tabIndex={operator ? 0 : -1}
           onClick={(event) => { if (!operator) return; if (suppressClick.current) { suppressClick.current = false; return; } const rect = event.currentTarget.getBoundingClientRect(); sendInput({ kind: "click", x: (event.clientX - rect.left) * VIEWPORT.width / rect.width, y: (event.clientY - rect.top) * VIEWPORT.height / rect.height }); }}
           onKeyDown={(event) => { if (!operator || event.key === "Tab" || event.key === "Escape") return; event.preventDefault(); sendInput({ kind: "key", key: event.key }); }}
           onWheel={(event) => { if (!operator) return; event.preventDefault(); sendInput({ kind: "scroll", deltaX: normalizeBrowserWheelDelta(event.deltaX, event.deltaMode, event.currentTarget.clientWidth), deltaY: normalizeBrowserWheelDelta(event.deltaY, event.deltaMode, event.currentTarget.clientHeight) }); }}

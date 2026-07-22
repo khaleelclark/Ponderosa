@@ -1,7 +1,4 @@
-import CheckOutlinedIcon from "@mui/icons-material/CheckOutlined";
-import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
-import ErrorOutlineOutlinedIcon from "@mui/icons-material/ErrorOutlineOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
@@ -37,8 +34,7 @@ import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@pondero
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { copyText } from "../clipboard";
-import { artifactDisplayLabel, CopyableCodeBlock, UnifiedDiffViewer } from "./panes";
+import { artifactDisplayLabel, UnifiedDiffViewer } from "./panes";
 import { ProjectOverview } from "./ProjectOverview";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
@@ -150,27 +146,6 @@ function RecordedDiffPreview({ artifact, agent }: { artifact: ArtifactDto; agent
   return <Box data-testid="project-recorded-diff" sx={{ minWidth: 0 }}><UnifiedDiffViewer diff={diff} /></Box>;
 }
 
-function CommandCopyAction({ command }: { command: string }): JSX.Element {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
-  const feedback = state === "copied" ? "Command copied" : state === "failed" ? "Copy command failed" : "Copy command";
-  return <>
-    <Tooltip title={feedback}>
-      <IconButton
-        size="small"
-        color={state === "failed" ? "error" : "inherit"}
-        aria-label="Copy command"
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          void copyText(command).then(() => setState("copied"), () => setState("failed"));
-        }}
-        sx={{ minWidth: 44, minHeight: 44, flexShrink: 0 }}
-      >{state === "copied" ? <CheckOutlinedIcon fontSize="small" /> : state === "failed" ? <ErrorOutlineOutlinedIcon fontSize="small" /> : <ContentCopyOutlinedIcon fontSize="small" />}</IconButton>
-    </Tooltip>
-    <Box component="span" aria-live="polite" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{state === "idle" ? "" : feedback}</Box>
-  </>;
-}
-
 const projectOutputKinds = new Set<ArtifactDto["kind"]>([
   "diff",
   "test_report",
@@ -178,13 +153,11 @@ const projectOutputKinds = new Set<ArtifactDto["kind"]>([
   "document",
   "screenshot",
   "generated_file",
-  "log",
 ]);
 
-export function projectArtifactGroup(kind: ArtifactDto["kind"]): "Modified & Created Files" | "Results" | "Commands" | undefined {
+export function projectArtifactGroup(kind: ArtifactDto["kind"]): "Modified & Created Files" | "Results" | undefined {
   if (["diff", "document", "screenshot", "generated_file"].includes(kind)) return "Modified & Created Files";
   if (["test_report", "pr_summary"].includes(kind)) return "Results";
-  if (kind === "log") return "Commands";
   return undefined;
 }
 
@@ -197,6 +170,9 @@ export function ProjectArtifactsView({
   onOpenArtifactInNewTab,
   onOpenRun,
   onOpenAgentWork,
+  conversations = [],
+  onOpenConversation = () => undefined,
+  onOpenBrowser = () => undefined,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -206,6 +182,9 @@ export function ProjectArtifactsView({
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
   onOpenRun(agentId: string, runId: string): void;
   onOpenAgentWork(): void;
+  conversations?: import("@ponderosa/core").ConversationDto[];
+  onOpenConversation?(conversationId: string): void;
+  onOpenBrowser?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
@@ -265,7 +244,7 @@ export function ProjectArtifactsView({
     });
     return PROJECT_FILE_CATEGORIES.map((option) => ({ ...option, count: counts.get(option.value) ?? 0 }));
   }, [records]);
-  const grouped = (["Modified & Created Files", "Results", "Commands"] as const).map((label) => ({
+  const grouped = (["Modified & Created Files", "Results"] as const).map((label) => ({
     label,
     records: filtered.filter(({ artifact }) => projectArtifactGroup(artifact.kind) === label),
   })).filter((group) => group.records.length > 0);
@@ -278,6 +257,9 @@ export function ProjectArtifactsView({
         agents={agents}
         healthByAgentId={healthByAgentId}
         importantArtifacts={(projectArtifacts.data?.items ?? []).filter((artifact) => artifact.pinned || artifact.visibility === "published")}
+        conversations={conversations}
+        onOpenConversation={onOpenConversation}
+        onOpenBrowser={onOpenBrowser}
         onOpenAgentWork={onOpenAgentWork}
         onOpenProjectFiles={() => document.getElementById("project-files-and-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}
         onOpenImportantArtifact={(artifact) => {
@@ -391,7 +373,6 @@ export function ProjectArtifactsView({
                 <Typography variant="caption" color="text.secondary">{new Date(artifact.createdAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}</Typography>
               </Stack>
             </ListItemButton>
-            {artifact.kind === "log" && artifact.summary ? <CommandCopyAction command={artifact.summary} /> : null}
             {artifact.kind === "diff" ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" sx={{ display: { xs: "none", lg: "inline-flex" }, mr: .5, flexShrink: 0 }}>View Diff</Button> : null}
             {artifact.previewUrl ? <Button aria-label={`Preview ${label}`} onClick={() => setPreviewArtifact(artifact)} size="small" startIcon={<OpenInNewOutlinedIcon />} sx={{ display: { xs: "none", lg: "inline-flex" }, mr: .5, flexShrink: 0 }}>Preview</Button> : null}
             {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} download size="small" aria-label={`Download ${label}`} startIcon={<DownloadOutlinedIcon />} sx={{ minWidth: 44, minHeight: 44, mr: { xs: .5, sm: 1 }, px: { xs: .75, sm: 1 }, flexShrink: 0 }}><Box component="span" sx={{ display: { xs: "none", sm: "inline" } }}>Download</Box></Button> : null}
@@ -416,9 +397,7 @@ export function ProjectArtifactsView({
           })() : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
           <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project Scope"} />
         </Stack> : null}
-        {previewArtifact?.kind === "log" && previewArtifact.summary ? <CopyableCodeBlock>
-          <code className="language-bash">{previewArtifact.summary}</code>
-        </CopyableCodeBlock> : previewArtifact?.kind === "diff" ? <RecordedDiffPreview
+        {previewArtifact?.kind === "diff" ? <RecordedDiffPreview
           key={previewArtifact.id}
           artifact={previewArtifact}
           agent={agents.find((candidate) => candidate.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))}

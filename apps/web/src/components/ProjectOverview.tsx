@@ -1,6 +1,8 @@
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import LanguageIcon from "@mui/icons-material/Language";
 import {
   Accordion,
   AccordionDetails,
@@ -13,7 +15,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, AgentHealthDto, ArtifactDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { artifactDisplayLabel } from "./panes";
@@ -25,6 +27,9 @@ export function ProjectOverview({
   agents,
   healthByAgentId,
   importantArtifacts,
+  conversations,
+  onOpenConversation,
+  onOpenBrowser,
   onOpenAgentWork,
   onOpenProjectFiles,
   onOpenImportantArtifact,
@@ -33,6 +38,9 @@ export function ProjectOverview({
   agents: AgentDto[];
   healthByAgentId: Map<string, AgentHealthDto>;
   importantArtifacts: ArtifactDto[];
+  conversations: ConversationDto[];
+  onOpenConversation(conversationId: string): void;
+  onOpenBrowser(): void;
   onOpenAgentWork(): void;
   onOpenProjectFiles(): void;
   onOpenImportantArtifact(artifact: ArtifactDto): void;
@@ -46,6 +54,12 @@ export function ProjectOverview({
     queryKey: ["decisions", "project", project.id],
     queryFn: () => api.listDecisions({ projectId: project.id, status: "pending" }),
     staleTime: 10_000,
+  });
+  const browser = useQuery({
+    queryKey: ["project-browser", project.id],
+    queryFn: () => api.getProjectBrowser(project.id),
+    retry: false,
+    staleTime: 5_000,
   });
   const activeAgents = agents.filter((agent) => {
     const status = healthByAgentId.get(agent.id)?.status;
@@ -77,6 +91,18 @@ export function ProjectOverview({
             ? <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", maxHeight: 220, overflowY: "auto" }}>{project.instructions.trim()}</Typography>
             : <Typography variant="body2" color="text.secondary">No Project instructions have been set. Project history remains canonical, but the current purpose is not stated as a rule.</Typography>}
         </Box>
+        <Divider />
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="overline" color="text.secondary">Project Chats</Typography>
+            {conversations.length ? <Stack spacing={0.25}>{[...conversations].filter((chat) => !chat.archived).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 5).map((chat) => <Button key={chat.id} size="small" color="inherit" startIcon={<ChatBubbleOutlineIcon />} onClick={() => onOpenConversation(chat.id)} sx={{ justifyContent: "flex-start", px: 0 }}><Typography variant="body2" noWrap>{chat.title}</Typography></Button>)}</Stack> : <Typography variant="body2" color="text.secondary">No Project Chats yet.</Typography>}
+          </Box>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            <Typography variant="overline" color="text.secondary">Interactive Browser</Typography>
+            <Typography variant="body2" color="text.secondary">{browser.data?.status === "ready" ? browser.data.title || browser.data.url || "Browser session active" : "No active browser session."}</Typography>
+            <Button size="small" startIcon={<LanguageIcon />} onClick={onOpenBrowser} sx={{ mt: 0.5 }}>{browser.data?.status === "ready" ? "Open Tab" : "Open Browser"}</Button>
+          </Box>
+        </Stack>
         <Divider />
         <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
           <Box sx={{ flex: 1, minWidth: 0 }}>

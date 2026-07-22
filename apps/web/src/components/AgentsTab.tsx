@@ -29,7 +29,7 @@ import type { SelectChangeEvent } from "@mui/material/Select";
 import { agentRoleProfile } from "@ponderosa/core";
 import type { ConversationDto, AgentDto, AgentHealthDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { api } from "../api";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
@@ -106,6 +106,7 @@ export function AgentsTab({
   displayOrder,
   selectionAllowed = true,
   onReorder,
+  toolbarControls,
 }: {
   agents: AgentDto[];
   projectId?: string;
@@ -122,6 +123,7 @@ export function AgentsTab({
   displayOrder?: readonly string[];
   selectionAllowed?: boolean;
   onReorder?(sourceAgentId: string, targetAgentId: string): void;
+  toolbarControls?: ReactNode;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
@@ -236,6 +238,7 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
       >
+        {toolbarControls}
         <FormControl size="small" sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel id="agents-status-filter-label">Status</InputLabel>
           <Select

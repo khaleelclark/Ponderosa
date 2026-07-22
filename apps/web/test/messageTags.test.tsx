@@ -19,9 +19,7 @@ describe("Conversation #tags", () => {
       agentTitle={() => "John"}
       agentIdForHandle={() => undefined}
       onOpenAgent={vi.fn()}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
+      projectId="project-1"
     />);
 
     expect(html).toContain("#John");
@@ -42,9 +40,7 @@ describe("Conversation #tags", () => {
       agentTitle={() => "Agent"}
       agentIdForHandle={(handle) => handle.toLocaleLowerCase() === "cabrillo" ? "agent-cabrillo" : undefined}
       onOpenAgent={vi.fn()}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
+      projectId="project-1"
     />);
 
     expect(html).toContain('aria-label="Open agent Cabrillo"');
@@ -71,9 +67,7 @@ describe("Conversation #tags", () => {
       agentTitle={() => "Olympic"}
       agentIdForHandle={(handle) => handle.toLocaleLowerCase() === "cabrillo" ? "agent-cabrillo" : undefined}
       onOpenAgent={onOpenAgent}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
+      projectId="project-1"
     />);
 
     view.root.findByProps({ "aria-label": "Open agent Cabrillo" }).props.onClick();
@@ -160,9 +154,7 @@ describe("Conversation #tags", () => {
       agentTitle={() => "Olympic"}
       agentIdForHandle={() => undefined}
       onOpenAgent={vi.fn()}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
+      projectId="project-1"
     />);
 
     expect(html).toContain("Completed answer");
