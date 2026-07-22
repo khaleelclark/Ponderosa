@@ -4791,6 +4791,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     communicationEventId?: string;
   }): Promise<number> {
     let repaired = 0;
+    let skippedUnavailableTargets = 0;
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     for (const row of coordinationV3.runtimeCommunications()) {
@@ -4979,6 +4980,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
 
         const behavior = deriveCommunicationBehavior(canonical);
+        const projectionTargets = behavior.projectionTargets.filter((target) => {
+          if (target.surface === "conversation" || target.surface === "collaboration_view") {
+            const conversation = store.getConversation(target.projectionKey);
+            return Boolean(conversation && conversation.projectId === canonical.projectId && !conversation.archived);
+          }
+          if (target.surface === "direct_agent_audit" || target.surface === "agent_inbox") {
+            const agent = store.getAgent(target.projectionKey);
+            return Boolean(agent && agent.projectId === canonical.projectId && !agent.archived);
+          }
+          return true;
+        });
+        skippedUnavailableTargets += behavior.projectionTargets.length - projectionTargets.length;
         const recipientIds = behavior.deliveryRecipients.flatMap((recipient) =>
           recipient.kind === "agent" ? [recipient.agentId] : []);
         const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
@@ -5000,7 +5013,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   return target ? `#${agentMentionHandle(target.title)} ${dispatchText}`.trimEnd() : dispatchText;
                 })()
               : dispatchText;
-        const roomTarget = behavior.projectionTargets.find((target) =>
+        const roomTarget = projectionTargets.find((target) =>
           target.surface === "conversation" || target.surface === "collaboration_view");
         if (roomTarget && canonical.conversationId) {
           const channel = roomTarget.surface === "collaboration_view" ? "collaboration" : "main";
@@ -5054,7 +5067,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }
         }
 
-        for (const target of behavior.projectionTargets.filter((item) => item.surface === "direct_agent_audit")) {
+        for (const target of projectionTargets.filter((item) => item.surface === "direct_agent_audit")) {
           const before = store.readCommunicationProjections(canonical.projectId).find((projection) =>
             projection.eventId === canonical.eventId && projection.surface === target.surface &&
             projection.projectionKey === target.projectionKey);
@@ -5077,6 +5090,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
         for (const [agentId, recipientAttachments] of attachmentsByAgent) {
           if (!recipientAttachments.length) continue;
+          const agent = store.getAgent(agentId);
+          if (!agent || agent.projectId !== canonical.projectId || agent.archived) continue;
           await assets.associate(canonical.projectId, agentId, recipientAttachments.map((item) => item.id));
         }
       } catch (error) {
@@ -5086,6 +5101,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           communicationEventId,
         }, "runtime communication projection recovery failed");
       }
+    }
+    if (skippedUnavailableTargets > 0) {
+      app.log.info({ skippedUnavailableTargets },
+        "runtime communication recovery skipped unavailable historical projection surfaces");
     }
     for (const projectId of repairedProjectIds) scheduleCommunicationReconciliation(projectId);
     if (filter?.projectId && filter.communicationEventId) {
@@ -5100,11 +5119,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const receiptMessage = canonical?.conversationId && canonical.idempotencyKey
         ? store.getConversationMessageByReceiptKey(canonical.conversationId, canonical.idempotencyKey)
         : undefined;
-      const incompleteTargets = canonical ? deriveCommunicationBehavior(canonical).projectionTargets.filter((target) =>
-        (target.surface === "conversation" || target.surface === "collaboration_view" || target.surface === "direct_agent_audit") &&
-        !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
-        !projections.some((projection) => projection.eventId === canonical.eventId &&
-          projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message)) : [];
+      const incompleteTargets = canonical ? deriveCommunicationBehavior(canonical).projectionTargets.filter((target) => {
+        if (target.surface === "conversation" || target.surface === "collaboration_view") {
+          const conversation = store.getConversation(target.projectionKey);
+          if (!conversation || conversation.projectId !== canonical.projectId || conversation.archived) return false;
+        } else if (target.surface === "direct_agent_audit") {
+          const agent = store.getAgent(target.projectionKey);
+          if (!agent || agent.projectId !== canonical.projectId || agent.archived) return false;
+        } else {
+          return false;
+        }
+        return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
+          !projections.some((projection) => projection.eventId === canonical.eventId &&
+            projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message);
+      }) : [];
       if (!canonical || incompleteTargets.length > 0) {
         throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe");
       }

@@ -9154,6 +9154,52 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("keeps deleted-Agent communications canonical without rebuilding unavailable audit surfaces", async () => {
+    const project = store.createProject({ label: "Historical communication recovery", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "General" });
+    const agent = store.createAgent(project.id, {
+      title: "Deleted recipient", engine: "codex", conversationId: conversation.id,
+    });
+    const event: CommunicationEvent = {
+      eventId: randomUUID(), schemaVersion: 2, projectId: project.id, conversationId: conversation.id,
+      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
+      audience: { kind: "user_agent", userId: "local-operator", agentId: agent.id },
+      text: "Retain this historical message", createdAt: new Date().toISOString(),
+    };
+    store.appendCommunicationEvent(event);
+    const coordination = new CoordinationV3Store(store.sqlite);
+    const runtimeCommunicationId = `dispatch:${event.eventId}:${agent.id}`;
+    coordination.recordRuntimeCommunication({
+      id: runtimeCommunicationId,
+      projectId: project.id,
+      sender: event.sender,
+      intent: event.intent,
+      audience: event.audience,
+      payload: { communication: event, dispatch: { text: event.text } },
+      activation: {
+        agentId: agent.id, kind: "human_message", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "human",
+      },
+      now: event.createdAt,
+    });
+    store.sqlite.prepare("UPDATE agents SET archived = 1, deleted_at = ? WHERE id = ?")
+      .run(new Date().toISOString(), agent.id);
+    const appendProjection = vi.spyOn(store, "appendCommunicationProjection");
+
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 0 },
+    });
+    await app.ready();
+
+    expect(store.getCommunicationEvent(project.id, event.eventId)).toEqual(event);
+    expect(coordination.runtimeCommunication(runtimeCommunicationId)).toBeDefined();
+    expect(appendProjection.mock.calls.some(([, projection]) =>
+      projection.surface === "direct_agent_audit" && projection.projectionKey === agent.id)).toBe(false);
+    expect((await app.inject({ method: "GET", url: "/api/health" })).statusCode).toBe(200);
+    await app.close();
+  });
+
   it("recovers an attachment-only communication after the SQLite commit crash window", async () => {
     const project = store.createProject({ label: "Attachment recovery", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "General" });
