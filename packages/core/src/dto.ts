@@ -237,7 +237,7 @@ export type WorkspaceEvent =
   | { type: "draft_conflict"; conversationId: string; revision: number }
   | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "started" }
-  | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string }
+  | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string; conversationIds?: string[] }
   | { type: "coordination_changed"; projectId: string; agentId: string }
   | { type: "trigger_changed"; projectId: string; agentId: string; triggerId: string; action: "created" | "updated" | "deleted" | "occurrence" }
   | { type: "usage_changed"; projectId: string; agentId: string; conversationIds: string[]; seq: number; executionId?: string }

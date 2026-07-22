@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { WorkspaceEvent } from "@ponderosa/core";
-import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesAllChat, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, createCollaborationChatInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesAllChat, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh } from "../src/hooks/useWorkspaceStream";
 
 afterEach(() => vi.useRealTimers());
 
@@ -73,6 +73,44 @@ describe("workspace stream cursor recovery", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["agents", "project-a"] });
+    invalidator.dispose();
+  });
+
+  it("coalesces Team Chat refreshes by conversation without touching unrelated chats", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    client.setQueryData(["collaboration-chat", "chat-a"], { old: true });
+    client.setQueryData(["collaboration-chat", "chat-b"], { old: true });
+    client.setQueryData(["collaboration-chat", "chat-c"], { old: true });
+    const invalidator = createCollaborationChatInvalidator(client, 750);
+
+    invalidator.schedule([]);
+    await vi.advanceTimersByTimeAsync(750);
+    expect(client.getQueryState(["collaboration-chat", "chat-a"])?.isInvalidated).toBe(false);
+
+    for (let event = 0; event < 90; event += 1) invalidator.schedule(["chat-a", "chat-b"]);
+    await vi.advanceTimersByTimeAsync(749);
+    expect(client.getQueryState(["collaboration-chat", "chat-a"])?.isInvalidated).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(client.getQueryState(["collaboration-chat", "chat-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["collaboration-chat", "chat-b"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["collaboration-chat", "chat-c"])?.isInvalidated).toBe(false);
+    invalidator.dispose();
+  });
+
+  it("falls back to one global Team Chat refresh for legacy unscoped events", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    client.setQueryData(["collaboration-chat", "chat-a"], { old: true });
+    client.setQueryData(["collaboration-chat", "chat-b"], { old: true });
+    const invalidator = createCollaborationChatInvalidator(client, 1);
+
+    invalidator.schedule();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(client.getQueryState(["collaboration-chat", "chat-a"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["collaboration-chat", "chat-b"])?.isInvalidated).toBe(true);
     invalidator.dispose();
   });
 

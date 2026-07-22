@@ -1074,9 +1074,31 @@ export class CoordinationV3Store {
   /** Project immutable authored messages onto mutable, per-recipient delivery
    * evidence without rewriting the Communication or its chat projection. */
   deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {
-    if (!projectId.trim() || !communicationEventId.trim()) return [];
+    return this.deliveryReceiptsForCommunications(projectId, [communicationEventId]).get(communicationEventId) ?? [];
+  }
+
+  /** Batch the mutable delivery projection for a bounded page of canonical
+   * messages. The former per-message path repeated the same activation scan and
+   * authority lookups up to 1,000 times in one synchronous HTTP request. */
+  deliveryReceiptsForCommunications(
+    projectId: string,
+    requestedCommunicationEventIds: readonly string[],
+  ): Map<string, MessageDeliveryReceiptDto[]> {
+    const communicationEventIds = [...new Set(
+      requestedCommunicationEventIds.map((eventId) => eventId.trim()).filter(Boolean),
+    )];
+    const receiptsByCommunication = new Map<string, MessageDeliveryReceiptDto[]>(
+      communicationEventIds.map((eventId) => [eventId, []]),
+    );
+    if (!projectId.trim() || communicationEventIds.length === 0) return receiptsByCommunication;
+    const eventBindings = Object.fromEntries(
+      communicationEventIds.map((eventId, index) => [`event${index}`, eventId]),
+    );
+    const eventPlaceholders = communicationEventIds.map((_, index) => `@event${index}`).join(", ");
     const activations = this.sqlite.prepare(`
-      SELECT DISTINCT activation.id, activation.project_id, activation.agent_id,
+      SELECT DISTINCT CASE WHEN runtime.id IN (${eventPlaceholders}) THEN runtime.id
+          ELSE json_extract(runtime.payload_json, '$.communication.eventId') END AS communication_event_id,
+        activation.id, activation.project_id, activation.agent_id,
         activation.scope_key, activation.kind, activation.state, activation.updated_at,
         activation.rowid AS row_sequence,
         COALESCE(retry_lineage.attempt_number, 0) AS attempt_number,
@@ -1087,22 +1109,25 @@ export class CoordinationV3Store {
       LEFT JOIN activation_delivery_retry_lineage retry_lineage
         ON retry_lineage.successor_activation_id = activation.id
       WHERE source.source_kind = 'communication'
-        AND runtime.project_id = ?
+        AND runtime.project_id = @projectId
         AND activation.project_id = runtime.project_id
         AND (
-          runtime.id = ? OR
+          runtime.id IN (${eventPlaceholders}) OR
           CASE WHEN json_valid(runtime.payload_json)
             THEN json_extract(runtime.payload_json, '$.communication.eventId')
             ELSE NULL
-          END = ?
+          END IN (${eventPlaceholders})
         )
-      ORDER BY attempt_number, row_sequence
-    `).all(projectId, communicationEventId, communicationEventId) as Array<{
-      id: string; project_id: string; agent_id: string; scope_key: string;
+      ORDER BY communication_event_id, attempt_number, row_sequence
+    `).all({ projectId, ...eventBindings }) as Array<{
+      communication_event_id: string; id: string; project_id: string; agent_id: string; scope_key: string;
       kind: string; state: string; updated_at: string; row_sequence: number; attempt_number: number;
       sender_json: string; intent: string; audience_json: string; payload_json: string;
     }>;
-    const latestByRecipient = new Map<string, { activation: typeof activations[number]; attemptCount: number }>();
+    const latestByCommunication = new Map<
+      string,
+      Map<string, { activation: typeof activations[number]; attemptCount: number }>
+    >();
     for (const activation of activations) {
       let sender: unknown;
       let audience: unknown;
@@ -1122,12 +1147,18 @@ export class CoordinationV3Store {
         payload,
         activations: [{ agentId: activation.agent_id, kind: activation.kind, scopeKey: activation.scope_key }],
       }, false)) continue;
+      let latestByRecipient = latestByCommunication.get(activation.communication_event_id);
+      if (!latestByRecipient) {
+        latestByRecipient = new Map();
+        latestByCommunication.set(activation.communication_event_id, latestByRecipient);
+      }
       latestByRecipient.set(activation.agent_id, {
         activation,
         attemptCount: activation.attempt_number + 1,
       });
     }
-    return [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
+    for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
+      const receipts = [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
       const injection = this.sqlite.prepare(`
         SELECT injection.id, injection.kind, injection.state, injection.updated_at
         FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
@@ -1182,7 +1213,10 @@ export class CoordinationV3Store {
         ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
         ...(recovery?.recovery_activation_id ? { recoveryActivationId: recovery.recovery_activation_id } : {}),
       };
-    });
+      });
+      receiptsByCommunication.set(communicationEventId, receipts);
+    }
+    return receiptsByCommunication;
   }
 
   /** Create a new delivery attempt without duplicating the canonical user
