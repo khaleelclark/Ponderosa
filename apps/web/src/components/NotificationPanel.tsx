@@ -45,9 +45,10 @@ export function notificationsNewestFirst(notifications: WorkspaceNotificationDto
 }
 
 export function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
-  if (filter === "mentions") return notifications.filter((item) => item.kind === "mentions");
-  if (filter === "urgent") return notifications.filter((item) => item.severity === "urgent" && (item.status ?? "open") === "open");
-  return notifications;
+  const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open");
+  if (filter === "mentions") return unread.filter((item) => item.kind === "mentions");
+  if (filter === "urgent") return unread.filter((item) => item.severity === "urgent");
+  return unread;
 }
 
 export function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
@@ -106,7 +107,19 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const groups = groupNotificationsByProject(visibleNotifications);
   const unreadCount = notifications.filter((item) => !item.readAt).length;
 
+  const markRead = (item: WorkspaceNotificationDto) => {
+    const readAt = new Date().toISOString();
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) => current.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate));
+    void api.markNotificationRead(item.id).then(() => {
+      announceWorkspaceRefresh();
+      return queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    }).catch((reason) => {
+      setError(reason instanceof Error ? reason.message : "Notification could not be marked read.");
+      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    });
+  };
   const navigateToNotification = (item: WorkspaceNotificationDto) => {
+    markRead(item);
     if (item.action?.kind === "open_settings") {
       onClose();
       onOpenSettings?.();
@@ -215,9 +228,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       </Stack>
     </DialogTitle>
     <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
-      <Tab value="all" label={`All (${notifications.length})`} sx={{ minHeight: 42 }} />
-      <Tab value="urgent" label={`Urgent (${notifications.filter((item) => item.severity === "urgent" && (item.status ?? "open") === "open").length})`} sx={{ minHeight: 42 }} />
-      <Tab value="mentions" label={`Mentions (${notifications.filter((item) => item.kind === "mentions").length})`} sx={{ minHeight: 42 }} />
+      <Tab value="all" label={`All (${filterNotifications(notifications, "all").length})`} sx={{ minHeight: 42 }} />
+      <Tab value="urgent" label={`Urgent (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
+      <Tab value="mentions" label={`Mentions (${filterNotifications(notifications, "mentions").length})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
@@ -265,7 +278,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
-      <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!notifications.length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
+      <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
   </Dialog>
   {agentWorkTarget ? <AgentWorkInspector

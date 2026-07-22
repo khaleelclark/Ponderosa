@@ -797,7 +797,7 @@ export class AgentStore {
         : input;
     if (!this.getProject(event.projectId)) throw new Error("communication project not found");
     if (event.schemaVersion !== 1 && event.schemaVersion !== 2) throw new Error("unsupported communication schema version");
-    if (!event.eventId || (!event.text.trim() && !event.attachments?.length) || !event.createdAt) {
+    if (!event.eventId || (!event.text.trim() && !event.attachments?.length && !event.document) || !event.createdAt) {
       throw new Error("communication event is incomplete");
     }
     if (event.attachments) {

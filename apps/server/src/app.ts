@@ -54,6 +54,8 @@ import type {
   LetCurrentRunFinishResponse,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
+  CancelMessageDeliveryRequest,
+  CancelMessageDeliveryResponse,
   QueuedConversationMessageDto,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
@@ -2026,7 +2028,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/import-agents$/u.test(pathname) ||
-      /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/retry$/u.test(pathname) ||
+      /^\/api\/projects\/[^/]+\/message-deliveries\/[^/]+\/(?:retry|cancel)$/u.test(pathname) ||
       /^\/api\/agents\/[^/]+\/triggers$/u.test(pathname) ||
       /^\/api\/triggers\/[^/]+(?:\/(?:rotate-secret|allow-runs))?$/u.test(pathname) ||
       /^\/api\/trigger-webhooks\/[^/]+$/u.test(pathname) ||
@@ -2109,6 +2111,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   const reconcileCommunicationFailureNotifications = (): void => {
     for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
+      if (failure.state === "cancelled") continue;
       if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
       // Intent, not priority or rendered text, keeps internal Collaboration out
       // of the operator notification tree.
@@ -7043,12 +7046,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       content: documentContent, byteLength: Buffer.byteLength(documentContent, "utf8"),
       authorAgentId: capability.agentId, executionId: capability.runId, createdAt,
     } : undefined;
-    const publishedText = messageArtifact
-      ? [
-          `Full response: ponderosa://artifact/${messageArtifact.id}`,
-          ...(explicitDocumentArtifact ? [`Additional document: ponderosa://artifact/${explicitDocumentArtifact.id}`] : []),
-        ].join("\n")
-      : messageContent;
+    // The stable artifact reference remains in structured document metadata and
+    // tool results. Do not leak the internal ponderosa:// URI into chat prose.
+    const publishedText = messageArtifact ? "" : messageContent;
     if (inferredReplyFingerprint) capability.inferredReplyFingerprint = inferredReplyFingerprint;
 
     if (intent === "direct_to_user") {
@@ -9135,6 +9135,31 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3Scheduler.notify();
     publishMessageDeliveryChanged(result.targetAgentId);
     return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);
+  });
+
+  app.post<{
+    Params: { projectId: string; activationId: string };
+    Body: CancelMessageDeliveryRequest;
+  }>("/api/projects/:projectId/message-deliveries/:activationId/cancel", async (request, reply) => {
+    const projectId = request.params.projectId?.trim() ?? "";
+    const activationId = request.params.activationId?.trim() ?? "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
+    if (!projectId) return reply.code(400).send({ error: "projectId is required" });
+    if (!activationId) return reply.code(400).send({ error: "activationId is required" });
+    if (!idempotencyKey || idempotencyKey.length > 200) {
+      return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
+    }
+    const result = coordinationV3.cancelTerminalMessageDelivery({ projectId, activationId, idempotencyKey });
+    if (!result.cancelled) return reply.code(409).send(result satisfies CancelMessageDeliveryResponse);
+    const cursor = workspace.cursor();
+    for (const notification of workspace.listNotifications()) {
+      if (notification.dedupeKey?.startsWith(`communication-delivery:${activationId}:`)) {
+        workspace.setNotificationStatus(notification.id, "dismissed");
+      }
+    }
+    publishWorkspaceSince(cursor);
+    if (result.targetAgentId) publishMessageDeliveryChanged(result.targetAgentId);
+    return result satisfies CancelMessageDeliveryResponse;
   });
 
 
@@ -12700,6 +12725,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishWorkspaceSince(cursor);
     return notification;
   });
+  app.post<{ Params: { id: string } }>("/api/notifications/:id/read", async (request, reply) => {
+    const cursor = workspace.cursor();
+    const notification = workspace.readNotification(request.params.id);
+    if (!notification) return reply.code(404).send({ error: "notification not found" });
+    publishWorkspaceSince(cursor);
+    return { read: true };
+  });
   app.post("/api/notifications/read", async () => {
     const cursor = workspace.cursor();
     const read = workspace.readAllNotifications();
@@ -13134,6 +13166,100 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3Scheduler.notify();
     publishMessageDeliveryChanged(request.params.id);
     return { cancelled: true, replayed: result.replayed } satisfies CancelAgentRunResponse;
+  });
+
+  app.post<{
+    Params: { projectId: string };
+    Body: { engineId?: string; model?: string; effort?: string; name?: string; argumentsText?: string };
+  }>("/api/projects/:projectId/provider-commands", async (request, reply) => {
+    const project = store.getProject(request.params.projectId);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    const engineId = request.body?.engineId?.trim() ?? "";
+    const engine = engines.get(engineId);
+    if (!engine) return reply.code(400).send({ error: "unknown engine" });
+    if (!engine.adapter.openSession) {
+      return reply.code(409).send({ error: "this provider cannot open a command-only session" });
+    }
+    const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
+    const argumentsText = request.body?.argumentsText?.trim();
+    if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
+      return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
+    }
+    const selection = concreteRuntimeSelection(engine.adapter, [
+      { model: request.body?.model, effort: request.body?.effort },
+      project.defaultEngine === engineId ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+      workspace.getPreferences().engineDefaults?.[engineId],
+    ]);
+    const authority: CapabilityDiscoveryAuthority = {
+      projectId: project.id,
+      engineId,
+      key: `project-provider-command:${project.id}:${randomUUID()}`,
+      controller: new AbortController(),
+      processes: new Set(),
+      settled: false,
+    };
+    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
+      if (closed || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
+        void closeCapabilityDiscoveryProcess(state).catch((error) => {
+          app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+        });
+      }
+    };
+    let invocation: { catalog: EngineCapabilities; message?: string } | undefined;
+    const operation = Promise.resolve().then(async () => {
+      const session = await engine.adapter.openSession!({
+        agentId: `project-command:${project.id}:${randomUUID()}`,
+        cwd: project.hostPath,
+        history: [],
+        model: selection.model,
+        effort: selection.effort,
+        onRuntimeSpawned: registerProcess,
+        onRuntimeRootExit: () => undefined,
+        onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engineId),
+        signal: authority.controller.signal,
+      });
+      if (!session.capabilities || !session.invokeCommand) {
+        throw new Error("this provider does not support structured runtime commands");
+      }
+      const catalog = await session.capabilities();
+      const command = catalog.commands.find((candidate) => candidate.name === name);
+      if (!command || command.invocation !== "runtime" || command.status !== "available") {
+        const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
+        Object.assign(error, { catalogVersion: catalog.catalogVersion });
+        throw error;
+      }
+      const result = await session.invokeCommand(name, argumentsText);
+      invocation = { catalog, ...(result?.message ? { message: result.message } : {}) };
+      return catalog;
+    });
+    authority.operation = operation;
+    engineCapabilityDiscoveryAuthorities.add(authority);
+    try {
+      await operation;
+      reportRuntimeCapabilitiesChanged(project.id, engineId);
+      return {
+        invoked: true,
+        name,
+        catalogVersion: invocation?.catalog.catalogVersion,
+        ...(invocation?.message ? { message: invocation.message } : {}),
+      };
+    } catch (error) {
+      const catalogVersion = error && typeof error === "object" && "catalogVersion" in error
+        ? (error as { catalogVersion?: string }).catalogVersion : undefined;
+      return reply.code(409).send({
+        error: error instanceof Error ? error.message : "provider command failed",
+        ...(catalogVersion ? { catalogVersion } : {}),
+      });
+    } finally {
+      authority.settled = true;
+      try {
+        await closeCapabilityDiscoveryAuthority(authority);
+      } catch (error) {
+        app.log.error({ err: error, projectId: project.id }, "project provider-command process cleanup remains pending");
+      }
+    }
   });
 
   app.post<{ Params: { id: string }; Body: { name?: string; argumentsText?: string } }>(

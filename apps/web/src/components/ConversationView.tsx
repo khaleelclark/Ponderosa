@@ -1243,10 +1243,23 @@ export function ConversationView({
           commands={composerCommands}
           capabilities={directReplyAgent ? directReplyEngineCapabilities?.composerCapabilities ?? [] : composerRuntime.capabilities}
           onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: directReplyAgent?.activeEngine ?? activeEngine?.id, model: directReplyAgent?.model ?? model, agentId: directReplyAgent?.id })}
-          onCommand={directReplyAgent ? (command, argumentsText) => api.invokeProviderCommand(directReplyAgent.id, {
-            name: command.name,
-            ...(argumentsText ? { argumentsText } : {}),
-          }).then((result) => setQueuedReplyNotice(result.message ?? `/${command.name} invoked for ${directReplyAgent.title}.`)) : undefined}
+          onCommand={activeEngine ? (command, argumentsText) => {
+            const invocation = directReplyAgent
+              ? api.invokeProviderCommand(directReplyAgent.id, {
+                  name: command.name,
+                  ...(argumentsText ? { argumentsText } : {}),
+                })
+              : api.invokeProjectProviderCommand(conversation.projectId, {
+                  engineId: activeEngine.id,
+                  ...(model ? { model } : {}),
+                  ...(effort ? { effort } : {}),
+                  name: command.name,
+                  ...(argumentsText ? { argumentsText } : {}),
+                });
+            return invocation.then((result) => setQueuedReplyNotice(
+              result.message ?? `/${command.name} invoked for ${directReplyAgent?.title ?? activeEngine.displayName}.`,
+            ));
+          } : undefined}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady

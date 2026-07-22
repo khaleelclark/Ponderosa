@@ -535,6 +535,17 @@ export interface MessageDeliveryReceiptDto {
   recoveryActivationId?: string;
 }
 
+export interface CancelMessageDeliveryRequest {
+  idempotencyKey: string;
+}
+
+export interface CancelMessageDeliveryResponse {
+  cancelled: boolean;
+  replayed: boolean;
+  state: "cancelled" | "not_cancellable";
+  targetAgentId?: string;
+}
+
 export interface LetCurrentRunFinishRequest {
   idempotencyKey: string;
 }

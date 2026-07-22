@@ -29,6 +29,12 @@ describe("message delivery retry", () => {
       targetAgentId: "manager",
       retryMayDuplicate: true,
     });
+    const cancel = vi.spyOn(api, "cancelMessageDelivery").mockResolvedValue({
+      cancelled: true,
+      replayed: false,
+      state: "cancelled",
+      targetAgentId: "manager",
+    });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
@@ -57,6 +63,10 @@ describe("message delivery retry", () => {
     expect(retry).toHaveBeenCalledOnce();
     expect(retry).toHaveBeenCalledWith("project-a", "uncertain-activation", {
       idempotencyKey: "operator-delivery-retry:uncertain-activation",
+    });
+    await act(async () => { await buttonNamed("Cancel Delivery").props.onClick(); });
+    expect(cancel).toHaveBeenCalledWith("project-a", "uncertain-activation", {
+      idempotencyKey: "operator-delivery-cancel:uncertain-activation",
     });
     view.unmount();
     client.clear();

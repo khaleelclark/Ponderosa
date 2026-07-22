@@ -3,6 +3,7 @@ import {
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ReplyOutlinedIcon from "@mui/icons-material/ReplyOutlined";
+import TagIcon from "@mui/icons-material/Tag";
 import type { AllChatItemDto, EngineCommand } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +14,7 @@ import { ChatMessageBody, Composer, isChatNearBottom, ScrollToLatestButton, scro
 import { MessageTimestamp } from "./MessageTimestamp";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
+import { agentMentionHandle } from "../mentions";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -60,6 +62,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   const [selectedId, setSelectedId] = useState<string>();
   const [mobileTimestampId, setMobileTimestampId] = useState<string>();
   const [notice, setNotice] = useState<string>();
+  const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
   const scrollRef = useRef<HTMLDivElement>(null);
   const firstLayout = useRef(true);
   const followLatest = useRef(true);
@@ -117,8 +120,14 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
   const replyUnavailable = selected ? allChatReplyUnavailableMessage(selected) : undefined;
   const selectItem = (item: AllChatItemDto) => {
     setSelectedId(item.communicationEventId);
+    setMentionInsertRequest(undefined);
     setNotice(undefined);
     send.reset();
+  };
+  const mentionItem = (item: AllChatItemDto) => {
+    selectItem(item);
+    if (!item.directMessageAgent) return;
+    setMentionInsertRequest({ id: `${item.communicationEventId}:${Date.now()}`, text: `#${agentMentionHandle(item.directMessageAgent.title)}` });
   };
   const history = older ?? {
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
@@ -204,16 +213,24 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
             sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", borderRadius: 2, "& .messages-hover-actions": { opacity: { xs: 1, sm: 0 }, transition: "opacity 120ms ease" }, "&:hover .messages-hover-actions, &:focus-within .messages-hover-actions": { opacity: 1 } }}
           >
             <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? "fit-content" : "100%", maxWidth: fromUser ? { xs: "94%", sm: 920 } : 1120, alignItems: "flex-start" }}>
-              {!fromUser ? <Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar> : null}
+              {!fromUser ? <ButtonBase aria-label={`Message ${item.author.label}`} onClick={(event) => { event.stopPropagation(); if (item.directMessageAgent) onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent.id }); }} sx={{ borderRadius: "50%", flex: "0 0 auto" }}><Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar></ButtonBase> : null}
               <Box sx={{ minWidth: 0, flex: 1 }}>
                 {fromUser
                   ? <UserMessageLabel profile={workspacePreferences.data?.profile} createdAt={item.createdAt} />
                   : <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "baseline", mb: 0.25 }}>
-                    <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography>
+                    <ButtonBase onClick={(event) => { event.stopPropagation(); if (item.directMessageAgent) onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent.id }); }} sx={{ borderRadius: 0.75 }}><Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography></ButtonBase>
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
                 <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", minWidth: 0, "& p": { my: 0.15 }, "& li + li": { mt: 0.05 } }}>
-                  <ChatMessageBody text={item.text} collapseLongMessage projectId={item.project.id} operatorHandle={workspacePreferences.data?.profile.handle} />
+                  <ChatMessageBody
+                    text={item.text}
+                    collapseLongMessage
+                    compactMarkdown
+                    projectId={item.project.id}
+                    operatorHandle={workspacePreferences.data?.profile.handle}
+                    agentMentionForHandle={(handle) => item.directMessageAgent && agentMentionHandle(item.directMessageAgent.title).toLocaleLowerCase() === handle.toLocaleLowerCase() ? { agentId: item.directMessageAgent.id, label: item.directMessageAgent.title } : undefined}
+                    onOpenAgent={(agentId) => onNavigate({ kind: "agent", projectId: item.project.id, agentId })}
+                  />
                 </Box>
                 {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
                 <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>
@@ -223,6 +240,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                 </Stack>
                 <Stack className="messages-hover-actions" direction="row" spacing={0.25} sx={{ mt: 0.15, justifyContent: fromUser ? "flex-end" : "flex-start", minHeight: 28 }}>
                   <Tooltip title="Copy"><IconButton size="small" aria-label="Copy message" onClick={() => void copyText(item.text)}><ContentCopyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip>
+                  {item.directMessageAgent ? <Tooltip title={`Mention ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Mention ${item.directMessageAgent.title}`} onClick={() => mentionItem(item)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
                   {item.directMessageAgent ? <Tooltip title={`Reply to ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Reply to ${item.directMessageAgent.title}`} onClick={() => selectItem(item)}><ReplyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
                 </Stack>
               </Box>
@@ -271,6 +289,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                 replyTo={{ text: selected.text }}
                 replyLabel={`Direct reply to #${selected.directMessageAgent.title}`}
                 onCancelReply={() => { setSelectedId(undefined); setNotice(undefined); send.reset(); }}
+                insertTextRequest={mentionInsertRequest}
                 draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
                 conversationDraftId={`agent:${selected.directMessageAgent.id}`}
                 guidance="Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages."

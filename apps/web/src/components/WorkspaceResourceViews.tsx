@@ -85,7 +85,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
   const starredIds = starredWorkspaceResources(preferences);
-  return <Box sx={{ minHeight: 0, overflow: "hidden" }}>
+  return <Box className="ponderosa-scroll" sx={{ height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
     {projects.length ? <AgentsTab toolbarControls={<>
       <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
       <Button color="inherit" startIcon={<SortOutlinedIcon />} onClick={(event) => setSortAnchor(event.currentTarget)} sx={{ minHeight: 40, whiteSpace: "nowrap" }}>Sort</Button>

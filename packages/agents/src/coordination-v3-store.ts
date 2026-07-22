@@ -366,6 +366,7 @@ export interface TerminalActivationV3View {
   projectId: string;
   agentId: string;
   kind: string;
+  state: "failed" | "outcome_unknown" | "cancelled" | "consumed";
   scopeKey?: string;
   communicationEventId?: string;
   communicationIntent?: string;
@@ -1363,6 +1364,39 @@ export class CoordinationV3Store {
     })();
   }
 
+  /** Acknowledge a terminal delivery failure without replaying the immutable
+   * message. The original terminal outcome/error remain available for audit. */
+  cancelTerminalMessageDelivery(input: {
+    projectId: string;
+    activationId: string;
+    idempotencyKey: string;
+    now?: string;
+  }): { cancelled: boolean; replayed: boolean; state: "cancelled" | "not_cancellable"; targetAgentId?: string } {
+    if (!input.idempotencyKey.trim()) throw new Error("delivery cancellation idempotency key is required");
+    const now = input.now ?? new Date().toISOString();
+    const hash = payloadHash({ projectId: input.projectId, activationId: input.activationId });
+    return this.sqlite.transaction(() => {
+      const replay = this.idempotentReplay<{ cancelled: boolean; state: "cancelled" | "not_cancellable"; targetAgentId?: string }>(
+        input.projectId, "user:local-operator", "cancel_terminal_message_delivery", input.idempotencyKey, hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      const activation = this.sqlite.prepare(`
+        SELECT agent_id FROM agent_activations WHERE id = ? AND project_id = ?
+      `).get(input.activationId, input.projectId) as { agent_id: string } | undefined;
+      const changed = this.sqlite.prepare(`
+        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
+        WHERE id = ? AND project_id = ? AND state IN ('failed', 'outcome_unknown')
+      `).run(now, input.activationId, input.projectId).changes;
+      const result = changed === 1
+        ? { cancelled: true, state: "cancelled" as const, ...(activation ? { targetAgentId: activation.agent_id } : {}) }
+        : { cancelled: false, state: "not_cancellable" as const };
+      this.recordIdempotency(
+        input.projectId, "user:local-operator", "cancel_terminal_message_delivery", input.idempotencyKey, hash, result, now,
+      );
+      return { ...result, replayed: false };
+    })();
+  }
+
   pendingActivations(projectId?: string): PendingActivationV3View[] {
     const rows = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, kind, state, payload_json, created_at
@@ -1386,7 +1420,7 @@ export class CoordinationV3Store {
 
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, kind, scope_key, terminal_outcome, delivery_failures,
+      SELECT id, project_id, agent_id, kind, state, scope_key, terminal_outcome, delivery_failures,
         (SELECT COALESCE(json_extract(runtime.payload_json, '$.communication.eventId'), runtime.id)
           FROM activation_sources source
           JOIN runtime_communications runtime ON runtime.id = source.source_id
@@ -1401,7 +1435,7 @@ export class CoordinationV3Store {
       WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
       ORDER BY terminal_at DESC, id DESC LIMIT ?
     `).all(projectId ?? null, projectId ?? null, Math.max(1, Math.min(limit, 500))) as Array<{
-      id: string; project_id: string; agent_id: string; kind: string; scope_key: string | null;
+      id: string; project_id: string; agent_id: string; kind: string; state: TerminalActivationV3View["state"]; scope_key: string | null;
       communication_event_id: string | null; communication_intent: string | null;
       terminal_outcome: ActivationTerminalOutcome; delivery_failures: number;
       last_delivery_error: string | null; terminal_at: string;
@@ -1411,6 +1445,7 @@ export class CoordinationV3Store {
       projectId: row.project_id,
       agentId: row.agent_id,
       kind: row.kind,
+      state: row.state,
       ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
       ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
       ...(row.communication_intent ? { communicationIntent: row.communication_intent } : {}),

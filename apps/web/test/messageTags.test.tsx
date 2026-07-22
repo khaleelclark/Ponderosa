@@ -27,7 +27,7 @@ describe("Conversation #tags", () => {
     expect(html).toContain('aria-label="Open agent John"');
   });
 
-  it("links agent tags while styling reserved and unknown tags without navigation", () => {
+  it("links only valid Agent, user, and broadcast tags while leaving unknown hashtags plain", () => {
     const html = renderToStaticMarkup(<ConversationMessage
       message={{
         id: "tagged",
@@ -46,7 +46,8 @@ describe("Conversation #tags", () => {
     expect(html).toContain('aria-label="Open agent Cabrillo"');
     expect(html).toContain('data-message-tag="user"');
     expect(html).toContain('data-message-tag="broadcast"');
-    expect(html).toContain('data-message-tag="unknown"');
+    expect(html).not.toContain('data-message-tag="unknown"');
+    expect(html).toContain("#unknown");
     expect(html).not.toContain('aria-label="Open agent user"');
     expect(html).toContain("<code>#Olympic</code>");
     expect(html).toContain('href="https://example.com"');
