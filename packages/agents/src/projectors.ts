@@ -268,7 +268,7 @@ export function projectEvent(
           mediaType: null, visibility: null, pinned: null, size: null,
         },
         content:
-          event.diff ??
+          event.diff ||
           `# ${event.kind} ${event.path}\n\nNo diff text was provided by the engine.\n`,
       });
       ops.push({ kind: "touch_agent", updatedAt: ts });
