@@ -4,7 +4,7 @@ import { execFile } from "node:child_process";
 import { promises as dns } from "node:dns";
 import { request as httpsRequest } from "node:https";
 import { BlockList, isIP, type Socket } from "node:net";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import { Readable, Transform } from "node:stream";
 import { gzipSync } from "node:zlib";
@@ -1744,6 +1744,9 @@ export function normalizeExternalCitations(value: unknown, verifiedAt = new Date
 }
 
 export interface PonderosaServer extends FastifyInstance {
+  /** Stop accepting work and synchronously detach long-lived HTTP streams so
+   * Fastify's close lifecycle can reach its durable teardown hooks. */
+  prepareForShutdown(): void;
   /** Retry the retained provider barriers after Fastify shutdown was unable to
    * confirm every process group. Intended for the production signal handler. */
   retryProviderRuntimeShutdown(): Promise<void>;
@@ -1918,6 +1921,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
+  const liveSseClosures = new Set<() => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
     for (const subscriber of workspaceSubscribers) subscriber(event);
   };
@@ -4633,6 +4637,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
   let deploymentDraining = false;
+  let shutdownPrepared = false;
+  app.prepareForShutdown = (): void => {
+    if (shutdownPrepared) return;
+    shutdownPrepared = true;
+    closed = true;
+    deploymentDraining = true;
+    for (const closeStream of [...liveSseClosures]) {
+      try {
+        closeStream();
+      } catch (error) {
+        app.log.warn({ err: error }, "Ponderosa could not close a live event stream cleanly");
+      }
+    }
+    app.server.closeIdleConnections();
+  };
   const deploymentDrainSnapshot = () => {
     const schedulerRuns = coordinationV3.activeRunCount();
     const localRuns = activeRuns.size;
@@ -5263,6 +5282,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.addHook("preClose", async () => {
+    app.prepareForShutdown();
     app.server.off("upgrade", linkPreviewUpgrade);
     if (linkPreviewSweep) clearInterval(linkPreviewSweep);
     const shutdownPairs = [...linkPreviews.values()].flatMap((registration) => [...registration.connections]);
@@ -12817,6 +12837,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   app.get<{ Querystring: { lastEventId?: string } }>("/api/workspace/stream", async (request, reply) => {
+    if (closed) return reply.code(503).send({ error: "server is shutting down" });
     if (workspaceSubscribers.size >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
       return reply.code(429).send({ error: "too many stream subscribers" });
     }
@@ -12848,12 +12869,27 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     replaying = false;
     for (const event of queued) writeEvent(event);
     const heartbeat = setInterval(() => writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }), 15_000);
-    request.raw.on("close", () => { clearInterval(heartbeat); workspaceSubscribers.delete(subscriber); });
+    let streamClosed = false;
+    const cleanup = (): void => {
+      if (streamClosed) return;
+      streamClosed = true;
+      clearInterval(heartbeat);
+      workspaceSubscribers.delete(subscriber);
+      liveSseClosures.delete(closeStream);
+    };
+    const closeStream = (): void => {
+      cleanup();
+      if (!reply.raw.writableEnded) reply.raw.end();
+      if (!reply.raw.destroyed) reply.raw.destroy();
+    };
+    liveSseClosures.add(closeStream);
+    request.raw.on("close", cleanup);
   });
 
   app.get<{ Params: { id: string }; Querystring: { lastEventId?: string } }>(
     "/api/agents/:id/stream",
     async (request, reply) => {
+      if (closed) return reply.code(503).send({ error: "server is shutting down" });
       if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
       if ((subscribers.get(request.params.id)?.size ?? 0) >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
         return reply.code(429).send({ error: "too many stream subscribers" });
@@ -12907,10 +12943,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
       }, 15000);
 
-      request.raw.on("close", () => {
+      let streamClosed = false;
+      const cleanup = (): void => {
+        if (streamClosed) return;
+        streamClosed = true;
         clearInterval(heartbeat);
         unsubscribe();
-      });
+        liveSseClosures.delete(closeStream);
+      };
+      const closeStream = (): void => {
+        cleanup();
+        if (!reply.raw.writableEnded) reply.raw.end();
+        if (!reply.raw.destroyed) reply.raw.destroy();
+      };
+      liveSseClosures.add(closeStream);
+      request.raw.on("close", cleanup);
     },
   );
 

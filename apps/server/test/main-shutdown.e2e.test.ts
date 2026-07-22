@@ -34,6 +34,50 @@ afterEach(async () => {
 });
 
 describe("production entrypoint shutdown", () => {
+  it.runIf(process.platform !== "win32")("closes live event streams before awaiting Fastify shutdown", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-main-stream-shutdown-"));
+    roots.push(root);
+    const dataDir = path.join(root, "data");
+    const repoDir = path.join(root, "repo");
+    mkdirSync(repoDir, { recursive: true });
+    writeFileSync(path.join(repoDir, "README.md"), "# stream shutdown test\n");
+    const port = await unusedPort();
+    const entrypoint = fileURLToPath(new URL("../dist/main.js", import.meta.url));
+    const server = spawn(process.execPath, [entrypoint], {
+      cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        PONDEROSA_DATA_DIR: dataDir,
+        PONDEROSA_BROWSE_ROOTS: repoDir,
+        PONDEROSA_HOST: "127.0.0.1",
+        PONDEROSA_PORT: String(port),
+      },
+    });
+    children.push(server);
+    let diagnostics = "";
+    server.stdout?.on("data", (chunk) => { diagnostics += chunk.toString(); });
+    server.stderr?.on("data", (chunk) => { diagnostics += chunk.toString(); });
+    const base = `http://127.0.0.1:${port}`;
+
+    await vi.waitFor(async () => {
+      const response = await fetch(`${base}/api/health`).catch(() => undefined);
+      expect(response?.status, diagnostics).toBe(200);
+    }, { timeout: 8_000, interval: 25 });
+
+    const stream = await fetch(`${base}/api/workspace/stream`);
+    expect(stream.status, diagnostics).toBe(200);
+    const reader = stream.body?.getReader();
+    expect(reader).toBeDefined();
+    const firstChunk = await reader!.read();
+    expect(firstChunk.done).toBe(false);
+    expect(new TextDecoder().decode(firstChunk.value)).toContain("workspace_status");
+
+    server.kill("SIGTERM");
+    await vi.waitFor(() => expect(server.exitCode, diagnostics).toBe(0), { timeout: 4_000, interval: 25 });
+    await expect(reader!.read()).resolves.toMatchObject({ done: true });
+  }, 10_000);
+
   it.runIf(process.platform !== "win32")("awaits a stubborn provider and descendant after SIGTERM", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "ponderosa-main-shutdown-"));
     roots.push(root);
