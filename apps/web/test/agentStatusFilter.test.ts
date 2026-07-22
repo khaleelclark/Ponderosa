@@ -37,9 +37,8 @@ describe("agent status filter", () => {
     expect(options.map((option) => option.value)).toEqual([
       "all", ...STATUS_FILTERS.map((option) => option.value), "unassigned",
     ]);
-    expect(source).toContain('labelId="agents-status-filter-label"');
-    expect(source).toContain('aria-label": "Filter agents by status"');
-    expect(source).toContain("multiple");
+    expect(source).toContain('aria-label="Filter Agents by status"');
+    expect(source).toContain("statusAnchor");
     expect(source).not.toContain("ToggleButtonGroup");
   });
 

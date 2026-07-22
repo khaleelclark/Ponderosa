@@ -142,7 +142,7 @@ describe("composer clipboard attachments", () => {
     expect(result.error).toContain("2 pasted or selected files were not attached");
   });
 
-  it("atomically caps rapid duplicate paste events at four files", async () => {
+  it("atomically caps rapid duplicate paste events at twenty files", async () => {
     const originalCreate = URL.createObjectURL;
     const originalRevoke = URL.revokeObjectURL;
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
@@ -150,8 +150,8 @@ describe("composer clipboard attachments", () => {
     let sent: File[] = [];
     const view = renderComposer(<Composer disabled={false} running={false} onSend={(_text, files) => { sent = files; }} />);
     const textarea = pasteTarget(view);
-    const first = [1, 2, 3, 4].map((index) => file(`first-${index}.png`, "image/png"));
-    const second = [1, 2, 3, 4].map((index) => file(`second-${index}.png`, "image/png"));
+    const first = Array.from({ length: 10 }, (_, index) => file(`first-${index}.png`, "image/png"));
+    const second = Array.from({ length: 10 }, (_, index) => file(`second-${index}.png`, "image/png"));
 
     unstable_batchedUpdates(() => {
       textarea.props.onPaste(clipboard(first));
@@ -159,8 +159,8 @@ describe("composer clipboard attachments", () => {
     });
     view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!.props.onClick();
 
-    expect(sent).toHaveLength(4);
-    expect(sent).toEqual(first);
+    expect(sent).toHaveLength(20);
+    expect(sent).toEqual([...first, ...second]);
     view.unmount();
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;
@@ -291,7 +291,7 @@ describe("composer clipboard attachments", () => {
     URL.revokeObjectURL = originalRevoke;
   });
 
-  it("atomically caps rapid paste events at the 24 MiB aggregate and exposes rejection", async () => {
+  it("atomically caps rapid paste events at the server's 80 MiB aggregate and exposes rejection", async () => {
     const originalCreate = URL.createObjectURL;
     const originalRevoke = URL.revokeObjectURL;
     URL.createObjectURL = (value) => `blob:${(value as File).name}`;
@@ -302,14 +302,14 @@ describe("composer clipboard attachments", () => {
     const eightMiB = 8 * 1024 * 1024;
 
     unstable_batchedUpdates(() => {
-      textarea.props.onPaste(clipboard([file("one.pdf", "application/pdf", eightMiB), file("two.pdf", "application/pdf", eightMiB)]));
-      textarea.props.onPaste(clipboard([file("three.pdf", "application/pdf", eightMiB), file("four.pdf", "application/pdf", eightMiB)]));
+      textarea.props.onPaste(clipboard(Array.from({ length: 6 }, (_, index) => file(`first-${index}.pdf`, "application/pdf", eightMiB))));
+      textarea.props.onPaste(clipboard(Array.from({ length: 6 }, (_, index) => file(`second-${index}.pdf`, "application/pdf", eightMiB))));
     });
     expect(view.root.findAll((node) => node.children.some((child) => typeof child === "string" && child.includes("not attached")))).not.toHaveLength(0);
     view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === "Send message")[0]!.props.onClick();
 
-    expect(sent).toHaveLength(3);
-    expect(sent.reduce((total, value) => total + value.size, 0)).toBe(24 * 1024 * 1024);
+    expect(sent).toHaveLength(10);
+    expect(sent.reduce((total, value) => total + value.size, 0)).toBe(80 * 1024 * 1024);
     view.unmount();
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = originalRevoke;

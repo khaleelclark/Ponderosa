@@ -4,6 +4,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
@@ -138,6 +139,7 @@ export function AgentsTab({
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
   const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
+  const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
 
   const promoteAgent = useMutation({
@@ -238,32 +240,28 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
       >
+        <TextField size="small" label="Search Agents" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: 220, flex: { sm: 1 }, width: { xs: "100%", sm: "auto" } }} />
         {toolbarControls}
-        <FormControl size="small" sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}>
-          <InputLabel id="agents-status-filter-label">Status</InputLabel>
-          <Select
-            labelId="agents-status-filter-label"
-            label="Status"
-            multiple
-            value={statusFilters}
-            onChange={(event: SelectChangeEvent<StatusFilter[]>) => {
-              const value = event.target.value;
-              setStatusFilters(typeof value === "string" ? value.split(",") as StatusFilter[] : value);
-            }}
-            inputProps={{ "aria-label": "Filter agents by status" }}
-            sx={{ minHeight: { xs: 44, sm: 40 } }}
-            renderValue={(values) => {
-              if (values.length === 0) return `All (${agents.length})`;
-              if (values.length <= 2) return values.map((value) => statusOptions.find((candidate) => candidate.value === value)?.label ?? value).join(", ");
-              return `${values.length} Statuses`;
-            }}
-          >
-            {statusOptions.filter((option) => option.value !== "all").map((option) => <MenuItem key={option.value} value={option.value}>
-              <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />
-              {option.label} ({option.count})
-            </MenuItem>)}
-          </Select>
-        </FormControl>
+        <Button
+          color="inherit"
+          variant={statusFilters.length ? "outlined" : "text"}
+          startIcon={<FilterListOutlinedIcon />}
+          onClick={(event) => setStatusAnchor(event.currentTarget)}
+          aria-label="Filter Agents by status"
+          sx={{ minHeight: 40, whiteSpace: "nowrap" }}
+        >
+          {statusFilters.length ? `Status (${statusFilters.length})` : "Status"}
+        </Button>
+        {statusAnchor ? <Menu anchorEl={statusAnchor} open onClose={() => setStatusAnchor(undefined)}>
+          <MenuItem onClick={() => setStatusFilters([])}>
+            <Checkbox checked={statusFilters.length === 0} />
+            All ({agents.length})
+          </MenuItem>
+          {statusOptions.filter((option) => option.value !== "all").map((option) => <MenuItem key={option.value} onClick={() => setStatusFilters((current) => current.includes(option.value as StatusFilter) ? current.filter((value) => value !== option.value) : [...current, option.value as StatusFilter])}>
+            <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />
+            {option.label} ({option.count})
+          </MenuItem>)}
+        </Menu> : null}
         <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel id="agents-master-filter-label">Project chat</InputLabel>
           <Select
@@ -280,7 +278,6 @@ export function AgentsTab({
             ))}
           </Select>
         </FormControl>
-        <TextField size="small" label="Search agents" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }} />
       </Stack>
 
       <Box sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>

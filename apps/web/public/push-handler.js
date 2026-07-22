@@ -5,9 +5,12 @@ self.addEventListener("push", (event) => {
   event.waitUntil((async () => {
     if (payload.conversationId) {
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const target = payload.url ? new URL(payload.url, self.location.origin) : undefined;
       const alreadyOpen = windows.some((client) => {
         if (client.visibilityState !== "visible") return false;
-        const parts = new URL(client.url).pathname.split("/").filter(Boolean).map(decodeURIComponent);
+        const clientUrl = new URL(client.url);
+        if (target && clientUrl.pathname === target.pathname && clientUrl.search === target.search) return true;
+        const parts = clientUrl.pathname.split("/").filter(Boolean).map(decodeURIComponent);
         const projectMatches = !payload.projectId || (parts[0] === "projects" && parts[1] === payload.projectId);
         const conversationIndex = parts.findIndex((part) => part === "chats" || part === "conversations");
         return projectMatches && conversationIndex >= 0 && parts[conversationIndex + 1] === payload.conversationId;

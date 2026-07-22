@@ -481,13 +481,9 @@ export function WorkspaceSidebar({
       destination?.project.label,
     ].filter(Boolean).join(" ").toLocaleLowerCase().includes(normalizedFilter);
   }), workspaceResourceSort(preferences, "trigger"), preferences.triggerOrder, (trigger) => trigger.id, (trigger) => trigger.name, (trigger) => trigger.updatedAt);
-  const triggerManagers = triggerDestinations.filter(({ agent, project: triggerProject }) => !normalizedFilter
-    || `${agent.title} ${triggerProject.label} ${agent.activeEngine}`.toLocaleLowerCase().includes(normalizedFilter));
   const triggersPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
     <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}>
-      <Box sx={{ width: 32, height: 32, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center", mr: 1 }}><BoltOutlinedIcon fontSize="small" /></Box>
-      <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800}>Triggers</Typography><Typography variant="caption" color="text.secondary">Automations across every project</Typography></Box>
-      <Typography variant="caption" color="text.secondary">{allTriggersQuery.data?.length ?? 0}</Typography>
+      <Typography variant="h6" fontWeight={800}>Triggers</Typography>
     </Stack>
     <Box sx={{ px: 1.75, pb: 1.25 }}><TextField
       fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search triggers or agents"
@@ -497,9 +493,8 @@ export function WorkspaceSidebar({
     <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}>
       {allTriggersQuery.isLoading ? <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>Loading triggers…</Typography> : null}
       {allTriggersQuery.isError ? <Typography variant="body2" color="error" sx={{ p: 1 }}>Triggers could not be loaded.</Typography> : null}
-      <Box component="section" sx={{ mb: 2 }}>
-        <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Configured triggers</Typography>
-        <List disablePadding sx={{ mt: .5 }}>{filteredTriggers.map((trigger) => {
+      <Box component="section">
+        <List disablePadding>{filteredTriggers.map((trigger) => {
           const destination = triggerAgentById.get(trigger.agentId);
           if (!destination) return null;
           return <ListItemButton
@@ -513,32 +508,17 @@ export function WorkspaceSidebar({
               if (draggedResource?.kind === "trigger") onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, (allTriggersQuery.data ?? []).map((item) => item.id), draggedResource.id, trigger.id) });
               setDraggedResource(undefined);
             }}
-            aria-label={`Manage trigger ${trigger.name}`}
+            aria-label={`Open triggers for ${destination.agent.title}`}
             onClick={() => openTriggerManager(destination.project.id, destination.agent.id)}
             onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } }); }}
             sx={{ borderRadius: 1.25, px: 1, py: .75, mb: .35, minWidth: 0 }}
           >
-            <ListItemIcon sx={{ minWidth: 38 }}><BoltOutlinedIcon sx={{ fontSize: 18 }} /></ListItemIcon>
-            <ListItemText primary={trigger.name} secondary={`${destination.project.label} · ${destination.agent.title} · ${trigger.sourceKind}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
+            <ListItemText primary={trigger.name} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 750 }} />
             <Box title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled" }} />
             <IconButton component="span" size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)) ? "Unstar" : "Star"} ${trigger.name}`} onClick={(event) => { event.stopPropagation(); toggleStar("trigger", trigger.id); }}>{starredResourceIds.has(resourcePreferenceKey("trigger", trigger.id)) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton>
           </ListItemButton>;
         })}</List>
         {!allTriggersQuery.isLoading && filteredTriggers.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 1 }}>{filter.trim() ? "No configured triggers match." : "No triggers configured yet."}</Typography> : null}
-      </Box>
-      <Box component="section">
-        <Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>Create or edit by agent</Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 1, mb: .5 }}>Choose an agent to open its Trigger manager.</Typography>
-        <List disablePadding>{triggerManagers.map(({ agent, project: triggerProject }) => <ListItemButton
-          key={agent.id}
-          aria-label={`Open triggers for ${agent.title}`}
-          onClick={() => openTriggerManager(triggerProject.id, agent.id)}
-          onContextMenu={(event) => { event.preventDefault(); setMenu({ anchor: event.currentTarget, route: { kind: "agent", projectId: triggerProject.id, agentId: agent.id, view: "triggers" } }); }}
-          sx={{ borderRadius: 1.25, px: 1, py: .65, mb: .25, minWidth: 0 }}
-        >
-          <ListItemIcon sx={{ minWidth: 38 }}><SmartToyOutlinedIcon sx={{ fontSize: 17 }} /></ListItemIcon>
-          <ListItemText primary={agent.title} secondary={triggerProject.label} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
-        </ListItemButton>)}</List>
       </Box>
     </Box>
     <Box sx={{ p: 1.75, boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}` }}><Button fullWidth variant="contained" startIcon={<AddIcon />} onClick={() => onCreateTrigger?.()} sx={{ justifyContent: "flex-start" }}>New Trigger</Button><Button fullWidth color="inherit" startIcon={<BoltOutlinedIcon />} onClick={() => onNavigate({ kind: "allTriggers" })} sx={{ mt: .5, justifyContent: "flex-start", color: "text.secondary" }}>View All Triggers</Button><SidebarSortControl sort={workspaceResourceSort(preferences, "trigger")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("trigger", sort))} /></Box>
@@ -549,11 +529,9 @@ export function WorkspaceSidebar({
     articles: section.articles.filter((article) => !normalizedFilter || `${article.title} ${article.summary}`.toLocaleLowerCase().includes(normalizedFilter)),
   })).filter((section) => section.articles.length > 0);
   const activeWikiArticleId = route.kind === "wiki" ? route.articleId ?? wikiIndexQuery.data?.sections[0]?.articles[0]?.id : undefined;
-  const wikiArticleCount = wikiIndexQuery.data?.sections.reduce((total, section) => total + section.articles.length, 0) ?? 0;
   const wikiPanel = <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)", bgcolor: sidebarSurface }}>
     <Stack direction="row" sx={{ alignItems: "center", pl: 2.25, pr: drawer ? 7 : 2.25, pt: 2, pb: 1.25 }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", flex: 1, minWidth: 0 }}><MenuBookOutlinedIcon color="primary" /><Box sx={{ minWidth: 0 }}><Typography variant="h6" fontWeight={800}>Wiki</Typography><Typography variant="caption" color="text.secondary">Ponderosa guide</Typography></Box></Stack>
-      <Typography variant="caption" color="text.secondary">{wikiArticleCount}</Typography>
+      <Typography variant="h6" fontWeight={800}>Wiki</Typography>
     </Stack>
     <Box sx={{ px: 1.75, pb: 1.5 }}><TextField
       fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Wiki"

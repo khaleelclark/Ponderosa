@@ -1,5 +1,6 @@
 import type {
   AgentActivityOutputDto,
+  AssetLimitsDto,
   AgentDeletionPreviewDto,
   AgentDeletionPreviewRequest,
   AgentDetailDto,
@@ -167,6 +168,7 @@ export const realApi = {
   getWikiIndex(): Promise<WikiIndexDto> {
     return requestJson<WikiIndexDto>("/api/wiki");
   },
+  getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
   getWikiArticle(id: string): Promise<WikiArticleDto> {
     return requestJson<WikiArticleDto>(`/api/wiki/articles/${encodeURIComponent(id)}`);
   },
@@ -264,22 +266,23 @@ export const realApi = {
       body: JSON.stringify(request satisfies CreateConversationMessageRequest),
     });
   },
-  getConversationDraft(conversationId: string): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`);
+  getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);
   },
-  getConversationDraftConflicts(conversationId: string): Promise<ConversationDraftConflictListDto> {
-    return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts`);
+  getConversationDraftConflicts(conversationId: string, ownerId: string): Promise<ConversationDraftConflictListDto> {
+    return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts?ownerId=${encodeURIComponent(ownerId)}`);
   },
   putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
     return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
   },
-  uploadDraftAttachment(conversationId: string, file: File): Promise<DraftAttachmentDto> {
+  uploadDraftAttachment(conversationId: string, ownerId: string, file: File): Promise<DraftAttachmentDto> {
     return requestJson<DraftAttachmentDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments`, {
       method: "POST",
       headers: {
         "content-type": "application/octet-stream",
         "x-ponderosa-media-type": file.type || "application/octet-stream",
         "x-ponderosa-filename": file.name,
+        "x-ponderosa-draft-owner": ownerId,
       },
       body: file,
     });
@@ -289,8 +292,8 @@ export const realApi = {
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
-  async deleteDraftAttachment(conversationId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}`, { method: "DELETE" });
+  async deleteDraftAttachment(conversationId: string, ownerId: string, attachmentId: string): Promise<void> {
+    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`, { method: "DELETE" });
     if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
   generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse> {
@@ -404,6 +407,7 @@ export const realApi = {
       effort: options.effort,
       initialMessage: options.initialMessage,
       draftAttachmentIds: options.draftAttachmentIds,
+      draftOwnerId: options.draftOwnerId,
       replyToMessageId: options.replyToMessageId,
       presetId: options.presetId,
       managerAgentId: options.managerAgentId,

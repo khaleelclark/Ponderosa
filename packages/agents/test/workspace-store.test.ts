@@ -31,6 +31,20 @@ describe("WorkspaceStore canonical replay", () => {
     expect(restarted.readSince(0).map((item) => item.id)).toEqual(restarted.readSince(0).map((_, index) => index + 1));
   });
 
+  it("isolates browser-owned drafts, ignores no-op saves, and clears every owner with the surface", () => {
+    const { store } = fixture();
+    const first = store.putDraft("chat", { ownerId: "browser-a", text: "private a", attachmentIds: [], expectedRevision: 0, clientId: "tab-a" });
+    const cursor = store.cursor();
+    expect(store.putDraft("chat", { ownerId: "browser-a", text: "private a", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" })).toEqual(first);
+    expect(store.cursor()).toBe(cursor);
+    expect(store.putDraft("chat", { ownerId: "browser-b", text: "private b", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" })).toMatchObject({ ownerId: "browser-b", revision: 1 });
+    expect(store.getDraft("chat", "browser-a").text).toBe("private a");
+    expect(store.getDraft("chat", "browser-b").text).toBe("private b");
+    store.deleteDraft("chat");
+    expect(store.getDraft("chat", "browser-a").revision).toBe(0);
+    expect(store.getDraft("chat", "browser-b").revision).toBe(0);
+  });
+
   it("defaults Agent Run concurrency when replaying a preferences event without the field", () => {
     const { dir, store } = fixture();
     store.updatePreferences({ projectSort: "custom" });

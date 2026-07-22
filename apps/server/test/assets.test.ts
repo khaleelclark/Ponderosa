@@ -399,7 +399,7 @@ describe("secure staged assets", () => {
   });
 
   it("persists rate limits across store restarts", async () => {
-    for (let index = 0; index < 20; index++) await assets.stage({ projectId: "p", agentId: "t", body: Buffer.from(JSON.stringify({ index })), name: `${index}.json`, declaredType: "application/json" });
+    for (let index = 0; index < 100; index++) await assets.stage({ projectId: "p", agentId: "t", body: Buffer.from(JSON.stringify({ index })), name: `${index}.json`, declaredType: "application/json" });
     await expect(new AssetStore(dataDir).stage({ projectId: "p", agentId: "t", body: Buffer.from("{}"), name: "blocked.json", declaredType: "application/json" })).rejects.toMatchObject({ statusCode: 429 });
   });
 
@@ -417,6 +417,8 @@ describe("secure staged assets", () => {
 
     const a = new AssetAuthority(dataDir); const b = new AssetAuthority(dataDir);
     const firstReservation = a.reserve("p", "other", randomUUID(), 1);
+    b.reserve("p", "other", randomUUID(), 1);
+    a.reserve("p", "other", randomUUID(), 1);
     b.reserve("p", "other", randomUUID(), 1);
     expect(() => a.reserve("p", "other", randomUUID(), 1)).toThrowError(AssetError);
     const clockDb = new Database(path.join(dataDir, "asset-authority.sqlite")); clockDb.prepare("UPDATE asset_reservations SET created_at=0 WHERE project_id='p' AND agent_id='other'").run(); clockDb.close();
@@ -454,7 +456,7 @@ describe("secure staged assets", () => {
 
   it("rejects expired ownership and stale quota snapshots at settlement boundaries", () => {
     const authority = new AssetAuthority(dataDir);
-    const usage = new Map(Array.from({ length: 7 }, (_, index) => [`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, ASSET_LIMITS.maxFileBytes]));
+    const usage = new Map(Array.from({ length: ASSET_LIMITS.maxAgentBytes / ASSET_LIMITS.maxFileBytes - 1 }, (_, index) => [`00000000-0000-4000-8000-${String(index).padStart(12, "0")}`, ASSET_LIMITS.maxFileBytes]));
     authority.syncAgent("p", "quota", usage);
     const first = authority.reserve("p", "quota", randomUUID(), ASSET_LIMITS.maxFileBytes);
     authority.settle(first);
@@ -537,10 +539,10 @@ describe("secure staged assets", () => {
   });
 
   it("bounds concurrent uploads per agent", async () => {
-    const results = await Promise.allSettled(["a", "b", "c"].map((name) => assets.stage({
+    const results = await Promise.allSettled(["a", "b", "c", "d", "e"].map((name) => assets.stage({
       projectId: "p", agentId: "t", body: PNG, name: `${name}.png`, declaredType: "image/png",
     })));
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(2);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(4);
     const rejected = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
     expect(rejected.reason).toMatchObject({ statusCode: 429 });
   });

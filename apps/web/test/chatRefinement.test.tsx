@@ -36,8 +36,8 @@ describe("chat interaction refinement", () => {
     expect(conversationComposerRuntime({ id: "runtime-a", authenticated: false, available: false }, []).capabilities).toEqual([]);
 
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    expect(source).toContain("capabilities={composerRuntime.capabilities}");
-    expect(source).toContain("onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}");
+    expect(source).toContain("capabilities={directReplyAgent ? directReplyEngineCapabilities?.composerCapabilities ?? [] : composerRuntime.capabilities}");
+    expect(source).toContain("onCommand={directReplyAgent ?");
     expect(source).not.toContain('capabilities={activeView === "main"');
   });
 

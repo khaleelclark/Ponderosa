@@ -88,6 +88,10 @@ export class WorkspaceStore {
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private preferences = DEFAULT_PREFERENCES;
 
+  private draftKey(conversationId: string, ownerId = "legacy"): string {
+    return `${conversationId}\u0000${ownerId}`;
+  }
+
   constructor(dataDir: string) {
     this.file = workspaceEventsPath(dataDir);
     const instanceFile = workspaceInstancePath(dataDir);
@@ -124,15 +128,20 @@ export class WorkspaceStore {
       onboardingCompletedAt: record.event.preferences.onboardingCompletedAt ?? null,
       profile: normalizeProfile(record.event.preferences.profile),
     };
-    if (record.mutation?.kind === "draft") this.drafts.set(record.mutation.draft.conversationId, record.mutation.draft);
+    if (record.mutation?.kind === "draft") this.drafts.set(this.draftKey(record.mutation.draft.conversationId, record.mutation.draft.ownerId), record.mutation.draft);
     if (record.mutation?.kind === "draft_conflict") {
       const conversationId = record.mutation.conflict.current.conversationId;
-      const conflicts = this.draftConflicts.get(conversationId) ?? [];
+      const key = this.draftKey(conversationId, record.mutation.conflict.current.ownerId);
+      const conflicts = this.draftConflicts.get(key) ?? [];
       conflicts.push(record.mutation.conflict);
       // Keep the canonical log complete, but bound the projection used by the UI.
-      this.draftConflicts.set(conversationId, conflicts.slice(-20));
+      this.draftConflicts.set(key, conflicts.slice(-20));
     }
-    if (record.mutation?.kind === "draft_deleted") this.drafts.delete(record.mutation.draftId);
+    if (record.mutation?.kind === "draft_deleted") {
+      const prefix = `${record.mutation.draftId}\u0000`;
+      for (const key of [...this.drafts.keys()]) if (key.startsWith(prefix)) this.drafts.delete(key);
+      for (const key of [...this.draftConflicts.keys()]) if (key.startsWith(prefix)) this.draftConflicts.delete(key);
+    }
     if (record.mutation?.kind === "notification") {
       this.notifications.set(record.mutation.notification.id, record.mutation.notification);
       for (const target of record.mutation.pushTargets ?? []) {
@@ -291,17 +300,20 @@ export class WorkspaceStore {
     return preferences;
   }
 
-  getDraft(conversationId: string): ConversationDraftDto {
-    return this.drafts.get(conversationId) ?? { conversationId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
+  getDraft(conversationId: string, ownerId = "legacy"): ConversationDraftDto {
+    return this.drafts.get(this.draftKey(conversationId, ownerId)) ?? { conversationId, ownerId, text: "", attachmentIds: [], revision: 0, updatedAt: new Date(0).toISOString(), clientId: "" };
   }
 
-  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; expectedRevision: number; clientId: string }): ConversationDraftDto {
-    const current = this.getDraft(conversationId);
+  putDraft(conversationId: string, input: { text: string; attachmentIds: string[]; expectedRevision: number; clientId: string; ownerId?: string }): ConversationDraftDto {
+    const ownerId = input.ownerId ?? "legacy";
+    const current = this.getDraft(conversationId, ownerId);
+    const attachmentIds = [...new Set(input.attachmentIds)];
+    if (current.text === input.text && JSON.stringify(current.attachmentIds) === JSON.stringify(attachmentIds)) return current;
     if (current.revision !== input.expectedRevision) {
       const displaced: ConversationDraftConflictDto["displaced"] = {
         conversationId,
         text: input.text,
-        attachmentIds: [...new Set(input.attachmentIds)],
+        attachmentIds,
         clientId: input.clientId,
         capturedAt: new Date().toISOString(),
       };
@@ -309,17 +321,18 @@ export class WorkspaceStore {
       this.append({ type: "draft_conflict", conversationId, revision: current.revision, }, { kind: "draft_conflict", conflict });
       throw Object.assign(new Error("draft revision conflict"), { code: "DRAFT_CONFLICT", current, displaced });
     }
-    const draft: ConversationDraftDto = { conversationId, text: input.text, attachmentIds: [...new Set(input.attachmentIds)], revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
+    const draft: ConversationDraftDto = { conversationId, ownerId, text: input.text, attachmentIds, revision: current.revision + 1, updatedAt: new Date().toISOString(), clientId: input.clientId };
     this.append({ type: "draft_changed", conversationId, revision: draft.revision, cleared: !draft.text && draft.attachmentIds.length === 0 }, { kind: "draft", draft });
     return draft;
   }
 
-  listDraftConflicts(conversationId: string): ConversationDraftConflictListDto {
-    return { conversationId, conflicts: [...(this.draftConflicts.get(conversationId) ?? [])] };
+  listDraftConflicts(conversationId: string, ownerId = "legacy"): ConversationDraftConflictListDto {
+    return { conversationId, conflicts: [...(this.draftConflicts.get(this.draftKey(conversationId, ownerId)) ?? [])] };
   }
 
   deleteDraft(draftId: string): void {
-    const current = this.drafts.get(draftId);
+    const prefix = `${draftId}\u0000`;
+    const current = [...this.drafts.entries()].find(([key]) => key.startsWith(prefix))?.[1];
     if (!current) return;
     this.append({ type: "draft_changed", conversationId: draftId, revision: current.revision + 1, cleared: true }, { kind: "draft_deleted", draftId });
   }

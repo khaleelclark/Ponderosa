@@ -56,6 +56,12 @@ describe("responsive workspace sidebar flow", () => {
         agents: [{ agentId: agents[index]!.id, childAgentIds: [], status: index === 0 ? "running" : "idle", statusTimestamp: "2026-07-16T00:00:00.000Z", reason: index === 0 ? "active_run" : "no_active_work" }],
       });
     });
+    client.setQueryData(["triggers"], [{
+      id: "trigger-alpha", projectId: "alpha", conversationId: "chat-alpha", agentId: "agent-alpha",
+      name: "Release monitor", instructions: "Check release status", sourceKind: "webhook",
+      sourceConfig: { kind: "webhook" }, enabled: true, fullAccess: true,
+      createdAt: "2026-07-16T00:00:00.000Z", updatedAt: "2026-07-16T00:00:00.000Z",
+    }]);
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
