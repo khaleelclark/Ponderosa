@@ -220,8 +220,8 @@ export class AssetAuthority {
       const active = (this.db.prepare("SELECT count(*) count, coalesce(sum(size),0) bytes FROM asset_reservations WHERE project_id=? AND agent_id=?").get(projectId, agentId) as { count: number; bytes: number });
       const committed = (this.db.prepare("SELECT coalesce(sum(size),0) bytes FROM asset_committed WHERE project_id=? AND agent_id=?").get(projectId, agentId) as { bytes: number }).bytes;
       const rate = (this.db.prepare("SELECT count(*) count FROM asset_rate_events WHERE project_id=? AND agent_id=?").get(projectId, agentId) as { count: number }).count;
-      if (active.count >= 2) throw new AssetError(429, "too many concurrent asset uploads");
-      if (rate >= 20) throw new AssetError(429, "asset upload rate limit exceeded");
+      if (active.count >= 4) throw new AssetError(429, "too many concurrent asset uploads");
+      if (rate >= 100) throw new AssetError(429, "asset upload rate limit exceeded");
       if (committed + active.bytes + size > ASSET_LIMITS.maxAgentBytes) throw new AssetError(413, "agent asset quota exceeded");
       this.db.prepare("INSERT INTO asset_reservations VALUES (?,?,?,?,?,?)").run(id, assetId, projectId, agentId, size, now);
       this.db.prepare("INSERT INTO asset_rate_events VALUES (?,?,?,?)").run(id, projectId, agentId, now);
@@ -1030,7 +1030,12 @@ export class AssetStore {
           const metadata = await image.metadata();
           if (!metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1 || metadata.width * metadata.height > MAX_PIXELS) throw new Error("unsafe image dimensions");
           width = metadata.width; height = metadata.height;
-          const renderedPreview = await image.rotate().timeout({ seconds: 5 }).png({ compressionLevel: 9, adaptiveFiltering: true }).toBuffer();
+          const renderedPreview = await image
+            .rotate()
+            .resize({ width: 2048, height: 2048, fit: "inside", withoutEnlargement: true })
+            .timeout({ seconds: 5 })
+            .png({ compressionLevel: 9, adaptiveFiltering: true })
+            .toBuffer();
           if (renderedPreview.length > ASSET_LIMITS.maxFileBytes) throw new Error("preview exceeds size limit");
           preview = renderedPreview;
         } catch { throw new AssetError(415, "image could not be safely decoded as one bounded frame"); }

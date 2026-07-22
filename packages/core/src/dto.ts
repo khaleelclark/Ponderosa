@@ -131,6 +131,7 @@ export type UpdateWorkspacePreferencesRequest = Partial<Omit<WorkspacePreference
 export interface DraftAttachmentDto {
   id: string;
   conversationId: string;
+  ownerId?: string;
   name: string;
   mediaType: string;
   size: number;
@@ -140,6 +141,8 @@ export interface DraftAttachmentDto {
 
 export interface ConversationDraftDto {
   conversationId: string;
+  /** Durable browser-profile owner. Drafts never roam to another browser profile. */
+  ownerId: string;
   text: string;
   /** Stable staged asset IDs; a draft is never represented as a chat event. */
   attachmentIds: string[];
@@ -166,6 +169,7 @@ export interface PutConversationDraftRequest {
   attachmentIds: string[];
   expectedRevision: number;
   clientId: string;
+  ownerId?: string;
 }
 
 export interface GenerateConversationTitleResponse {
@@ -724,6 +728,10 @@ export interface CreateDirectReplyRequest {
   replyToMessageId: string;
   targetAuthorAgentId: string;
   attachmentIds?: string[];
+  /** Browser-private staged files promoted server-side without another upload. */
+  draftAttachmentIds?: string[];
+  draftId?: string;
+  draftOwnerId?: string;
   /** Stable across retries; the server applies both durable effects once. */
   idempotencyKey: string;
   activeRunDelivery?: "steer" | "queue";
@@ -977,6 +985,8 @@ export interface CreateAgentRequest {
   initialMessage?: string;
   /** Conversation-scoped staged assets committed with the optional first turn. */
   draftAttachmentIds?: string[];
+  /** Browser-private draft owner used to resolve staged first-turn attachments. */
+  draftOwnerId?: string;
   /** Project-chat message referenced by the optional first turn. */
   replyToMessageId?: string;
   presetId?: string;
@@ -1218,9 +1228,9 @@ export interface AssetLimitsDto {
 export const DEFAULT_ASSET_LIMITS: AssetLimitsDto = {
   maxFileBytes: 8 * 1024 * 1024,
   maxRequestBytes: 8 * 1024 * 1024 + 16 * 1024,
-  maxAssetsPerMessage: 4,
-  maxMessageBytes: 24 * 1024 * 1024,
-  maxAgentBytes: 64 * 1024 * 1024,
+  maxAssetsPerMessage: 20,
+  maxMessageBytes: 80 * 1024 * 1024,
+  maxAgentBytes: 512 * 1024 * 1024,
   acceptedMediaTypes: [...ASSET_MEDIA_TYPES],
 };
 

@@ -58,7 +58,7 @@ import {
   unifiedDiffLineTotals,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, AssetLimitsDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -66,6 +66,7 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { copyText } from "../clipboard";
 import { readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { telemetryElementId } from "../telemetryFocus";
@@ -131,7 +132,12 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   }, [favicon]);
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
-  const activate = (event: React.MouseEvent) => { event.preventDefault(); setChooserOpen(true); setError(undefined); };
+  const activate = (event: React.MouseEvent) => {
+    if (!link.loopback) return;
+    event.preventDefault();
+    setChooserOpen(true);
+    setError(undefined);
+  };
   const openInside = async () => {
     setOpening(true); setError(undefined);
     try {
@@ -145,7 +151,7 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
     finally { setOpening(false); }
   };
   return <>
-    <Box className="chat-text-navigation" component="a" href={href} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       {!faviconFailed && faviconSrc
         ? <Box component="img" src={faviconSrc} alt="" onError={() => { if (favicon) markFaviconFailed(favicon, faviconSrc); setFaviconFailed(true); }} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
         : <LanguageIcon aria-hidden fontSize="inherit" />}
@@ -281,9 +287,9 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "image/png", "image/jpeg", "image/webp", "application/pdf",
   "text/plain", "application/json", "application/zip",
 ]);
-const COMPOSER_MAX_FILES = 4;
+const COMPOSER_MAX_FILES = 20;
 const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
-const COMPOSER_MAX_MESSAGE_BYTES = 24 * 1024 * 1024;
+const COMPOSER_MAX_MESSAGE_BYTES = 80 * 1024 * 1024;
 
 export function filesFromClipboard(
   items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>,
@@ -296,15 +302,19 @@ export function filesFromClipboard(
   return extracted.length > 0 ? extracted : Array.from(fallback);
 }
 
-export function selectComposerFiles(current: File[], candidates: File[]): { accepted: File[]; error?: string } {
+export function selectComposerFiles(current: File[], candidates: File[], limits?: AssetLimitsDto): { accepted: File[]; error?: string } {
+  const maxFiles = limits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES;
+  const maxFileBytes = limits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES;
+  const maxMessageBytes = limits?.maxMessageBytes ?? COMPOSER_MAX_MESSAGE_BYTES;
+  const acceptedMediaTypes = limits ? new Set<string>(limits.acceptedMediaTypes) : COMPOSER_ACCEPTED_MEDIA_TYPES;
   const accepted: File[] = [];
   let bytes = current.reduce((total, file) => total + file.size, 0);
   for (const file of candidates) {
     if (
-      current.length + accepted.length < COMPOSER_MAX_FILES &&
-      COMPOSER_ACCEPTED_MEDIA_TYPES.has(file.type) &&
-      file.size <= COMPOSER_MAX_FILE_BYTES &&
-      bytes + file.size <= COMPOSER_MAX_MESSAGE_BYTES
+      current.length + accepted.length < maxFiles &&
+      acceptedMediaTypes.has(file.type) &&
+      file.size <= maxFileBytes &&
+      bytes + file.size <= maxMessageBytes
     ) {
       accepted.push(file);
       bytes += file.size;
@@ -314,14 +324,14 @@ export function selectComposerFiles(current: File[], candidates: File[]): { acce
   return {
     accepted,
     error: rejected > 0
-      ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to 4 supported files, 8 MiB each and 24 MiB total.`
+      ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to ${maxFiles} supported files, ${Math.floor(maxFileBytes / 1024 / 1024)} MiB each and ${Math.floor(maxMessageBytes / 1024 / 1024)} MiB total.`
       : undefined,
   };
 }
 
 type ComposerAttachmentState = { files: File[]; error?: string };
 type ComposerAttachmentAction =
-  | { type: "add"; candidates: File[] }
+  | { type: "add"; candidates: File[]; limits?: AssetLimitsDto }
   | { type: "remove"; index: number }
   | { type: "replace"; files: File[]; error?: string }
   | { type: "clear" };
@@ -333,14 +343,16 @@ export function composerAttachmentReducer(
   if (action.type === "clear") return { files: [] };
   if (action.type === "remove") return { files: state.files.filter((_, index) => index !== action.index) };
   if (action.type === "replace") return { files: action.files, ...(action.error ? { error: action.error } : {}) };
-  const selection = selectComposerFiles(state.files, action.candidates);
+  const selection = selectComposerFiles(state.files, action.candidates, action.limits);
   return {
     files: selection.accepted.length > 0 ? [...state.files, ...selection.accepted] : state.files,
     error: selection.error,
   };
 }
 
-function ComposerAttachment({ file, onRemove }: { file: File; onRemove(): void }): JSX.Element {
+type DraftUploadStatus = "queued" | "uploading" | "complete" | "failed";
+
+function ComposerAttachment({ file, status, error, onRetry, onRemove }: { file: File; status?: DraftUploadStatus; error?: string; onRetry?(): void; onRemove(): void }): JSX.Element {
   const [preview, setPreview] = useState<string>();
   useLayoutEffect(() => {
     if (!file.type.startsWith("image/")) return undefined;
@@ -353,7 +365,12 @@ function ComposerAttachment({ file, onRemove }: { file: File; onRemove(): void }
       {preview ? <Box component="a" href={preview} target="_blank" rel="noreferrer" aria-label={`Open ${file.name}`}>
         <Box component="img" src={preview} alt="" sx={{ width: 72, height: 72, objectFit: "cover", borderRadius: 1 }} />
       </Box> : <Typography variant="caption" sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}>{file.name}<br />{file.size} bytes</Typography>}
-      <IconButton size="small" aria-label={`Remove ${file.name}`} onClick={onRemove} sx={{ position: "absolute", right: 0, top: 0, bgcolor: "background.paper", minWidth: 44, minHeight: 44 }}><CloseIcon fontSize="small" /></IconButton>
+      <IconButton size="small" aria-label={`Remove ${file.name}`} onClick={onRemove} sx={{ position: "absolute", right: 3, top: 3, width: 28, height: 28, minWidth: 28, minHeight: 28, p: 0.4, bgcolor: "background.paper", boxShadow: 1, "&:hover": { bgcolor: "background.paper" } }}><CloseIcon sx={{ fontSize: 16 }} /></IconButton>
+      {status ? <Stack direction="row" spacing={0.5} sx={{ mt: 0.4, alignItems: "center", maxWidth: 180 }}>
+        {status === "uploading" ? <CircularProgress size={12} /> : null}
+        <Typography variant="caption" color={status === "failed" ? "error.main" : "text.secondary"} noWrap title={error}>{status === "complete" ? "Ready" : status[0]!.toUpperCase() + status.slice(1)}</Typography>
+        {status === "failed" && onRetry ? <Button size="small" onClick={onRetry} sx={{ minWidth: 0, p: 0.25 }}>Retry</Button> : null}
+      </Stack> : null}
     </Box>
   );
 }
@@ -2223,11 +2240,11 @@ export function Composer({
   busyMentionHandles?: string[];
   /** Whether text without a valid mention may be submitted. */
   allowUnmentionedSend?: boolean;
-  onSend(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
+  onSend(text: string, files: File[], draftAttachmentIds?: string[], draftOwnerId?: string): Promise<unknown> | unknown;
   /** Structured provider commands bypass ordinary user-text submission. */
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
   /** Explicitly enqueue this draft instead of steering the active agent turn. */
-  onQueue?(text: string, files: File[], draftAttachmentIds?: string[]): Promise<unknown> | unknown;
+  onQueue?(text: string, files: File[], draftAttachmentIds?: string[], draftOwnerId?: string): Promise<unknown> | unknown;
   /** Make the primary send action enqueue while this direct Agent already has pending work. */
   preferQueue?: boolean;
   /** Agent handles whose existing pending work should make a targeted follow-up enqueue by default. */
@@ -2252,10 +2269,21 @@ export function Composer({
   insertTextRequest?: { id: string; text: string };
 }): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
+  const [draftOwnerId] = useState(() => {
+    if (typeof window === "undefined") return "server";
+    const key = "ponderosa.draft.owner.v1";
+    const existing = window.localStorage.getItem(key);
+    if (existing) return existing;
+    const created = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    window.localStorage.setItem(key, created);
+    return created;
+  });
   const [pastedText, setPastedText] = useState<string>();
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
   const queryClient = useQueryClient();
+  const assetLimitsQuery = useQuery({ queryKey: ["asset-limits"], queryFn: () => api.getAssetLimits(), staleTime: 5 * 60_000 });
+  const assetLimits = assetLimitsQuery.data;
   const [sendError, setSendError] = useState<string>();
   const [draftConflict, setDraftConflict] = useState<ConversationDraftConflictDto>();
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -2265,8 +2293,14 @@ export function Composer({
   const draftReady = useRef(false);
   const draftClientId = useRef<string>();
   const draftAttachmentIds = useRef(new Map<File, string>());
+  const [draftUploadStates, setDraftUploadStates] = useState<Map<File, { status: DraftUploadStatus; error?: string }>>(() => new Map());
+  const pendingDraftUploads = useRef<File[]>([]);
+  const activeDraftUploads = useRef(0);
+  const pumpDraftUploads = useRef<() => void>(() => undefined);
   const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
   const draftGeneration = useRef(0);
+  const draftEditVersion = useRef(0);
+  const draftLocallyEdited = useRef(false);
   const [draftAttachmentVersion, setDraftAttachmentVersion] = useState(0);
   const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
@@ -2297,7 +2331,8 @@ export function Composer({
     mentionedHandles,
     mentionedBusyHandles,
   });
-  const canSend = textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0);
+  const draftUploadsReady = !conversationDraftId || files.every((file) => draftAttachmentIds.current.has(file));
+  const canSend = draftUploadsReady && (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
   const canCancel = running && Boolean(onCancel);
 
   useEffect(() => {
@@ -2327,13 +2362,15 @@ export function Composer({
     return () => window.cancelAnimationFrame(frame);
   }, [insertTextRequest]);
   const draftQuery = useQuery({
-    queryKey: ["conversation-draft", conversationDraftId],
-    queryFn: () => api.getConversationDraft(conversationDraftId!),
-    enabled: Boolean(conversationDraftId),
+    queryKey: ["conversation-draft", conversationDraftId, draftOwnerId],
+    queryFn: () => api.getConversationDraft(conversationDraftId!, draftOwnerId),
+    enabled: Boolean(conversationDraftId) && typeof window !== "undefined",
     staleTime: 0,
   });
 
   const update = (next: string) => {
+    draftEditVersion.current += 1;
+    draftLocallyEdited.current = true;
     setText(next);
   };
 
@@ -2350,11 +2387,15 @@ export function Composer({
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
       draftReady.current = false;
+      draftLocallyEdited.current = false;
       draftRevision.current = 0;
       draftAttachmentIds.current.clear();
+      pendingDraftUploads.current = [];
+      activeDraftUploads.current = 0;
+      setDraftUploadStates(new Map());
       dispatchAttachments({ type: "clear" });
     }
-    if (!conversationDraftId) return;
+    if (!conversationDraftId || typeof window === "undefined") return;
     const key = "ponderosa.draft.client.v1";
     let clientId = window.sessionStorage.getItem(key);
     if (!clientId) {
@@ -2375,13 +2416,17 @@ export function Composer({
       })));
       if (cancelled || draft.revision < draftRevision.current) return;
       draftAttachmentIds.current = new Map(restored.map(({ attachment, file }) => [file, attachment.id]));
+      setDraftUploadStates(new Map(restored.map(({ file }) => [file, { status: "complete" as const }])));
       dispatchAttachments({ type: "replace", files: restored.map(({ file }) => file) });
       setDraftAttachmentVersion((value) => value + 1);
       draftRevision.current = draft.revision;
       const local = draftStorageKey ? readChatState(draftStorageKey) ?? "" : "";
-      const nextText = draft.revision === 0 && local && !draft.text ? local : draft.text;
-      setText(nextText);
-      if (draftStorageKey) writeChatState(draftStorageKey, nextText);
+      const focusedOrEdited = document.activeElement === inputRef.current || draftLocallyEdited.current;
+      if (!focusedOrEdited) {
+        const nextText = draft.revision === 0 && local && !draft.text ? local : draft.text;
+        setText(nextText);
+        if (draftStorageKey) writeChatState(draftStorageKey, nextText);
+      }
       draftReady.current = true;
     };
     void apply().catch(() => {
@@ -2400,50 +2445,84 @@ export function Composer({
   }, [draftStorageKey, text]);
 
   useEffect(() => {
-    if (!conversationDraftId || !draftReady.current || !draftClientId.current) return;
+    if (!conversationDraftId || !draftReady.current || !draftClientId.current || !draftLocallyEdited.current) return;
     const timer = window.setTimeout(() => {
       const generation = draftGeneration.current;
+      const editVersion = draftEditVersion.current;
       const attachmentIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
       const clientId = draftClientId.current!;
       draftWriteChain.current = draftWriteChain.current.then(async () => {
         if (generation !== draftGeneration.current) return;
         try {
-          const draft = await api.putConversationDraft(conversationDraftId, { text, attachmentIds, expectedRevision: draftRevision.current, clientId });
+          const draft = await api.putConversationDraft(conversationDraftId, { text, attachmentIds, expectedRevision: draftRevision.current, clientId, ownerId: draftOwnerId });
           if (generation !== draftGeneration.current) return;
           draftRevision.current = draft.revision;
-          queryClient.setQueryData(["conversation-draft", conversationDraftId], draft);
-        } catch {
-          const current = await api.getConversationDraft(conversationDraftId);
+          if (draftEditVersion.current === editVersion) draftLocallyEdited.current = false;
+          queryClient.setQueryData(["conversation-draft", conversationDraftId, draftOwnerId], draft);
+        } catch (error) {
+          if (!(error instanceof ApiRequestError) || error.status !== 409) {
+            setSendError(error instanceof Error ? error.message : "Draft could not be saved.");
+            return;
+          }
+          const current = await api.getConversationDraft(conversationDraftId, draftOwnerId);
           draftGeneration.current += 1;
           draftRevision.current = current.revision;
-          queryClient.setQueryData(["conversation-draft", conversationDraftId], current);
-          const conflicts = await api.getConversationDraftConflicts(conversationDraftId).catch(() => undefined);
+          queryClient.setQueryData(["conversation-draft", conversationDraftId, draftOwnerId], current);
+          const conflicts = await api.getConversationDraftConflicts(conversationDraftId, draftOwnerId).catch(() => undefined);
           const displaced = conflicts?.conflicts.at(-1);
           if (displaced) setDraftConflict(displaced);
         }
       });
     }, 500);
     return () => window.clearTimeout(timer);
-  }, [conversationDraftId, draftAttachmentVersion, files, queryClient, text]);
+  }, [conversationDraftId, draftAttachmentVersion, draftOwnerId, files, queryClient, text]);
+
+  pumpDraftUploads.current = () => {
+    if (!conversationDraftId) return;
+    while (activeDraftUploads.current < 4 && pendingDraftUploads.current.length > 0) {
+      const file = pendingDraftUploads.current.shift()!;
+      const state = draftUploadStates.get(file);
+      if (state?.status === "complete" || draftAttachmentIds.current.has(file)) continue;
+      activeDraftUploads.current += 1;
+      setDraftUploadStates((current) => new Map(current).set(file, { status: "uploading" }));
+      void api.uploadDraftAttachment(conversationDraftId, draftOwnerId, file).then((attachment) => {
+        draftAttachmentIds.current.set(file, attachment.id);
+        setDraftUploadStates((current) => new Map(current).set(file, { status: "complete" }));
+        setDraftAttachmentVersion((value) => value + 1);
+      }).catch((error: unknown) => {
+        setDraftUploadStates((current) => new Map(current).set(file, {
+          status: "failed",
+          error: error instanceof Error ? error.message : "Upload failed.",
+        }));
+      }).finally(() => {
+        activeDraftUploads.current -= 1;
+        pumpDraftUploads.current();
+      });
+    }
+  };
+
+  const queueDraftUploads = (candidates: File[]) => {
+    if (!conversationDraftId || candidates.length === 0) return;
+    setDraftUploadStates((current) => {
+      const next = new Map(current);
+      for (const file of candidates) next.set(file, { status: "queued" });
+      return next;
+    });
+    pendingDraftUploads.current.push(...candidates);
+    window.queueMicrotask(() => pumpDraftUploads.current());
+  };
 
   const addFiles = (candidates: File[]) => {
-    const selection = selectComposerFiles(files, candidates);
-    dispatchAttachments({ type: "add", candidates });
-    if (!conversationDraftId || selection.accepted.length === 0) return;
-    void Promise.allSettled(selection.accepted.map(async (file) => ({ file, staged: await api.uploadDraftAttachment(conversationDraftId, file) })))
-      .then((results) => {
-        const staged = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
-        const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
-        if (!failure) {
-          for (const { file, staged: attachment } of staged) draftAttachmentIds.current.set(file, attachment.id);
-          setDraftAttachmentVersion((value) => value + 1);
-          return;
-        }
-        for (const { staged: attachment } of staged) void api.deleteDraftAttachment(conversationDraftId, attachment.id).catch(() => undefined);
-        const rejected = new Set(selection.accepted);
-        const error = failure.reason as unknown;
-        dispatchAttachments({ type: "replace", files: files.filter((file) => !rejected.has(file)), error: error instanceof Error ? error.message : "Draft attachment upload failed." });
-      });
+    const selection = selectComposerFiles(files, candidates, assetLimits);
+    dispatchAttachments({ type: "add", candidates, limits: assetLimits });
+    queueDraftUploads(selection.accepted);
+  };
+
+  const retryDraftUpload = (file: File) => {
+    if (!conversationDraftId || draftAttachmentIds.current.has(file)) return;
+    setDraftUploadStates((current) => new Map(current).set(file, { status: "queued" }));
+    pendingDraftUploads.current.push(file);
+    pumpDraftUploads.current();
   };
 
   const removeFile = (index: number) => {
@@ -2451,9 +2530,15 @@ export function Composer({
     if (!file) return;
     const id = draftAttachmentIds.current.get(file);
     draftAttachmentIds.current.delete(file);
+    pendingDraftUploads.current = pendingDraftUploads.current.filter((candidate) => candidate !== file);
+    setDraftUploadStates((current) => {
+      const next = new Map(current);
+      next.delete(file);
+      return next;
+    });
     dispatchAttachments({ type: "remove", index });
     setDraftAttachmentVersion((value) => value + 1);
-    if (conversationDraftId && id) void api.deleteDraftAttachment(conversationDraftId, id).catch(() => undefined);
+    if (conversationDraftId && id) void api.deleteDraftAttachment(conversationDraftId, draftOwnerId, id).catch(() => undefined);
   };
 
   // Agent routing uses #; @ is reserved for project file/folder references.
@@ -2566,7 +2651,7 @@ export function Composer({
 
   const visibleCapabilities = matchingComposerCapabilities(capabilities ?? [], capabilityFilter);
 
-  const submit = (handler: (message: string, selectedFiles: File[], stagedAttachmentIds?: string[]) => Promise<unknown> | unknown) => {
+  const submit = (handler: (message: string, selectedFiles: File[], stagedAttachmentIds?: string[], stagedDraftOwnerId?: string) => Promise<unknown> | unknown) => {
     if (sendingRef.current || !canSend) return;
     const slash = files.length === 0 ? providerSlashSubmission(submissionText, commands ?? []) : undefined;
     if (slash && "error" in slash) {
@@ -2582,14 +2667,16 @@ export function Composer({
     const stagedIds = files.map((file) => draftAttachmentIds.current.get(file)).filter((id): id is string => Boolean(id));
     const operation = slash && slash.command.invocation === "runtime"
       ? onCommand!(slash.command, slash.argumentsText)
-      : handler(submissionText, files, stagedIds);
+      : handler(submissionText, files, stagedIds, conversationDraftId ? draftOwnerId : undefined);
     void Promise.resolve(operation).then(() => {
       update("");
       setPastedText(undefined);
       dispatchAttachments({ type: "clear" });
       draftAttachmentIds.current.clear();
+      pendingDraftUploads.current = [];
+      setDraftUploadStates(new Map());
       setDraftAttachmentVersion((value) => value + 1);
-      if (conversationDraftId) for (const id of stagedIds) void api.deleteDraftAttachment(conversationDraftId, id).catch(() => undefined);
+      if (conversationDraftId) for (const id of stagedIds) void api.deleteDraftAttachment(conversationDraftId, draftOwnerId, id).catch(() => undefined);
       setCaret(0);
     }).catch((error: unknown) => setSendError(error instanceof Error ? error.message : "Upload failed; try again."))
       .finally(() => { sendingRef.current = false; });
@@ -2648,7 +2735,10 @@ export function Composer({
         </Stack>
       ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
-        {files.map((file, index) => <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} onRemove={() => removeFile(index)} />)}
+        {files.map((file, index) => {
+          const upload = draftUploadStates.get(file);
+          return <ComposerAttachment key={`${file.name}-${file.size}-${file.lastModified}-${index}`} file={file} status={upload?.status} error={upload?.error} onRetry={() => retryDraftUpload(file)} onRemove={() => removeFile(index)} />;
+        })}
       </Stack> : null}
       {pastedText ? (
         <Paper variant="outlined" sx={{ mb: 1, px: 1, py: 0.75, display: "flex", alignItems: "center", gap: 1, maxWidth: 360 }}>
@@ -2703,15 +2793,15 @@ export function Composer({
               </Box>
               <MenuList dense id={capabilityListId} aria-label="Add attachment or runtime capability" sx={{ maxHeight: "min(38vh, 300px)", overflowY: "auto", overscrollBehavior: "contain" }}>
                 <MenuItem
-                  disabled={!attachmentsEnabled || files.length >= COMPOSER_MAX_FILES}
+                  disabled={!attachmentsEnabled || files.length >= (assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES)}
                   onClick={() => { setCapabilityMenuAnchor(null); fileInput.current?.click(); }}
                   sx={{ whiteSpace: "normal", alignItems: "flex-start", minHeight: 54 }}
                 >
                   <Box><Typography variant="body2">Upload image or file</Typography><Typography variant="caption" color="text.secondary">{!attachmentsEnabled
                     ? attachmentsUnavailableReason ?? "Attachments are not supported in this chat."
-                    : files.length >= COMPOSER_MAX_FILES
+                    : files.length >= (assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES)
                       ? "Remove an attachment before adding another."
-                      : "PNG, JPEG, WebP, PDF, text, JSON, or ZIP · 8 MiB each"}</Typography></Box>
+                      : `Up to ${assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES} PNG, JPEG, WebP, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}</Typography></Box>
                 </MenuItem>
                 <Divider />
                 {(capabilities ?? []).length === 0 ? (

@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import SearchIcon from "@mui/icons-material/Search";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import SortOutlinedIcon from "@mui/icons-material/SortOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
@@ -71,6 +72,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const conversationQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["conversations", project.id], queryFn: () => api.listConversations(project.id), staleTime: 10_000 })) });
   const healthQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agent-health", project.id], queryFn: () => api.getAgentHealth(project.id), staleTime: 5_000 })) });
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
+  const [sortAnchor, setSortAnchor] = useState<HTMLElement>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "agent");
   const rows = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
@@ -86,7 +88,12 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   return <Box sx={{ minHeight: 0, overflow: "hidden" }}>
     {projects.length ? <AgentsTab toolbarControls={<>
       <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
-      <FormControl size="small" sx={{ minWidth: 170, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="recent">Recently Updated</MenuItem><MenuItem value="name">Name</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
+      <Button color="inherit" startIcon={<SortOutlinedIcon />} onClick={(event) => setSortAnchor(event.currentTarget)} sx={{ minHeight: 40, whiteSpace: "nowrap" }}>Sort</Button>
+      {sortAnchor ? <Menu anchorEl={sortAnchor} open onClose={() => setSortAnchor(undefined)}>
+        <MenuItem selected={sort === "last_used"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "last_used")); setSortAnchor(undefined); }}>Recent Activity</MenuItem>
+        <MenuItem selected={sort === "alphabetical"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "alphabetical")); setSortAnchor(undefined); }}>Alphabetical</MenuItem>
+        <MenuItem selected={sort === "custom"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "custom")); setSortAnchor(undefined); }}>Custom Order</MenuItem>
+      </Menu> : null}
     </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} /> : <Alert severity="info" sx={{ m: 2 }}>Create a Project before creating Agents.</Alert>}
   </Box>;
 }

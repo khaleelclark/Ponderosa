@@ -2762,14 +2762,14 @@ describe("CoordinationV3Store scheduler", () => {
     register(foreign.projectId, recipientA, foreignCanonical);
     const reused = runtimeAttachment(recipientA);
     register(projectId, recipientA, reused);
-    const oversized = Array.from({ length: 4 }, (_, index) => {
+    const oversized = Array.from({ length: 11 }, (_, index) => {
       const item = runtimeAttachment(recipientA, {
         id: randomUUID(), name: `oversized-${index}.pdf`, size: 8 * 1024 * 1024,
       });
       register(projectId, recipientA, item);
       return item;
     });
-    const overCount = Array.from({ length: 5 }, (_, index) => runtimeAttachment(recipientA, {
+    const overCount = Array.from({ length: 21 }, (_, index) => runtimeAttachment(recipientA, {
       id: randomUUID(), name: `count-${index}.pdf`,
     }));
     const rejected = [
@@ -2916,13 +2916,8 @@ describe("CoordinationV3Store scheduler", () => {
 
     const deterministicId = (sequence: number) =>
       `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-    const overCount = [
-      register(recipientA, 64, deterministicId(1)),
-      register(recipientA, 64, deterministicId(2)),
-      register(recipientA, 64, deterministicId(3)),
-      register(recipientB, 64, deterministicId(4)),
-      register(recipientB, 64, deterministicId(5)),
-    ];
+    const overCount = Array.from({ length: 21 }, (_, index) =>
+      register(index < 11 ? recipientA : recipientB, 64, deterministicId(index + 1)));
     const before = runtimeMutationState();
     calls.clear();
     expect(() => store.recordRuntimeCommunication(communicationInput(
@@ -2944,18 +2939,17 @@ describe("CoordinationV3Store scheduler", () => {
     expect(calls.size).toBe(0);
     expect(runtimeMutationState()).toEqual(before);
 
-    const overBytes = [
-      register(recipientA, DEFAULT_ASSET_LIMITS.maxFileBytes, deterministicId(6)),
-      register(recipientA, DEFAULT_ASSET_LIMITS.maxFileBytes, deterministicId(7)),
-      register(recipientB, DEFAULT_ASSET_LIMITS.maxFileBytes, deterministicId(8)),
-      register(recipientB, DEFAULT_ASSET_LIMITS.maxFileBytes, deterministicId(9)),
-    ];
+    const overBytes = Array.from({ length: 11 }, (_, index) => register(
+      index < 6 ? recipientA : recipientB,
+      DEFAULT_ASSET_LIMITS.maxFileBytes,
+      deterministicId(30 + index),
+    ));
     expect(() => store.recordRuntimeCommunication(communicationInput(
       "global-cross-owner-bytes", overBytes, { omitCanonical: true },
     )))
       .toThrow("runtime communication attachments are invalid");
-    expect(calls.size).toBe(4);
-    expect([...calls.values()]).toEqual([1, 1, 1, 1]);
+    expect(calls.size).toBe(11);
+    expect([...calls.values()]).toEqual(Array.from({ length: 11 }, () => 1));
     expect(runtimeMutationState()).toEqual(before);
 
     calls.clear();
@@ -3049,10 +3043,8 @@ describe("CoordinationV3Store scheduler", () => {
       };
     };
 
-    const overCount = [
-      register(recipientA, 1, 1), register(recipientA, 2, 1), register(recipientA, 3, 1),
-      register(recipientB, 4, 1), register(recipientB, 5, 1),
-    ];
+    const overCount = Array.from({ length: 21 }, (_, index) =>
+      register(index < 11 ? recipientA : recipientB, index + 1, 1));
     const before = runtimeMutationState();
     expect(() => store.recordRuntimeCommunication(input("recipient-only-five-items", overCount)))
       .toThrow("runtime communication attachments are invalid");
@@ -3060,13 +3052,9 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.leaseNextRun({ workerId: "recipient-only-count-rejection" })).toBeUndefined();
     expect(runtimeMutationState()).toEqual(before);
 
-    const overBytes = [
-      register(recipientA, 6, DEFAULT_ASSET_LIMITS.maxFileBytes),
-      register(recipientA, 7, DEFAULT_ASSET_LIMITS.maxFileBytes),
-      register(recipientB, 8, DEFAULT_ASSET_LIMITS.maxFileBytes),
-      register(recipientB, 9, DEFAULT_ASSET_LIMITS.maxFileBytes),
-    ];
-    expect(() => store.recordRuntimeCommunication(input("recipient-only-thirty-two-mib", overBytes)))
+    const overBytes = Array.from({ length: 11 }, (_, index) =>
+      register(index < 6 ? recipientA : recipientB, 30 + index, DEFAULT_ASSET_LIMITS.maxFileBytes));
+    expect(() => store.recordRuntimeCommunication(input("recipient-only-over-byte-budget", overBytes)))
       .toThrow("runtime communication attachments are invalid");
     expect(runtimeMutationState()).toEqual(before);
     expect(store.leaseNextRun({ workerId: "recipient-only-byte-rejection" })).toBeUndefined();

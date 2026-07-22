@@ -770,14 +770,15 @@ export function AgentDetail({
   />;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
-    (text: string, files: File[]) => {
-      const sent = Promise.all(files.map((file) => api.uploadAttachment(agentId, file))).then(async (attachments) => {
+    (text: string, files: File[], draftAttachmentIds: string[] = [], draftOwnerId?: string) => {
+      const sent = (draftAttachmentIds.length ? Promise.resolve([]) : Promise.all(files.map((file) => api.uploadAttachment(agentId, file)))).then(async (attachments) => {
         try {
           return await sendMessage.mutateAsync(
             {
               text,
               idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
               attachmentIds: attachments.map((item) => item.id),
+              ...(draftAttachmentIds.length ? { draftAttachmentIds, draftId: `agent:${agentId}`, draftOwnerId } : {}),
               model,
               effort: effortSelectionIsCompatible(engine, model, effort) ? effort : "",
               activeRunDelivery,
@@ -1134,8 +1135,8 @@ export function AgentDetail({
             : "Message this agent directly. Use @ to reference a project file."}
           placeholder={runtimeActivity ? "Steer this agent's active response" : "Message this agent directly"}
           agentResponding={Boolean(runtimeActivity)}
-          onSend={(text, files) => {
-            return submitAgentMessage("steer")(text, files);
+          onSend={(text, files, stagedIds, draftOwnerId) => {
+            return submitAgentMessage("steer")(text, files, stagedIds, draftOwnerId);
           }}
           onCommand={(command, argumentsText) => api.invokeProviderCommand(agentId, {
             name: command.name,

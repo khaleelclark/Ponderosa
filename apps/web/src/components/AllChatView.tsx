@@ -1,8 +1,10 @@
 import {
-  Alert, Avatar, Box, Button, ButtonBase, CircularProgress, Stack, Typography, useMediaQuery, useTheme,
+  Alert, Avatar, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
-import type { AllChatItemDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import ReplyOutlinedIcon from "@mui/icons-material/ReplyOutlined";
+import type { AllChatItemDto, EngineCommand } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
@@ -10,6 +12,7 @@ import type { Route } from "../routing";
 import { ChatMessageBody, Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageTimestamp } from "./MessageTimestamp";
 import { useMobileComposerAutoHide } from "../mobileChat";
+import { copyText } from "../clipboard";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -70,6 +73,47 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     [older?.items, query.data?.items],
   );
   const selected = items.find((item) => item.communicationEventId === selectedId);
+  const selectedAgentId = selected?.directMessageAgent?.id;
+  const selectedAgent = useQuery({
+    queryKey: ["agent", selectedAgentId, 100],
+    queryFn: () => api.getAgent(selectedAgentId!, 100),
+    enabled: Boolean(selectedAgentId),
+  });
+  const invokeCommand = async (command: EngineCommand, argumentsText?: string) => {
+    if (!selectedAgentId) throw new Error("Select an Agent-authored message first.");
+    const result = await api.invokeProviderCommand(selectedAgentId, {
+      name: command.name,
+      ...(argumentsText ? { argumentsText } : {}),
+    });
+    setNotice(result.message ?? `/${command.name} completed for ${selected?.directMessageAgent?.title ?? "the selected Agent"}.`);
+  };
+  const refreshSelectedCapabilities = async () => {
+    if (!selected?.project.id || !selectedAgentId) return;
+    const discovered = await api.getEngineCapabilities(selected.project.id, {
+      engineId: selectedEngineId,
+      model: selectedModel,
+      agentId: selectedAgentId,
+      refresh: true,
+    });
+    queryClient.setQueryData(
+      ["engine-capabilities", selected.project.id, selectedAgentId, selectedEngineId, selectedModel],
+      discovered,
+    );
+  };
+  const selectedEngineId = selectedAgent.data?.agent.activeEngine;
+  const selectedModel = selectedAgent.data?.agent.model;
+  const selectedCapabilities = useQuery({
+    queryKey: ["engine-capabilities", selected?.project.id, selectedAgentId, selectedEngineId, selectedModel],
+    queryFn: () => api.getEngineCapabilities(selected!.project.id, {
+      engineId: selectedEngineId,
+      model: selectedModel,
+      agentId: selectedAgentId,
+    }),
+    enabled: Boolean(selected?.project.id && selectedAgentId && selectedEngineId),
+    staleTime: 10_000,
+  });
+  const selectedEngineCapabilities = selectedCapabilities.data?.find((item) => item.engineId === selectedEngineId);
+  const selectedCommands: EngineCommand[] = selectedEngineCapabilities?.commands ?? [];
   const replyUnavailable = selected ? allChatReplyUnavailableMessage(selected) : undefined;
   const selectItem = (item: AllChatItemDto) => {
     setSelectedId(item.communicationEventId);
@@ -80,11 +124,12 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
   };
   const send = useMutation({
-    mutationFn: async (body: string) => {
+    mutationFn: async ({ body, files, draftAttachmentIds, draftOwnerId }: { body: string; files: File[]; draftAttachmentIds: string[]; draftOwnerId?: string }) => {
       if (!selected?.directMessageAgent) throw new Error("Select a message tied to one exact Agent");
-      if (!body.trim()) throw new Error("Message text is required");
+      if (!body.trim() && files.length === 0) throw new Error("Message text or an attachment is required");
       return api.sendMessage(selected.directMessageAgent.id, {
         text: body.trim(),
+        ...(draftAttachmentIds.length ? { draftAttachmentIds, draftId: `agent:${selected.directMessageAgent.id}`, draftOwnerId } : {}),
         replyToMessageId: selected.messageId,
         idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
         activeRunDelivery: "steer",
@@ -148,33 +193,15 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
       {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
       {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>Messages could not be loaded.</Alert> : null}
       {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
-      <Stack spacing={2.5} sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }} role="radiogroup" aria-label="Source message for direct reply">
-        {items.map((item, index) => {
-          const selectedItem = selectedId === item.communicationEventId;
+      <Stack spacing={1.75} sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }}>
+        {items.map((item) => {
           const fromUser = item.author.kind === "user";
           return <Box
             key={item.communicationEventId}
             component="article"
-            role="radio"
-            aria-checked={selectedItem}
             aria-label={allChatSourceAccessibleName(item)}
-            tabIndex={selectedId ? (selectedItem ? 0 : -1) : (index === 0 ? 0 : -1)}
-            onClick={() => {
-              selectItem(item);
-              setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId);
-            }}
-            onKeyDown={(event) => {
-              if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft"].includes(event.key)) return;
-              event.preventDefault();
-              const delta = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : -1;
-              const nextIndex = (index + delta + items.length) % items.length;
-              const nextItem = items[nextIndex];
-              if (!nextItem) return;
-              selectItem(nextItem);
-              const group = event.currentTarget.closest<HTMLElement>('[role="radiogroup"]');
-              group?.querySelectorAll<HTMLElement>('[role="radio"]')[nextIndex]?.focus();
-            }}
-            sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", outline: "none", cursor: "pointer", borderRadius: 2, "&:focus-visible": { boxShadow: (muiTheme) => `0 0 0 2px ${muiTheme.palette.primary.main}` } }}
+            onClick={() => setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId)}
+            sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", borderRadius: 2, "& .messages-hover-actions": { opacity: { xs: 1, sm: 0 }, transition: "opacity 120ms ease" }, "&:hover .messages-hover-actions, &:focus-within .messages-hover-actions": { opacity: 1 } }}
           >
             <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? "fit-content" : "100%", maxWidth: fromUser ? { xs: "94%", sm: 920 } : 1120, alignItems: "flex-start" }}>
               {!fromUser ? <Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar> : null}
@@ -185,7 +212,7 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                     <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography>
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
-                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", border: selectedItem ? 1 : 0, borderColor: "primary.main", minWidth: 0 }}>
+                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", minWidth: 0, "& p": { my: 0.15 }, "& li + li": { mt: 0.05 } }}>
                   <ChatMessageBody text={item.text} collapseLongMessage projectId={item.project.id} operatorHandle={workspacePreferences.data?.profile.handle} />
                 </Box>
                 {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
@@ -193,6 +220,10 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
                   <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate({ kind: "project", projectId: item.project.id }); }} sx={{ borderRadius: 0.75, typography: "caption", fontWeight: 650, px: 0.25 }}>{item.project.label}</ButtonBase>
                   <Typography variant="caption" aria-hidden>·</Typography>
                   <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }} sx={{ borderRadius: 0.75, typography: "caption", px: 0.25 }}>{item.source.title}</ButtonBase>
+                </Stack>
+                <Stack className="messages-hover-actions" direction="row" spacing={0.25} sx={{ mt: 0.15, justifyContent: fromUser ? "flex-end" : "flex-start", minHeight: 28 }}>
+                  <Tooltip title="Copy"><IconButton size="small" aria-label="Copy message" onClick={() => void copyText(item.text)}><ContentCopyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip>
+                  {item.directMessageAgent ? <Tooltip title={`Reply to ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Reply to ${item.directMessageAgent.title}`} onClick={() => selectItem(item)}><ReplyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
                 </Stack>
               </Box>
             </Stack>
@@ -229,17 +260,21 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
               {notice ? <Alert severity="success">{notice}</Alert> : null}
               {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}
               <Composer
+                commands={selectedCommands}
+                capabilities={selectedEngineCapabilities?.composerCapabilities ?? []}
+                onCapabilitiesOpen={refreshSelectedCapabilities}
+                onCommand={invokeCommand}
                 disabled={send.isPending}
                 running={false}
-                attachmentsEnabled={false}
-                attachmentsUnavailableReason="Messages sends a direct text reply to the selected Agent."
+                attachmentsEnabled
                 placeholder={`Message ${selected.directMessageAgent.title}`}
                 replyTo={{ text: selected.text }}
-                replyLabel={`Direct reply to ${selected.directMessageAgent.title}`}
+                replyLabel={`Direct reply to #${selected.directMessageAgent.title}`}
                 onCancelReply={() => { setSelectedId(undefined); setNotice(undefined); send.reset(); }}
-                draftStorageKey={`messages:${selected.communicationEventId}`}
+                draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
+                conversationDraftId={`agent:${selected.directMessageAgent.id}`}
                 guidance="Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages."
-                onSend={(body) => send.mutateAsync(body)}
+                onSend={(body, files, draftAttachmentIds = [], draftOwnerId) => send.mutateAsync({ body, files, draftAttachmentIds, draftOwnerId })}
               />
             </Stack>}
       </Box>

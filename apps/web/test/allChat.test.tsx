@@ -55,7 +55,7 @@ describe("All Chat view contract", () => {
     expect(source).not.toContain("sendConversationMessage");
   });
 
-  it("mounts a single-tab-stop radio group with unique names, wrapped arrow selection, and fixed direct-message routing", async () => {
+  it("renders ordinary messages with Copy and Reply controls and routes provider commands through the selected Agent", async () => {
     const first = item({
       author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
@@ -73,41 +73,38 @@ describe("All Chat view contract", () => {
       items: [first, second],
       history: { limit: 50, hasMore: false },
     });
+    vi.spyOn(api, "getAgent").mockResolvedValue({
+      agent: { id: "agent-2", projectId: "project-1", title: "Verifier", activeEngine: "codex", model: "gpt-test", conversationIds: ["conversation-1"], state: {}, createdAt: second.createdAt, updatedAt: second.createdAt, archived: false },
+    } as never);
+    vi.spyOn(api, "getEngineCapabilities").mockResolvedValue([{ engineId: "codex", commands: [{ name: "status", description: "Show status", source: "built-in", acceptsArguments: false, insertText: "/status", status: "available", invocation: "runtime" }], composerCapabilities: [] }] as never);
+    const invokeCommand = vi.spyOn(api, "invokeProviderCommand").mockResolvedValue({ invoked: true, name: "status", message: "Session healthy" });
     const sendMessage = vi.spyOn(api, "sendMessage").mockResolvedValue({ queued: false, runId: "run-2", mode: "steer" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><AllChatView onNavigate={vi.fn()} /></QueryClientProvider>);
     });
-    const radioControls = () => view.root.findAllByProps({ role: "radio" }).filter((node) => node.type === "article");
-    await vi.waitFor(() => expect(radioControls()).toHaveLength(2));
+    const messages = () => view.root.findAll((node) => node.type === "article");
+    await vi.waitFor(() => expect(messages()).toHaveLength(2));
     expect(view.root.findAllByType("strong").some((node) => node.children.join("") === "Bold detail")).toBe(true);
-    expect(new Set(radioControls().map((choice) => choice.props["aria-label"])).size).toBe(2);
-    expect(radioControls()[0]!.props["aria-label"]).toContain("First release note");
-    expect(radioControls()[1]!.props["aria-label"]).toContain("Second release note");
-    expect(radioControls().map((choice) => choice.props.tabIndex)).toEqual([0, -1]);
+    expect(messages()[0]!.props["aria-label"]).toContain("First release note");
+    expect(messages()[1]!.props["aria-label"]).toContain("Second release note");
+    const buttons = (label: string) => view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === label);
+    expect(buttons("Copy message")).toHaveLength(2);
+    expect(buttons("Reply to Reviewer")).toHaveLength(1);
+    expect(buttons("Reply to Verifier")).toHaveLength(1);
 
-    const focus = [vi.fn(), vi.fn()];
-    const group = { querySelectorAll: () => focus.map((focusItem) => ({ focus: focusItem })) };
-    const arrow = (key: string) => ({ key, preventDefault: vi.fn(), currentTarget: { closest: () => group } });
-    const wrapBackward = arrow("ArrowUp");
-    act(() => radioControls()[0]!.props.onKeyDown(wrapBackward));
-    expect(wrapBackward.preventDefault).toHaveBeenCalledOnce();
-    expect(focus[1]).toHaveBeenCalledOnce();
-    expect(radioControls().map((choice) => [choice.props["aria-checked"], choice.props.tabIndex])).toEqual([[false, -1], [true, 0]]);
+    act(() => buttons("Reply to Verifier")[0]!.props.onClick());
+    await vi.waitFor(() => expect(api.getEngineCapabilities).toHaveBeenCalledWith("project-1", expect.objectContaining({ agentId: "agent-2", engineId: "codex" })));
 
     const composer = view.root.find((node) => node.props.guidance === "Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages.");
+    await act(async () => { await composer.props.onCommand({ name: "status" }); });
+    expect(invokeCommand).toHaveBeenCalledWith("agent-2", { name: "status" });
     await act(async () => { await composer.props.onSend("Private follow-up"); });
     expect(sendMessage).toHaveBeenCalledWith("agent-2", expect.objectContaining({
       text: "Private follow-up", replyToMessageId: "message-2", activeRunDelivery: "steer",
     }));
 
-    const wrapForward = arrow("ArrowDown");
-    act(() => radioControls()[1]!.props.onKeyDown(wrapForward));
-    expect(focus[0]).toHaveBeenCalledOnce();
-    expect(radioControls().map((choice) => [choice.props["aria-checked"], choice.props.tabIndex])).toEqual([[true, 0], [false, -1]]);
-    const radioGroups = view.root.findAllByProps({ role: "radiogroup" }).filter((node) => node.type === "div");
-    expect(radioGroups.some((node) => node.props["aria-label"] === "Source message for direct reply")).toBe(true);
     view.unmount();
     client.clear();
   });

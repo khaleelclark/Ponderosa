@@ -3,7 +3,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
-import TimelineIcon from "@mui/icons-material/Timeline";
+import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
@@ -592,7 +592,7 @@ export function ConversationView({
   });
 
   const spawn = useMutation({
-    mutationFn: async ({ text, draftAttachmentIds }: { text: string; draftAttachmentIds: string[] }) => {
+    mutationFn: async ({ text, draftAttachmentIds, draftOwnerId }: { text: string; draftAttachmentIds: string[]; draftOwnerId?: string }) => {
       if (!conversation) {
         throw new Error("Project chat not loaded");
       }
@@ -609,6 +609,7 @@ export function ConversationView({
         ...runConfig,
         initialMessage: text,
         draftAttachmentIds,
+        draftOwnerId,
         replyToMessageId: replyTo?.id,
       });
       setActiveOperation({ agentIds: [agent.id], state: "starting" });
@@ -679,9 +680,9 @@ export function ConversationView({
   });
 
   const directReply = useMutation({
-    mutationFn: async ({ targetId, text, files, replyToMessageId, requestId, activeRunDelivery }: { targetId: string; text: string; files: File[]; replyToMessageId: string; requestId: string; activeRunDelivery: "steer" | "queue" }) => {
+    mutationFn: async ({ targetId, text, files, draftAttachmentIds, draftOwnerId, replyToMessageId, requestId, activeRunDelivery }: { targetId: string; text: string; files: File[]; draftAttachmentIds: string[]; draftOwnerId?: string; replyToMessageId: string; requestId: string; activeRunDelivery: "steer" | "queue" }) => {
       let attachments = directReplyUploads.current.get(requestId);
-      if (!attachments) {
+      if (!attachments && draftAttachmentIds.length === 0) {
         attachments = await uploadDirectReplyFiles(
           files,
           (file) => api.uploadAttachment(targetId, file),
@@ -693,7 +694,12 @@ export function ConversationView({
         text,
         replyToMessageId,
         targetAuthorAgentId: targetId,
-        attachmentIds: attachments.map((item) => item.id),
+        attachmentIds: attachments?.map((item) => item.id) ?? [],
+        ...(draftAttachmentIds.length ? {
+          draftAttachmentIds,
+          draftId: conversationId,
+          draftOwnerId,
+        } : {}),
         idempotencyKey: requestId,
         activeRunDelivery,
       });
@@ -830,6 +836,13 @@ export function ConversationView({
   const project = projectsQuery.data?.find((candidate: ProjectDto) => candidate.id === conversation.projectId);
   const composerRuntime = conversationComposerRuntime(activeEngine, engineCapabilities);
   const commands = composerRuntime.commands;
+  const directReplyAgent = agents.find((candidate) => candidate.id === directReplyTargetId);
+  const directReplyEngineCapabilities = directReplyAgent
+    ? engineCapabilities.find((candidate) => candidate.engineId === directReplyAgent.activeEngine)
+    : undefined;
+  const composerCommands = directReplyAgent
+    ? directReplyEngineCapabilities?.commands ?? []
+    : commands.filter((command) => command.invocation === "prompt");
   const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
   const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
     ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
@@ -893,7 +906,7 @@ export function ConversationView({
     invalidate();
   };
 
-  const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = []) => {
+  const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = [], draftOwnerId?: string) => {
     const broadcastText = managerBroadcastText(text);
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) throw new Error("Add informational context or an attachment after #broadcast.");
@@ -913,6 +926,8 @@ export function ConversationView({
         targetId: route.agentIds[0],
         text,
         files,
+        draftAttachmentIds,
+        draftOwnerId,
         replyToMessageId: replyTo.id,
         requestId: directReplyRequestId,
         activeRunDelivery,
@@ -931,7 +946,7 @@ export function ConversationView({
       });
     } else {
       setActiveOperation({ agentIds: [], state: "starting" });
-      await spawn.mutateAsync({ text, draftAttachmentIds });
+      await spawn.mutateAsync({ text, draftAttachmentIds, draftOwnerId });
     }
   };
 
@@ -1067,8 +1082,8 @@ export function ConversationView({
         <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); setAgentWorkOpen(false); setAgentsOpen(true); }} aria-pressed={agentsOpen} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary" }}>Agents</Button>
-          <Button color="inherit" startIcon={<TimelineIcon fontSize="small" />} onClick={() => { setAgentsOpen(false); setAgentWorkOpen(true); setAgentWorkFocus(undefined); }} aria-pressed={agentWorkOpen} aria-label="Open Agent Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary" }}>Agent Work</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
+          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Agent Work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agent Work</Button>
         </Stack>
         </Collapse>
       </Box>
@@ -1225,16 +1240,20 @@ export function ConversationView({
           running={operationRunning}
           allowSendWhileRunning
           mentionHandles={mentionHandles}
-          commands={commands}
-          capabilities={composerRuntime.capabilities}
-          onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: activeEngine?.id, model })}
+          commands={composerCommands}
+          capabilities={directReplyAgent ? directReplyEngineCapabilities?.composerCapabilities ?? [] : composerRuntime.capabilities}
+          onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: directReplyAgent?.activeEngine ?? activeEngine?.id, model: directReplyAgent?.model ?? model, agentId: directReplyAgent?.id })}
+          onCommand={directReplyAgent ? (command, argumentsText) => api.invokeProviderCommand(directReplyAgent.id, {
+            name: command.name,
+            ...(argumentsText ? { argumentsText } : {}),
+          }).then((result) => setQueuedReplyNotice(result.message ?? `/${command.name} invoked for ${directReplyAgent.title}.`)) : undefined}
           busyMentionHandles={busyMentionHandles}
           allowUnmentionedSend={engineReady || Boolean(directReplyTargetId)}
           placeholder={engineReady
               ? "Send a message"
               : "#tag an agent or use #broadcast for shared context"}
-          onSend={(text, files, stagedIds) => submit(text, files, "steer", stagedIds)}
-          onQueue={(text, files, stagedIds) => submit(text, files, "queue", stagedIds)}
+          onSend={(text, files, stagedIds, draftOwnerId) => submit(text, files, "steer", stagedIds, draftOwnerId)}
+          onQueue={(text, files, stagedIds, draftOwnerId) => submit(text, files, "queue", stagedIds, draftOwnerId)}
           preferQueue={Boolean(directReplyTargetId && (queuedMessagesQuery.data ?? []).some((message) => message.targetAgentId === directReplyTargetId))}
           queuedMentionHandles={(queuedMessagesQuery.data ?? []).flatMap((message) => {
             const agent = agents.find((candidate) => candidate.id === message.targetAgentId);

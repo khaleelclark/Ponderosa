@@ -1,6 +1,6 @@
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import TimelineIcon from "@mui/icons-material/Timeline";
+import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import LanguageIcon from "@mui/icons-material/Language";
 import {
@@ -112,7 +112,7 @@ export function ProjectOverview({
               {attentionWork.length ? <Typography variant="body2">{attentionWork.length} work {attentionWork.length === 1 ? "trace" : "traces"} need attention</Typography> : null}
               {attentionAgents.length ? <Typography variant="body2">{attentionAgents.length} {attentionAgents.length === 1 ? "Agent is" : "Agents are"} blocked, failed, or interrupted</Typography> : null}
             </Stack>}
-            <Button size="small" startIcon={<TimelineIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Agent Work</Button>
+            <Button size="small" startIcon={<AccountTreeOutlinedIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Agent Work</Button>
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="overline" color="text.secondary">Current activity</Typography>

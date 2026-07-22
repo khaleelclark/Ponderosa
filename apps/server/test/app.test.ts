@@ -3252,24 +3252,24 @@ describe("project lifecycle API", () => {
     const upload = await app.inject({
       method: "POST",
       url: `/api/conversations/${conversationId}/draft-attachments`,
-      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "notes.txt" },
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "notes.txt", "x-ponderosa-draft-owner": "browser-a" },
       payload: Buffer.from("durable draft file"),
     });
     expect(upload.statusCode).toBe(201);
     const attachment = upload.json<{ id: string; downloadUrl: string }>();
-    const saved = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "keep this", attachmentIds: [attachment.id], expectedRevision: 0, clientId: "tab-a" } });
+    const saved = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { ownerId: "browser-a", text: "keep this", attachmentIds: [attachment.id], expectedRevision: 0, clientId: "tab-a" } });
     expect(saved.json()).toMatchObject({ text: "keep this", attachmentIds: [attachment.id], attachments: [{ id: attachment.id, name: "notes.txt" }] });
     expect((await app.inject({ method: "GET", url: attachment.downloadUrl })).rawPayload.toString()).toBe("durable draft file");
 
     await app.close();
     store = new AgentStore(dataDir);
     app = createServer({ dataDir, store, engines, logger: false });
-    const restored = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft` });
+    const restored = await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft?ownerId=browser-a` });
     expect(restored.json()).toMatchObject({ revision: 1, text: "keep this", attachments: [{ id: attachment.id }] });
-    const conflict = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" } });
+    const conflict = await app.inject({ method: "PUT", url: `/api/conversations/${conversationId}/draft`, payload: { ownerId: "browser-a", text: "stale", attachmentIds: [], expectedRevision: 0, clientId: "tab-b" } });
     expect(conflict.statusCode).toBe(409);
     expect(conflict.json()).toMatchObject({ current: { revision: 1, text: "keep this" }, displaced: { text: "stale", clientId: "tab-b" } });
-    expect((await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft-conflicts` })).json()).toMatchObject({ conversationId, conflicts: [expect.objectContaining({ displaced: expect.objectContaining({ text: "stale" }) })] });
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${conversationId}/draft-conflicts?ownerId=browser-a` })).json()).toMatchObject({ conversationId, conflicts: [expect.objectContaining({ displaced: expect.objectContaining({ text: "stale" }) })] });
     await app.close();
   });
 
@@ -3281,12 +3281,12 @@ describe("project lifecycle API", () => {
       const saved = await app.inject({
         method: "PUT",
         url: `/api/conversations/${encodeURIComponent(surface)}/draft`,
-        payload: { text: `draft-${index}`, attachmentIds: [], expectedRevision: 0, clientId: "tab-a" },
+        payload: { ownerId: "browser-a", text: `draft-${index}`, attachmentIds: [], expectedRevision: 0, clientId: "tab-a" },
       });
       expect(saved.statusCode).toBe(200);
       expect(saved.json()).toMatchObject({ conversationId: surface, text: `draft-${index}`, revision: 1 });
     }
-    expect((await app.inject({ method: "GET", url: `/api/conversations/${encodeURIComponent(`agent:${agent.id}`)}/draft` })).json()).toMatchObject({ text: "draft-2" });
+    expect((await app.inject({ method: "GET", url: `/api/conversations/${encodeURIComponent(`agent:${agent.id}`)}/draft?ownerId=browser-a` })).json()).toMatchObject({ text: "draft-2" });
     await app.close();
   });
 
@@ -5409,7 +5409,7 @@ describe("server chunk F", () => {
     const draft = await app.inject({
       method: "POST",
       url: `/api/conversations/${conversation.id}/draft-attachments`,
-      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "image/png", "x-ponderosa-filename": "draft.png" },
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "image/png", "x-ponderosa-filename": "draft.png", "x-ponderosa-draft-owner": "browser-a" },
       payload: png,
     });
     expect(draft.statusCode, draft.body).toBe(201);
@@ -7694,7 +7694,7 @@ describe("server chunk F", () => {
     const conversation = store.createConversation(project.id, { title: "Room" });
     const upload = await app.inject({
       method: "POST", url: `/api/conversations/${conversation.id}/draft-attachments`,
-      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "brief.txt" },
+      headers: { "content-type": "application/octet-stream", "x-ponderosa-media-type": "text/plain", "x-ponderosa-filename": "brief.txt", "x-ponderosa-draft-owner": "browser-a" },
       payload: Buffer.from("first-turn attachment"),
     });
     const draft = upload.json<{ id: string }>();
@@ -7702,7 +7702,7 @@ describe("server chunk F", () => {
       method: "POST", url: `/api/projects/${project.id}/agents`,
       payload: {
         title: "Atomic", engine: "codex", conversationId: conversation.id,
-        initialMessage: "Read the brief", draftAttachmentIds: [draft.id],
+        initialMessage: "Read the brief", draftAttachmentIds: [draft.id], draftOwnerId: "browser-a",
       },
     });
     expect(created.statusCode, created.body).toBe(200);
