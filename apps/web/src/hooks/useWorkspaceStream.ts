@@ -5,34 +5,14 @@ import { api } from "../api";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
-const REFRESH_KEY = "ponderosa.workspace.refresh.v1";
-const REFRESH_CHANNEL = "ponderosa.workspace.refresh.v1";
-
-export function workspaceRefreshStorageKey(key: string | null): boolean {
-  return key === REFRESH_KEY;
-}
-
-/** Notify sibling tabs after this tab commits a canonical workspace mutation. */
-export function announceWorkspaceRefresh(): void {
-  if (typeof window === "undefined") return;
-  const stamp = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
-  window.localStorage.setItem(REFRESH_KEY, stamp);
-  if (typeof BroadcastChannel !== "undefined") {
-    const channel = new BroadcastChannel(REFRESH_CHANNEL);
-    channel.postMessage(stamp);
-    channel.close();
-  }
-}
-
-export function workspaceStorageCursor(key: string | null, value: string | null, current: number): number | undefined {
-  if (key !== CURSOR_KEY) return undefined;
-  const next = Number(value);
-  return Number.isSafeInteger(next) && next > current ? next : undefined;
-}
 
 function initialCursor(): number {
-  const value = Number(window.localStorage.getItem(CURSOR_KEY) ?? 0);
+  const value = Number(window.sessionStorage.getItem(CURSOR_KEY) ?? 0);
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+function initialInstanceId(): string | null {
+  return window.sessionStorage.getItem(INSTANCE_KEY);
 }
 
 export interface WorkspaceCursorReconciliation {
@@ -50,10 +30,9 @@ export function invalidateWorkspaceCapabilities(
   queryClient: QueryClient,
   boundary: WorkspaceCapabilityBoundary,
 ): Promise<void> {
+  if (boundary.kind === "reconnect") return Promise.resolve();
   return queryClient.invalidateQueries({
-    queryKey: boundary.kind === "runtime-change"
-      ? ["engine-capabilities", boundary.projectId]
-      : ["engine-capabilities"],
+    queryKey: ["engine-capabilities", boundary.projectId],
   });
 }
 
@@ -173,6 +152,7 @@ export function createAgentListInvalidator(
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
   const cursor = useRef(initialCursor());
+  const instanceId = useRef(initialInstanceId());
 
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
@@ -190,7 +170,6 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: ["workspace-status"] });
       void queryClient.invalidateQueries({ queryKey: ["workspace-file"] });
       void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
-      void queryClient.invalidateQueries({ queryKey: ["engine-capabilities"] });
       void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
       void queryClient.invalidateQueries({ queryKey: ["triggers"] });
@@ -202,7 +181,7 @@ export function useWorkspaceStream(): void {
       if (reconciliation.duplicate) return;
       if (reconciliation.gap) invalidateAll();
       cursor.current = reconciliation.cursor;
-      window.localStorage.setItem(CURSOR_KEY, String(envelope.id));
+      window.sessionStorage.setItem(CURSOR_KEY, String(envelope.id));
       const event = envelope.event;
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: ["global-search"] });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
@@ -260,42 +239,19 @@ export function useWorkspaceStream(): void {
     const subscription = api.subscribeWorkspace(cursor.current, {
       onEvent: apply,
       onStatus: (status) => {
-        // Reconnect is a capability boundary: skills/plugins/connectors can
-        // change while a phone is backgrounded or the server is unavailable.
-        void invalidateWorkspaceCapabilities(queryClient, { kind: "reconnect" });
-        const previousInstance = window.localStorage.getItem(INSTANCE_KEY);
+        const previousInstance = instanceId.current;
         if (workspaceReconnectRequiresRefresh(cursor.current, previousInstance, status)) {
           cursor.current = 0;
-          window.localStorage.setItem(CURSOR_KEY, "0");
+          window.sessionStorage.setItem(CURSOR_KEY, "0");
           invalidateAll();
         }
-        window.localStorage.setItem(INSTANCE_KEY, status.instanceId);
+        instanceId.current = status.instanceId;
+        window.sessionStorage.setItem(INSTANCE_KEY, status.instanceId);
       },
       onError: () => undefined,
     });
-    const onVisible = () => { if (document.visibilityState === "visible") invalidateAll(); };
-    const refreshChannel = typeof BroadcastChannel === "undefined" ? undefined : new BroadcastChannel(REFRESH_CHANNEL);
-    if (refreshChannel) refreshChannel.onmessage = () => invalidateAll();
-    const onStorage = (event: StorageEvent) => {
-      if (workspaceRefreshStorageKey(event.key)) {
-        invalidateAll();
-        return;
-      }
-      const next = workspaceStorageCursor(event.key, event.newValue, cursor.current);
-      if (next === undefined) return;
-      // Background tabs can receive the shared localStorage cursor before
-      // their SSE callback is scheduled. Refresh now, then treat the later
-      // stream event as a harmless duplicate.
-      cursor.current = next;
-      invalidateAll();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("storage", onStorage);
     return () => {
       subscription.close();
-      document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("storage", onStorage);
-      refreshChannel?.close();
       agentWorkInvalidator.dispose();
       agentListInvalidator.dispose();
     };

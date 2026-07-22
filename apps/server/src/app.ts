@@ -2517,7 +2517,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const scopeKey = engineCapabilityScopeKey(projectId, engineId);
     engineCapabilityGenerations.set(scopeKey, (engineCapabilityGenerations.get(scopeKey) ?? 0) + 1);
     for (const [key, entry] of engineCapabilityCache) {
-      if (entry.projectId === projectId && entry.engineId === engineId) engineCapabilityCache.delete(key);
+      if (entry.projectId === projectId && entry.engineId === engineId) {
+        engineCapabilityCache.set(key, { ...entry, expiresAt: 0 });
+      }
     }
   };
   const reportRuntimeCapabilitiesChanged = (projectId: string, engineId: string): void => {
@@ -2587,14 +2589,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const scopeKey = engineCapabilityScopeKey(projectId, adapter.id);
     const generation = engineCapabilityGenerations.get(scopeKey) ?? 0;
     const key = `${projectId}\0${hostPath}\0${adapter.id}\0${model ?? "default"}`;
+    const cached = engineCapabilityCache.get(key);
     const running = engineCapabilityDiscoveries.get(key);
     // A cache invalidation may make this result ineligible for storage, but it
     // must not create a second provider process beside discovery already in
-    // progress. The next request can refresh after this operation settles.
-    if (running) return running.operation!;
-    const cached = engineCapabilityCache.get(key);
+    // progress. Ordinary readers keep receiving the last successful value;
+    // only an explicit refresh waits for the discovery already in flight.
+    if (running) {
+      if (!forceRefresh && cached) return Promise.resolve(cached.value);
+      return running.operation!;
+    }
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
-    if (cached) engineCapabilityCache.delete(key);
 
     const authority: CapabilityDiscoveryAuthority = {
       projectId,
@@ -2631,6 +2636,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             expiresAt: Date.now() + engineCapabilityCacheTtlMs,
             value,
           });
+          if (cached && JSON.stringify(cached.value) !== JSON.stringify(value)) {
+            appendWorkspace({ type: "runtime_capabilities_changed", projectId, engineId: adapter.id });
+          }
         }
         return value;
       }, async (error: unknown) => {
@@ -2644,6 +2652,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       });
     authority.operation = promise;
     engineCapabilityDiscoveries.set(key, authority);
+    if (!forceRefresh && cached) {
+      void promise.catch((error) => {
+        app.log.warn({ err: error, projectId, engineId: adapter.id }, "background capability refresh failed; serving last-known capabilities");
+      });
+      return Promise.resolve(cached.value);
+    }
     return promise;
   };
   const contextCursors = new ContextCursorStore(opts.dataDir);

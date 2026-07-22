@@ -59,7 +59,7 @@ import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
 import { useEngines, useNotifications, useProjects, useWorkspacePreferences } from "./hooks/queries";
-import { announceWorkspaceRefresh, useWorkspaceStream } from "./hooks/useWorkspaceStream";
+import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
   parseRoute,
@@ -242,7 +242,6 @@ export default function App({
     queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
       current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt } : item));
     void api.clearConversationNotifications(conversationId!).then(() => {
-      announceWorkspaceRefresh();
       return queryClient.invalidateQueries({ queryKey: ["notifications"] });
     }).catch(() => {
       void queryClient.invalidateQueries({ queryKey: ["notifications"] });
