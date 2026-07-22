@@ -4042,10 +4042,8 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
-  it("retries an Activation on a fresh persistent session after a pre-submission root exit", async () => {
+  it("retires a persisted provider session before retrying an unsubmitted Activation", async () => {
     const persistent = new SteerableMockAdapter();
-    let releaseOpening!: () => void;
-    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpening = resolve; });
     persistent.completeStartedTurns = true;
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
     const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { pollMs: 5 } });
@@ -4053,23 +4051,41 @@ describe("persistent engine steering", () => {
     const agent = store.createAgent(project.id, { title: "Retry safely", engine: "codex" });
 
     expect((await app.inject({
+      method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Establish resumable history" },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    expect(store.resumeSessionId(agent.id)).toBe("persistent-session");
+
+    let releaseOpening!: () => void;
+    persistent.openBarrier = new Promise<void>((resolve) => { releaseOpening = resolve; });
+    expect((await app.inject({
       method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Retry this exactly once safely" },
     })).statusCode).toBe(202);
-    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
-    persistent.openedOptions[0]!.onRuntimeRootExit({ exitCode: 17, signal: null, stderr: "bounded failure" });
-    await vi.waitFor(() => expect(persistent.closed).toBe(1));
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(2));
+    expect(persistent.openedOptions[1]?.resumeSessionId).toBe("persistent-session");
+
+    persistent.openedOptions[1]!.onRuntimeRootExit({ exitCode: 17, signal: null, stderr: "bounded failure" });
+    await vi.waitFor(() => expect(persistent.closed).toBe(2));
     releaseOpening();
-    await vi.waitFor(() => expect(persistent.opened).toBe(2));
-    await vi.waitFor(() => expect(persistent.starts).toHaveLength(1));
+
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    expect(persistent.openedOptions[2]?.resumeSessionId).toBeUndefined();
+    await waitForRun(agent.id, 2);
+    expect(persistent.starts).toHaveLength(2);
+    expect(store.readEvents(agent.id).some((event) =>
+      event.event.type === "session_reset" && event.event.reason === "provider_root_exit",
+    )).toBe(true);
     expect(store.sqlite.prepare(`
       SELECT status, prompt_injection_state, provider_failure_json FROM scheduler_runs
-      ORDER BY created_at LIMIT 1
+      WHERE status = 'failed'
+      ORDER BY created_at DESC LIMIT 1
     `).get()).toMatchObject({
       status: "failed",
       prompt_injection_state: "not_injected",
       provider_failure_json: expect.stringContaining('"exitCode":17'),
     });
-    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 1 });
+    expect(store.sqlite.prepare("SELECT COUNT(*) AS count FROM agent_activations").get()).toEqual({ count: 2 });
     await app.close();
   });
 
@@ -4122,6 +4138,10 @@ describe("persistent engine steering", () => {
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Replacement turn" } });
     await waitForRun(agent.id, 2);
     expect(persistent.opened).toBe(2);
+    expect(persistent.openedOptions[1]?.resumeSessionId).toBeUndefined();
+    expect(store.readEvents(agent.id).some((event) =>
+      event.event.type === "session_reset" && event.event.reason === "provider_root_exit",
+    )).toBe(true);
     await app.close();
   });
 

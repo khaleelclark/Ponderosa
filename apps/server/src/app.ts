@@ -3165,20 +3165,39 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   function persistentRootExited(agentId: string, identity: object, detail?: ProviderRootExitDetail): void {
     const authority = runtimeAuthority(agentId);
     const runtime = authority?.reusable;
-    if (runtime?.identity === identity) {
+    const matchedReusable = runtime?.identity === identity;
+    const opening = authority?.opening;
+    const matchedOpening = opening?.identity === identity;
+    const run = activeRuns.get(agentId);
+    const matchedRun = Boolean(
+      run
+      && run.persistentRuntimeIdentity === identity
+      && ownsActiveRunForAuditDrain(agentId, run),
+    );
+
+    // The provider process is the authority behind its opaque resumable
+    // session. Once that process exits, the persisted session id must not be
+    // offered to a replacement process. This applies to active, opening, and
+    // warm-idle runtimes; stale callbacks from superseded identities do not
+    // affect the current session generation.
+    if (matchedReusable || matchedOpening || matchedRun) {
+      scheduledSessionRollovers.delete(agentId);
+      store.clearResumeSession(agentId, "provider_root_exit");
+      organizationEnvelopeStates.delete(agentId);
+    }
+
+    if (runtime && matchedReusable) {
       // Detach before checking Run ownership. An idle or second-turn crash must
       // never leave this dead process eligible for later reuse.
       teardownPersistentRuntimeInBackground(agentId, runtime, "provider root exited");
     }
-    const opening = authority?.opening;
-    if (opening?.identity === identity && opening.handle && !opening.terminationConfirmed) {
+    if (opening && matchedOpening && opening.handle && !opening.terminationConfirmed) {
       void teardownOpeningRuntime(agentId, opening, "provider root exited during readiness").catch((error) => {
         app.log.error({ err: error, agentId }, "opening provider root-exit cleanup remains pending");
       });
     }
 
-    const run = activeRuns.get(agentId);
-    if (!run || run.persistentRuntimeIdentity !== identity || !ownsActiveRunForAuditDrain(agentId, run)) return;
+    if (!run || !matchedRun) return;
     transitionRun(agentId, run, "cancelling");
     void closeRunBrowser(agentId, run, "persistent_provider_root_exited");
     closeLinkPreviewsForAgent(agentId, "persistent provider root exited");
