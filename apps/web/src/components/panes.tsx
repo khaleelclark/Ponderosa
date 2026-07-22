@@ -7,7 +7,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import AddIcon from "@mui/icons-material/Add";
-import ReplyIcon from "@mui/icons-material/Reply";
+import TagIcon from "@mui/icons-material/Tag";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
@@ -75,7 +75,6 @@ import { MessageSenderLabel } from "./MessageSenderLabel";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
-import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { useProjectBrowser } from "./ProjectBrowserContext";
 import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../faviconCache";
 import { OperatorAvatar } from "./OperatorAvatar";
@@ -860,8 +859,7 @@ export function ChatPane({
   onOpenAgent,
   onOpenWorkLog,
   onOpenBroadcast,
-  onReact,
-  onReply,
+  onMentionAgent,
   onScrollPositionChange,
   previewScope,
   scrollStorageKey,
@@ -876,8 +874,7 @@ export function ChatPane({
   onOpenAgent?(agentId: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenBroadcast?(message: MessageDto): void;
-  onReact?(message: MessageDto, emoji: string): Promise<void>;
-  onReply?(message: MessageDto): void;
+  onMentionAgent?(): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
   scrollStorageKey?: string;
@@ -1028,7 +1025,6 @@ export function ChatPane({
                   : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
               </Box>)}
             </Stack> : null}
-            <MessageReactions reactions={message.reactions} />
               </Box>
               {workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : null}
               <MessageActionsAndTimestamp
@@ -1046,9 +1042,8 @@ export function ChatPane({
                   />
                   : undefined}
                 actions={<>
-              {message.role === "assistant" && message.communicationEventId && onReact ? <EmojiReactionPicker recipientName={senderLabel} onReact={(emoji) => onReact(message, emoji)} /> : null}
+              {message.role === "assistant" && onMentionAgent ? <Tooltip title={`Mention ${senderLabel}`}><IconButton size="small" aria-label={`Mention ${senderLabel}`} onClick={onMentionAgent}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
               <CopyMessageButton text={message.text} />
-              {onReply ? <IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton> : null}
                 </>}
               />
             </Box>
@@ -1300,15 +1295,12 @@ export function RunsPane({
       </Stack>
       {coordinationV3 ? (
         <Alert severity={coordinationV3.requests.some((request) => request.state === "outcome_unknown") ? "warning" : coordinationV3.availability === "waiting" ? "info" : "success"}>
-          Communication V3: {coordinationV3.availability}
+          <Typography variant="subtitle2">{coordinationV3.availability === "waiting" ? "Waiting for coordinated work" : coordinationV3.availability === "idle" ? "No coordinated work is active" : "Coordinated work is active"}</Typography>
           {coordinationV3.joins.some((join) => join.state === "open")
-            ? ` · ${coordinationV3.joins.filter((join) => join.state === "open").length} open join(s)`
+            ? `Waiting for ${coordinationV3.joins.filter((join) => join.state === "open").length} dependent result(s). `
             : ""}
           {coordinationV3.requests.some((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state))
-            ? ` · ${coordinationV3.requests.filter((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).length} open request(s)`
-            : ""}
-          {coordinationV3.activeRun
-            ? ` · fence ${coordinationV3.activeRun.fencingToken} · ${coordinationV3.activeRun.promptInjectionState.replaceAll("_", " ")}`
+            ? `${coordinationV3.requests.filter((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).length} assignment(s) are still active. `
             : ""}
           {coordinationV3.requests.filter((request) => request.direction === "outbound" && ["outcome_unknown", "failed", "recipient_unavailable"].includes(request.state)).map((request) => (
             <RetryRequestButton key={request.id} requestId={request.id} />
@@ -1426,7 +1418,8 @@ function RetryRequestButton({ requestId }: { requestId: string }): JSX.Element {
         await queryClient.invalidateQueries();
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
       finally { setBusy(false); }
-    }}>{busy ? "Retrying…" : `Retry request ${requestId.slice(0, 8)}`}</Button>
+    }}>{busy ? "Retrying…" : "Retry Failed Work"}</Button>
+    <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>Request {requestId.slice(0, 8)}</Typography>
     {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
   </Box>;
 }
@@ -2206,6 +2199,7 @@ export function Composer({
   controls,
   guidance,
   focusReply = false,
+  insertTextRequest,
 }: {
   disabled: boolean;
   running: boolean;
@@ -2254,6 +2248,8 @@ export function Composer({
   guidance?: ReactNode;
   /** Focus the normal composer when a direct reply is selected. */
   focusReply?: boolean;
+  /** Inserts text into the draft when a message action explicitly requests it. */
+  insertTextRequest?: { id: string; text: string };
 }): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [pastedText, setPastedText] = useState<string>();
@@ -2281,6 +2277,7 @@ export function Composer({
   const [capabilityMenuAnchor, setCapabilityMenuAnchor] = useState<HTMLElement | null>(null);
   const [capabilityFilter, setCapabilityFilter] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
+  const appliedInsertRequest = useRef<string>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
@@ -2313,6 +2310,22 @@ export function Composer({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [focusReply]);
+
+  useEffect(() => {
+    if (!insertTextRequest || appliedInsertRequest.current === insertTextRequest.id) return;
+    appliedInsertRequest.current = insertTextRequest.id;
+    setText((current) => {
+      const prefix = current && !/\s$/u.test(current) ? " " : "";
+      return `${current}${prefix}${insertTextRequest.text} `;
+    });
+    const frame = window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      const end = inputRef.current?.value.length ?? 0;
+      inputRef.current?.setSelectionRange(end, end);
+      setCaret(end);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [insertTextRequest]);
   const draftQuery = useQuery({
     queryKey: ["conversation-draft", conversationDraftId],
     queryFn: () => api.getConversationDraft(conversationDraftId!),

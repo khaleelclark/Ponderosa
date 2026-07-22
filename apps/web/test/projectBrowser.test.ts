@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import { consumeProjectBrowserRequest } from "../src/components/ProjectBrowserContext";
 
 describe("persistent Project browser surfaces", () => {
-  it("makes the Project browser globally reachable and keeps link choice explicit", () => {
+  it("keeps the Interactive Browser Project-scoped and keeps link choice explicit", () => {
     const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+    const overview = readFileSync(new URL("../src/components/ProjectOverview.tsx", import.meta.url), "utf8");
+    const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
-    expect(app).toContain('aria-label="Open Shared Browser"');
+    expect(app).not.toContain('aria-label="Open Interactive Browser"');
     expect(app).toContain("ProjectBrowserContext.Provider");
-    expect(app).toContain('openWorkspaceRoute({ kind: "browser"');
+    expect(overview).toContain("Interactive Browser");
+    expect(conversation).toContain("Interactive Browser");
     expect(app).not.toContain("projectBrowserOpen");
     expect(panes).toContain("projectBrowser.open(link.url.href)");
     expect(panes).toContain("Open in Ponderosa");

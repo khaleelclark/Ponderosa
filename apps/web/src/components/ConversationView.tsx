@@ -1,12 +1,10 @@
 import AddIcon from "@mui/icons-material/Add";
-import ReplyIcon from "@mui/icons-material/Reply";
-import QuickreplyIcon from "@mui/icons-material/Quickreply";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import TimelineIcon from "@mui/icons-material/Timeline";
-import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
@@ -48,7 +46,6 @@ import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation } from "../hooks/queries";
 import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
-import { compactViewportQuery } from "../responsive";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
 import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, QueuedMessageTray, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
 import { MessageSenderLabel } from "./MessageSenderLabel";
@@ -61,6 +58,7 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
+import { AgentWorkInspector } from "./AgentWorkInspector";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -106,7 +104,6 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
     {names} {responding.length === 1 ? "is" : "are"} responding · {formatExecutionElapsed(earliest, now)}
   </Alert>;
 }
-import { EmojiReactionPicker, MessageReactions } from "./EmojiReactionPicker";
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
@@ -116,15 +113,12 @@ export function ConversationMessage({
   conversation,
   agentTitle,
   agentIdForHandle,
-  compactViewport = false,
   onOpenAgent,
   onOpenWorkLog,
   onOpenReview,
   onOpenFileActivity,
-  onReply,
-  onDirectReply,
-  onReact,
   onEdit,
+  onMentionAgent,
   projectId,
   activeRunId,
   operatorProfile,
@@ -133,15 +127,12 @@ export function ConversationMessage({
   conversation: "main" | "collaboration";
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
-  compactViewport?: boolean;
   onOpenAgent(agentId: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
-  onReply(message: ConversationMessageDto): void;
-  onDirectReply(message: ConversationMessageDto): void;
-  onReact(message: ConversationMessageDto, emoji: string): Promise<void>;
   onEdit?: (message: ConversationMessageDto) => void;
+  onMentionAgent?(agentId: string): void;
   projectId: string;
   activeRunId?: string;
   operatorProfile?: OperatorProfileDto;
@@ -240,7 +231,6 @@ export function ConversationMessage({
             </Stack>
           </Box>)}
         </Stack> : null}
-        <MessageReactions reactions={message.reactions} />
           </Box>
           <MessageActionsAndTimestamp
             mobileTimestampAlign={fromManager && message.role === "user" ? "end" : "start"}
@@ -255,25 +245,9 @@ export function ConversationMessage({
               onOpenWorkLog={onOpenWorkLog}
             /> : undefined}
             actions={conversation === "main" ? <>
-        {message.authorAgentId ? <Tooltip title={`Open ${senderName}`}><IconButton
-          size="small"
-          aria-label={`Open agent ${senderName}`}
-          onClick={() => onOpenAgent(message.authorAgentId!)}
-        ><OpenInNewIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {message.authorAgentId && message.communicationEventId ? <EmojiReactionPicker recipientName={agentTitle(message.authorAgentId)} onReact={(emoji) => onReact(message, emoji)} /> : null}
         <CopyMessageButton text={visibleText} />
-        {conversation === "main" ? <Tooltip title="Reply"><IconButton size="small" aria-label="Reply to message" onClick={() => onReply(message)}><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+        {message.authorAgentId && onMentionAgent ? <Tooltip title={`Mention ${senderName}`}><IconButton size="small" aria-label={`Mention ${senderName}`} onClick={() => onMentionAgent(message.authorAgentId!)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
         {conversation === "main" && onEdit ? <Tooltip title="Edit Message"><IconButton size="small" aria-label="Edit message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && message.authorAgentId ? (
-          <Tooltip title={`Reply directly to ${agentTitle(message.authorAgentId)}`}><IconButton
-            size="small"
-            aria-label={`Reply directly to ${agentTitle(message.authorAgentId)}`}
-            onClick={() => onDirectReply(message)}
-            sx={{ minHeight: compactViewport ? 44 : undefined }}
-          >
-            <QuickreplyIcon fontSize="inherit" />
-          </IconButton></Tooltip>
-        ) : null}
           </> : undefined}
           />
         </Box>
@@ -300,6 +274,7 @@ export function ConversationView({
   onInitialAgentsOpenConsumed,
   onOpenReview,
   onOpenAgentWork,
+  onOpenBrowser,
   onOpenFileActivity,
   onNewAgent,
   onDeleted,
@@ -321,6 +296,7 @@ export function ConversationView({
   onInitialAgentsOpenConsumed?(): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
+  onOpenBrowser(): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto): void;
   onDeleted(): void;
@@ -360,6 +336,8 @@ export function ConversationView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [agentsOpen, setAgentsOpen] = useState(initialAgentsOpen);
+  const [agentWorkOpen, setAgentWorkOpen] = useState(false);
+  const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const consumedInitialAgentsOpen = useRef(false);
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [rosterMenu, setRosterMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
@@ -374,6 +352,7 @@ export function ConversationView({
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+  const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
   useEffect(() => {
     if (!initialAgentsOpen || consumedInitialAgentsOpen.current) return;
     consumedInitialAgentsOpen.current = true;
@@ -405,7 +384,6 @@ export function ConversationView({
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
-  const compactViewport = useMediaQuery(compactViewportQuery(theme.breakpoints.down("sm")));
   const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
   const mobileComposer = useMobileComposerAutoHide(mobileRoster);
 
@@ -424,6 +402,13 @@ export function ConversationView({
   }, [activeView, conversationId]);
 
   const conversation = detailQuery.data?.conversation;
+  const projectBrowser = useQuery({
+    queryKey: ["project-browser", conversation?.projectId],
+    queryFn: () => api.getProjectBrowser(conversation!.projectId),
+    enabled: Boolean(conversation?.projectId),
+    retry: false,
+    staleTime: 5_000,
+  });
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
   const messages = mergeConversationMessages(olderMain?.messages ?? [], compactDefined(detailQuery.data?.messages ?? []));
@@ -723,16 +708,6 @@ export function ConversationView({
           : undefined
         : undefined);
       if (response.queued) setActiveOperation(undefined);
-      void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
-    },
-  });
-
-  const sendReaction = useMutation({
-    mutationFn: ({ communicationEventId, emoji, requestId }: { communicationEventId: string; emoji: string; requestId: string }) =>
-      api.sendUserReaction({ projectId: conversation!.projectId, communicationEventId, emoji, idempotencyKey: requestId }),
-    onSuccess: (response) => {
-      invalidate();
-      setQueuedReplyNotice(undefined);
       void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
     },
   });
@@ -1090,15 +1065,16 @@ export function ConversationView({
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
-          <Button color="inherit" aria-pressed={!agentsOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
-          <Button color="inherit" startIcon={<TimelineIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Agent work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agent Work</Button>
+          <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
+          <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); setAgentWorkOpen(false); setAgentsOpen(true); }} aria-pressed={agentsOpen} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary" }}>Agents</Button>
+          <Button color="inherit" startIcon={<TimelineIcon fontSize="small" />} onClick={() => { setAgentsOpen(false); setAgentWorkOpen(true); setAgentWorkFocus(undefined); }} aria-pressed={agentWorkOpen} aria-label="Open Agent Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary" }}>Agent Work</Button>
         </Stack>
         </Collapse>
       </Box>
 
       <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
+        {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : <>
         <Box
           ref={chatScrollRef}
           className="chat-scroll-region"
@@ -1130,7 +1106,7 @@ export function ConversationView({
               host, or pick a signed-in engine, before spawning agents.
             </Alert>
           ) : null}
-          {activeView === "main" ? <MasterRespondingIndicator agents={agents} healthByAgentId={healthByAgentId} /> : null}
+          {activeView === "main" && projectBrowser.data?.status === "ready" ? <Alert severity="info" action={<Button color="inherit" size="small" onClick={onOpenBrowser}>Open Tab</Button>} sx={{ mb: 1.5 }}>Interactive Browser is active{projectBrowser.data.title ? ` · ${projectBrowser.data.title}` : ""}.</Alert> : null}
           {(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"} sx={{ mb: 1.5 }}>
             <Typography variant="subtitle2">{agentTitle(decision.agentId)} needs your decision</Typography>
             <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
@@ -1163,7 +1139,7 @@ export function ConversationView({
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
                   ? <Box key={event.id} sx={sx}>{content}</Box>
-                  : <ButtonBase key={event.id} onClick={() => onOpenAgentWork(event.id)} aria-label={`${event.text}. Open Agent work details`} sx={sx}>{content}</ButtonBase>;
+                  : <ButtonBase key={event.id} onClick={() => { setAgentsOpen(false); setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Agent Work details`} sx={sx}>{content}</ButtonBase>;
               })}
             </Stack> : null}
             {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (
@@ -1183,27 +1159,11 @@ export function ConversationView({
                 operatorProfile={preferencesQuery.data?.profile}
                 agentTitle={agentTitle}
                 agentIdForHandle={agentIdForHandle}
-                compactViewport={compactViewport}
                 onOpenAgent={onOpenAgent}
                 onOpenWorkLog={onOpenWorkLog}
                 onOpenReview={onOpenReview}
                 onOpenFileActivity={onOpenFileActivity}
-                onReply={(selected) => {
-                  clearReply();
-                  setReplyTo(selected);
-                }}
-                onDirectReply={(selected) => {
-                  clearReply();
-                  setReplyTo(selected);
-                  setDirectReplyTargetId(selected.authorAgentId);
-                  setDirectReplyRequestId(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
-                  setStoppedNotice(undefined);
-                }}
-                onReact={(selected, emoji) => sendReaction.mutateAsync({
-                  communicationEventId: selected.communicationEventId!,
-                  emoji,
-                  requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
-                }).then(() => undefined)}
+                onMentionAgent={(agentId) => setMentionInsertRequest({ id: String(Date.now()), text: `#${agentMentionHandle(agentTitle(agentId))} ` })}
                 onEdit={activeView === "main" && message.role === "user" && !message.authorAgentId && !message.correctedByMessageId && !message.correctionOfMessageId
                   ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); }
                   : undefined}
@@ -1223,11 +1183,12 @@ export function ConversationView({
             mobileComposer.showAtLatest(chatScrollRef.current);
           }}
         />
+        </>}
       </Box>
 
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={agentsOpen || mobileComposer.hidden ? "true" : "false"}
+        data-mobile-composer-hidden={agentsOpen || agentWorkOpen || mobileComposer.hidden ? "true" : "false"}
         onTransitionEnd={(event) => {
           if (
             event.currentTarget !== event.target
@@ -1238,11 +1199,12 @@ export function ConversationView({
       >
         {activeView === "main" && queuedReplyNotice ? <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>{queuedReplyNotice}</Alert> : null}
         {activeView === "main" && stoppedNotice ? <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>{stoppedNotice}</Alert> : null}
-        {spawn.isError || reply.isError || directReply.isError || sendReaction.isError ? (
+        {spawn.isError || reply.isError || directReply.isError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error ?? sendReaction.error) as Error)}
+            Message not sent. {String((spawn.error ?? reply.error ?? directReply.error) as Error)}
           </Alert>
         ) : null}
+        {activeView === "main" ? <Box sx={{ mx: 1.5, mt: 1 }}><MasterRespondingIndicator agents={agents} healthByAgentId={healthByAgentId} /></Box> : null}
         {activeView === "main" ? <QueuedMessageTray
           messages={queuedMessagesQuery.data ?? []}
           agentNameForId={agentTitle}
@@ -1254,6 +1216,7 @@ export function ConversationView({
         {activeView === "main" ? <Composer
           draftStorageKey={chatStateKey("draft", `conversation.${conversationId}.${activeView}`)}
           conversationDraftId={conversationId}
+          insertTextRequest={mentionInsertRequest}
           controls={runtimeControls}
           guidance={agents.length > 0
             ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."

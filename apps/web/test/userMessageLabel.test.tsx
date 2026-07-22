@@ -38,9 +38,8 @@ function renderMaster(message: ConversationMessageDto, conversation: "main" | "c
       agentTitle={() => "Pinnacles"}
       agentIdForHandle={() => undefined}
       onOpenAgent={vi.fn()}
-      onReply={vi.fn()}
-      onDirectReply={vi.fn()}
-      onReact={vi.fn()}
+      onMentionAgent={vi.fn()}
+      projectId="project-1"
     />,
   );
 }
@@ -90,7 +89,7 @@ describe("user message labels on chat surfaces", () => {
   it("places the ChatPane desktop user identity in timestamp-name-avatar order before the bubble", () => {
     const html = renderToStaticMarkup(<ChatPane messages={[agentMessage({
       attachments: [{ id: "attachment-1", agentId: "agent-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
-    })]} onReply={vi.fn()} />);
+    })]} />);
 
     const timestamp = html.indexOf("data-user-message-timestamp");
     const label = html.indexOf("data-user-message-name");
@@ -98,14 +97,14 @@ describe("user message labels on chat surfaces", () => {
     const bubble = html.indexOf('data-message-bubble="true"');
     const content = html.indexOf("Manager request");
     const attachment = html.indexOf('aria-label="Download diagram.png"');
-    const reply = html.indexOf('aria-label="Reply to message"');
     expect(label).toBeGreaterThanOrEqual(0);
     expect(timestamp).toBeLessThan(label);
     expect(label).toBeLessThan(avatar);
     expect(avatar).toBeLessThan(bubble);
     expect(bubble).toBeLessThan(content);
     expect(content).toBeLessThan(attachment);
-    expect(attachment).toBeLessThan(reply);
+    expect(attachment).toBeGreaterThan(content);
+    expect(html).not.toContain('aria-label="Reply to message"');
   });
 
   it("does not label agent messages and filters unsupported system messages from ChatPane", () => {
@@ -151,7 +150,7 @@ describe("user message labels on chat surfaces", () => {
     expect(system).not.toContain(">User</div>");
   });
 
-  it("keeps the master timestamp with its identity while preserving attachment and reply actions", () => {
+  it("keeps the master timestamp with its identity while preserving attachment and Agent tag actions", () => {
     const manager = renderMaster(masterMessage({
       attachments: [{ id: "attachment-1", agentId: "agent-1", name: "diagram.png", mediaType: "image/png", size: 12, width: 2, height: 2, url: "/attachment.png" }],
     }));
@@ -161,13 +160,14 @@ describe("user message labels on chat surfaces", () => {
     expect(manager.indexOf("data-user-message-name")).toBeLessThan(manager.indexOf("data-user-message-avatar"));
     expect(manager.indexOf("data-user-message-avatar")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
-    expect(manager.indexOf('aria-label="Download diagram.png"')).toBeLessThan(manager.indexOf('aria-label="Reply to message"'));
+    expect(manager).not.toContain('aria-label="Reply to message"');
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
-    expect(agent.indexOf('class="chat-message-actions')).toBeLessThan(agent.indexOf('aria-label="Open agent Pinnacles"'));
-    expect(agent.indexOf('aria-label="Open agent Pinnacles"')).toBeLessThan(agent.indexOf('aria-label="Reply to message"'));
-    expect(agent.indexOf("<time")).toBeLessThan(agent.indexOf('aria-label="Reply to message"'));
-    expect(agent.indexOf('aria-label="Reply to message"')).toBeLessThan(agent.indexOf("Reply directly to Pinnacles"));
+    expect(agent).toContain('aria-label="Open agent Pinnacles from profile image"');
+    expect(agent).toContain('aria-label="Open agent Pinnacles from name"');
+    expect(agent).toContain('aria-label="Mention Pinnacles"');
+    expect(agent).not.toContain('aria-label="Reply to message"');
+    expect(agent).not.toContain("Reply directly to Pinnacles");
   });
 
   it("keeps Team Chat read-only while preserving timestamps", () => {
@@ -194,9 +194,7 @@ describe("user message labels on chat surfaces", () => {
         agentTitle={() => "Pinnacles"}
         agentIdForHandle={() => undefined}
         onOpenAgent={vi.fn()}
-        onReply={vi.fn()}
-        onDirectReply={vi.fn()}
-        onReact={vi.fn()}
+        projectId="project-1"
         onEdit={vi.fn()}
       />,
     );

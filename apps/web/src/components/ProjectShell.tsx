@@ -253,6 +253,7 @@ export function ProjectShell({
         onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
+        onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={openNewAgentFromMaster}
         onDeleted={() => {
@@ -336,6 +337,9 @@ export function ProjectShell({
         project={project}
         agents={agents}
         healthByAgentId={healthByAgentId}
+        conversations={conversations}
+        onOpenConversation={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
+        onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}
         onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenRun={(agentId, runId) => navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "runs", id: runId } })}

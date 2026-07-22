@@ -132,15 +132,15 @@ export function AgentWorkInspector({
   return <Stack data-testid="agent-work-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6">Agent work</Typography>
+          <Typography variant="h6">Agent Work</Typography>
           <Typography variant="caption" color="text.secondary">Requests, waiting, wake-ups, Runs, Triggers, and Decisions</Typography>
         </Box>
         <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Agent work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
       </Stack>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
-        <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} active`} />
-        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} need attention`} />
-        <Chip size="small" variant="outlined" label={`${stateCounts.finished} finished`} />
+        <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} Active`} />
+        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Need Attention`} />
+        <Chip size="small" variant="outlined" label={`${stateCounts.finished} Finished`} />
         {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Agent work" /> : null}
       </Stack>
       <Box className="ponderosa-scroll" sx={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: 1.5 }}>

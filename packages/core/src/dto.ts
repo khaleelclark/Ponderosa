@@ -485,7 +485,6 @@ export interface ConversationMessageDto {
   /** Immutable quoted context captured when this reply was sent. */
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
-  reactions?: MessageReactionDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   executionId?: string;
@@ -581,29 +580,6 @@ export interface LinkPreviewDto {
   openUrl: string;
   targetOrigin: string;
   expiresAt: string;
-}
-
-/** User-authored emoji state projected onto one canonical agent communication. */
-export interface MessageReactionDto {
-  emoji: string;
-  count: number;
-  reactedByCurrentActor: boolean;
-  reactors: Array<{ kind: "manager" }>;
-}
-
-/** POST /api/user-reactions body. */
-export interface CreateUserReactionRequest {
-  projectId: string;
-  communicationEventId: string;
-  emoji: string;
-  idempotencyKey: string;
-}
-
-export interface CreateUserReactionResponse {
-  replayed: boolean;
-  queued: boolean;
-  targetAuthorAgentId: string;
-  reactions: MessageReactionDto[];
 }
 
 export interface MessageReferenceDto {
@@ -1194,7 +1170,6 @@ export interface MessageDto {
   executionId?: string;
   replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
-  reactions?: MessageReactionDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
   /** Durable per-recipient delivery evidence for operator-authored messages. */

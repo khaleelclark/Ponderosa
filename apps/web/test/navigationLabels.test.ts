@@ -21,7 +21,7 @@ describe("launch navigation labels", () => {
       "Files & Results",
       "Stop All",
       "Open in New Ponderosa Tab",
-      "Shared Browser",
+      "Interactive Browser",
       "Project Overview",
       "Rename Tab",
       "Close Other Tabs",
@@ -34,7 +34,7 @@ describe("launch navigation labels", () => {
       'label: "Files & results"',
       ">Stop all<",
       ">Open in new Ponderosa tab<",
-      ">Shared browser<",
+      ">Interactive browser<",
       ">Project overview<",
       ">Close other tabs<",
     ]) expect(sources).not.toContain(retiredLabel);

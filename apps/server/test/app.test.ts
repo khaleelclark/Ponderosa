@@ -826,7 +826,6 @@ function readinessFenceDurableState(store: AgentStore, dataDir: string, projectI
       sqlite: retryFenceSqliteState(store),
       projectFiles: directoryState(path.join(dataDir, "projects", projectId)),
       assetAuthorityBytes: authority.serialize().toString("base64"),
-      reactions: optionalFile(path.join(dataDir, "user-reactions.jsonl")),
       workspace: optionalFile(path.join(dataDir, "workspace-events.jsonl")),
     };
   } finally {
@@ -3768,6 +3767,43 @@ describe("persistent engine steering", () => {
     await app.close();
   });
 
+  it("opens a command-only provider session for status without creating Agent work", async () => {
+    const persistent = new SteerableMockAdapter();
+    persistent.runtimeCapabilities = {
+      steering: true,
+      persistentSessions: true,
+      sessionId: "command-only-session",
+      catalogVersion: "command-only-catalog",
+      commands: [{
+        name: "status", description: "Status", source: "built-in", acceptsArguments: false,
+        insertText: "/status", status: "available", invocation: "runtime",
+      }],
+      mcpServers: [],
+      composerCapabilities: [],
+    };
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Command-only status", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Room" });
+    const agent = store.createAgent(project.id, { title: "Status Agent", engine: "codex", conversationId: conversation.id });
+
+    const invoked = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/provider-commands`,
+      payload: { name: "status" },
+    });
+
+    expect(invoked.statusCode, invoked.body).toBe(200);
+    expect(invoked.json()).toMatchObject({ invoked: true, name: "status", catalogVersion: "command-only-catalog" });
+    expect(persistent.opened).toBe(1);
+    expect(persistent.closed).toBe(1);
+    expect(persistent.invokedCommands).toEqual([{ name: "status" }]);
+    expect(persistent.starts).toEqual([]);
+    expect(store.getRuns(agent.id)).toEqual([]);
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
+    await app.close();
+  });
+
   it("reuses session-scoped capabilities while authorizing only the current turn", async () => {
     const persistent = new SteerableMockAdapter();
     persistent.completeStartedTurns = true;
@@ -5093,7 +5129,6 @@ describe("server chunk F", () => {
     expect(intake.statusCode).toBe(503);
     expect(intake.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
     for (const blockedUrl of [
-      "/api/user-reactions",
       `/api/conversations/${randomUUID()}/direct-replies`,
     ]) {
       const blocked = await app.inject({ method: "POST", url: blockedUrl, payload: {} });
@@ -5408,7 +5443,7 @@ describe("server chunk F", () => {
     await healthy.close();
   });
 
-  it("rejects valid reaction and direct-reply intake without procfs before any canonical or notification mutation", async () => {
+  it("rejects valid direct-reply intake without procfs before any canonical or notification mutation", async () => {
     const project = store.createProject({ label: "Blocked private reply intake", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "Valid reply target" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: conversation.id });
@@ -5456,19 +5491,6 @@ describe("server chunk F", () => {
     const authorEventsBefore = structuredClone(store.getMessages(author.id));
     const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
 
-    const reaction = await app.inject({
-      method: "POST",
-      url: "/api/user-reactions",
-      payload: {
-        projectId: project.id,
-        communicationEventId,
-        emoji: "✅",
-        idempotencyKey: "blocked-valid-reaction",
-      },
-    });
-    expect(reaction.statusCode, reaction.body).toBe(503);
-    expect(reaction.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
-
     const directReply = await app.inject({
       method: "POST",
       url: `/api/conversations/${conversation.id}/direct-replies`,
@@ -5493,17 +5515,6 @@ describe("server chunk F", () => {
     store = new AgentStore(dataDir);
     const healthy = createServer({ dataDir, store, engines, logger: false });
     expect((await healthy.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
-    const healthyReaction = await healthy.inject({
-      method: "POST",
-      url: "/api/user-reactions",
-      payload: {
-        projectId: project.id,
-        communicationEventId,
-        emoji: "✅",
-        idempotencyKey: "blocked-valid-reaction",
-      },
-    });
-    expect(healthyReaction.statusCode, healthyReaction.body).toBe(200);
     const healthyReply = await healthy.inject({
       method: "POST",
       url: `/api/conversations/${conversation.id}/direct-replies`,
@@ -5516,13 +5527,13 @@ describe("server chunk F", () => {
       },
     });
     expect(healthyReply.statusCode, healthyReply.body).toBe(200);
-    expect(store.readCommunicationEvents(project.id)).toHaveLength(communicationsBefore.length + 2);
+    expect(store.readCommunicationEvents(project.id)).toHaveLength(communicationsBefore.length + 1);
     expect(store.getConversationMessages(conversation.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({
         replyTo: expect.objectContaining({ messageId: targetMessage.id, authorAgentId: author.id }),
       }),
     ]));
-    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(2);
+    expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(1);
     expect(adapter.seeds).toEqual([]);
     await healthy.close();
   });
@@ -6787,92 +6798,6 @@ describe("server chunk F", () => {
     expect(replay.json()).toMatchObject({ replayed: true, messageId: userMessages[0]!.id });
     expect(store.getConversationMessages(master.id).filter((message) => message.role === "user")).toHaveLength(1);
     expect(adapter.seeds).toHaveLength(3);
-    await app.close();
-  });
-
-  it("projects a user reaction onto its message and privately notifies only the author with reply context", async () => {
-    const app = createServer({ dataDir, store, engines, logger: false });
-    const project = store.createProject({ label: "User emoji reaction", hostPath: repoDir });
-    const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const observer = store.createAgent(project.id, { title: "Observer", engine: "codex", conversationId: master.id });
-    const text = "the user reacted with 🧑🏽‍🚀";
-    const communicationEventId = randomUUID();
-    store.appendCommunicationEvent({
-      eventId: communicationEventId, schemaVersion: 2, projectId: project.id, conversationId: master.id,
-      sender: { kind: "agent", agentId: author.id, executionId: "run-result" },
-      intent: "broadcast", audience: { kind: "organization", organizationId: project.id },
-      text: "Original agent result", createdAt: new Date().toISOString(),
-    });
-    const original = store.appendConversationMessage(
-      master.id, { role: "assistant", text: "#broadcast Original agent result" }, author.id,
-      "main", undefined, undefined, communicationEventId,
-    )!;
-    store.appendEvent(author.id, {
-      type: "communication_projection", communicationEventId, text: "Original agent result", role: "assistant",
-    });
-    let reactionReplyStatus: number | undefined;
-    adapter.beforeResponse = async (opts) => {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/agent-messages",
-        headers: { authorization: `Bearer ${opts.environment?.PONDEROSA_AGENT_MESSAGE_TOKEN}` },
-        payload: {
-          intent: "direct_to_user",
-          text: "Reaction acknowledged",
-          idempotencyKey: "ack-reaction",
-        },
-      });
-      reactionReplyStatus = response.statusCode;
-    };
-
-    const sent = await app.inject({
-      method: "POST",
-      url: "/api/user-reactions",
-      payload: {
-        projectId: project.id,
-        communicationEventId,
-        emoji: "🧑🏽‍🚀",
-        idempotencyKey: "reaction-to-author",
-      },
-    });
-    expect(sent.statusCode, sent.body).toBe(200);
-    const replay = await app.inject({
-      method: "POST", url: "/api/user-reactions",
-      payload: { projectId: project.id, communicationEventId, emoji: "🧑🏽‍🚀", idempotencyKey: "reaction-to-author" },
-    });
-    expect(replay.json()).toMatchObject({ replayed: true, targetAuthorAgentId: author.id });
-    await waitForRun(author.id);
-
-    expect(reactionReplyStatus).toBe(200);
-    expect(store.getConversationMessages(master.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: original.id }),
-      expect.objectContaining({ role: "assistant", text: "#user Reaction acknowledged", authorAgentId: author.id }),
-    ]));
-    expect(store.getConversationMessages(master.id).some((message) => message.text === text)).toBe(false);
-    const detail = await app.inject({ method: "GET", url: `/api/conversations/${master.id}` });
-    expect(detail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
-      { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
-    ]);
-    const authorDetail = await app.inject({ method: "GET", url: `/api/agents/${author.id}` });
-    expect(authorDetail.json<{ messages: Array<{ reactions?: unknown[] }> }>().messages[0]?.reactions).toEqual([
-      { emoji: "🧑🏽‍🚀", count: 1, reactedByCurrentActor: true, reactors: [{ kind: "manager" }] },
-    ]);
-    const reactionCommunication = store.readCommunicationEvents(project.id).find((event) => event.text === text);
-    expect(reactionCommunication).toMatchObject({
-      schemaVersion: 2,
-      intent: "user_dm",
-      audience: { kind: "user_agent", agentId: author.id },
-    });
-    expect(store.getMessages(author.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ role: "user", text, communicationEventId: reactionCommunication?.eventId }),
-    ]));
-    expect(store.getMessages(observer.id).some((message) => message.text === text)).toBe(false);
-    expect(adapter.seeds.filter((seed) => seed.agentId === author.id)).toHaveLength(1);
-    expect(adapter.seeds[0]?.prompt).toContain(text);
-    expect(adapter.seeds[0]?.prompt).toContain("Original agent result");
-    expect(adapter.seeds.filter((seed) => seed.agentId === observer.id)).toHaveLength(0);
-    expect(store.getRuns(author.id).at(-1)?.wakeCause).toBe("direct_message");
     await app.close();
   });
 

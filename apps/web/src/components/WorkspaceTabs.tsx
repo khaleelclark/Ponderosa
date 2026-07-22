@@ -117,7 +117,7 @@ export function WorkspaceTabs({
             : tabRoute.kind === "review"
               ? tabRoute.path?.split(/[\\/]/u).at(-1) ?? `${resources?.agents.find((agent) => agent.id === tabRoute.agentId)?.title ?? "Agent"} Review`
               : tabRoute.kind === "agents" ? "Agents"
-                : tabRoute.kind === "browser" ? "Shared Browser"
+                : tabRoute.kind === "browser" ? "Interactive Browser"
                 : tabRoute.kind === "projectWork" ? "Agent Work"
                 : tabRoute.kind === "allAgents" ? "All Agents"
                   : tabRoute.kind === "allChats" ? "All Chats"
