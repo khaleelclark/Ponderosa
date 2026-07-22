@@ -1,24 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import type { WorkspaceEvent } from "@ponderosa/core";
-import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesAllChat, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh, workspaceRefreshStorageKey, workspaceStorageCursor } from "../src/hooks/useWorkspaceStream";
+import { conversationChangedQueryKeys, createAgentListInvalidator, createAgentWorkInvalidator, fileActivityConversationQueryKeys, invalidateWorkspaceCapabilities, reconcileWorkspaceCursor, workspaceEventInvalidatesAllChat, workspaceEventInvalidatesGlobalSearch, workspaceReconnectRequiresRefresh } from "../src/hooks/useWorkspaceStream";
 
 afterEach(() => vi.useRealTimers());
 
 describe("workspace stream cursor recovery", () => {
-  it("refreshes a background tab when another tab advances the canonical cursor", () => {
-    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "14", 12)).toBe(14);
-    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "12", 12)).toBeUndefined();
-    expect(workspaceStorageCursor("unrelated", "14", 12)).toBeUndefined();
-    expect(workspaceStorageCursor("ponderosa.workspace.cursor.v2", "invalid", 12)).toBeUndefined();
-  });
-
-  it("separates explicit sibling-tab refreshes from replay cursor changes", () => {
-    expect(workspaceRefreshStorageKey("ponderosa.workspace.refresh.v1")).toBe(true);
-    expect(workspaceRefreshStorageKey("ponderosa.workspace.cursor.v2")).toBe(false);
-    expect(workspaceRefreshStorageKey(null)).toBe(false);
-  });
-
   it("invalidates only the changed project's runtime discovery cache", async () => {
     const client = new QueryClient();
     client.setQueryData(["engine-capabilities", "project-a"], ["old-a"]);
@@ -30,15 +17,15 @@ describe("workspace stream cursor recovery", () => {
     expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(false);
   });
 
-  it("invalidates all runtime discovery caches on reconnect", async () => {
+  it("keeps runtime discovery cached across an ordinary reconnect", async () => {
     const client = new QueryClient();
     client.setQueryData(["engine-capabilities", "project-a"], ["old-a"]);
     client.setQueryData(["engine-capabilities", "project-b"], ["old-b"]);
 
     await invalidateWorkspaceCapabilities(client, { kind: "reconnect" });
 
-    expect(client.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated).toBe(true);
-    expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(true);
+    expect(client.getQueryState(["engine-capabilities", "project-a"])?.isInvalidated).toBe(false);
+    expect(client.getQueryState(["engine-capabilities", "project-b"])?.isInvalidated).toBe(false);
   });
 
   it("coalesces coordination bursts into one Agent work refresh per Project", async () => {

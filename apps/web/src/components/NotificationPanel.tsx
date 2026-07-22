@@ -27,7 +27,6 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
-import { announceWorkspaceRefresh } from "../hooks/useWorkspaceStream";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 
 export interface NotificationGroup {
@@ -111,7 +110,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     const readAt = new Date().toISOString();
     queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) => current.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate));
     void api.markNotificationRead(item.id).then(() => {
-      announceWorkspaceRefresh();
       return queryClient.invalidateQueries({ queryKey: ["notifications"] });
     }).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Notification could not be marked read.");
@@ -172,7 +170,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     );
     try {
       await api.markAllNotificationsRead();
-      announceWorkspaceRefresh();
       await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await queryClient.invalidateQueries({ queryKey: ["global-search"] });
     } catch (reason) {
@@ -189,7 +186,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], []);
     try {
       await api.clearAllNotifications();
-      announceWorkspaceRefresh();
       await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await queryClient.invalidateQueries({ queryKey: ["global-search"] });
     } catch (reason) {
@@ -206,7 +202,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) => current.filter((item) => item.projectId !== projectId));
     try {
       await api.clearProjectNotifications(projectId);
-      announceWorkspaceRefresh();
       await queryClient.invalidateQueries({ queryKey: ["notifications"] });
       await queryClient.invalidateQueries({ queryKey: ["global-search"] });
     } catch (reason) {

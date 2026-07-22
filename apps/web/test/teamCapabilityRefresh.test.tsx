@@ -222,11 +222,9 @@ describe("Project composer runtime capability refresh", () => {
     });
 
     await invalidateWorkspaceCapabilities(client, { kind: "reconnect" });
-    await vi.waitFor(() => {
-      expect(capabilityRequest).toHaveBeenCalledTimes(3);
-      expect(visibleText(view.root, "Reconnected skill")).not.toHaveLength(0);
-      expect(visibleText(view.root, "Issue tracker")).toHaveLength(0);
-    });
+    expect(capabilityRequest).toHaveBeenCalledTimes(2);
+    expect(visibleText(view.root, "Issue tracker")).not.toHaveLength(0);
+    expect(visibleText(view.root, "Reconnected skill")).toHaveLength(0);
 
     buttons(view.root, "Switch to team chat")[0]!.props.onClick();
     await vi.waitFor(() => {

@@ -10582,6 +10582,46 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("serves last-known capabilities while one expired-cache refresh runs in the background", async () => {
+    let discoveries = 0;
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    Object.assign(adapter, { capabilities: async () => {
+      discoveries += 1;
+      if (discoveries === 2) await refreshGate;
+      const skill = { id: `skill:stale-${discoveries}`, kind: "skill" as const, label: `stale-${discoveries}`, description: "Review changes", status: "available" as const, insertText: `$stale-${discoveries} ` };
+      return { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [skill] };
+    } });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Stale capabilities", hostPath: repoDir });
+
+    const primed = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    expect(primed.statusCode).toBe(200);
+    expect(primed.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("stale-1");
+
+    clock.mockReturnValue(now + 60_001);
+    const stale = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    expect(stale.statusCode).toBe(200);
+    expect(stale.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("stale-1");
+    await vi.waitFor(() => expect(discoveries).toBe(2));
+
+    const concurrent = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+    expect(concurrent.statusCode).toBe(200);
+    expect(concurrent.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("stale-1");
+
+    releaseRefresh();
+    await vi.waitFor(async () => {
+      const refreshed = await app.inject({ method: "GET", url: `/api/projects/${project.id}/engine-capabilities` });
+      expect(refreshed.statusCode).toBe(200);
+      expect(refreshed.json<ProjectEngineCapabilitiesDto[]>()[0]?.composerCapabilities[0]?.label).toBe("stale-2");
+    });
+    expect(discoveries).toBe(2);
+    clock.mockRestore();
+    await app.close();
+  });
+
   it("drains a spawned capability-discovery helper before deleting its Project", async () => {
     let registered = false;
     let closeAttempts = 0;
