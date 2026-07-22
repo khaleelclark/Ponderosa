@@ -937,6 +937,23 @@ describe("AgentStore — append + projection", () => {
     expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8")).toContain("crash-boundary");
   });
 
+  it("rebuilds a file-change artifact when the provider supplied an empty diff", () => {
+    const { projectId, agentId } = seedAgent();
+    store.close();
+    const stored = new EventLog(eventsPath(dir, projectId, agentId)).append({
+      type: "file_change", path: "unchanged.txt", kind: "edit", diff: "",
+    });
+
+    store = new AgentStore(dir);
+
+    const artifactId = `${agentId}:a:${stored.seq}:0`;
+    expect(store.getProjectArtifact(projectId, artifactId)).toMatchObject({
+      id: artifactId, kind: "diff", originAgentId: agentId, sha256: expect.any(String),
+    });
+    expect(readFileSync(managedArtifactContentPath(dir, projectId, artifactId), "utf8"))
+      .toContain("No diff text was provided by the engine.");
+  });
+
   it("rebuilds every execution artifact association and retains deleted-Agent audit evidence", () => {
     const { projectId, agentId } = seedAgent();
     store.appendEvent(agentId, {
