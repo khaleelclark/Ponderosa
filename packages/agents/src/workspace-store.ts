@@ -24,8 +24,10 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
+    | { kind: "notifications_read_ids"; notificationIds: string[]; readAt: string }
     | { kind: "notifications_read_all"; readAt: string }
     | { kind: "notifications_cleared"; notificationIds: string[] }
+    | { kind: "notifications_dismissed"; notificationIds: string[]; at: string }
     | { kind: "notification_status"; notificationId: string; status: "resolved" | "dismissed"; at: string }
     | { kind: "decision"; decision: DecisionDto; idempotencyKey: string }
     | { kind: "push_subscription"; subscription?: WebPushSubscriptionDto; deviceId: string; replacedDeviceIds?: string[] }
@@ -163,9 +165,24 @@ export class WorkspaceStore {
         }
       }
     }
+    if (record.mutation?.kind === "notifications_read_ids") {
+      for (const notificationId of record.mutation.notificationIds) {
+        const current = this.notifications.get(notificationId);
+        if (current && !current.readAt) this.notifications.set(notificationId, { ...current, readAt: record.mutation.readAt });
+      }
+    }
     if (record.mutation?.kind === "notifications_read_all") {
       for (const [id, item] of this.notifications) {
         if (!item.readAt) this.notifications.set(id, { ...item, readAt: record.mutation.readAt });
+      }
+    }
+    if (record.mutation?.kind === "notifications_dismissed") {
+      for (const notificationId of record.mutation.notificationIds) {
+        const current = this.notifications.get(notificationId);
+        if (current) this.notifications.set(notificationId, { ...current, status: "dismissed", resolvedAt: record.mutation.at, readAt: current.readAt ?? record.mutation.at });
+        for (const key of this.pushDeliveries.keys()) {
+          if (key.startsWith(`${notificationId}\u0000`)) this.pushDeliveries.delete(key);
+        }
       }
     }
     if (record.mutation?.kind === "notifications_cleared") {
@@ -343,7 +360,7 @@ export class WorkspaceStore {
       if (existing) return existing;
     }
     if (input.dedupeKey) {
-      const existing = [...this.notifications.values()].find((item) => item.dedupeKey === input.dedupeKey && (item.status ?? "open") === "open");
+      const existing = [...this.notifications.values()].find((item) => item.dedupeKey === input.dedupeKey);
       if (existing) return existing;
     }
     const notification = {
@@ -368,7 +385,9 @@ export class WorkspaceStore {
     // Collaboration/Team Chat is an agent-only room and is intentionally not
     // part of the operator notification or unread-count tree, including when
     // replaying logs created by an older server.
-    return [...this.notifications.values()].filter((item) => item.kind !== "collaboration").sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return [...this.notifications.values()]
+      .filter((item) => item.kind !== "collaboration" && (item.status ?? "open") !== "dismissed")
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }
 
   readConversation(conversationId: string): void {
@@ -376,6 +395,18 @@ export class WorkspaceStore {
     if (!unread) return;
     const readAt = new Date().toISOString();
     this.append({ type: "notification_changed", conversationId, action: "read" }, { kind: "notifications_read", conversationId, readAt });
+  }
+
+  readNotification(notificationId: string): boolean {
+    const current = this.notifications.get(notificationId);
+    if (!current) return false;
+    if (current.readAt) return true;
+    const readAt = new Date().toISOString();
+    this.append(
+      { type: "notification_changed", notificationId, conversationId: current.conversationId, action: "read" },
+      { kind: "notifications_read_ids", notificationIds: [notificationId], readAt },
+    );
+    return true;
   }
 
   readAllNotifications(): number {
@@ -389,23 +420,25 @@ export class WorkspaceStore {
   }
 
   clearNotifications(): number {
-    const notificationIds = this.listNotifications().map((item) => item.id);
+    const notificationIds = this.listNotifications().filter((item) => (item.status ?? "open") === "open").map((item) => item.id);
     if (notificationIds.length === 0) return 0;
+    const at = new Date().toISOString();
     this.append(
       { type: "notification_changed", action: "cleared" },
-      { kind: "notifications_cleared", notificationIds },
+      { kind: "notifications_dismissed", notificationIds, at },
     );
     return notificationIds.length;
   }
 
   clearProjectNotifications(projectId: string): number {
     const notificationIds = this.listNotifications()
-      .filter((item) => item.projectId === projectId)
+      .filter((item) => item.projectId === projectId && (item.status ?? "open") === "open")
       .map((item) => item.id);
     if (notificationIds.length === 0) return 0;
+    const at = new Date().toISOString();
     this.append(
       { type: "notification_changed", action: "cleared" },
-      { kind: "notifications_cleared", notificationIds },
+      { kind: "notifications_dismissed", notificationIds, at },
     );
     return notificationIds.length;
   }

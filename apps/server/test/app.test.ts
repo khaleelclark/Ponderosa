@@ -1156,6 +1156,10 @@ describe("notification panel actions", () => {
       communicationEventId: userCommunication.eventId, body: expect.stringContaining("recipient runtime is unavailable"),
     })]);
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toHaveLength(1);
+    expect((await app.inject({ method: "DELETE", url: "/api/notifications" })).json()).toEqual({ cleared: 1 });
+    // Reconciliation runs on every list request. A user dismissal is durable
+    // and must not recreate the same urgent item immediately.
+    expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
     await app.close();
   });
 
@@ -1163,12 +1167,13 @@ describe("notification panel actions", () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Release chat" });
     const workspace = new WorkspaceStore(dataDir);
-    workspace.createNotification({ projectId: project.id, conversationId: conversation.id, communicationEventId: "message-one", kind: "mentions", title: "Agent", body: "Review this" });
+    const firstNotification = workspace.createNotification({ projectId: project.id, conversationId: conversation.id, communicationEventId: "message-one", kind: "mentions", title: "Agent", body: "Review this" });
     workspace.createNotification({ projectId: project.id, conversationId: conversation.id, communicationEventId: "message-two", kind: "direct_responses", title: "Agent", body: "Done" });
     const app = createServer({ dataDir, store, engines, logger: false });
 
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toHaveLength(2);
-    expect((await app.inject({ method: "POST", url: "/api/notifications/read" })).json()).toEqual({ read: 2 });
+    expect((await app.inject({ method: "POST", url: `/api/notifications/${firstNotification.id}/read` })).json()).toEqual({ read: true });
+    expect((await app.inject({ method: "POST", url: "/api/notifications/read" })).json()).toEqual({ read: 1 });
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{ readAt?: string }>>().every((item) => Boolean(item.readAt))).toBe(true);
     expect((await app.inject({ method: "DELETE", url: "/api/notifications" })).json()).toEqual({ cleared: 2 });
     expect((await app.inject({ method: "GET", url: "/api/notifications" })).json()).toEqual([]);
@@ -3688,6 +3693,23 @@ describe("persistent engine steering", () => {
       targetAgentId: firstAgent.id,
       activationId: expect.any(String),
     });
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/projects/${secondProject.id}/message-deliveries/${secondDelivery.activationId}/cancel`,
+      payload: { idempotencyKey: "cancel-second-terminal-delivery" },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    expect(cancelled.json()).toMatchObject({
+      cancelled: true,
+      state: "cancelled",
+      targetAgentId: secondAgent.id,
+    });
+    const secondDetail = (await app.inject({
+      method: "GET",
+      url: `/api/conversations/${secondConversation.id}`,
+    })).json<ConversationDetailDto>();
+    expect(secondDetail.messages.find((message) => message.communicationEventId === eventId)?.deliveryReceipts)
+      .toEqual([expect.objectContaining({ activationId: secondDelivery.activationId, state: "cancelled" })]);
     await app.close();
   });
 
@@ -3801,6 +3823,18 @@ describe("persistent engine steering", () => {
     expect(persistent.starts).toEqual([]);
     expect(store.getRuns(agent.id)).toEqual([]);
     expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
+
+    const projectInvocation = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/provider-commands`,
+      payload: { engineId: "codex", name: "status" },
+    });
+    expect(projectInvocation.statusCode, projectInvocation.body).toBe(200);
+    expect(projectInvocation.json()).toMatchObject({ invoked: true, name: "status", catalogVersion: "command-only-catalog" });
+    expect(persistent.opened).toBe(2);
+    expect(persistent.closed).toBe(2);
+    expect(persistent.invokedCommands).toEqual([{ name: "status" }, { name: "status" }]);
+    expect(persistent.starts).toEqual([]);
     await app.close();
   });
 
@@ -8330,7 +8364,7 @@ describe("server chunk F", () => {
     expect(published.success, published.text).toBe(true);
     const result = JSON.parse(published.text) as { eventId: string; resultRef: string };
     const event = store.getCommunicationEvent(project.id, result.eventId)!;
-    expect(event.text).toBe(result.resultRef.replace("ponderosa://artifact/", "Full response: ponderosa://artifact/"));
+    expect(event.text).toBe("");
     expect(event.document?.title).toBe("Report [steering reference]");
     const artifactRows = new CoordinationV3Store(store.sqlite).runtimeArtifacts("communication", result.eventId);
     expect(artifactRows).toHaveLength(1);
@@ -8381,7 +8415,7 @@ describe("server chunk F", () => {
     expect(JSON.parse(retry.text)).toMatchObject({ eventId: runtimeRow.id, replayed: true, resultRef: expect.stringMatching(/^ponderosa:\/\/artifact\//) });
     expect(store.getCommunicationEvent(project.id, runtimeRow.id)).toMatchObject({
       eventId: runtimeRow.id,
-      text: expect.stringMatching(/^Full response: ponderosa:\/\/artifact\//),
+      text: "",
     });
     persistent.completeTurn(0);
     await app.close();

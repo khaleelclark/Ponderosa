@@ -22,6 +22,8 @@ import type {
   BrowserSessionDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
+  CancelMessageDeliveryRequest,
+  CancelMessageDeliveryResponse,
   CancelQueuedMessageRequest,
   CancelQueuedMessageResponse,
   CollaborationViewDto,
@@ -309,6 +311,7 @@ export const realApi = {
     });
   },
   listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
+  async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
   async clearConversationNotifications(conversationId: string): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
@@ -373,6 +376,12 @@ export const realApi = {
   },
   retryMessageDelivery(projectId: string, activationId: string, request: RetryMessageDeliveryRequest): Promise<RetryMessageDeliveryResponse> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/message-deliveries/${encodeURIComponent(activationId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  cancelMessageDelivery(projectId: string, activationId: string, request: CancelMessageDeliveryRequest): Promise<CancelMessageDeliveryResponse> {
+    return requestJson<CancelMessageDeliveryResponse>(`/api/projects/${encodeURIComponent(projectId)}/message-deliveries/${encodeURIComponent(activationId)}/cancel`, {
       method: "POST",
       body: JSON.stringify(request),
     });
@@ -569,6 +578,12 @@ export const realApi = {
   },
   invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string }> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
+  invokeProjectProviderCommand(projectId: string, request: { engineId: string; model?: string; effort?: string; name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string }> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),
     });

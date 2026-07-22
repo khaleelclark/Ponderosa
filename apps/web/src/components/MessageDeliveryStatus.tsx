@@ -77,6 +77,7 @@ export function MessageDeliveryStatus({
   const [now, setNow] = useState(Date.now());
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
   const [pendingRetryId, setPendingRetryId] = useState<string>();
+  const [pendingCancelId, setPendingCancelId] = useState<string>();
   const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
   const hasCountdown = receipts?.some((receipt) => receipt.state === "unconfirmed" && receipt.recoveryAt) ?? false;
@@ -122,6 +123,26 @@ export function MessageDeliveryStatus({
       setError(cause instanceof Error ? cause.message : "Could not retry message delivery.");
     } finally {
       setPendingRetryId(undefined);
+    }
+  };
+  const cancelDelivery = async (receipt: MessageDeliveryReceiptDto) => {
+    if (!projectId) return;
+    setError(undefined);
+    setPendingCancelId(receipt.activationId);
+    try {
+      await api.cancelMessageDelivery(projectId, receipt.activationId, {
+        idempotencyKey: `operator-delivery-cancel:${receipt.activationId}`,
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["agent", receipt.targetAgentId] }),
+        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
+        queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] }),
+        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+      ]);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Could not cancel message delivery.");
+    } finally {
+      setPendingCancelId(undefined);
     }
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
@@ -178,6 +199,14 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Delivery Again…" : "Try Delivery Again"}</Button> : null}
+        {receipt.canRetry && projectId ? <Button
+          color="inherit"
+          variant="text"
+          size="small"
+          disabled={pendingCancelId === receipt.activationId}
+          onClick={() => void cancelDelivery(receipt)}
+          sx={{ minHeight: 28, py: 0.25 }}
+        >{pendingCancelId === receipt.activationId ? "Cancelling…" : "Cancel Delivery"}</Button> : null}
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}

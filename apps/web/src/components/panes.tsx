@@ -682,6 +682,7 @@ export function ChatMarkdown({
   previewScope,
   projectId,
   operatorHandle,
+  compact = false,
 }: {
   children: string;
   agentIdForHandle?(handle: string): string | undefined;
@@ -691,6 +692,7 @@ export function ChatMarkdown({
   previewScope?: LinkPreviewScope;
   projectId?: string;
   operatorHandle?: string;
+  compact?: boolean;
 }): JSX.Element {
   return (
     <Box
@@ -707,14 +709,14 @@ export function ChatMarkdown({
         "& > :last-child": { mb: 0 },
         fontSize: { xs: "0.875rem", sm: "0.9375rem" },
         lineHeight: { xs: 1.44, sm: 1.48 },
-        "& p": { my: 0.35, maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
+        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
         "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
         "& h3, & h4": { fontSize: { xs: "1rem", sm: "1.05rem" } },
-        "& ul, & ol": { my: 0.45, pl: 2.75 },
+        "& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75 },
         "& li": { maxWidth: "100%", whiteSpace: "pre-wrap", overflowWrap: "anywhere", wordBreak: "break-word" },
-        "& li + li": { mt: 0.15 },
+        "& li + li": { mt: compact ? 0.05 : 0.15 },
         "& blockquote": { my: 0.65, mx: 0, pl: 1.5, whiteSpace: "pre-wrap", borderLeft: 3, borderColor: "divider" },
         "& code": { fontFamily: "monospace", fontSize: "0.875em" },
         "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
@@ -749,9 +751,13 @@ export function ChatMarkdown({
             const visibleLabel = operatorMention && operatorHandle ? `#${operatorHandle}` : boundMention ? `#${boundMention.label}` : label;
             const mentionSx = { display: "inline", px: 0.45, py: 0.1, borderRadius: 0.75, bgcolor: "action.selected", color: "primary.light", fontWeight: 700, textDecoration: "none", boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)" } as const;
             if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
-            if (!agentId || !onOpenAgent) {
-              return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
+            if (!agentId) {
+              if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) {
+                return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{label}</Box>;
+              }
+              return <>{label}</>;
             }
+            if (!onOpenAgent) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
             return <Box className="chat-text-navigation" component="button" type="button" aria-label={`Open agent ${boundMention?.label ?? handle}`} onClick={() => onOpenAgent(agentId)} sx={{ ...mentionSx, border: 0, font: "inherit", cursor: "pointer" }}>{visibleLabel}</Box>;
           },
         }}
@@ -762,7 +768,7 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle }: {
+export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compact }: {
   text: string;
   agentIdForHandle?(handle: string): string | undefined;
   agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
@@ -771,34 +777,39 @@ export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle,
   previewScope?: LinkPreviewScope;
   projectId?: string;
   operatorHandle?: string;
+  compact?: boolean;
 }): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle}>{text}</ChatMarkdown>;
+  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compact}>{text}</ChatMarkdown>;
 }
 
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useState(false);
   const query = useQuery({
     queryKey: ["communication-document", document.id],
     queryFn: () => api.getCommunicationDocument(document.previewUrl),
-    enabled: expanded,
+    enabled: open,
   });
-  return <Paper variant="outlined" sx={{ mt: 1, p: 1 }}>
+  return <><Paper variant="outlined" sx={{ mt: 1, p: 1 }}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
       <ArticleIcon fontSize="small" />
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography variant="subtitle2" noWrap>{document.title}</Typography>
         <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
       </Box>
-      <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>{expanded ? "Hide" : "Preview"}</Button>
+      <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setOpen(true)}>Preview</Button>
       <Button className="chat-text-navigation" size="small" component="a" href={document.downloadUrl} download>Download</Button>
     </Stack>
-    {expanded ? <Box sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}>
-      {query.isLoading ? <CircularProgress size={20} /> : query.data ? <ChatMarkdown>{query.data.content}</ChatMarkdown> : <Alert severity="error">Document preview is unavailable.</Alert>}
-    </Box> : null}
-  </Paper>;
+  </Paper>
+  <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="xl" aria-labelledby={`document-preview-${document.id}`} PaperProps={{ sx: { width: "min(1440px, calc(100vw - 24px))", height: "min(92vh, 1100px)", m: 1.5 } }}>
+    <DialogTitle id={`document-preview-${document.id}`} sx={{ display: "flex", alignItems: "center", gap: 1 }}><ArticleIcon /><Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="h6" noWrap>{document.title}</Typography><Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography></Box><IconButton aria-label="Close document preview" onClick={() => setOpen(false)}><CloseIcon /></IconButton></DialogTitle>
+    <DialogContent dividers className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 5 }, py: 3 }}>
+      {query.isLoading ? <Stack sx={{ height: "100%", alignItems: "center", justifyContent: "center" }}><CircularProgress size={28} /></Stack> : query.data ? <Box sx={{ width: "min(100%, 1080px)", mx: "auto" }}><ChatMarkdown>{query.data.content}</ChatMarkdown></Box> : <Alert severity="error">Document preview is unavailable.</Alert>}
+    </DialogContent>
+    <DialogActions><Button component="a" href={document.downloadUrl} download>Download</Button><Button variant="contained" onClick={() => setOpen(false)}>Close</Button></DialogActions>
+  </Dialog></>;
 }
 
-export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle }: {
+export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false }: {
   text: string;
   citations?: VerifiedCitationDto[];
   collapseLongMessage?: boolean;
@@ -809,6 +820,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
   previewScope?: LinkPreviewScope;
   projectId?: string;
   operatorHandle?: string;
+  compactMarkdown?: boolean;
 }): JSX.Element {
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
@@ -826,7 +838,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} />
+        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} />
       </Box>
       {collapsible ? (
         <Button

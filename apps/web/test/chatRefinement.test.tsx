@@ -37,7 +37,8 @@ describe("chat interaction refinement", () => {
 
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(source).toContain("capabilities={directReplyAgent ? directReplyEngineCapabilities?.composerCapabilities ?? [] : composerRuntime.capabilities}");
-    expect(source).toContain("onCommand={directReplyAgent ?");
+    expect(source).toContain("onCommand={activeEngine ?");
+    expect(source).toContain("api.invokeProjectProviderCommand(conversation.projectId");
     expect(source).not.toContain('capabilities={activeView === "main"');
   });
 
@@ -127,8 +128,8 @@ describe("chat interaction refinement", () => {
     const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 
     expect(panes).toContain('whiteSpace: "normal"');
-    expect(panes).toMatch(/"& p": \{ my: 0\.35,[^}]*whiteSpace: "pre-wrap"/);
-    expect(panes).toContain('"& ul, & ol": { my: 0.45, pl: 2.75 }');
-    expect(panes).toContain('"& li + li": { mt: 0.15 }');
+    expect(panes).toMatch(/"& p": \{ my: compact \? 0\.15 : 0\.35,[^}]*whiteSpace: "pre-wrap"/);
+    expect(panes).toContain('"& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75 }');
+    expect(panes).toContain('"& li + li": { mt: compact ? 0.05 : 0.15 }');
   });
 });
