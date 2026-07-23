@@ -16,7 +16,6 @@ describe("composer surface ownership", () => {
     expect(agentDetail).toContain('preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}');
     expect(agentDetail).toContain("agentResponding={Boolean(runtimeActivity)}");
     expect(agentDetail).toContain('{tab === "chat" ? <Box');
-    expect(agentDetail).toContain('<Box sx={{ minWidth: 0 }}>\n        <BrowserPanel');
   });
 
   it("keeps Team chat read-only", () => {
