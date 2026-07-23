@@ -14,7 +14,6 @@ import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight, vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism";
 import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
-import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../../faviconCache";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
@@ -58,23 +57,9 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   const projectFilePreview = projectFileViewerHref(projectId ?? previewScope?.projectId, href);
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
-  const [faviconFailed, setFaviconFailed] = useState(false);
-  const [faviconSrc, setFaviconSrc] = useState<string>();
   const [opening, setOpening] = useState(false);
   const [error, setError] = useState<string>();
-  const favicon = link ? faviconIdentity(link.url.href) : undefined;
-  useEffect(() => {
-    let current = true;
-    setFaviconSrc(undefined);
-    setFaviconFailed(false);
-    if (!favicon) return () => { current = false; };
-    const resource = acquireFavicon(favicon);
-    void resource.src.then(
-      (src) => { if (current) setFaviconSrc(src); },
-      () => { if (current) setFaviconFailed(true); },
-    );
-    return () => { current = false; resource.release(); };
-  }, [favicon]);
+
   if (projectFilePreview) return <a className="chat-text-navigation" href={projectFilePreview} target="_blank" rel="noreferrer">{children}</a>;
   if (!link) return <a className="chat-text-navigation" href={href}>{children}</a>;
   const activate = (event: React.MouseEvent) => {
@@ -97,10 +82,7 @@ function ChatLink({ href, children, previewScope, projectId }: { href: string; c
   };
   return <>
     <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
-      {!faviconFailed && faviconSrc
-        ? <Box component="img" src={faviconSrc} alt="" onError={() => { if (favicon) markFaviconFailed(favicon, faviconSrc); setFaviconFailed(true); }} sx={{ width: 14, height: 14, flex: "0 0 auto" }} />
-        : <LanguageIcon aria-hidden fontSize="inherit" />}
-      <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}><strong>{link.hostname}</strong> · {link.destination}</Box>
+      <Box component="span" sx={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{link.destination}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
     <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
