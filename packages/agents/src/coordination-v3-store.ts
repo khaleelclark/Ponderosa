@@ -2767,10 +2767,14 @@ export class CoordinationV3Store {
     projectId: string;
     conversationId?: string;
     agentId?: string;
+    focusId?: string;
     limit?: number;
   }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
     const limit = Math.max(1, Math.min(input.limit ?? 300, 1_000));
     const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : undefined;
+    const focusRecordId = input.focusId?.includes(":")
+      ? input.focusId.slice(input.focusId.indexOf(":") + 1)
+      : input.focusId;
     type GraphKind = "request" | "join" | "activation" | "run" | "trigger";
     const graphLimit = Math.min(Math.max(limit * 4, limit), 4_000);
     const selectedIds = new Map<GraphKind, string[]>();
@@ -2820,10 +2824,48 @@ export class CoordinationV3Store {
           UNION ALL SELECT 'run', id, active_rank, updated_at, 3 FROM (SELECT * FROM seed_runs LIMIT @seedLimit)
           UNION ALL SELECT 'trigger', id, active_rank, updated_at, 4 FROM (SELECT * FROM seed_triggers LIMIT @seedLimit)
         ),
-        seeds(kind, id) AS (
+        recent_seeds(kind, id) AS (
           SELECT kind, id FROM seed_candidates
           ORDER BY active_rank, updated_at DESC, kind_rank, id DESC
           LIMIT @graphLimit
+        ),
+        focus_seeds(kind, id) AS (
+          SELECT 'request', id FROM coordination_requests
+          WHERE @focusRecordId IS NOT NULL AND project_id = @projectId
+            AND (@conversationId IS NULL OR conversation_id = @conversationId)
+            AND (requester_agent_id = @agentId OR recipient_agent_id = @agentId)
+            AND (id = @focusRecordId OR communication_event_id = @focusRecordId)
+          UNION
+          SELECT 'join', id FROM coordination_joins
+          WHERE @focusRecordId IS NOT NULL AND project_id = @projectId
+            AND (@conversationId IS NULL OR conversation_id = @conversationId)
+            AND owner_agent_id = @agentId
+            AND id = @focusRecordId
+          UNION
+          SELECT 'activation', id FROM agent_activations
+          WHERE @focusRecordId IS NOT NULL AND project_id = @projectId
+            AND (@scopeKey IS NULL OR scope_key = @scopeKey)
+            AND agent_id = @agentId
+            AND id = @focusRecordId
+          UNION
+          SELECT 'run', scheduler.id
+          FROM scheduler_runs scheduler
+          LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
+          WHERE @focusRecordId IS NOT NULL AND scheduler.project_id = @projectId
+            AND (@scopeKey IS NULL OR scheduler.scope_key = @scopeKey)
+            AND scheduler.agent_id = @agentId
+            AND (scheduler.id = @focusRecordId OR provider.execution_id = @focusRecordId)
+          UNION
+          SELECT 'trigger', id FROM trigger_occurrences
+          WHERE @focusRecordId IS NOT NULL AND project_id = @projectId
+            AND (@scopeKey IS NULL OR scope_key = @scopeKey)
+            AND agent_id = @agentId
+            AND (id = @focusRecordId OR trigger_id = @focusRecordId)
+        ),
+        seeds(kind, id) AS (
+          SELECT kind, id FROM recent_seeds
+          UNION
+          SELECT kind, id FROM focus_seeds
         ),
         base_edges(from_kind, from_id, to_kind, to_id) AS (
           SELECT 'join', member.join_id, 'request', member.request_id
@@ -2903,12 +2945,18 @@ export class CoordinationV3Store {
             (SELECT COUNT(*) FROM seed_runs) > @seedLimit OR
             (SELECT COUNT(*) FROM seed_triggers) > @seedLimit
           THEN 1 ELSE 0 END AS seed_overflow
-        FROM reachable LIMIT @graphFetchLimit
+        FROM reachable
+        ORDER BY CASE WHEN EXISTS (
+          SELECT 1 FROM focus_seeds focused
+          WHERE focused.kind = reachable.kind AND focused.id = reachable.id
+        ) THEN 0 ELSE 1 END
+        LIMIT @graphFetchLimit
       `).all({
         projectId: input.projectId,
         conversationId: input.conversationId ?? null,
         scopeKey: scopeKey ?? null,
         agentId: input.agentId,
+        focusRecordId: focusRecordId ?? null,
         seedLimit: limit,
         seedFetchLimit: limit + 1,
         graphFetchLimit: graphLimit + 1,

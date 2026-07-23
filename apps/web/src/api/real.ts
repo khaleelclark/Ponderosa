@@ -214,10 +214,11 @@ export const realApi = {
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
-  getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
+  getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; focusId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
       conversationId: filter.conversationId,
       agentId: filter.agentId,
+      focusId: filter.focusId,
       limit: filter.limit === undefined ? undefined : String(filter.limit),
     })}`);
   },

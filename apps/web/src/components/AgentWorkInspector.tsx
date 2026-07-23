@@ -132,8 +132,8 @@ export function AgentWorkInspector({
   onClose(): void;
 }): JSX.Element {
   const query = useQuery({
-    queryKey: ["agent-work", projectId, conversationId ?? "", agentId ?? ""],
-    queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, limit: 200 }),
+    queryKey: ["agent-work", projectId, conversationId ?? "", agentId ?? "", focus?.id ?? ""],
+    queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, focusId: focus?.id, limit: 200 }),
     enabled: open,
   });
   const [expandedTraceId, setExpandedTraceId] = useState<string>();

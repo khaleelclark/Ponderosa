@@ -71,6 +71,7 @@ export interface AgentLifecycleEvent {
   /** Structural activation cause, recorded only on the running transition. */
   wakeCause?: AgentRunWakeCause;
   /** Requested runtime identity captured when the run starts. */
+  engine?: string;
   model?: string;
   effort?: string;
 }

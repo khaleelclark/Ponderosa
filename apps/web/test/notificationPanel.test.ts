@@ -80,6 +80,17 @@ describe("notification panel grouping", () => {
     expect(notificationWorkRoute({ ...coordination, action: undefined, communicationEventId: "event-a" })).toEqual({
       kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "request:request-a",
     });
+
+    const triggerIssue = {
+      ...notification("trigger-budget", "project-a", "chat-a", "2026-07-16T04:00:00.000Z"),
+      kind: "operational" as const,
+      category: "budget" as const,
+      dedupeKey: "trigger:timer:refresh:budget-held",
+      action: { kind: "open_agent" as const, targetId: "agent-a" },
+    };
+    expect(notificationWorkRoute(triggerIssue)).toEqual({
+      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "technical", technicalFocusId: "trigger:timer:refresh",
+    });
   });
 
   it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {

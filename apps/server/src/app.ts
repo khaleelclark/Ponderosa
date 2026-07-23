@@ -1134,6 +1134,19 @@ export const PROVIDER_TOOL_CONTRACT_HASH = createHash("sha256").update(JSON.stri
   promptContract: communicationV3Prompt(),
 })).digest("hex");
 
+export function providerSessionContractHash(
+  engine: string,
+  model?: string,
+  effort?: string,
+): string {
+  return createHash("sha256").update(JSON.stringify({
+    toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+    engine,
+    model: model?.trim() || null,
+    effort: effort?.trim() || null,
+  })).digest("hex");
+}
+
 function runtimeSelectionError(adapter: Adapter, model?: string, effort?: string): string | undefined {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
@@ -4237,6 +4250,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectId: string;
     conversationId?: string;
     agentId?: string;
+    focusId?: string;
     limit?: number;
   }): AgentWorkInspectorDto {
     const projectAgents = store.listAgents(input.projectId);
@@ -4285,6 +4299,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       : []));
     const decisionCandidates = new Map<string, NonNullable<ReturnType<WorkspaceStore["getDecision"]>>>();
     for (const decision of recentDecisionPage.decisions) decisionCandidates.set(decision.id, decision);
+    const focusRecordId = input.focusId?.includes(":")
+      ? input.focusId.slice(input.focusId.indexOf(":") + 1)
+      : input.focusId;
+    if (focusRecordId) {
+      const focusedDecision = workspace.getDecision(focusRecordId);
+      if (focusedDecision?.projectId === input.projectId
+        && (!input.conversationId || focusedDecision.conversationId === input.conversationId)
+        && (!input.agentId || focusedDecision.agentId === input.agentId)) {
+        decisionCandidates.set(focusedDecision.id, focusedDecision);
+      }
+    }
     for (const decision of workspace.decisionsForRuns(relatedRunIds)) {
       if (decision.projectId === input.projectId && (!input.conversationId || decision.conversationId === input.conversationId)) {
         decisionCandidates.set(decision.id, decision);
@@ -4419,12 +4444,33 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const itemBudget = input.limit ?? 300;
     const selectedTraces: typeof traces = [];
     const selectedItemIds = new Set<string>();
+    const itemMatchesFocus = (item: AgentWorkItemDto): boolean => Boolean(
+      input.focusId && (
+        item.id === input.focusId
+        || item.recordId === input.focusId
+        || item.referenceIds.includes(input.focusId)
+        || item.recordId === focusRecordId
+        || Boolean(focusRecordId && item.referenceIds.includes(focusRecordId))
+      )
+    );
+    const focusedTrace = input.focusId
+      ? traces.find((trace) => trace.itemIds.some((id) => {
+          const item = byId.get(id);
+          return item ? itemMatchesFocus(item) : false;
+        }))
+      : undefined;
+    if (focusedTrace) {
+      selectedTraces.push(focusedTrace);
+      focusedTrace.itemIds.forEach((id) => selectedItemIds.add(id));
+    }
     for (const trace of traces) {
+      if (trace.id === focusedTrace?.id) continue;
       const additions = trace.itemIds.filter((id) => !selectedItemIds.has(id));
       if (selectedTraces.length > 0 && selectedItemIds.size + additions.length > itemBudget && trace.state === "finished") continue;
       selectedTraces.push(trace);
       additions.forEach((id) => selectedItemIds.add(id));
     }
+    selectedTraces.sort((a, b) => traceRank[a.state] - traceRank[b.state] || b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
     const selectedItems = items.filter((item) => selectedItemIds.has(item.id));
     const responseTruncated = selectedTraces.length < traces.length;
     return {
@@ -8492,7 +8538,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.get<{
     Params: { id: string };
-    Querystring: { conversationId?: string; agentId?: string; limit?: string };
+    Querystring: { conversationId?: string; agentId?: string; focusId?: string; limit?: string };
   }>("/api/projects/:id/agent-work", async (request, reply) => {
     const project = store.getProject(request.params.id);
     if (!project) return reply.code(404).send({ error: "project not found" });
@@ -8508,10 +8554,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (parsedLimit !== undefined && (!Number.isSafeInteger(parsedLimit) || parsedLimit < 1 || parsedLimit > 1_000)) {
       return reply.code(400).send({ error: "limit must be an integer between 1 and 1000" });
     }
+    const focusId = request.query.focusId?.trim();
+    if (request.query.focusId !== undefined && (!focusId || focusId.length > 500)) {
+      return reply.code(400).send({ error: "focusId must be between 1 and 500 characters" });
+    }
     const result = agentWorkInspector({
       projectId: project.id,
       ...(request.query.conversationId ? { conversationId: request.query.conversationId } : {}),
       ...(request.query.agentId ? { agentId: request.query.agentId } : {}),
+      ...(focusId ? { focusId } : {}),
       ...(parsedLimit ? { limit: parsedLimit } : {}),
     });
     return sendInspectorJson(reply, request.headers["accept-encoding"], result);
@@ -10836,10 +10887,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};
       if (runtimeSettingsChanged) {
         const activeEngine = body.activeEngine?.trim() || current.activeEngine;
+        const engineChanged = activeEngine !== current.activeEngine;
         const configured = engines.get(activeEngine);
         if (!configured) return reply.code(400).send({ error: "unknown engine" });
-        const model = body.model === undefined ? current.model : body.model?.trim() || undefined;
-        const effort = body.effort === undefined ? current.effort : body.effort?.trim() || undefined;
+        const model = body.model === undefined ? (engineChanged ? undefined : current.model) : body.model?.trim() || undefined;
+        const effort = body.effort === undefined ? (engineChanged ? undefined : current.effort) : body.effort?.trim() || undefined;
         const selectionError = runtimeSelectionError(configured.adapter, model, effort);
         if (selectionError) return reply.code(400).send({ error: selectionError });
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
@@ -11186,6 +11238,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         : hasModelOverride
           ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]]).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
+      const runtimeSessionContractHash = providerSessionContractHash(
+        runtimeEngineId,
+        effectiveModel,
+        effectiveEffort,
+      );
       const providerSlash = !internalV3Dispatch ? /^\/([\p{L}\p{N}_:-]+)(?:\s|$)/u.exec(text) : undefined;
       if (providerSlash) {
         const runtimeSession = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
@@ -11534,10 +11591,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
         if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
-      } else if (resumeSessionState && resumeSessionState.toolContractHash !== PROVIDER_TOOL_CONTRACT_HASH) {
-        // A provider session is a cache of both context and its immutable tool
-        // surface. Missing hashes are intentionally incompatible: canonical
-        // Agent state survives while the opaque provider cache is reseeded.
+      } else if (resumeSessionState && resumeSessionState.toolContractHash !== runtimeSessionContractHash) {
+        // A provider session is a cache of both context and its immutable
+        // provider, model, reasoning, and tool contract. Missing hashes are
+        // intentionally incompatible: canonical Agent state survives while
+        // the opaque provider cache is reseeded.
         const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
         store.clearResumeSession(agent.id, "tool_contract_changed");
@@ -12109,6 +12167,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const trackedV3FencingToken = internalV3Dispatch ? v3FencingToken : undefined;
       const runningLifecycle = store.appendEvent(agent.id, {
         type: "agent_lifecycle", status: "running", reason: "active_run", executionId: runId,
+        engine: runtimeEngineId,
         wakeCause: activationWakeCause ?? (sharedTaskTurn
           ? "project_request"
           : directUserTaskTurn
@@ -12450,14 +12509,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             const current = store.resumeSessionState(agent.id);
             if (
               current?.sessionId === acceptedSessionId
-              && current.toolContractHash === PROVIDER_TOOL_CONTRACT_HASH
+              && current.toolContractHash === runtimeSessionContractHash
               && current.artifactIds.length === artifactIds.length
               && current.artifactIds.every((id, index) => id === artifactIds[index])
             ) return;
             const sessionSnapshot = store.appendEvent(agent.id, {
               type: "session_snapshot",
               sessionId: acceptedSessionId,
-              toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+              toolContractHash: runtimeSessionContractHash,
               artifactIds,
             });
             publish(agent.id, sessionSnapshot);
@@ -13636,7 +13695,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         workspace.getPreferences().engineDefaults?.[agent.activeEngine],
       ]);
       const persisted = store.resumeSessionState(agent.id);
-      const resumeSessionId = persisted?.toolContractHash === PROVIDER_TOOL_CONTRACT_HASH ? persisted.sessionId : undefined;
+      const runtimeSessionContractHash = providerSessionContractHash(
+        agent.activeEngine,
+        selection.model,
+        selection.effort,
+      );
+      const resumeSessionId = persisted?.toolContractHash === runtimeSessionContractHash ? persisted.sessionId : undefined;
       const authority: CapabilityDiscoveryAuthority = {
         projectId: project.id,
         engineId: engine.adapter.id,

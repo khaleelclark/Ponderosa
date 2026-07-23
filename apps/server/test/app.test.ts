@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ASSET_LIMITS, type Adapter, type AgentEvent, type AgentPortablePackageDto, type ArtifactDto, type CommunicationEvent, type ContinueOptions, type ConversationDetailDto, type EffortOption, type EngineCapabilities, type EngineCapabilityDiscoveryOptions, type ModelOption, type OpenRuntimeSessionOptions, type ProjectEngineCapabilitiesDto, type RuntimeProcessHandle, type RuntimeSession, type RuntimeTurnInput, type SeedOptions, type UploadedOperatorAvatarDto } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, EventLog, WorkspaceStore, managedArtifactContentPath, artifactContentPath, publishManagedArtifactContent } from "@ponderosa/agents";
 import { ClaudeStreamSession, renderSeedPrompt, streamProcess } from "@ponderosa/engines";
-import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, PROVIDER_TOOL_CONTRACT_HASH, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
+import { boundedContinuationHistory, boundedSeedHistory, collectReachableArtifactIds, conciseConversationTitle, createServer, isProjectFileReferenceAllowed, normalizeExternalCitations, notificationKindForCommunication, notificationPreferenceMatches, parseGitStatus, providerSessionContractHash, rewritePortableArtifactReferences, runtimeIdentityPrompt, semanticConversationTitle, workspaceAgentEventCategory, type EngineRegistration } from "../src/app.js";
 import type { BrowserDriver } from "../src/browser-session-manager.js";
 import { AssetStore, type RegisteredGeneratedArtifact } from "../src/assets.js";
 import { ContextCursorStore } from "../src/context-cursors.js";
@@ -1585,6 +1585,23 @@ describe("Agent work inspector", () => {
     })).json<{ items: Array<{ id: string; title: string }> }>();
     expect(withSelfRequest.items.find((item) => item.id === "request:inspector-request")?.title)
       .toBe("Coordinator asked Coordinator to work");
+    coordination.coordinate({
+      projectId: project.id, conversationId: conversation.id, requesterAgentId: agent.id,
+      actorScope: `agent:${agent.id}`, idempotencyKey: "newer-inspector-request",
+      requests: [{ requestId: "newer-inspector-request", recipientAgentId: agent.id, lifetime: { kind: "indefinite" }, payload: { assignment: "Inspect newer work" } }],
+      join: { id: "newer-inspector-join", mode: "all" },
+    });
+    const boundedWithoutFocus = (await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}&limit=1`,
+    })).json<{ items: Array<{ id: string }> }>();
+    expect(boundedWithoutFocus.items.some((item) => item.id === "request:inspector-request")).toBe(false);
+    const boundedWithFocus = (await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}&limit=1&focusId=${encodeURIComponent("request:inspector-request")}`,
+    })).json<{ items: Array<{ id: string }>; truncated?: boolean }>();
+    expect(boundedWithFocus.truncated).toBe(true);
+    expect(boundedWithFocus.items.some((item) => item.id === "request:inspector-request")).toBe(true);
     expect((await app.inject({ method: "POST", url: `/api/decisions/${decision.id}/respond`, payload: { optionId: "yes" } })).statusCode).toBe(200);
     const afterResponse = (await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}` })).json<{
       items: Array<{ id: string; kind: string; referenceIds: string[]; relatedItemIds: string[] }>;
@@ -1595,6 +1612,7 @@ describe("Agent work inspector", () => {
     expect(afterResponse.traces.some((trace) => trace.itemIds.includes(`decision:${decision.id}`) && trace.itemIds.includes(responseActivation.id))).toBe(true);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=foreign` })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?limit=0` })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?focusId=` })).statusCode).toBe(400);
     await app.close();
   });
 });
@@ -1954,7 +1972,7 @@ describe("generated artifact endpoints", () => {
     persistent.completeTurn(0);
     await vi.waitFor(() => expect(store.resumeSessionState(agent.id)).toMatchObject({
       sessionId: "persistent-session",
-      toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+      toolContractHash: providerSessionContractHash("codex", "mock-model", "high"),
       artifactIds: expect.arrayContaining([artifactId]),
     }));
 
@@ -6132,7 +6150,7 @@ describe("server chunk F", () => {
     });
     expect(resetDefaults.statusCode, resetDefaults.body).toBe(202);
     await waitForRun(agent.id, 2);
-    expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: undefined, effort: undefined });
 
     models.mockReturnValue([{ id: "", label: "Codex default" }]);
     const unknownCache = await app.inject({
@@ -6142,13 +6160,13 @@ describe("server chunk F", () => {
     });
     expect(unknownCache.statusCode, unknownCache.body).toBe(202);
     await waitForRun(agent.id, 3);
-    expect(adapter.continues.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
     models.mockRestore();
     efforts.mockRestore();
     await app.close();
   });
 
-  it("persists Agent runtime settings and applies them when each next Run starts", async () => {
+  it("persists Agent runtime settings and starts a compatible provider session for each next Run", async () => {
     const models = vi.spyOn(adapter, "listModels").mockReturnValue([
       { id: "mock-model", label: "Mock Model", efforts: [{ id: "high", label: "High" }] },
       { id: "alternate", label: "Alternate", efforts: [{ id: "low", label: "Low" }] },
@@ -6197,11 +6215,53 @@ describe("server chunk F", () => {
       payload: { text: "Use the restored saved runtime." },
     })).statusCode).toBe(202);
     await waitForRun(agent.id, 2);
-    expect(adapter.continues.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(adapter.continues).toHaveLength(0);
     expect(store.getRuns(agent.id).at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
 
     models.mockRestore();
     efforts.mockRestore();
+    await app.close();
+  });
+
+  it("retires a saved provider session when the persisted provider changes", async () => {
+    const claude = new MockAdapter();
+    claude.id = "claude";
+    claude.displayName = "Mock Claude";
+    engines.push({ adapter: claude, authStatus: async () => ({ authenticated: true, detail: "test" }) });
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Provider transition", hostPath: repoDir });
+    const agent = store.createAgent(project.id, {
+      title: "Specialist", engine: "codex", model: "mock-model", effort: "high",
+    });
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Start with Codex." },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    expect(store.resumeSessionState(agent.id)?.toolContractHash)
+      .toBe(providerSessionContractHash("codex", "mock-model", "high"));
+
+    expect((await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${agent.id}`,
+      payload: { activeEngine: "claude" },
+    })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Continue with Claude." },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id, 2);
+
+    expect(adapter.continues).toHaveLength(0);
+    expect(claude.continues).toHaveLength(0);
+    expect(claude.seeds).toHaveLength(1);
+    expect(store.getRuns(agent.id).at(-1)).toMatchObject({ engine: "claude", model: "mock-model", effort: "high" });
+    expect(store.resumeSessionState(agent.id)?.toolContractHash)
+      .toBe(providerSessionContractHash("claude", "mock-model", "high"));
     await app.close();
   });
 
@@ -7822,7 +7882,7 @@ describe("server chunk F", () => {
     store.appendEvent(agent.id, { type: "session", sessionId: "sess-2" });
     store.appendEvent(agent.id, {
       type: "session_snapshot", sessionId: "sess-2",
-      toolContractHash: PROVIDER_TOOL_CONTRACT_HASH, artifactIds: [],
+      toolContractHash: providerSessionContractHash("codex", "mock-model", "high"), artifactIds: [],
     });
     await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "new epoch", sourceChannel: "main" } });
     await waitForRun(agent.id, 4);
@@ -7934,7 +7994,7 @@ describe("server chunk F", () => {
       });
       expect(store.resumeSessionState(agent.id)).toEqual({
         sessionId: "sess-1",
-        toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
+        toolContractHash: providerSessionContractHash("codex", "mock-model", "high"),
         artifactIds: [],
       });
       const run = store.getRuns(agent.id)[0]!;
