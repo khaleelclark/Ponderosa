@@ -18,7 +18,6 @@ import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, typ
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
-import { BrowserPanel } from "./BrowserPanel";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
@@ -296,11 +295,9 @@ export function ProjectShell({
         }}
       />
     );
-  } else if (route.kind === "browser") {
-    main = route.agentId && route.runId
-      ? <BrowserPanel projectId={projectId} agentId={route.agentId} runId={route.runId} standalone />
-      : <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
-  } else if (route.kind === "agents") {
+} else if (route.kind === "browser") {
+  main = <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
+} else if (route.kind === "agents") {
     main = (
       <AgentsTab
         agents={agents}

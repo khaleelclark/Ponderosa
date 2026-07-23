@@ -66,7 +66,6 @@ import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
-import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { AttentionSurface } from "./AttentionSurface";
 import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
@@ -1132,10 +1131,6 @@ export function AgentDetail({
           </Collapse>
         </Stack>
         {running ? <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}><LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /></Collapse> : null}
-      </Box>
-
-      <Box sx={{ minWidth: 0 }}>
-        <BrowserPanel projectId={detail.agent.projectId} agentId={agentId} runId={runtimeActivity?.executionId} onOpenInTab={() => runtimeActivity?.executionId && onOpenBrowser(runtimeActivity.executionId)} />
       </Box>
 
       <Tabs
