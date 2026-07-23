@@ -61,6 +61,7 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
+import { AttachmentPreview } from "./filePreview/AttachmentPreview";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -228,15 +229,7 @@ export function ConversationMessage({
             : undefined}
         /> : null}
         {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-          {message.attachments.map((attachment) => <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
-            {attachment.mediaType.startsWith("image/")
-              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 320, maxHeight: 240, objectFit: "contain", borderRadius: 1 }} />
-              : <Stack spacing={.25} sx={{ p: .75, border: 1, borderColor: "divider", borderRadius: 1 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography><Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography></Stack>}
-            <Stack direction="row" spacing={.5} sx={{ mt: .25 }}>
-              {attachment.previewUrl ? <Button size="small" component="a" href={attachment.previewUrl} target="_blank" rel="noreferrer" sx={{ minWidth: 0, px: .5 }}>Open</Button> : null}
-              <Button size="small" component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" download aria-label={`Download ${attachment.name}`} sx={{ minWidth: 0, px: .5 }}>Download</Button>
-            </Stack>
-          </Box>)}
+          {message.attachments.map((attachment) => <AttachmentPreview key={attachment.id} attachment={attachment} maxWidth={320} />)}
         </Stack> : null}
           </Box>
           <MessageActionsAndTimestamp

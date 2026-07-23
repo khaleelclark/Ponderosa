@@ -58,7 +58,7 @@ import {
   unifiedDiffLineTotals,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactContentDto, ArtifactDto, AssetLimitsDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactDto, AssetLimitsDto, ChangedFileDto, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -79,6 +79,12 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { useProjectBrowser } from "./ProjectBrowserContext";
 import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../faviconCache";
 import { OperatorAvatar } from "./OperatorAvatar";
+import { CommunicationDocumentCard } from "./filePreview/CommunicationDocumentCard";
+import { AgentArtifactPreview } from "./filePreview/ArtifactPreview";
+import { UnifiedDiffViewer } from "./filePreview/FilePreview";
+import { AttachmentPreview } from "./filePreview/AttachmentPreview";
+export { CommunicationDocumentCard } from "./filePreview/CommunicationDocumentCard";
+export { UnifiedDiffViewer, diffLineKind } from "./filePreview/FilePreview";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -801,33 +807,6 @@ export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle,
   return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compact}>{text}</ChatMarkdown>;
 }
 
-export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const query = useQuery({
-    queryKey: ["communication-document", document.id],
-    queryFn: () => api.getCommunicationDocument(document.previewUrl),
-    enabled: open,
-  });
-  return <><Paper variant="outlined" sx={{ mt: 1, p: 1 }}>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-      <ArticleIcon fontSize="small" />
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="subtitle2" noWrap>{document.title}</Typography>
-        <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
-      </Box>
-      <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setOpen(true)}>Preview</Button>
-      <Button className="chat-text-navigation" size="small" component="a" href={document.downloadUrl} download>Download</Button>
-    </Stack>
-  </Paper>
-  <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="xl" aria-labelledby={`document-preview-${document.id}`} PaperProps={{ sx: { width: "min(1440px, calc(100vw - 24px))", height: "min(92vh, 1100px)", m: 1.5 } }}>
-    <DialogTitle id={`document-preview-${document.id}`} sx={{ display: "flex", alignItems: "center", gap: 1 }}><ArticleIcon /><Box sx={{ minWidth: 0, flex: 1 }}><Typography variant="h6" noWrap>{document.title}</Typography><Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography></Box><IconButton aria-label="Close document preview" onClick={() => setOpen(false)}><CloseIcon /></IconButton></DialogTitle>
-    <DialogContent dividers className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 5 }, py: 3 }}>
-      {query.isLoading ? <Stack sx={{ height: "100%", alignItems: "center", justifyContent: "center" }}><CircularProgress size={28} /></Stack> : query.data ? <Box sx={{ width: "min(100%, 1080px)", mx: "auto" }}><ChatMarkdown>{query.data.content}</ChatMarkdown></Box> : <Alert severity="error">Document preview is unavailable.</Alert>}
-    </DialogContent>
-    <DialogActions><Button component="a" href={document.downloadUrl} download>Download</Button><Button variant="contained" onClick={() => setOpen(false)}>Close</Button></DialogActions>
-  </Dialog></>;
-}
-
 export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false }: {
   text: string;
   citations?: VerifiedCitationDto[];
@@ -1081,11 +1060,7 @@ export function ChatPane({
             />
             {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
             {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-              {message.attachments.map((attachment) => <Box key={attachment.id} component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" aria-label={`Download ${attachment.name}`} sx={{ maxWidth: "100%" }}>
-                {attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith("image/")
-                  ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", width: "auto", maxWidth: { xs: "100%", sm: 220 }, maxHeight: 180, objectFit: "contain", borderRadius: 1 }} />
-                  : <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name} · {attachment.mediaType} · {attachment.size} bytes</Typography>}
-              </Box>)}
+              {message.attachments.map((attachment) => <AttachmentPreview key={attachment.id} attachment={attachment} maxWidth={220} />)}
             </Stack> : null}
               </Box>
               {workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : null}
@@ -1985,175 +1960,6 @@ export function languageForPath(filePath: string): string {
   return ({ ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx", json: "json", css: "css", html: "html", md: "markdown", py: "python", rs: "rust", go: "go", sh: "bash", yml: "yaml", yaml: "yaml" } as Record<string, string>)[extension ?? ""] ?? "text";
 }
 
-export function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
-  if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
-  if (line.startsWith("-") && !line.startsWith("---")) return "deletion";
-  return "neutral";
-}
-
-/** A small shared diff renderer with full-line change highlighting. */
-export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
-  return <Box
-    component="pre"
-    aria-label="Unified diff"
-    sx={{ m: 0, py: 0.75, overflowX: "auto", bgcolor: "background.paper", fontFamily: "monospace", fontSize: 12.5, lineHeight: 1.55 }}
-  >
-    {diff.split("\n").map((line, index) => {
-      const kind = diffLineKind(line);
-      return <Box
-        component="span"
-        key={`${index}:${line.slice(0, 24)}`}
-        data-diff-line-kind={kind}
-        sx={{
-          display: "block",
-          minWidth: "max-content",
-          px: 1,
-          color: kind === "addition" ? "success.dark" : kind === "deletion" ? "error.dark" : "text.primary",
-          bgcolor: kind === "addition" ? "rgba(46, 160, 67, 0.16)" : kind === "deletion" ? "rgba(248, 81, 73, 0.16)" : "transparent",
-        }}
-      >{line || " "}</Box>;
-    })}
-  </Box>;
-}
-
-function MarkdownViewer({ content }: { content: string }): JSX.Element {
-  return (
-    <Box
-      sx={{
-        "& pre": { overflowX: "auto", m: 0 },
-        "& code": { fontSize: "0.86rem" },
-        "& p": { lineHeight: 1.65 },
-      }}
-    >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          pre: ({ children }) => <CopyableCodeBlock>{children}</CopyableCodeBlock>,
-        }}
-      >
-        {content}
-      </ReactMarkdown>
-    </Box>
-  );
-}
-
-function ArtifactViewer({
-  artifact,
-  agentId,
-  agentTitle,
-  onOpenRun,
-  liveContent,
-}: {
-  artifact: ArtifactDto | undefined;
-  agentId: string;
-  agentTitle: string;
-  onOpenRun(runId: string): void;
-  liveContent: string | undefined;
-}): JSX.Element {
-  const contentQuery = useQuery({
-    queryKey: ["artifact", agentId, artifact?.id],
-    queryFn: () => api.getArtifact(agentId, artifact?.id ?? ""),
-    enabled: Boolean(artifact && artifact.kind !== "document" && artifact.kind !== "screenshot" && !artifact.id.startsWith("live-artifact-")),
-  });
-
-  const content: ArtifactContentDto | undefined =
-    liveContent && artifact
-      ? { ...artifact, content: liveContent, contentType: artifact.kind === "diff" ? "diff" : "markdown" }
-      : contentQuery.data;
-
-  if (!artifact) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Typography variant="body2" color="text.secondary">
-          Select a file or result to inspect its contents.
-        </Typography>
-      </Box>
-    );
-  }
-
-  if (artifact.kind === "document" && artifact.mediaType === "application/pdf") {
-    return <Box sx={{ p: 1.5, minWidth: 0 }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifactDisplayLabel(artifact)}</Typography>
-        {artifact.previewUrl ? <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open Preview</Button> : null}
-        {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
-      </Stack>
-      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
-      {artifact.previewUrl ? <Box component="iframe" title={`Preview ${artifact.path}`} src={artifact.previewUrl} sx={{ width: "100%", height: { xs: "55vh", md: "66vh" }, border: 1, borderColor: "divider", borderRadius: 1, bgcolor: "background.paper" }} /> : <Alert severity="info">The PDF is still being indexed. Refresh to preview or download it.</Alert>}
-    </Box>;
-  }
-
-  if (artifact.kind === "screenshot" && artifact.previewUrl) {
-    return <Box sx={{ p: 1.5, minWidth: 0 }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
-        <Typography variant="subtitle2" sx={{ flex: 1 }}>{artifactDisplayLabel(artifact)}</Typography>
-        <Button component="a" href={artifact.previewUrl} target="_blank" rel="noreferrer" size="small" variant="outlined">Open</Button>
-        {artifact.downloadUrl ? <Button component="a" href={artifact.downloadUrl} size="small" variant="contained" download>Download</Button> : null}
-      </Stack>
-      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
-      <Box component="img" src={artifact.previewUrl} alt={artifact.summary ?? "Browser screenshot"} sx={{ display: "block", maxWidth: "100%", maxHeight: { xs: "55vh", md: "66vh" }, mx: "auto", border: 1, borderColor: "divider", borderRadius: 1 }} />
-    </Box>;
-  }
-
-  if (contentQuery.isLoading && !content) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <CircularProgress size={22} />
-      </Box>
-    );
-  }
-
-  if (!content) {
-    return (
-      <Alert severity="warning" sx={{ m: 1.5 }}>
-        Artifact content is not available yet.
-      </Alert>
-    );
-  }
-
-  return (
-    <Box sx={{ p: 1.5, minWidth: 0 }}>
-      <Stack spacing={0.25} sx={{ mb: 1, minWidth: 0 }}>
-        <Typography variant="subtitle2">{artifactDisplayLabel(content)}</Typography>
-        <Typography variant="caption" color="text.secondary" noWrap title={content.path}>{compactPath(content.path)}</Typography>
-      </Stack>
-      <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
-      {content.truncated ? (
-        <Alert
-          severity="info"
-          sx={{ mb: 1 }}
-          action={content.downloadUrl ? (
-            <Button component="a" href={content.downloadUrl} download size="small" color="inherit">Download Full Artifact</Button>
-          ) : undefined}
-        >
-          Preview is limited to 2 MiB{content.totalBytes ? ` of ${content.totalBytes.toLocaleString()} bytes` : ""}.
-        </Alert>
-      ) : null}
-      <Paper variant="outlined" sx={{ p: 1.25, overflow: "auto", maxHeight: { xs: "55vh", md: "64vh" } }}>
-        {content.contentType === "markdown" ? (
-          <MarkdownViewer content={content.content} />
-        ) : (
-          <UnifiedDiffViewer diff={content.content} />
-        )}
-      </Paper>
-    </Box>
-  );
-}
-
-function ArtifactProvenance({ artifact, agentTitle, onOpenRun }: {
-  artifact: ArtifactDto;
-  agentTitle: string;
-  onOpenRun(runId: string): void;
-}): JSX.Element {
-  return <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-    <Chip size="small" label={`Created by ${agentTitle}`} />
-    {artifact.executionId
-      ? <Button size="small" onClick={() => onOpenRun(artifact.executionId!)}>Generated from Run {artifact.executionId.slice(0, 8)}</Button>
-      : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
-    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project scope"} />
-  </Stack>;
-}
-
 export function ArtifactsPane({
   artifacts,
   agentId,
@@ -2271,7 +2077,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <ArtifactViewer artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
+        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
         </Box>
       </Box>
       {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}

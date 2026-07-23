@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import type { AgentDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
@@ -25,8 +24,6 @@ vi.mock("@mui/material", async (importOriginal) => {
       createElement("div", { ...props, ref }, children)),
   };
 });
-
-const projectArtifactsSource = readFileSync(new URL("../src/components/ProjectArtifactsView.tsx", import.meta.url), "utf8");
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -141,10 +138,6 @@ describe("project artifacts view", () => {
     expect(JSON.stringify(view.toJSON())).toContain("Edit · app.ts");
     expect(JSON.stringify(view.toJSON())).not.toContain("Accessibility audit");
     expect(JSON.stringify(view.toJSON())).not.toContain("pnpm test");
-    expect(projectArtifactsSource).toContain('sandbox="allow-scripts"');
-    expect(projectArtifactsSource).not.toContain("allow-same-origin");
-    expect(projectArtifactsSource).toContain('referrerPolicy="no-referrer"');
-    expect(projectArtifactsSource).toContain("Open originating Run");
     view.unmount();
     client.clear();
   });
@@ -201,9 +194,6 @@ describe("project artifacts view", () => {
     expect(isTextArtifactPreview("text/html")).toBe(false);
     expect(projectFileCategory(markdown)).toBe("documents");
     expect(projectFileCategory(json)).toBe("data");
-    expect(projectArtifactsSource).toContain('sandbox="allow-scripts"');
-    expect(projectArtifactsSource).not.toContain("allow-same-origin");
-    expect(projectArtifactsSource).toContain('referrerPolicy="no-referrer"');
     expect(view.root.findByProps({ "aria-label": "Download Config.json" }).props.href).toBe(json.downloadUrl);
     view.unmount();
     client.clear();

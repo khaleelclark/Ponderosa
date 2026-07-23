@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { artifactDisplayLabel } from "../src/components/panes";
+import { AttachmentPreview } from "../src/components/filePreview/AttachmentPreview";
 
 const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/api/real.ts", import.meta.url), "utf8");
@@ -20,9 +23,20 @@ describe("general asset UI contract", () => {
   });
 
   it("renders safe previews separately from general download metadata", () => {
-    expect(panes).toContain("attachment.previewUrl || !attachment.mediaType || attachment.mediaType.startsWith");
-    expect(panes).toContain("attachment.downloadUrl ?? attachment.url");
-    expect(panes).toContain('aria-label={`Download ${attachment.name}`}');
+    const html = renderToStaticMarkup(createElement(AttachmentPreview, { attachment: {
+      id: "file-1",
+      name: "report.pdf",
+      mediaType: "application/pdf",
+      size: 4096,
+      url: "/asset",
+      previewUrl: "/asset/preview",
+      downloadUrl: "/asset/download",
+    } }));
+    expect(html).toContain('data-preview-capability="pdf"');
+    expect(html).not.toContain("<iframe");
+    expect(html).toContain('href="/asset/preview"');
+    expect(html).toContain('href="/asset/download"');
+    expect(html).toContain('aria-label="Download report.pdf"');
   });
 
   it("uploads bytes through the binary parser while preserving declared type separately", () => {

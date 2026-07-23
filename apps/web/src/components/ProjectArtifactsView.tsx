@@ -34,13 +34,14 @@ import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@pondero
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { artifactDisplayLabel, UnifiedDiffViewer } from "./panes";
+import { artifactDisplayLabel } from "./panes";
 import { ProjectOverview } from "./ProjectOverview";
+import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
+import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
+export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
-  return Boolean(mediaType && mediaType !== "text/html" && (
-    mediaType.startsWith("text/") || mediaType === "application/json"
-  ));
+  return isTextPreviewCapability(mediaType);
 }
 
 export type ProjectFileCategory = "all" | "code" | "documents" | "data" | "images" | "archives" | "other";
@@ -83,67 +84,6 @@ export function matchesProjectFileCategories(
   selected: readonly Exclude<ProjectFileCategory, "all">[],
 ): boolean {
   return selected.length === 0 || selected.includes(projectFileCategory(artifact));
-}
-
-export function createdFileUnifiedDiff(path: string, content: string): string {
-  const normalized = content.replace(/\r\n?/gu, "\n");
-  const lines = normalized === "" ? [] : normalized.endsWith("\n") ? normalized.slice(0, -1).split("\n") : normalized.split("\n");
-  return [
-    `diff --git a/${path} b/${path}`,
-    "new file mode 100644",
-    "--- /dev/null",
-    `+++ b/${path}`,
-    `@@ -0,0 +1,${lines.length} @@`,
-    ...lines.map((line) => `+${line}`),
-  ].join("\n");
-}
-
-export function recordedArtifactDiff(artifact: ArtifactDto, content: string): string | undefined {
-  const normalized = content.replace(/\r\n?/gu, "\n");
-  const hasDiffStructure = /^(?:diff --git |@@ |--- |\+\+\+ )/mu.test(normalized)
-    && /^(?:\+(?!\+\+)|-(?!--))/mu.test(normalized);
-  if (hasDiffStructure) return normalized;
-  if (/^create\s+/iu.test(artifact.summary?.trim() ?? "") && !/No diff text was provided by the engine\./iu.test(normalized)) {
-    return createdFileUnifiedDiff(artifact.sourcePath ?? artifact.summary!.trim().replace(/^create\s+/iu, ""), normalized);
-  }
-  return undefined;
-}
-
-function ArtifactTextDiffPreview({ artifact }: { artifact: ArtifactDto }): JSX.Element {
-  const query = useQuery({
-    queryKey: ["project-artifact-text-preview", artifact.id, artifact.previewUrl],
-    queryFn: async ({ signal }) => {
-      const response = await fetch(artifact.previewUrl!, {
-        cache: "no-store",
-        credentials: "same-origin",
-        signal,
-      });
-      if (!response.ok) throw new Error(`Preview request failed (${response.status})`);
-      return response.text();
-    },
-    enabled: Boolean(artifact.previewUrl),
-  });
-  const label = artifactDisplayLabel(artifact);
-  if (query.isLoading) return <Stack direction="row" spacing={1} role="status" sx={{ alignItems: "center", py: 3 }}><CircularProgress size={20} /><Typography variant="body2">Loading text preview…</Typography></Stack>;
-  if (query.isError) return <Alert severity="error">Text preview is unavailable. Download the file to inspect it.</Alert>;
-  const diff = createdFileUnifiedDiff(artifact.sourcePath ?? artifact.path, query.data ?? "");
-  return <Box data-testid="artifact-text-diff-preview" aria-label={`Created-file diff for ${label}`} sx={{ minWidth: 0 }}>
-    <UnifiedDiffViewer diff={diff} />
-  </Box>;
-}
-
-function RecordedDiffPreview({ artifact, agent }: { artifact: ArtifactDto; agent?: AgentDto }): JSX.Element {
-  const query = useQuery({
-    queryKey: ["project-recorded-diff", artifact.id, agent?.id],
-    queryFn: () => api.getArtifact(agent!.id, artifact.id),
-    enabled: Boolean(agent),
-  });
-  if (!agent) return <Alert severity="info">The originating Agent was deleted, so this durable diff cannot be retrieved from its bounded artifact route.</Alert>;
-  if (query.isLoading) return <Stack direction="row" spacing={1} role="status" sx={{ alignItems: "center", py: 3 }}><CircularProgress size={20} /><Typography variant="body2">Loading recorded diff…</Typography></Stack>;
-  if (query.isError || !query.data) return <Alert severity="error">The durable recorded diff is unavailable. Ponderosa will not substitute current working-tree content for historical Agent work.</Alert>;
-  const diff = recordedArtifactDiff(artifact, query.data.content);
-  if (!diff) return <Alert severity="info">This canonical file-change record does not contain a line-oriented diff. Ponderosa will not present raw text or the current working tree as historical changes.</Alert>;
-  return <Box data-testid="project-recorded-diff" sx={{ minWidth: 0 }}><UnifiedDiffViewer diff={diff} /></Box>;
 }
 
 const projectOutputKinds = new Set<ArtifactDto["kind"]>([
@@ -397,25 +337,11 @@ export function ProjectArtifactsView({
           })() : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
           <Chip size="small" variant="outlined" label={previewArtifact.visibility === "published" ? "Published" : "Project Scope"} />
         </Stack> : null}
-        {previewArtifact?.kind === "diff" ? <RecordedDiffPreview
+        {previewArtifact ? <ProjectArtifactPreview
           key={previewArtifact.id}
           artifact={previewArtifact}
           agent={agents.find((candidate) => candidate.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))}
-        /> : previewArtifact?.previewUrl ? previewArtifact.mediaType?.startsWith("image/") ? <Box
-          component="img"
-          data-testid="artifact-image-preview"
-          src={previewArtifact.previewUrl}
-          alt={artifactDisplayLabel(previewArtifact)}
-          sx={{ display: "block", maxWidth: "100%", maxHeight: "72dvh", mx: "auto", objectFit: "contain", borderRadius: 1 }}
-        /> : isTextArtifactPreview(previewArtifact.mediaType) ? <ArtifactTextDiffPreview key={previewArtifact.id} artifact={previewArtifact} /> : <Box
-          component="iframe"
-          data-testid="artifact-document-preview"
-          src={previewArtifact.previewUrl}
-          title={artifactDisplayLabel(previewArtifact)}
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          sx={{ display: "block", width: "100%", height: "72dvh", border: 0, borderRadius: 1, bgcolor: "background.paper" }}
-        /> : previewArtifact ? <Alert severity="info">This file has no safe inline preview. Download it or open its originating Agent record when available.</Alert> : null}
+        /> : null}
       </DialogContent>
       <DialogActions sx={{ flexWrap: "wrap", gap: 0.5, px: { xs: 1, sm: 2 }, "& .MuiButton-root": { minHeight: { xs: 44, sm: 36 } } }}>
         {previewArtifact ? (() => {
