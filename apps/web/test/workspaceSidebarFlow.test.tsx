@@ -101,7 +101,7 @@ describe("responsive workspace sidebar flow", () => {
     act(() => view.root.findByProps({ "aria-label": "Open project overview" }).props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Open project agents" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "allAgents", filterProjectId: "alpha" });
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "agents", projectId: "alpha" });
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");

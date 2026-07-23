@@ -1,31 +1,32 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 export function useProjects() {
   return useQuery({
-    queryKey: ["projects"],
+    queryKey: queryKeys.projects.all,
     queryFn: () => api.listProjects(),
   });
 }
 
 export function useWorkspacePreferences() {
-  return useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
+  return useQuery({ queryKey: queryKeys.workspacePreferences.all, queryFn: () => api.getWorkspacePreferences() });
 }
 
 export function useNotifications() {
-  return useQuery({ queryKey: ["notifications"], queryFn: () => api.listNotifications() });
+  return useQuery({ queryKey: queryKeys.notifications.all, queryFn: () => api.listNotifications() });
 }
 
 export function useAllChat(limit = 50) {
   return useQuery({
-    queryKey: ["all-chat", limit],
+    queryKey: queryKeys.allChat(limit),
     queryFn: () => api.getAllChat(limit),
   });
 }
 
 export function useProjectFolders(open: boolean) {
   return useQuery({
-    queryKey: ["project-folders"],
+    queryKey: queryKeys.projectFolders,
     queryFn: () => api.getProjectFolders(),
     enabled: open,
   });
@@ -33,7 +34,7 @@ export function useProjectFolders(open: boolean) {
 
 export function useConversations(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["conversations", projectId],
+    queryKey: queryKeys.conversations.project(projectId),
     queryFn: () => api.listConversations(projectId ?? ""),
     enabled: Boolean(projectId),
   });
@@ -41,7 +42,7 @@ export function useConversations(projectId: string | undefined) {
 
 export function useAgentHealth(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["agent-health", projectId],
+    queryKey: queryKeys.agents.health(projectId),
     queryFn: () => api.getAgentHealth(projectId ?? ""),
     enabled: Boolean(projectId),
     refetchInterval: (query) => {
@@ -54,7 +55,7 @@ export function useAgentHealth(projectId: string | undefined) {
 
 export function useConversation(conversationId: string | undefined, limit = 100) {
   return useQuery({
-    queryKey: ["conversation", conversationId, limit],
+    queryKey: queryKeys.conversations.detail(conversationId, limit),
     queryFn: () => api.getConversation(conversationId ?? "", limit),
     enabled: Boolean(conversationId),
   });
@@ -62,7 +63,7 @@ export function useConversation(conversationId: string | undefined, limit = 100)
 
 export function useCollaborationView(conversationId: string | undefined, limit = 100, enabled = true) {
   return useQuery({
-    queryKey: ["collaboration-chat", conversationId, limit],
+    queryKey: queryKeys.collaboration(conversationId, limit),
     queryFn: () => api.getCollaborationView(conversationId ?? "", limit),
     enabled: Boolean(conversationId) && enabled,
   });
@@ -70,7 +71,7 @@ export function useCollaborationView(conversationId: string | undefined, limit =
 
 export function useAgents(projectId: string | undefined) {
   return useQuery({
-    queryKey: ["agents", projectId],
+    queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId ?? ""),
     enabled: Boolean(projectId),
     // Managed agents can be created or cascade-deleted by another agent. Poll
@@ -80,12 +81,12 @@ export function useAgents(projectId: string | undefined) {
   });
 }
 export function useAgentPresets(projectId: string | undefined) {
-  return useQuery({ queryKey: ["agent-presets", projectId], queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
+  return useQuery({ queryKey: queryKeys.agents.presets(projectId), queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
 }
 
 export function useAgent(agentId: string | undefined, limit = 100) {
   return useQuery({
-    queryKey: ["agent", agentId, limit],
+    queryKey: queryKeys.agents.detail(agentId, limit),
     queryFn: () => api.getAgent(agentId ?? "", limit),
     enabled: Boolean(agentId),
   });
@@ -93,7 +94,7 @@ export function useAgent(agentId: string | undefined, limit = 100) {
 
 export function useEngines() {
   return useQuery({
-    queryKey: ["engines"],
+    queryKey: queryKeys.engines.all,
     queryFn: () => api.listEngines(),
   });
 }

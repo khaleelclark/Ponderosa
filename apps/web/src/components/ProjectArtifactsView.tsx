@@ -21,7 +21,6 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Menu,
   MenuItem,
   Select,
   Stack,
@@ -39,6 +38,7 @@ import { ProjectOverview } from "./ProjectOverview";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
 export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
   return isTextPreviewCapability(mediaType);
@@ -132,7 +132,7 @@ export function ProjectArtifactsView({
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [artifactMenu, setArtifactMenu] = useState<{ anchor: HTMLElement; agentId: string; artifactId: string }>();
+  const [artifactMenu, setArtifactMenu] = useState<ResourceContextMenuState<{ agentId: string; artifactId: string }>>();
   useEffect(() => {
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
@@ -292,7 +292,7 @@ export function ProjectArtifactsView({
               onContextMenu={(event) => {
                 if (!agent) return;
                 event.preventDefault();
-                setArtifactMenu({ anchor: event.currentTarget, agentId: agent.id, artifactId: artifact.id });
+                setArtifactMenu({ anchor: event.currentTarget, resource: { agentId: agent.id, artifactId: artifact.id } });
               }}
               onClick={() => {
                 if (artifact.previewUrl || artifact.kind === "diff") setPreviewArtifact(artifact);
@@ -322,7 +322,11 @@ export function ProjectArtifactsView({
         </Box>)}
       </Box>
     </Stack>
-    {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.agentId, artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+    <ResourceContextMenu
+      state={artifactMenu}
+      onClose={() => setArtifactMenu(undefined)}
+      onOpenInNewTab={onOpenArtifactInNewTab ? (resource) => onOpenArtifactInNewTab(resource.agentId, resource.artifactId) : undefined}
+    />
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
       <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File Preview"}</DialogTitle>
       <DialogContent sx={{ minWidth: 0, p: { xs: 1, sm: 2 }, bgcolor: "background.default", overflow: "auto" }}>

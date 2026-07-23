@@ -29,6 +29,7 @@ import type { AgentDto, CreateTriggerRequest, TriggerBudgetPeriod, TriggerDefini
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
@@ -108,11 +109,11 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
   </Box>;
 }
 
-export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOpenAgentWork?(occurrenceId: string): void }): JSX.Element {
+export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false }: { agent: AgentDto; onOpenAgentWork?(occurrenceId: string): void; initialCreateOpen?: boolean }): JSX.Element {
   const queryClient = useQueryClient();
-  const queryKey = ["triggers", agent.id] as const;
+  const queryKey = queryKeys.triggers.agent(agent.id);
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(initialCreateOpen);
   const [editing, setEditing] = useState<TriggerDefinitionDto>();
   const [secret, setSecret] = useState<{ trigger: TriggerDefinitionDto; value: string }>();
   const [expandedId, setExpandedId] = useState<string>();
@@ -132,6 +133,9 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
   const [budgetEnabled, setBudgetEnabled] = useState(false);
   const [budgetLimit, setBudgetLimit] = useState("10");
   const [budgetPeriod, setBudgetPeriod] = useState<TriggerBudgetPeriod>("month");
+  useEffect(() => {
+    if (initialCreateOpen && agent.conversationIds.length > 0) setCreateOpen(true);
+  }, [agent.id, agent.conversationIds.length, initialCreateOpen]);
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
   const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
 
@@ -245,12 +249,12 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
     onSuccess: () => void queryClient.invalidateQueries({ queryKey }),
   });
   const occurrences = useQuery({
-    queryKey: ["trigger-occurrences", expandedId],
+    queryKey: queryKeys.triggers.occurrence(expandedId),
     queryFn: () => api.listTriggerOccurrences(expandedId!, 50),
     enabled: Boolean(expandedId),
   });
   const allOccurrences = useQuery({
-    queryKey: ["agent-trigger-occurrences", agent.id],
+    queryKey: queryKeys.triggers.agentOccurrences(agent.id),
     queryFn: () => api.listAgentTriggerOccurrences(agent.id, 100),
   });
   const latestOccurrences = latestOccurrenceByTrigger(allOccurrences.data ?? []);

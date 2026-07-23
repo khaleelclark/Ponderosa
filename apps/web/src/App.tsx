@@ -64,6 +64,7 @@ import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
 import { useEngines, useNotifications, useProjects, useWorkspacePreferences } from "./hooks/queries";
+import { useProjectAgents } from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -86,6 +87,7 @@ import {
   initializeWorkspaceTabSession,
   navigateWorkspaceTab,
   openWorkspaceTab,
+  openWorkspaceTabInBackground,
   removeProjectWorkspaceTabs,
   removeWorkspaceRoute,
   renameWorkspaceTab,
@@ -96,6 +98,8 @@ import {
 } from "./workspaceTabs";
 import { hasUnreadConversationNotifications } from "./workspaceNavigation";
 import { WORKSPACE_SIDEBAR_STORAGE_KEY, restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "./workspaceSidebarState";
+import { routeForTriggerAgentSelection, triggerAgentDestinations } from "./triggerCreation";
+import { queryKeys } from "./queryKeys";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif,image/avif";
@@ -180,15 +184,18 @@ export default function App({
   const [settingsProjectDefaultEffort, setSettingsProjectDefaultEffort] = useState("");
   const [deleteConfirmationOpen, setDeleteConfirmationOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
-  const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent" | "trigger">();
+  const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent">();
   const [homeCreateProjectId, setHomeCreateProjectId] = useState("");
+  const [homeCreateContinueToTrigger, setHomeCreateContinueToTrigger] = useState(false);
+  const [triggerCreateOpen, setTriggerCreateOpen] = useState(false);
+  const [triggerCreateAgentId, setTriggerCreateAgentId] = useState("");
   const [sidebarConversationAction, setSidebarConversationAction] = useState<{ kind: "rename" | "delete"; conversation: ConversationDto }>();
   const [sidebarConversationTitle, setSidebarConversationTitle] = useState("");
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const settingsProjectConversationsQuery = useQuery({
-    queryKey: ["conversations", settingsProjectId],
+    queryKey: queryKeys.conversations.project(settingsProjectId),
     queryFn: () => api.listConversations(settingsProjectId!),
     enabled: projectImportOpen && Boolean(settingsProjectId),
     staleTime: 10_000,
@@ -199,6 +206,11 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
+  const projectAgentQueries = useProjectAgents(projects);
+  const triggerAgentOptions = triggerAgentDestinations(
+    projects,
+    projectAgentQueries.map((query) => query.data),
+  );
 
   useEffect(() => {
     setWorkspaceTabs((current) => navigateWorkspaceTab(current, activeWorkspaceTabKey, route));
@@ -244,12 +256,12 @@ export default function App({
     const conversationId = route.kind === "conversation" ? route.conversationId : undefined;
     if (!pageVisible || !hasUnreadConversationNotifications(notificationsQuery.data ?? [], conversationId)) return;
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
+    queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
       current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt } : item));
     void api.clearConversationNotifications(conversationId!).then(() => {
-      return queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     }).catch(() => {
-      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     });
   }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, notificationsQuery.data, pageVisible, queryClient]);
 
@@ -314,10 +326,10 @@ export default function App({
         defaultEffort: projectDefaultEffort,
       })),
     onSuccess: (project) => {
-      queryClient.setQueryData<ProjectDto[]>(["projects"], (current = []) =>
+      queryClient.setQueryData<ProjectDto[]>(queryKeys.projects.all, (current = []) =>
         current.some((item) => item.id === project.id) ? current : [...current, project],
       );
-      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       setProjectDialogOpen(false);
       setProjectLabel("");
       setProjectPath("");
@@ -327,8 +339,8 @@ export default function App({
       setProjectDefaultEffort("");
       if (onboardingProjectCreation) {
         const completedAt = new Date().toISOString();
-        queryClient.setQueryData(["workspace-preferences"], (current: import("@ponderosa/core").WorkspacePreferencesDto | undefined) => current ? { ...current, onboardingCompletedAt: completedAt } : current);
-        void api.updateWorkspacePreferences({ onboardingCompletedAt: completedAt }).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
+        queryClient.setQueryData(queryKeys.workspacePreferences.all, (current: import("@ponderosa/core").WorkspacePreferencesDto | undefined) => current ? { ...current, onboardingCompletedAt: completedAt } : current);
+        void api.updateWorkspacePreferences({ onboardingCompletedAt: completedAt }).then((value) => queryClient.setQueryData(queryKeys.workspacePreferences.all, value));
         setOnboardingProjectCreation(false);
         setOnboardingCompleteOpen(true);
       }
@@ -339,17 +351,17 @@ export default function App({
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: (updated) => {
-      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(["engines"], (current) =>
+      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(queryKeys.engines.all, (current) =>
         current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
-      void queryClient.invalidateQueries({ queryKey: ["engines"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
       if (updated.available) setProjectDefaultEngine(updated.id);
     },
   });
   const updateEngine = useMutation({
     mutationFn: ({ engineId, enabled }: { engineId: string; enabled: boolean }) => api.updateEngine(engineId, { enabled }),
     onSuccess: (updated) => {
-      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(["engines"], (current) => current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
-      void queryClient.invalidateQueries({ queryKey: ["workspace-preferences"] });
+      queryClient.setQueryData<import("@ponderosa/core").EngineDto[]>(queryKeys.engines.all, (current) => current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspacePreferences.all });
     },
   });
 
@@ -361,7 +373,7 @@ export default function App({
       defaultModel: settingsProjectDefaultModel || null,
       defaultEffort: settingsProjectDefaultEffort || null,
     }),
-    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: ["projects"] }); setProjectSettingsOpen(false); },
+    onSuccess: () => { void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }); setProjectSettingsOpen(false); },
   });
 
   const deleteProject = useMutation({
@@ -370,7 +382,7 @@ export default function App({
       const next = nextProjectAfterDelete(projects, settingsProjectId!);
       const survivingProjectIds = new Set(projects.filter((project) => project.id !== settingsProjectId).map((project) => project.id));
       setWorkspaceTabs((current) => removeProjectWorkspaceTabs(current, survivingProjectIds));
-      void queryClient.invalidateQueries({ queryKey: ["projects"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       setDeleteConfirmationOpen(false);
       setProjectSettingsOpen(false);
       if (next) { saveLastProjectId(next.id); navigate({ kind: "project", projectId: next.id }); }
@@ -382,7 +394,7 @@ export default function App({
     mutationFn: ({ conversation, title }: { conversation: ConversationDto; title: string }) =>
       api.updateConversation(conversation.id, { title }),
     onSuccess: (_updated, { conversation }) => {
-      void queryClient.invalidateQueries({ queryKey: ["conversations", conversation.projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(conversation.projectId) });
       setSidebarConversationAction(undefined);
     },
   });
@@ -391,7 +403,7 @@ export default function App({
     mutationFn: (conversation: ConversationDto) => api.deleteConversation(conversation.id),
     onSuccess: (_deleted, conversation) => {
       setWorkspaceTabs((current) => removeWorkspaceRoute(current, { kind: "conversation", projectId: conversation.projectId, conversationId: conversation.id }));
-      void queryClient.invalidateQueries({ queryKey: ["conversations", conversation.projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(conversation.projectId) });
       setSidebarConversationAction(undefined);
       if (route.kind === "conversation" && route.conversationId === conversation.id) {
         navigate({ kind: "project", projectId: conversation.projectId }, { replace: true });
@@ -408,8 +420,8 @@ export default function App({
 
   const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, globalInstructions: "", maxConcurrentAgentRuns: 8, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
   const savePreferences = (patch: Partial<typeof preferences>) => {
-    queryClient.setQueryData(["workspace-preferences"], { ...preferences, ...patch });
-    void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(["workspace-preferences"], value));
+    queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
+    void api.updateWorkspacePreferences(patch).then((value) => queryClient.setQueryData(queryKeys.workspacePreferences.all, value));
   };
   const openProjectCreator = (onboarding = false) => {
     setOnboardingProjectCreation(onboarding);
@@ -474,6 +486,10 @@ export default function App({
     setActiveWorkspaceTabKey(tab.key);
     navigate(next);
   };
+  const openWorkspaceRouteInBackground = (next: Route) => {
+    const tab = createWorkspaceTab(next);
+    setWorkspaceTabs((current) => openWorkspaceTabInBackground(current, next, tab.lastActivatedAt, tab.key));
+  };
   const openProjectBrowser = (url?: string) => {
     if (!selectedProjectId) return;
     projectBrowserRequestId.current += 1;
@@ -485,30 +501,35 @@ export default function App({
     if (!project) return;
     const conversation = await api.createConversation(project.id, { title: "New Project Chat", defaultEngine: project.defaultEngine });
     await api.markProjectUsed(project.id, conversation.id);
-    void queryClient.invalidateQueries({ queryKey: ["conversations", project.id] });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(project.id) });
     navigateWorkspace({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
   };
-  const createHomeAgent = (projectId?: string) => {
+  const createHomeAgent = (projectId?: string, continueToTrigger = false, managerAgentId?: string) => {
     const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-    if (project) navigateWorkspace({ kind: "agents", projectId: project.id, create: true });
+    if (project) navigateWorkspace({
+      kind: "agents",
+      projectId: project.id,
+      create: true,
+      ...(managerAgentId ? { managerAgentId } : {}),
+      ...(continueToTrigger ? { continueToTrigger: true } : {}),
+    });
   };
-  const createHomeTrigger = async (projectId?: string) => {
-    const project = projects.find((candidate) => candidate.id === projectId) ?? projects[0];
-    if (!project) return;
-    const agents = await api.listAgents(project.id);
-    const agent = agents.find((candidate) => !candidate.archived);
-    navigateWorkspace(agent
-      ? { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" }
-      : { kind: "agents", projectId: project.id });
+  const beginTriggerCreate = () => {
+    setTriggerCreateAgentId("");
+    setTriggerCreateOpen(true);
   };
   const beginHomeCreate = (kind: "chat" | "agent" | "trigger") => {
+    if (kind === "trigger") {
+      beginTriggerCreate();
+      return;
+    }
     if (projects.length === 1) {
       const projectId = projects[0]!.id;
       if (kind === "chat") void createHomeChat(projectId);
-      else if (kind === "agent") createHomeAgent(projectId);
-      else void createHomeTrigger(projectId);
+      else createHomeAgent(projectId);
       return;
     }
+    setHomeCreateContinueToTrigger(false);
     setHomeCreateProjectId("");
     setHomeCreateKind(kind);
   };
@@ -517,10 +538,11 @@ export default function App({
     if (!homeCreateKind || !homeCreateProjectId) return;
     const kind = homeCreateKind;
     const projectId = homeCreateProjectId;
+    const continueToTrigger = homeCreateContinueToTrigger;
     setHomeCreateKind(undefined);
+    setHomeCreateContinueToTrigger(false);
     if (kind === "chat") void createHomeChat(projectId);
-    else if (kind === "agent") createHomeAgent(projectId);
-    else void createHomeTrigger(projectId);
+    else createHomeAgent(projectId, continueToTrigger);
   };
 
   useEffect(() => {
@@ -663,7 +685,7 @@ export default function App({
             route={route}
             notifications={notificationsQuery.data ?? []}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
             onCreateProject={() => openProjectCreator()}
             onCreateChat={() => beginHomeCreate("chat")}
             onCreateAgent={() => beginHomeCreate("agent")}
@@ -729,7 +751,7 @@ export default function App({
             notifications={notificationsQuery.data ?? []}
             preferences={preferences}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
             onPreferences={savePreferences}
             onCreateProject={() => openProjectCreator()}
             onCreateChat={() => beginHomeCreate("chat")}
@@ -744,7 +766,7 @@ export default function App({
             projects={projects}
             preferences={preferences}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
             onCreateProject={() => openProjectCreator()}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
@@ -757,8 +779,8 @@ export default function App({
             preferences={preferences}
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
-            onCreate={(projectId) => projectId ? createHomeAgent(projectId) : beginHomeCreate("agent")}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
+            onCreate={(projectId, managerAgentId) => projectId ? createHomeAgent(projectId, false, managerAgentId) : beginHomeCreate("agent")}
           />
         ) : route.kind === "allChats" ? (
           <AllChatsWorkspace
@@ -767,7 +789,7 @@ export default function App({
             preferences={preferences}
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
             onCreate={(projectId) => projectId ? void createHomeChat(projectId) : beginHomeCreate("chat")}
           />
         ) : route.kind === "allTriggers" ? (
@@ -776,8 +798,8 @@ export default function App({
             preferences={preferences}
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
-            onOpenInNewTab={openWorkspaceRoute}
-            onCreate={(projectId) => projectId ? void createHomeTrigger(projectId) : beginHomeCreate("trigger")}
+            onOpenInNewTab={openWorkspaceRouteInBackground}
+            onCreate={beginTriggerCreate}
           />
         ) : route.kind === "settings" ? (
           <WorkspaceSettingsView
@@ -801,7 +823,7 @@ export default function App({
             navigate={navigateWorkspace}
             browserRequest={projectBrowserRequest}
             onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
-            openInNewTab={openWorkspaceRoute}
+            openInNewTab={openWorkspaceRouteInBackground}
             onResourceDeleted={removeWorkspaceView}
           />
         ) : (
@@ -922,7 +944,7 @@ export default function App({
           if (selection.chat.kind === "conversation") {
             void api.markProjectUsed(selection.projectId, selection.chat.id);
           }
-          openWorkspaceRoute(routeForGlobalSearchSelection(selection));
+          openWorkspaceRouteInBackground(routeForGlobalSearchSelection(selection));
         }}
       />
 
@@ -1004,6 +1026,58 @@ export default function App({
           </Stack>
         </DialogContent>
         <DialogActions><Button onClick={() => setHomeCreateKind(undefined)}>Cancel</Button><Button variant="contained" disabled={!homeCreateProjectId} onClick={continueHomeCreate}>Continue</Button></DialogActions>
+      </Dialog>
+      <Dialog open={triggerCreateOpen} onClose={() => setTriggerCreateOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>Create Trigger</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ pt: 1 }}>
+            <Typography color="text.secondary">Choose the Agent that will own and run this Trigger. You will choose its Project chat in the next step.</Typography>
+            <FormControl fullWidth>
+              <InputLabel id="trigger-create-agent-label">Agent</InputLabel>
+              <Select
+                labelId="trigger-create-agent-label"
+                label="Agent"
+                value={triggerCreateAgentId}
+                onChange={(event) => setTriggerCreateAgentId(event.target.value)}
+              >
+                {triggerAgentOptions.map(({ project, agent }) => <MenuItem
+                  key={agent.id}
+                  value={agent.id}
+                  disabled={agent.conversationIds.length === 0}
+                >
+                  {agent.title} · {project.label}{agent.conversationIds.length === 0 ? " · assign to a Chat first" : ""}
+                </MenuItem>)}
+              </Select>
+            </FormControl>
+            {projectAgentQueries.some((query) => query.isLoading) ? <Typography role="status" variant="body2" color="text.secondary">Loading Agents…</Typography> : null}
+            {!projectAgentQueries.some((query) => query.isLoading) && triggerAgentOptions.length === 0 ? <Alert severity="info">Create an Agent first, then Ponderosa will continue directly to Trigger setup.</Alert> : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setTriggerCreateOpen(false);
+            setTriggerCreateAgentId("");
+            setHomeCreateContinueToTrigger(true);
+            if (projects.length === 1) createHomeAgent(projects[0]!.id, true);
+            else {
+              setHomeCreateProjectId("");
+              setHomeCreateKind("agent");
+            }
+          }}>Create New Agent</Button>
+          <Button onClick={() => setTriggerCreateOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            disabled={!triggerCreateAgentId}
+            onClick={() => {
+              const destination = routeForTriggerAgentSelection(triggerCreateAgentId, triggerAgentOptions);
+              if (!destination) return;
+              setTriggerCreateOpen(false);
+              navigateWorkspace(destination);
+            }}
+          >
+            Continue
+          </Button>
+        </DialogActions>
       </Dialog>
       <Dialog open={onboardingCompleteOpen} onClose={() => setOnboardingCompleteOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>You’re Ready to Build</DialogTitle>

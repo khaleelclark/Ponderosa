@@ -60,7 +60,9 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (candidate.kind === "project") return true;
   if (candidate.kind === "workspaceFile") return typeof candidate.path === "string" && Boolean(candidate.path);
   if (candidate.kind === "agents") {
-    return candidate.create === undefined || typeof candidate.create === "boolean";
+    return (candidate.create === undefined || typeof candidate.create === "boolean")
+      && (candidate.managerAgentId === undefined || typeof candidate.managerAgentId === "string")
+      && (candidate.continueToTrigger === undefined || typeof candidate.continueToTrigger === "boolean");
   }
   if (candidate.kind === "projectWork") return (candidate.conversationId === undefined || typeof candidate.conversationId === "string")
     && (candidate.focusId === undefined || typeof candidate.focusId === "string");
@@ -68,7 +70,8 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
     || (typeof candidate.agentId === "string" && Boolean(candidate.agentId) && typeof candidate.runId === "string" && Boolean(candidate.runId));
   if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
   if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
-    && (candidate.view === undefined || isAgentDetailView(candidate.view));
+    && (candidate.view === undefined || isAgentDetailView(candidate.view))
+    && (candidate.createTrigger === undefined || typeof candidate.createTrigger === "boolean");
   if (candidate.kind === "review") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
     && (candidate.path === undefined || typeof candidate.path === "string");
   return false;
@@ -123,6 +126,16 @@ export function openWorkspaceTab(
   key = generatedTabKey(),
 ): WorkspaceTabState[] {
   return [...current, createWorkspaceTab(route, now, key)];
+}
+
+/** Desktop resource menus create a tab without stealing focus from current work. */
+export function openWorkspaceTabInBackground(
+  current: WorkspaceTabState[],
+  route: Route,
+  now = Date.now(),
+  key = generatedTabKey(),
+): WorkspaceTabState[] {
+  return openWorkspaceTab(current, route, now, key);
 }
 
 /** Navigation replaces the active tab's location; it never creates a tab. */

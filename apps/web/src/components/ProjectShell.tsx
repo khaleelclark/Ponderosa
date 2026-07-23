@@ -10,6 +10,7 @@ import { chatStateKey, writeChatState } from "../chatState";
 import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
+import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -22,6 +23,7 @@ import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./panes";
 import { WorkspaceFileView } from "./WorkspaceFileView";
+import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 
 interface AgentDialogState {
   open: boolean;
@@ -31,11 +33,7 @@ interface AgentDialogState {
   defaultEffort?: string;
   defaultName?: string;
   defaultManagerAgentId?: string;
-}
-
-export interface AgentReturnContext {
-  conversationId: string;
-  reopenRoster: boolean;
+  continueToTrigger?: boolean;
 }
 
 export function ProjectShell({
@@ -70,7 +68,7 @@ export function ProjectShell({
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
   const capabilitiesQuery = useQuery({
-    queryKey: ["engine-capabilities", projectId],
+    queryKey: queryKeys.engines.capabilities(projectId),
     queryFn: () => api.getEngineCapabilities(projectId),
     staleTime: 60_000,
   });
@@ -81,14 +79,13 @@ export function ProjectShell({
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
     const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
-    queryClient.setQueryData(["engine-capabilities", projectId], discovered);
+    queryClient.setQueryData(queryKeys.engines.capabilities(projectId), discovered);
     return discovered;
   }, [projectId, queryClient]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
   const [presetsOpen, setPresetsOpen] = useState(false);
-  const [agentReturnContext, setAgentReturnContext] = useState<AgentReturnContext>();
 
   const statusByAgentId = useMemo(() => {
     return mergeAgentStatuses(agents, healthQuery.data?.agents ?? [], new Map());
@@ -101,10 +98,10 @@ export function ProjectShell({
   const createConversation = useMutation({
     mutationFn: (input: CreateConversationInput) => api.createConversation(projectId, input),
     onSuccess: (master) => {
-      queryClient.setQueryData<ConversationDto[]>(["conversations", projectId], (current = []) =>
+      queryClient.setQueryData<ConversationDto[]>(queryKeys.conversations.project(projectId), (current = []) =>
         current.some((item) => item.id === master.id) ? current : [...current, master],
       );
-      void queryClient.invalidateQueries({ queryKey: ["conversations", projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
       setMasterDialogOpen(false);
       navigate({ kind: "conversation", projectId, conversationId: master.id });
     },
@@ -122,15 +119,18 @@ export function ProjectShell({
         initialMessage: input.initialMessage,
       }),
     onSuccess: (agent) => {
-      queryClient.setQueryData<AgentDto[]>(["agents", projectId], (current = []) =>
+      queryClient.setQueryData<AgentDto[]>(queryKeys.agents.project(projectId), (current = []) =>
         current.some((item) => item.id === agent.id) ? current : [...current, agent],
       );
-      void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
       if (agent.conversationId) {
-        void queryClient.invalidateQueries({ queryKey: ["conversation", agent.conversationId] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(agent.conversationId) });
       }
+      const continueToTrigger = agentDialog.continueToTrigger;
       setAgentDialog({ open: false });
-      navigate({ kind: "agent", projectId, agentId: agent.id });
+      navigate(continueToTrigger
+        ? { kind: "agent", projectId, agentId: agent.id, view: "triggers", createTrigger: true }
+        : { kind: "agent", projectId, agentId: agent.id });
     },
   });
 
@@ -193,7 +193,12 @@ export function ProjectShell({
 
   useEffect(() => {
     if (loading || route.kind !== "agents" || !route.create) return;
-    setAgentDialog({ open: true, defaultName: suggestedName() });
+    setAgentDialog({
+      open: true,
+      defaultName: suggestedName(),
+      defaultManagerAgentId: route.managerAgentId,
+      continueToTrigger: route.continueToTrigger,
+    });
     navigate({ kind: "agents", projectId }, { replace: true });
   }, [loading, route, projectId, navigate]);
 
@@ -223,11 +228,6 @@ export function ProjectShell({
 
   let main: JSX.Element;
   if (route.kind === "conversation") {
-    const reopenRoster = agentReturnContext?.conversationId === route.conversationId && agentReturnContext.reopenRoster;
-    const openAgentFromConversation = (agentId: string, fromRoster: boolean) => {
-      setAgentReturnContext({ conversationId: route.conversationId, reopenRoster: fromRoster });
-      navigate({ kind: "agent", projectId, agentId });
-    };
     main = (
       <ConversationView
         key={route.conversationId}
@@ -242,12 +242,9 @@ export function ProjectShell({
         onOpenProject={() => navigate({ kind: "project", projectId })}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
-          : openAgentFromConversation(agentId, false)}
+          : navigate({ kind: "agent", projectId, agentId })}
         onOpenWorkLog={openAgentWorkLog}
-        onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
-        onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
-        initialAgentsOpen={reopenRoster}
-        onInitialAgentsOpenConsumed={() => setAgentReturnContext(undefined)}
+        onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
@@ -268,6 +265,7 @@ export function ProjectShell({
         focusTelemetry={route.focusTelemetry}
         technicalFocusId={route.technicalFocusId}
         initialView={route.view}
+        createTrigger={route.createTrigger}
         onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
         onOpenTechnicalDetails={(technicalFocusId) => navigate({
           kind: "agent", projectId, agentId: route.agentId, view: "technical",
@@ -284,7 +282,6 @@ export function ProjectShell({
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenBroadcast={(conversationId, communicationEventId) => navigate({ kind: "conversation", projectId, conversationId, focusMessageId: communicationEventId })}
         onOpenMaster={(conversationId) => {
-          setAgentReturnContext(undefined);
           navigate({ kind: "conversation", projectId, conversationId });
         }}
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
@@ -317,6 +314,7 @@ export function ProjectShell({
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
           : setAgentDialog({ open: true, defaultName: suggestedName() })}
+        scopeLabel={project.label}
       />
     );
   } else if (route.kind === "review") {
@@ -387,8 +385,8 @@ export function ProjectShell({
       />
       <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={(id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input as never);
-        void action.then(() => queryClient.invalidateQueries({ queryKey: ["agent-presets", projectId] }));
-      }} onDelete={(id) => { void api.deleteAgentPreset(id).then(() => queryClient.invalidateQueries({ queryKey: ["agent-presets", projectId] })); }} />
+        void action.then(() => queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) }));
+      }} onDelete={(id) => { void api.deleteAgentPreset(id).then(() => queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) })); }} />
     </>
   );
 
@@ -399,7 +397,7 @@ export function ProjectShell({
     return (
       <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
-        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>{main}</Box>
+        <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
         {dialogs}
       </Box>
     );
@@ -407,7 +405,7 @@ export function ProjectShell({
 
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid" }}>
-      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}>{main}</Box>
+      <Box component="section" aria-label="Project workspace" sx={{ minHeight: 0, minWidth: 0, display: "grid", bgcolor: "background.default" }}><WorkspaceErrorBoundary title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       {dialogs}
     </Box>
   );

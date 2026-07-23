@@ -20,7 +20,6 @@ describe("launch navigation labels", () => {
       "Work Log",
       "Files & Results",
       "Stop All",
-      "Open in New Ponderosa Tab",
       "Interactive Browser",
       "Project Overview",
       "Rename Tab",

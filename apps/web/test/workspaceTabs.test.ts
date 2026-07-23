@@ -5,6 +5,7 @@ import {
   initializeWorkspaceTabSession,
   navigateWorkspaceTab,
   openWorkspaceTab,
+  openWorkspaceTabInBackground,
   removeProjectWorkspaceTabs,
   reusableWorkspaceTab,
   renameWorkspaceTab,
@@ -43,6 +44,27 @@ describe("persistent user-owned workspace tabs", () => {
     expect(navigated).toHaveLength(2);
     expect(navigated[0]?.route).toEqual(focused);
     expect(navigated[1]?.route).toEqual(route);
+  });
+
+  it("opens desktop resource actions in a new background tab without changing active identity", () => {
+    const activeKey = "current-work";
+    const current = openWorkspaceTab(
+      [],
+      { kind: "agent", projectId: "alpha", agentId: "worker", view: "activity" },
+      1,
+      activeKey,
+    );
+    const next = openWorkspaceTabInBackground(
+      current,
+      { kind: "conversation", projectId: "alpha", conversationId: "release" },
+      2,
+      "release-chat",
+    );
+
+    expect(activeKey).toBe("current-work");
+    expect(next.map((tab) => tab.key)).toEqual(["current-work", "release-chat"]);
+    expect(next[0]).toBe(current[0]);
+    expect(next[1]?.route).toEqual({ kind: "conversation", projectId: "alpha", conversationId: "release" });
   });
 
   it("keeps one tab open and selects the browser-adjacent tab on close", () => {

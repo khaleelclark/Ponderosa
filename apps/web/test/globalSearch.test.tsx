@@ -100,9 +100,6 @@ describe("global chat search", () => {
     expect(component).toContain("refetchOnReconnect: true");
     expect(component).toContain('"aria-activedescendant"');
     expect(component).toContain("onOpenInNewTab");
-    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-    expect(app).toContain("onOpenInNewTab={(selection)");
-    expect(app).toContain("openWorkspaceRoute(routeForGlobalSearchSelection(selection))");
     expect(stream).toContain('["global-search"]');
   });
 

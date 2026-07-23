@@ -38,7 +38,6 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Menu,
   MenuItem,
   MenuList,
   Paper,
@@ -73,6 +72,7 @@ import { telemetryElementId } from "../telemetryFocus";
 import type { ExecutionItem } from "../hooks/useAgentStream";
 import { agentMentionHandle, findMentionedHandles } from "../mentions";
 import { MessageSenderLabel } from "./MessageSenderLabel";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
@@ -1203,7 +1203,7 @@ export function ResponseFileActivity({
   onViewAll?(): void;
   projectId?: string;
 }): JSX.Element | null {
-  const [fileMenu, setFileMenu] = useState<{ anchor: HTMLElement; file: ResponseFileActivityDto }>();
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
   if (files.length === 0) return null;
   const additions = files.reduce((total, file) => total + (file.additions ?? 0), 0);
   const deletions = files.reduce((total, file) => total + (file.deletions ?? 0), 0);
@@ -1234,7 +1234,7 @@ export function ResponseFileActivity({
               onContextMenu={(event) => {
                 if (!onOpenFileInNewTab) return;
                 event.preventDefault();
-                setFileMenu({ anchor: event.currentTarget, file });
+                setFileMenu({ anchor: event.currentTarget, resource: file });
               }}
               sx={{ alignItems: "center", minWidth: 0 }}
             >
@@ -1262,9 +1262,7 @@ export function ResponseFileActivity({
       </Paper>
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review All</Button> : null}
     </Stack>
-    {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
-      <MenuItem onClick={() => { onOpenFileInNewTab?.(fileMenu.file); setFileMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
-    </Menu> : null}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Box>;
 }
 
@@ -1782,7 +1780,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const changes = workspace.data?.changes ?? [];
   const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
   const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
-  const [fileMenu, setFileMenu] = useState<{ anchor: HTMLElement; path: string }>();
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
   const lastInitialPath = useRef(initialPath);
   const activePath = resolveWorkspaceReviewPath(changes, selectedPath, initialPath);
 
@@ -1835,7 +1833,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                     onContextMenu={(event) => {
                       if (!onOpenInNewTab) return;
                       event.preventDefault();
-                      setFileMenu({ anchor: event.currentTarget, path: change.path });
+                      setFileMenu({ anchor: event.currentTarget, resource: change.path });
                     }}
                     variant={change.path === activePath ? "contained" : "text"}
                     color={change.path === activePath ? "primary" : "inherit"}
@@ -1877,9 +1875,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>
             </Box>}
-    {fileMenu ? <Menu anchorEl={fileMenu.anchor} open onClose={() => setFileMenu(undefined)}>
-      <MenuItem onClick={() => { onOpenInNewTab?.(fileMenu.path); setFileMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
-    </Menu> : null}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }
 
@@ -1890,7 +1886,7 @@ function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
   onOpenReviewInNewTab?(path: string): void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const [fileMenuAnchor, setFileMenuAnchor] = useState<HTMLElement>();
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
   const detail = useQuery({
     queryKey: ["changed-file", agentId, file.path, file.lastSeq],
     queryFn: () => api.getChangedFileDetail(agentId, file.path),
@@ -1903,7 +1899,7 @@ function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
     onContextMenu={(event) => {
       if (!onOpenReviewInNewTab) return;
       event.preventDefault();
-      setFileMenuAnchor(event.currentTarget);
+      setFileMenu({ anchor: event.currentTarget, resource: file.path });
     }}
     sx={{ p: 1.25 }}
   >
@@ -1931,9 +1927,7 @@ function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
           : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
             : <Alert severity="info" sx={{ mt: 1 }}>The Agent did not provide a durable recorded diff for this historical file event. Current working-tree state is separate and is not used here.</Alert>
       : null}
-    {fileMenuAnchor ? <Menu anchorEl={fileMenuAnchor} open onClose={() => setFileMenuAnchor(undefined)}>
-      <MenuItem onClick={() => { onOpenReviewInNewTab?.(file.path); setFileMenuAnchor(undefined); }}>Open in New Ponderosa Tab</MenuItem>
-    </Menu> : null}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenReviewInNewTab} />
   </Paper>;
 }
 
@@ -1986,7 +1980,7 @@ export function ArtifactsPane({
       : orderedArtifacts[0]?.id,
   );
   const [filter, setFilter] = useState("");
-  const [artifactMenu, setArtifactMenu] = useState<{ anchor: HTMLElement; artifactId: string }>();
+  const [artifactMenu, setArtifactMenu] = useState<ResourceContextMenuState<string>>();
 
   useEffect(() => {
     if (initialArtifactId && orderedArtifacts.some((artifact) => artifact.id === initialArtifactId)) {
@@ -2059,7 +2053,7 @@ export function ArtifactsPane({
                     setSelectedArtifactId(artifact.id);
                     onSelectArtifact?.(artifact.id);
                   }}
-                  onContextMenu={(event) => { event.preventDefault(); setArtifactMenu({ anchor: event.currentTarget, artifactId: artifact.id }); }}
+                  onContextMenu={(event) => { event.preventDefault(); setArtifactMenu({ anchor: event.currentTarget, resource: artifact.id }); }}
                   aria-current={selected ? "true" : undefined}
                   sx={{ borderRadius: 1.5, mb: 0.25, alignItems: "flex-start", px: 1, py: 0.75 }}
                 >
@@ -2080,7 +2074,7 @@ export function ArtifactsPane({
         <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
         </Box>
       </Box>
-      {artifactMenu ? <Menu anchorEl={artifactMenu.anchor} open onClose={() => setArtifactMenu(undefined)}><MenuItem disabled={!onOpenArtifactInNewTab} onClick={() => { onOpenArtifactInNewTab?.(artifactMenu.artifactId); setArtifactMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+      <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />
     </Box>
   );
 }

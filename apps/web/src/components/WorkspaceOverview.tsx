@@ -15,7 +15,6 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Menu,
   MenuItem,
   Stack,
   TextField,
@@ -23,35 +22,17 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQueries } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { api } from "../api";
+import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
-  const conversationQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["conversations", project.id],
-      queryFn: () => api.listConversations(project.id),
-      staleTime: 10_000,
-    })),
-  });
-  const agentQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["agents", project.id],
-      queryFn: () => api.listAgents(project.id),
-      staleTime: 4_000,
-    })),
-  });
-  const healthQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["agent-health", project.id],
-      queryFn: () => api.getAgentHealth(project.id),
-      staleTime: 5_000,
-    })),
-  });
+  const conversationQueries = useProjectConversations(projects);
+  const agentQueries = useProjectAgents(projects);
+  const healthQueries = useProjectAgentHealth(projects);
   return projects.map((project, index) => ({
     project,
     conversations: conversationQueries[index]?.data ?? [],
@@ -96,7 +77,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   const [filter, setFilter] = useState("");
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
-  const [tabMenu, setTabMenu] = useState<{ anchor: HTMLElement; route: Route }>();
+  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -156,7 +137,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
         return <Stack
           key={snapshot.project.id}
           direction="row"
-          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: openProjectRoute(snapshot) }); }}
+          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: openProjectRoute(snapshot) }); }}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -207,6 +188,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
       })}
       {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
     </List>
-    {tabMenu ? <Menu anchorEl={tabMenu.anchor} open onClose={() => setTabMenu(undefined)}><MenuItem disabled={!onOpenInNewTab} onClick={() => { onOpenInNewTab?.(tabMenu.route); setTabMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+    <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }

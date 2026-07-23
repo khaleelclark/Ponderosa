@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import "./global.css";
 import { COLOR_MODE_STORAGE_KEY, createPonderosaTheme, loadColorMode, type ColorMode } from "./theme";
 
@@ -30,10 +31,12 @@ function Root(): JSX.Element {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <App
-          colorMode={colorMode}
-          onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
-        />
+        <WorkspaceErrorBoundary title="Ponderosa could not display the workspace.">
+          <App
+            colorMode={colorMode}
+            onToggleColorMode={() => setColorMode((current) => (current === "light" ? "dark" : "light"))}
+          />
+        </WorkspaceErrorBoundary>
       </ThemeProvider>
     </QueryClientProvider>
   );

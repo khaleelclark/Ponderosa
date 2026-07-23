@@ -75,6 +75,7 @@ import { useMobileComposerAutoHide } from "../mobileChat";
 import { TriggersPane } from "./TriggersPane";
 import { AgentHeaderRelationships, orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 import { notificationTechnicalFocusId } from "../technicalFocus";
+import { queryKeys } from "../queryKeys";
 
 type AgentTab = AgentDetailView;
 
@@ -247,6 +248,7 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
+  createTrigger,
   onViewChange,
   onOpenTechnicalDetails,
   engines,
@@ -273,6 +275,7 @@ export function AgentDetail({
   focusTelemetry?: AgentTelemetryFocus;
   technicalFocusId?: string;
   initialView?: AgentDetailView;
+  createTrigger?: boolean;
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
   engines: EngineDto[];
@@ -592,20 +595,20 @@ export function AgentDetail({
       engineMapping,
       ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
     });
-    await queryClient.invalidateQueries({ queryKey: ["agents", detail.agent.projectId] });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(detail.agent.projectId) });
     onOpenAgent(imported.rootAgentId);
   };
 
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => (agent.id === updated.id ? updated : agent)),
       );
-      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: queryKeys.conversations.detailAll }, (current) =>
         current
           ? {
               ...current,
@@ -613,9 +616,9 @@ export function AgentDetail({
             }
           : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll });
       setRenameOpen(false);
     },
   });
@@ -626,11 +629,11 @@ export function AgentDetail({
       primaryConversationId: membershipIds.length ? primaryConversationId : undefined,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll });
       setMembershipOpen(false);
     },
   });
@@ -638,10 +641,10 @@ export function AgentDetail({
   const updateOrganization = useMutation({
     mutationFn: () => api.updateAgentOrganization(agentId, { managerAgentId: organizationParentId || null }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(updated.projectId) });
       setOrganizationOpen(false);
     },
   });
@@ -650,10 +653,10 @@ export function AgentDetail({
     mutationFn: (managementPermissions: AgentDto["managementPermissions"]) =>
       api.updateAgent(agentId, { managementPermissions }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => agent.id === updated.id ? updated : agent),
       );
     },
@@ -666,13 +669,13 @@ export function AgentDetail({
       effort: settingsEffort || null,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => agent.id === updated.id ? updated : agent),
       );
-      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: queryKeys.conversations.detailAll }, (current) =>
         current ? { ...current, agents: current.agents.map((agent) => agent.id === updated.id ? updated : agent) } : current,
       );
       setRuntimeSettingsNotice("Saved. These runtime settings apply when the next Run starts.");
@@ -838,7 +841,7 @@ export function AgentDetail({
               onSuccess: (response) => {
                 setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
                 void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] });
-                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
+                void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(detail.agent.projectId) });
               },
             },
           );
@@ -993,7 +996,7 @@ export function AgentDetail({
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => { setTab("activity"); onViewChange?.("activity"); }} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
-    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
+    triggers: <TriggersPane agent={detail.agent} initialCreateOpen={createTrigger} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,
     settings: settingsPane,
     technical: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,

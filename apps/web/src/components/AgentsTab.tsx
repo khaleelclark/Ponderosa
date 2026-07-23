@@ -36,8 +36,10 @@ import type { ConversationDto, AgentDto, AgentHealthDto, EngineDto } from "@pond
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
   agentBelongsToConversation,
   agentStatusColor,
@@ -145,6 +147,7 @@ export function AgentsTab({
   selectionAllowed = true,
   onReorder,
   toolbarControls,
+  scopeLabel,
 }: {
   agents: AgentDto[];
   projectId?: string;
@@ -162,6 +165,7 @@ export function AgentsTab({
   selectionAllowed?: boolean;
   onReorder?(sourceAgentId: string, targetAgentId: string): void;
   toolbarControls?: ReactNode;
+  scopeLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
@@ -174,7 +178,7 @@ export function AgentsTab({
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(() => new Set());
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [agentMenu, setAgentMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
+  const [agentMenu, setAgentMenu] = useState<ResourceContextMenuState<string>>();
   const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
   const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
@@ -184,8 +188,8 @@ export function AgentsTab({
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
     onSuccess: (updated) => {
-      void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
-      void queryClient.invalidateQueries({ queryKey: ["agent", updated.id] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(updated.projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(updated.id) });
     },
   });
 
@@ -257,7 +261,7 @@ export function AgentsTab({
     })));
     const failed = results.filter((item) => item.status === "rejected").length;
     if (failed) setBulkError(`${activeRunTargets.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);
-    await queryClient.invalidateQueries({ queryKey: ["agents"] });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     setStoppingAll(false);
   };
   return (
@@ -269,9 +273,10 @@ export function AgentsTab({
         spacing={1}
         sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}
       >
-        <Typography variant="h6" sx={{ flex: 1 }}>
-          Agents
-        </Typography>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="h6" component="h1">Agents</Typography>
+          {scopeLabel ? <Typography variant="caption" color="text.secondary">{scopeLabel} organization</Typography> : null}
+        </Box>
         {selectionMode ? <>
           <Button color="inherit" size="small" onClick={() => {
             const visibleIds = filtered.map(({ agent }) => agent.id);
@@ -419,7 +424,7 @@ export function AgentsTab({
                   /> : null}
                   <ButtonBase
                     onClick={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
-                    onContextMenu={(event) => { if (selectionMode) return; event.preventDefault(); setAgentMenu({ anchor: event.currentTarget, agentId: agent.id }); }}
+                    onContextMenu={(event) => { if (selectionMode) return; event.preventDefault(); setAgentMenu({ anchor: event.currentTarget, resource: agent.id }); }}
                     aria-label={`Open agent ${agent.title}`}
                     sx={{ flex: 1, minWidth: 0, px: 1, py: 0.75, display: "block", textAlign: "left" }}
                   >
@@ -446,7 +451,7 @@ export function AgentsTab({
                     </Stack>
                   </ButtonBase>
                   {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
-                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, agentId: agent.id })} sx={{ mr: 0.5, minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton> : null}
+                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5, minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton> : null}
                   </Paper>
                 </Stack>
               );
@@ -462,12 +467,33 @@ export function AgentsTab({
         onClose={() => setPendingDelete(undefined)}
         onDeleted={() => setPendingDelete(undefined)}
       /> : null}
-      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}>
-        <MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
-        <MenuItem onClick={() => { onNewAgent(agentMenu.agentId); setAgentMenu(undefined); }}><PersonAddAlt1Icon fontSize="small" sx={{ mr: 1 }} />Add Delegated Agent</MenuItem>
-        {agentsById.get(agentMenu.agentId)?.managerAgentId ? <MenuItem disabled={promoteAgent.isPending} onClick={() => { promoteAgent.mutate(agentMenu.agentId); setAgentMenu(undefined); }}><ArrowUpwardIcon fontSize="small" sx={{ mr: 1 }} />Move to Top Level</MenuItem> : null}
-        <MenuItem sx={{ color: "error.main" }} onClick={() => { setPendingDelete(agentsById.get(agentMenu.agentId)); setAgentMenu(undefined); }}><DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} />Delete Agent</MenuItem>
-      </Menu> : null}
+      <ResourceContextMenu
+        state={agentMenu}
+        onClose={() => setAgentMenu(undefined)}
+        onOpenInNewTab={onOpenAgentInNewTab}
+        actions={agentMenu ? [
+          {
+            id: "delegate",
+            label: "Add Delegated Agent",
+            icon: <PersonAddAlt1Icon fontSize="small" />,
+            onSelect: onNewAgent,
+          },
+          ...(agentsById.get(agentMenu.resource)?.managerAgentId ? [{
+            id: "promote",
+            label: "Move to Top Level",
+            icon: <ArrowUpwardIcon fontSize="small" />,
+            disabled: promoteAgent.isPending,
+            onSelect: (agentId: string) => promoteAgent.mutate(agentId),
+          }] : []),
+          {
+            id: "delete",
+            label: "Delete Agent",
+            icon: <DeleteOutlineIcon fontSize="small" />,
+            color: "error" as const,
+            onSelect: (agentId: string) => setPendingDelete(agentsById.get(agentId)),
+          },
+        ] : []}
+      />
       {projectId ? <AgentDeletionDialog
         open={deleteSelectedOpen}
         projectId={projectId}
