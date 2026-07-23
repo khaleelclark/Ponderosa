@@ -8621,6 +8621,108 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves long text across capability, Decision, cancellation, and browser paths", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const browserDriver: BrowserDriver = {
+      pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+      navigate: async (url) => ({ url, title: "Page" }),
+      inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+      click: async () => ({ url: "about:blank", title: "Blank" }),
+      fill: vi.fn(async () => ({ url: "about:blank", title: "Blank" })),
+      key: async () => ({ url: "about:blank", title: "Blank" }),
+      pointer: async () => ({ url: "about:blank", title: "Blank" }),
+      type: async () => ({ url: "about:blank", title: "Blank" }),
+      scroll: async () => ({ url: "about:blank", title: "Blank" }),
+      capture: async () => Buffer.from("89504e470d0a1a0a", "hex"),
+      close: vi.fn(async () => undefined),
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      browserDriverFactory: async () => browserDriver,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Long capability text", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Long text team" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const longText = `${"Long payload ".repeat(449)}Long payload`;
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Exercise long-text capabilities", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+
+    const coordinated = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: recipient.id, text: longText, completionMode: "record" },
+    });
+    expect(coordinated.success, coordinated.text).toBe(true);
+    const coordinationRequestId = JSON.parse(coordinated.text).requestIds[0] as string;
+    expect(new CoordinationV3Store(store.sqlite).getRequest(coordinationRequestId)?.payload)
+      .toMatchObject({ text: longText });
+
+    const managed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_create_managed_agent",
+      arguments: {
+        idempotencyKey: "long-managed-agent",
+        title: "Long worker",
+        engine: "codex",
+        text: longText,
+        lifetime: { kind: "indefinite" },
+        awaitResult: false,
+      },
+    });
+    expect(managed.success, managed.text).toBe(true);
+    const managedRequestId = JSON.parse(managed.text).requestId as string;
+    expect(new CoordinationV3Store(store.sqlite).getRequest(managedRequestId)?.payload)
+      .toMatchObject({ text: longText });
+
+    const asked = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_decision",
+      arguments: { question: "Provide the complete response", context: longText, blocking: false },
+    });
+    expect(asked.success, asked.text).toBe(true);
+    const decision = JSON.parse(asked.text) as { id: string; context: string };
+    expect(decision.context).toBe(longText);
+
+    const opened = await runtime.handleDynamicToolCall!({ name: "ponderosa_browser_open", arguments: {} });
+    expect(opened.success, opened.text).toBe(true);
+    const filled = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_browser_act",
+      arguments: { action: "fill", selector: "#long-text", text: longText },
+    });
+    expect(filled.success, filled.text).toBe(true);
+    expect(browserDriver.fill).toHaveBeenCalledWith("#long-text", longText);
+
+    const responded = await app.inject({
+      method: "POST",
+      url: `/api/decisions/${decision.id}/respond`,
+      payload: { text: longText },
+    });
+    expect(responded.statusCode, responded.body).toBe(200);
+    expect(responded.json()).toMatchObject({ response: { text: longText } });
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/requests/${coordinationRequestId}/cancel`,
+      payload: { idempotencyKey: "long-cancel-reason", reason: longText },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    const cancellation = store.sqlite.prepare(`
+      SELECT payload_json FROM coordination_request_updates
+      WHERE request_id = ? AND kind = 'cancelled'
+    `).get(coordinationRequestId) as { payload_json: string };
+    expect(JSON.parse(cancellation.payload_json)).toEqual({ reason: longText });
+    await app.close();
+  });
+
   it("preserves an inherited user reply route across a callback continuation", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
