@@ -20,6 +20,11 @@ export function ChatMessageFrame({
     ? author.profile?.displayName ?? "You"
     : author.name ?? "Ponderosa";
   const openAuthor = author.kind === "agent" ? author.onOpen : undefined;
+  const selectable = message.onSelect !== undefined;
+  const selectMessage = () => {
+    setMobileTimestampRevealed((current) => !current);
+    message.onSelect?.();
+  };
   const avatar = (
     <Avatar
       aria-label={`${senderName} avatar`}
@@ -42,12 +47,22 @@ export function ChatMessageFrame({
       component="article"
       className="chat-message"
       aria-label={message.ariaLabel ?? `${senderName} message`}
-      tabIndex={-1}
-      onClick={() => {
-        setMobileTimestampRevealed((current) => !current);
-        message.onSelect?.();
+      role={selectable ? "button" : undefined}
+      tabIndex={selectable ? 0 : undefined}
+      onClick={selectMessage}
+      onKeyDown={(event) => {
+        if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        selectMessage();
       }}
-      sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
+      sx={{
+        alignSelf: "center",
+        width: "min(1120px, 100%)",
+        maxWidth: "100%",
+        minWidth: 0,
+        py: { xs: 0.75, sm: 1 },
+        ...(selectable ? { cursor: "pointer" } : {}),
+      }}
     >
       <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromOperator ? "flex-end" : "flex-start", minWidth: 0 }}>
         {!fromOperator ? openAuthor

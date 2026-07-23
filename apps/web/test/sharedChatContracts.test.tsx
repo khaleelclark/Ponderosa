@@ -36,6 +36,39 @@ describe("shared chat presentation contracts", () => {
     expect(html).toContain(">Copy</button>");
   });
 
+  it("makes only selectable message rows button-like and keyboard activatable", () => {
+    const onSelect = vi.fn();
+    const selectable = create(<ChatMessageFrame message={{
+      id: "message-selectable",
+      author: { kind: "agent", name: "Redwood" },
+      createdAt: "2026-07-23T10:00:00.000Z",
+      body: <p>Select me.</p>,
+      onSelect,
+    }} />);
+    const selectableArticle = selectable.root.findByType("article");
+    expect(selectableArticle.props.role).toBe("button");
+    expect(selectableArticle.props.tabIndex).toBe(0);
+
+    const currentTarget = {};
+    act(() => selectableArticle.props.onKeyDown({
+      key: "Enter", target: currentTarget, currentTarget, preventDefault: vi.fn(),
+    }));
+    act(() => selectableArticle.props.onKeyDown({
+      key: " ", target: currentTarget, currentTarget, preventDefault: vi.fn(),
+    }));
+    expect(onSelect).toHaveBeenCalledTimes(2);
+
+    const transcript = create(<ChatMessageFrame message={{
+      id: "message-transcript",
+      author: { kind: "agent", name: "Redwood" },
+      createdAt: "2026-07-23T10:00:00.000Z",
+      body: <p>Read me.</p>,
+    }} />);
+    const transcriptArticle = transcript.root.findByType("article");
+    expect(transcriptArticle.props.role).toBeUndefined();
+    expect(transcriptArticle.props.tabIndex).toBeUndefined();
+  });
+
   it("owns cursor pagination and prepares a stable prepend through one ChatSurface", () => {
     const loadEarlier = vi.fn();
     const view = create(<ChatSurface

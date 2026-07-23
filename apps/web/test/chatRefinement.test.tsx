@@ -138,12 +138,20 @@ describe("chat interaction refinement", () => {
     expect(documentCard).toContain('className="ponderosa-scroll"');
   });
 
-  it("keeps Markdown block rhythm compact without losing authored line breaks", () => {
-    const html = renderToStaticMarkup(<ChatMarkdown compact>{"First line\nsecond line\n\n- One\n- Two"}</ChatMarkdown>);
-    expect(html).toContain("white-space:normal");
-    expect(html).toContain("white-space:pre-wrap");
+  it("renders Markdown soft newlines as paragraph whitespace while preserving block and fenced-code structure", () => {
+    const html = renderToStaticMarkup(<ChatMarkdown compact>{
+      "First line\nsecond line\n\nThird paragraph\n\n- One\n- Two\n\n> Quoted first\n> quoted second\n\n```text\nalpha\n  beta\n```"
+    }</ChatMarkdown>);
+
+    expect(html).toContain("<p>First line\nsecond line</p>");
+    expect(html).not.toContain("<br");
+    expect(html.match(/<p>/gu)).toHaveLength(3);
     expect(html).toContain("<ul>");
-    expect(html).toContain("<li>One</li>");
-    expect(html).toContain("<li>Two</li>");
+    expect(html.match(/<li>/gu)).toHaveLength(2);
+    expect(html).toMatch(/<ul>\s*<li>One<\/li>\s*<li>Two<\/li>\s*<\/ul>/u);
+    expect(html).toMatch(/<blockquote>\s*<p>Quoted first\nquoted second<\/p>\s*<\/blockquote>/u);
+    expect(html).not.toContain("white-space:pre-wrap");
+    expect(html).toContain("white-space:pre");
+    expect(html).toContain("alpha\n  beta");
   });
 });
