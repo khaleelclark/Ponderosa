@@ -1244,10 +1244,13 @@ describe("notification panel actions", () => {
     })).json<{ traces: Array<{ state: string }> }>();
     expect(inspector.traces.some((trace) => trace.state === "attention")).toBe(true);
     const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
-      agentId?: string; category?: string; severity?: string;
+      agentId?: string; agentIds?: string[]; category?: string; severity?: string;
     }>>();
     expect(notifications).toEqual(expect.arrayContaining([expect.objectContaining({
-      agentId: manager.id, category: "coordination", severity: "attention",
+      agentId: workers[0].id,
+      agentIds: expect.arrayContaining([manager.id, ...workers.map((worker) => worker.id)]),
+      category: "coordination",
+      severity: "attention",
     })]));
     await app.close();
   });
