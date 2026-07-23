@@ -5383,6 +5383,84 @@ describe("server chunk F", () => {
     await unavailable.close();
   });
 
+  it("exchanges a one-time installed-launch credential for an HttpOnly browser session", async () => {
+    const tokens = ["bootstrap-token", "browser-session-token"];
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      buildVersion: "3.5.0-beta.1",
+      buildRevision: "packaged-revision",
+      releaseChannel: "beta",
+      launcherSecurity: {
+        controlToken: "launcher-control",
+        randomToken: () => tokens.shift() ?? "unexpected-token",
+      },
+    });
+    expect((await app.inject({ method: "GET", url: "/api/projects" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/launcher/status" })).statusCode).toBe(401);
+
+    const controlHeaders = { authorization: "Bearer launcher-control" };
+    const status = await app.inject({ method: "GET", url: "/api/launcher/status", headers: controlHeaders });
+    expect(status.statusCode, status.body).toBe(200);
+    expect(status.json()).toMatchObject({
+      pid: process.pid,
+      dataDir,
+      version: "3.5.0-beta.1",
+      commit: "packaged-revision",
+      channel: "beta",
+    });
+
+    const bootstrap = await app.inject({
+      method: "POST",
+      url: "/api/launcher/bootstrap",
+      headers: controlHeaders,
+    });
+    expect(bootstrap.statusCode, bootstrap.body).toBe(200);
+    expect(bootstrap.json()).toMatchObject({ token: "bootstrap-token" });
+
+    const page = await app.inject({ method: "GET", url: "/__ponderosa_bootstrap#not-sent-to-server" });
+    expect(page.statusCode).toBe(200);
+    expect(page.body).not.toContain("bootstrap-token");
+    expect(page.headers["cache-control"]).toBe("no-store");
+
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/launcher/session-exchange",
+      headers: {
+        origin: "http://localhost:8787",
+        host: "localhost:8787",
+      },
+      payload: { token: "bootstrap-token" },
+    });
+    expect(exchange.statusCode, exchange.body).toBe(204);
+    const cookie = String(exchange.headers["set-cookie"]);
+    expect(cookie).toContain("ponderosa_session=browser-session-token");
+    expect(cookie).toContain("HttpOnly");
+    expect(cookie).toContain("SameSite=Strict");
+
+    const replay = await app.inject({
+      method: "POST",
+      url: "/api/launcher/session-exchange",
+      headers: {
+        origin: "http://localhost:8787",
+        host: "localhost:8787",
+      },
+      payload: { token: "bootstrap-token" },
+    });
+    expect(replay.statusCode).toBe(401);
+
+    const browserHeaders = { cookie: "ponderosa_session=browser-session-token" };
+    expect((await app.inject({ method: "GET", url: "/api/projects", headers: browserHeaders })).statusCode).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/deployment/drain",
+      headers: { ...browserHeaders, origin: "https://attacker.example", host: "localhost:8787" },
+    })).statusCode).toBe(403);
+    await app.close();
+  });
+
   it("keeps cancellation cleanup running during deployment drain and never reports a false zero", async () => {
     const persistent = new SteerableMockAdapter();
     let releaseClose!: () => void;

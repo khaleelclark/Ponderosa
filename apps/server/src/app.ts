@@ -502,6 +502,19 @@ export interface CreateServerOptions {
   engines: EngineRegistration[];
   webDist?: string;
   authToken?: string;
+  /** Installed-build identity. Development and test embeddings may omit it. */
+  buildVersion?: string;
+  releaseChannel?: string;
+  /** Host-launcher security is enabled only for installed loopback builds.
+   * The launcher secret never enters a browser; it creates one-time browser
+   * bootstraps that exchange into HttpOnly local sessions. */
+  launcherSecurity?: {
+    controlToken: string;
+    bootstrapTtlMs?: number;
+    sessionTtlMs?: number;
+    now?: () => number;
+    randomToken?: () => string;
+  };
   /** Validated production listener boundary. Tests embedding the server default safely to loopback. */
   networkSecurity?: ReadinessDto["networkSecurity"];
   /** Deterministic test seam; production resolves and pins public DNS itself. */
@@ -1778,6 +1791,36 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     detail: opts.authToken
       ? "Operator API access requires bearer authentication on this loopback listener."
       : "Operator access is limited to clients on this host.",
+  };
+  const launcherNow = opts.launcherSecurity?.now ?? Date.now;
+  const launcherRandomToken = opts.launcherSecurity?.randomToken ??
+    (() => randomBytes(32).toString("base64url"));
+  const launcherBootstrapTtlMs = Math.max(5_000, Math.min(
+    opts.launcherSecurity?.bootstrapTtlMs ?? 60_000,
+    5 * 60_000,
+  ));
+  const launcherSessionTtlMs = Math.max(60_000, Math.min(
+    opts.launcherSecurity?.sessionTtlMs ?? 12 * 60 * 60_000,
+    7 * 24 * 60 * 60_000,
+  ));
+  const launcherBootstraps = new Map<string, number>();
+  const launcherSessions = new Map<string, number>();
+  const purgeLauncherSecurityState = (): void => {
+    const now = launcherNow();
+    for (const [token, expiresAt] of launcherBootstraps) {
+      if (expiresAt <= now) launcherBootstraps.delete(token);
+    }
+    for (const [token, expiresAt] of launcherSessions) {
+      if (expiresAt <= now) launcherSessions.delete(token);
+    }
+  };
+  const cookieValue = (header: string | undefined, name: string): string | undefined =>
+    header?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))
+      ?.slice(name.length + 1);
+  const validLauncherSession = (header: string | undefined): boolean => {
+    purgeLauncherSecurityState();
+    const token = cookieValue(header, "ponderosa_session");
+    return Boolean(token && (launcherSessions.get(token) ?? 0) > launcherNow());
   };
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
@@ -5370,6 +5413,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.addHook("onRequest", async (request, reply) => {
     const provided = request.headers.authorization?.replace(/^Bearer\s+/i, "");
+    const browserBootstrapPath = request.url === "/__ponderosa_bootstrap" ||
+      request.url === "/__ponderosa_bootstrap.js";
+    const launcherExchange = request.url === "/api/launcher/session-exchange";
+    const launcherControlRequest = request.url.startsWith("/api/launcher/") && !launcherExchange;
+    if (launcherControlRequest) {
+      if (opts.launcherSecurity && provided &&
+          secretEqual(provided, opts.launcherSecurity.controlToken)) return;
+      return reply.code(401).send({ error: "launcher authorization required" });
+    }
+    if (opts.launcherSecurity && (browserBootstrapPath || launcherExchange)) return;
     const agentToolRequest = request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-docs" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover";
     const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
     if (capability) {
@@ -5378,9 +5431,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       return;
     }
-    if (!opts.authToken) return;
     if (request.url === "/api/health" || request.url === "/api/ready" || request.url.startsWith("/api/trigger-webhooks/")) return;
-    if (!secretEqual(provided, opts.authToken)) {
+    if (opts.launcherSecurity && validLauncherSession(request.headers.cookie)) return;
+    if (opts.authToken && secretEqual(provided, opts.authToken)) return;
+    if (opts.authToken || opts.launcherSecurity) {
       return reply.code(401).send({ error: "unauthorized" });
     }
   });
@@ -7860,9 +7914,83 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get("/api/health", async (): Promise<HealthDto> => ({
     status: "ok",
     service: "ponderosa",
-    version: "0.0.0",
+    version: opts.buildVersion?.trim() || "0.0.0",
     revision: opts.buildRevision?.trim() || "development",
   }));
+
+  app.get("/api/launcher/status", async () => ({
+    service: "ponderosa",
+    pid: process.pid,
+    dataDir: opts.dataDir,
+    version: opts.buildVersion?.trim() || "0.0.0",
+    commit: opts.buildRevision?.trim() || "development",
+    channel: opts.releaseChannel?.trim() || "development",
+    acceptingDurableIntake: !closed,
+    leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
+  }));
+
+  app.post("/api/launcher/bootstrap", async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    purgeLauncherSecurityState();
+    const token = launcherRandomToken();
+    launcherBootstraps.set(token, launcherNow() + launcherBootstrapTtlMs);
+    return { token, expiresInMs: launcherBootstrapTtlMs };
+  });
+
+  app.post<{ Body: { token?: string } }>("/api/launcher/session-exchange", async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    if (!opts.launcherSecurity) return reply.code(404).send({ error: "launcher session bootstrap is disabled" });
+    purgeLauncherSecurityState();
+    const token = request.body?.token;
+    const expiresAt = typeof token === "string" ? launcherBootstraps.get(token) : undefined;
+    if (!token || !expiresAt || expiresAt <= launcherNow()) {
+      if (token) launcherBootstraps.delete(token);
+      return reply.code(401).send({ error: "browser bootstrap is invalid or expired" });
+    }
+    // Consume before issuing the browser session. Concurrent replay loses.
+    launcherBootstraps.delete(token);
+    const session = launcherRandomToken();
+    launcherSessions.set(session, launcherNow() + launcherSessionTtlMs);
+    reply.header(
+      "Set-Cookie",
+      `ponderosa_session=${session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(launcherSessionTtlMs / 1_000)}`,
+    );
+    return reply.code(204).send();
+  });
+
+  app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
+    .type("text/html; charset=utf-8")
+    .header("Cache-Control", "no-store")
+    .send(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Opening Ponderosa…</title>
+</head>
+<body>
+  <main><h1>Opening Ponderosa…</h1><p id="status">Securing this browser session.</p></main>
+  <script src="/__ponderosa_bootstrap.js"></script>
+</body>
+</html>`));
+
+  app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
+    .type("text/javascript; charset=utf-8")
+    .header("Cache-Control", "no-store")
+    .send(`(async()=>{const e=document.getElementById("status"),t=decodeURIComponent(location.hash.slice(1));history.replaceState(null,"","/__ponderosa_bootstrap");if(!t){e.textContent="This launch link is incomplete. Open Ponderosa from the installed application again.";return}try{const r=await fetch("/api/launcher/session-exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:t})});if(!r.ok)throw new Error("exchange failed");location.replace("/")}catch{e.textContent="This launch link expired or was already used. Open Ponderosa from the installed application again."}})();`));
+
+  app.post("/api/launcher/shutdown", async (_request, reply) => {
+    if (closed) return reply.code(409).send({ error: "Ponderosa is already shutting down" });
+    reply.code(202);
+    setImmediate(() => {
+      app.prepareForShutdown();
+      void app.close().catch((error) => {
+        app.log.error({ err: error }, "Launcher-requested shutdown remains incomplete");
+      });
+    });
+    return { accepted: true };
+  });
 
   app.post("/api/deployment/drain", async (_request, reply) => {
     if (closed) return reply.code(409).send({ error: "daemon is shutting down" });
@@ -8008,7 +8136,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const body: ReadinessDto = {
       status: canAcceptWork ? "ready" : "not_ready",
       service: "ponderosa",
-      version: "0.0.0",
+      version: opts.buildVersion?.trim() || "0.0.0",
       canAcceptWork,
       networkSecurity,
       acceptingDurableIntake,

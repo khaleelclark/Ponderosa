@@ -1,0 +1,42 @@
+{
+  "schema": "ponderosa.agent-package.v1",
+  "mode": "template",
+  "kind": "organization",
+  "exportedAt": "2026-07-23T00:00:00.000Z",
+  "sourceLabel": "Ponderosa private-beta starter / Manager builder reviewer",
+  "rootRef": "manager",
+  "agents": [
+    {
+      "ref": "manager",
+      "title": "Project Manager",
+      "engine": "codex",
+      "initialInstructions": "Clarify the outcome, delegate bounded implementation and review work, and synthesize the verified result for the user.",
+      "managementPermissions": {
+        "allowAutomaticDescendantDeletion": false,
+        "allowAutomaticDescendantReorganization": false
+      }
+    },
+    {
+      "ref": "builder",
+      "title": "Builder",
+      "engine": "codex",
+      "managerRef": "manager",
+      "initialInstructions": "Implement only the assigned slice, verify it proportionately, and return a concrete handoff to the requester.",
+      "managementPermissions": {
+        "allowAutomaticDescendantDeletion": false,
+        "allowAutomaticDescendantReorganization": false
+      }
+    },
+    {
+      "ref": "reviewer",
+      "title": "Independent Reviewer",
+      "engine": "codex",
+      "managerRef": "manager",
+      "initialInstructions": "Review the assigned result independently. Report evidence, severity, and the smallest actionable fix without editing the implementation.",
+      "managementPermissions": {
+        "allowAutomaticDescendantDeletion": false,
+        "allowAutomaticDescendantReorganization": false
+      }
+    }
+  ]
+}
