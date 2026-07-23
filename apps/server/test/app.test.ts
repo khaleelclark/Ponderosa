@@ -1206,6 +1206,47 @@ describe("notification panel actions", () => {
     await app.close();
   });
 
+  it("keeps one failed assignment visible while sibling assignments remain active or finish later", async () => {
+    const project = store.createProject({ label: "Mixed coordination attention", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Mixed work" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const workers = ["One", "Two", "Three"].map((title) =>
+      store.createAgent(project.id, { title: `Worker ${title}`, engine: "codex", conversationId: conversation.id }));
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id, conversationId: conversation.id, requesterAgentId: manager.id,
+      actorScope: `agent:${manager.id}`, idempotencyKey: "mixed-attention",
+      requests: workers.map((worker, index) => ({
+        requestId: `mixed-request-${index + 1}`, recipientAgentId: worker.id,
+        lifetime: { kind: "indefinite" as const }, payload: { assignment: `Work ${index + 1}` },
+      })),
+      join: { id: "mixed-attention-join", mode: "all" },
+    });
+    store.sqlite.prepare(`
+      UPDATE coordination_requests SET state = 'outcome_unknown', updated_at = ? WHERE id = 'mixed-request-1'
+    `).run("2099-07-23T06:00:01.000Z");
+    store.sqlite.prepare(`
+      UPDATE coordination_requests SET state = 'in_progress', updated_at = ? WHERE id = 'mixed-request-2'
+    `).run("2099-07-23T06:00:02.000Z");
+    // This later completion belongs to a sibling Request. It must not be
+    // mistaken for recovery of mixed-request-1.
+    store.sqlite.prepare(`
+      UPDATE coordination_requests SET state = 'completed', terminal_at = ?, updated_at = ? WHERE id = 'mixed-request-3'
+    `).run("2099-07-23T06:00:03.000Z", "2099-07-23T06:00:03.000Z");
+
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0 } });
+    const inspector = (await app.inject({
+      method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}`,
+    })).json<{ traces: Array<{ state: string }> }>();
+    expect(inspector.traces.some((trace) => trace.state === "attention")).toBe(true);
+    const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
+      agentId?: string; category?: string; severity?: string;
+    }>>();
+    expect(notifications).toEqual(expect.arrayContaining([expect.objectContaining({
+      agentId: manager.id, category: "coordination", severity: "attention",
+    })]));
+    await app.close();
+  });
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Release chat" });

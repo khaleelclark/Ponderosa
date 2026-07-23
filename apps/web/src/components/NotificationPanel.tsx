@@ -28,7 +28,6 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { isOpenAttention, visibleNotification } from "../attention";
-import { AgentWorkInspector } from "./AgentWorkInspector";
 
 export interface NotificationGroup {
   key: string;
@@ -69,6 +68,19 @@ export function groupNotificationsByProject(notifications: WorkspaceNotification
   return [...groups.values()].sort((a, b) => compareNotificationsNewestFirst(a.items[0]!, b.items[0]!));
 }
 
+export function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
+  if (!item.projectId) return undefined;
+  if (item.action?.kind === "open_agent" && item.action.targetId) {
+    return { kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "runs" };
+  }
+  const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
+  return {
+    kind: "projectWork", projectId: item.projectId,
+    ...(item.conversationId ? { conversationId: item.conversationId } : {}),
+    ...(focusId ? { focusId } : {}),
+  };
+}
+
 function notificationTime(value: string): string {
   const date = new Date(value);
   const today = new Date();
@@ -91,7 +103,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const [filter, setFilter] = useState<"all" | "mentions" | "urgent">("all");
   const [error, setError] = useState<string>();
   const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
-  const [agentWorkTarget, setAgentWorkTarget] = useState<{ projectId: string; conversationId?: string; focusId?: string }>();
   const visibleNotifications = filterNotifications(notifications, filter);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
@@ -266,9 +277,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                     </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
                       event.stopPropagation();
-                      const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
-                      setAgentWorkTarget({ projectId: item.projectId!, ...(item.conversationId ? { conversationId: item.conversationId } : {}), ...(focusId ? { focusId } : {}) });
+                      const route = notificationWorkRoute(item);
                       onClose();
+                      if (route) onNavigate(route);
                     }}>Review Work Details</Button> : null}</Stack>}
                     secondaryTypographyProps={{ sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />
@@ -284,12 +295,5 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
-  </Dialog>
-  {agentWorkTarget ? <AgentWorkInspector
-    open
-    projectId={agentWorkTarget.projectId}
-    conversationId={agentWorkTarget.conversationId}
-    focus={agentWorkTarget.focusId ? { id: agentWorkTarget.focusId } : undefined}
-    onClose={() => setAgentWorkTarget(undefined)}
-  /> : null}</>;
+  </Dialog></>;
 }

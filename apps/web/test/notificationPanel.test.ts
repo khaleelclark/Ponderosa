@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
-import { filterNotifications, groupNotificationsByProject } from "../src/components/NotificationPanel";
+import { filterNotifications, groupNotificationsByProject, notificationWorkRoute } from "../src/components/NotificationPanel";
 import { createPonderosaTheme } from "../src/theme";
 
 function luminance(color: string): number {
@@ -55,6 +55,21 @@ describe("notification panel grouping", () => {
     const attention = { ...urgent, id: "attention", severity: "attention" as const, readAt: "2026-07-16T04:00:00.000Z" };
     expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([attention, urgent]);
     expect(filterNotifications([attention], "all")).toEqual([attention]);
+  });
+
+  it("routes work review into the normal workspace instead of an overlay", () => {
+    const coordination = {
+      ...notification("coordination", "project-a", "chat-a", "2026-07-16T03:00:00.000Z"),
+      kind: "operational" as const,
+      category: "coordination" as const,
+      action: { kind: "open_agent" as const, targetId: "agent-a" },
+    };
+    expect(notificationWorkRoute(coordination)).toEqual({
+      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "runs",
+    });
+    expect(notificationWorkRoute({ ...coordination, action: undefined, communicationEventId: "event-a" })).toEqual({
+      kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "event-a",
+    });
   });
 
   it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {

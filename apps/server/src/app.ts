@@ -4314,15 +4314,46 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
         return false;
       };
-      const attentionItems = ordered.filter(needsAttention);
+      const completedRecoveryFor = (failure: AgentWorkItemDto): boolean => {
+        const activationIds = new Set<string>();
+        const addLaterActivation = (id: string): void => {
+          const candidate = componentById.get(id);
+          if (candidate?.kind === "activation" && candidate.createdAt >= failure.updatedAt) activationIds.add(candidate.id);
+        };
+        for (const relatedId of failure.relatedItemIds) {
+          const related = componentById.get(relatedId);
+          if (!related) continue;
+          addLaterActivation(related.id);
+          if (failure.kind === "request" && related.kind === "join") {
+            related.relatedItemIds.forEach(addLaterActivation);
+          }
+          if (failure.kind === "run" && related.kind === "activation") {
+            related.relatedItemIds.filter((id) => id !== failure.id).forEach(addLaterActivation);
+          }
+        }
+        const queue = [...activationIds];
+        const visitedActivations = new Set<string>();
+        while (queue.length) {
+          const activationId = queue.shift()!;
+          if (visitedActivations.has(activationId)) continue;
+          visitedActivations.add(activationId);
+          const activation = componentById.get(activationId);
+          if (!activation) continue;
+          for (const relatedId of activation.relatedItemIds) {
+            const related = componentById.get(relatedId);
+            if (related?.kind === "run" && related.id !== failure.id
+              && related.state === "completed" && related.updatedAt >= failure.updatedAt) return true;
+            if (related?.kind === "activation" && related.createdAt >= failure.updatedAt
+              && !visitedActivations.has(related.id)) queue.push(related.id);
+          }
+        }
+        return false;
+      };
+      const attentionItems = ordered.filter(needsAttention).filter((item) => !completedRecoveryFor(item));
       const active = ordered.some((item) => activeStates.has(item.state));
       const pendingDecision = ordered.some((item) => item.kind === "decision" && item.state === "pending");
-      const latestFailureAt = attentionItems.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, "");
-      const recoveredAfterFailure = Boolean(latestFailureAt) && ordered.some((item) =>
-        (item.kind === "run" || item.kind === "request") && item.state === "completed" && item.updatedAt >= latestFailureAt);
-      const state = pendingDecision ? "attention"
-        : active ? "active"
-          : attentionItems.length > 0 && !recoveredAfterFailure ? "attention" : "finished";
+      const state = pendingDecision || attentionItems.length > 0 ? "attention"
+        : active ? "active" : "finished";
       const counts = new Map<AgentWorkItemDto["kind"], number>();
       for (const item of ordered) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
       const summary = kindOrder.flatMap((kind) => {
