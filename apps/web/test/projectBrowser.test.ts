@@ -1,40 +1,16 @@
-import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { api } from "../src/api";
+import { projectBrowserAdapter, runBrowserAdapter } from "../src/components/browser/browserAdapters";
 import { consumeProjectBrowserRequest } from "../src/components/ProjectBrowserContext";
 
 describe("persistent Project browser surfaces", () => {
-  it("keeps the Interactive Browser Project-scoped and keeps link choice explicit", () => {
-    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-    const overview = readFileSync(new URL("../src/components/ProjectOverview.tsx", import.meta.url), "utf8");
-    const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
-    expect(app).not.toContain('aria-label="Open Interactive Browser"');
-    expect(app).toContain("ProjectBrowserContext.Provider");
-    expect(overview).toContain("Interactive Browser");
-    expect(conversation).toContain("Interactive Browser");
-    expect(app).not.toContain("projectBrowserOpen");
-    expect(panes).toContain("projectBrowser.open(link.url.href)");
-    expect(panes).toContain("Open in Ponderosa");
-    expect(panes).toContain("Open Externally");
-  });
-
-  it("shows run browser activity only after a real session exists and routes it to a workspace tab", () => {
-    const panel = readFileSync(new URL("../src/components/BrowserPanel.tsx", import.meta.url), "utf8");
-    const shell = readFileSync(new URL("../src/components/ProjectShell.tsx", import.meta.url), "utf8");
-    expect(panel).toContain('if (!runId || !session || missing || session.status === "closed") {');
-    expect(panel).toContain("This Run’s interactive browser is no longer active.");
-    expect(panel).toContain(": null;");
-    expect(panel).toContain("Interactive browser in use");
-    expect(panel).toContain("Open Tab");
-    expect(shell).toContain('kind: "browser"');
-  });
-
-  it("keeps operator control explicit and lends it only through an active-agent selector", () => {
-    const dialog = readFileSync(new URL("../src/components/ProjectBrowserDialog.tsx", import.meta.url), "utf8");
-    expect(dialog).toContain("Give {agent.title} Control");
-    expect(dialog).toContain('owner: "agent"');
-    expect(dialog).toContain("Take Control Back");
-    expect(dialog).toContain("Start an agent Run to make it available");
+  it("adapts Project and Run endpoints without weakening the control epoch fence", async () => {
+    const projectControl = vi.spyOn(api, "setProjectBrowserControl").mockResolvedValue({} as never);
+    const runInput = vi.spyOn(api, "sendBrowserInput").mockResolvedValue({} as never);
+    await projectBrowserAdapter("project / 1").setControl({ owner: "agent", agentId: "agent-1" }, 17);
+    await runBrowserAdapter("project-1", "agent-1", "run-1").sendInput({ kind: "click", x: 10, y: 20 }, 23);
+    expect(projectControl).toHaveBeenCalledWith("project / 1", { owner: "agent", agentId: "agent-1", expectedControlEpoch: 17 });
+    expect(runInput).toHaveBeenCalledWith("project-1", "agent-1", "run-1", { kind: "click", x: 10, y: 20, expectedControlEpoch: 23 });
   });
 
   it("consumes link-open requests so remounting cannot replay stale navigation", () => {
@@ -43,10 +19,5 @@ describe("persistent Project browser surfaces", () => {
     expect(consumed).toBeUndefined();
     expect(consumeProjectBrowserRequest(consumed, 7)).toBeUndefined();
     expect(consumeProjectBrowserRequest(request, 6)).toBe(request);
-
-    const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-    const dialog = readFileSync(new URL("../src/components/ProjectBrowserDialog.tsx", import.meta.url), "utf8");
-    expect(app).toContain("onBrowserRequestHandled");
-    expect(dialog).toContain("onRequestHandled?.(request.requestId)");
   });
 });

@@ -29,6 +29,8 @@ import { api } from "../api";
 import type { Route } from "../routing";
 import { isOpenAttention, visibleNotification } from "../attention";
 import { notificationTechnicalFocusId } from "../technicalFocus";
+import { notificationDecision } from "../decisions";
+import { DecisionActions } from "./decisions/DecisionActions";
 
 export interface NotificationGroup {
   key: string;
@@ -106,7 +108,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const [pendingProjectId, setPendingProjectId] = useState<string>();
   const [filter, setFilter] = useState<"all" | "mentions" | "urgent">("all");
   const [error, setError] = useState<string>();
-  const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
   const visibleNotifications = filterNotifications(notifications, filter);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
@@ -170,21 +171,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       setError(reason instanceof Error ? reason.message : "Notification could not be updated.");
     }
   };
-  const respondDecision = async (item: WorkspaceNotificationDto, optionId?: string, text?: string) => {
-    if (!item.decision) return;
-    setRespondingDecisionId(item.decision.id);
-    setError(undefined);
-    try {
-      await api.respondDecision(item.decision.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) });
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      await queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Decision response could not be sent.");
-    } finally {
-      setRespondingDecisionId(undefined);
-    }
-  };
-
   const markAllRead = async () => {
     setPending("read");
     setError(undefined);
@@ -275,10 +261,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: item.readAt ? "transparent" : "primary.main", flex: "0 0 auto" }} />
                   <ListItemText
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
-                      {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondingDecisionId === item.decision!.id} onClick={(event) => { event.stopPropagation(); void respondDecision(item, option.id); }}>{option.label}</Button>)}
-                      {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
-                    </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
+                    secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                      ? <DecisionActions decision={notificationDecision(item)!} compact />
+                      : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
                       event.stopPropagation();
                       const route = notificationWorkRoute(item);
@@ -299,5 +284,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
-  </Dialog></>;
+  </Dialog>
+  </>;
 }

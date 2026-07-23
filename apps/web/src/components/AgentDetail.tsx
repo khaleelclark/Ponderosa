@@ -58,8 +58,12 @@ import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection } from "../conversationEngine";
-import { ActivityPane, ArtifactsPane, ChatPane, Composer, QueuedMessageTray } from "./panes";
+import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection, runtimeControlState } from "../conversationEngine";
+import { ActivityPane } from "./activity/ActivityPane";
+import { ArtifactsPane } from "./filePreview/ArtifactsPane";
+import { ChatPane } from "./chat/ChatPane";
+import { Composer } from "./chat/Composer";
+import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
@@ -75,6 +79,9 @@ import { useMobileComposerAutoHide } from "../mobileChat";
 import { TriggersPane } from "./TriggersPane";
 import { AgentHeaderRelationships, orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 import { notificationTechnicalFocusId } from "../technicalFocus";
+import { queryKeys } from "../queryKeys";
+import { useRuntimeControls } from "../hooks/useRuntimeControls";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 type AgentTab = AgentDetailView;
 
@@ -247,6 +254,7 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
+  createTrigger,
   onViewChange,
   onOpenTechnicalDetails,
   engines,
@@ -273,6 +281,7 @@ export function AgentDetail({
   focusTelemetry?: AgentTelemetryFocus;
   technicalFocusId?: string;
   initialView?: AgentDetailView;
+  createTrigger?: boolean;
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
   engines: EngineDto[];
@@ -330,6 +339,8 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
+  const [elevatedCopyPackage, setElevatedCopyPackage] = useState<Awaited<ReturnType<typeof api.exportAgent>>>();
+  const [recheckEngineOpen, setRecheckEngineOpen] = useState(false);
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
@@ -483,6 +494,16 @@ export function AgentDetail({
   const engine =
     engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
   const project = projectsQuery.data?.find((candidate) => candidate.id === detail?.agent.projectId);
+  const selectedRuntime = useRuntimeControls({
+    engine,
+    preferences: preferencesQuery.data,
+    project,
+    selection: { model, effort },
+    onChange: (next) => {
+      setModel(next.model);
+      setEffort(next.effort);
+    },
+  });
   const inheritedRuntime = resolveRuntimeSelection(engine, preferencesQuery.data, project);
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = engineCapability?.commands ?? [];
@@ -576,15 +597,8 @@ export function AgentDetail({
     downloadJson(portable, portablePackageFileName(detail?.agent.title ?? "agent", organization, mode));
     setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`);
   };
-  const quickCopyIntoProjectChat = async () => {
+  const importQuickCopy = async (portable: Awaited<ReturnType<typeof api.exportAgent>>, elevated: boolean) => {
     if (!detail?.agent.conversationId) return;
-    const portable = await api.exportAgent(agentId, "full", false);
-    const elevated = portable.agents.some((node) =>
-      node.managementPermissions.allowAutomaticDescendantDeletion ||
-      node.managementPermissions.allowAutomaticDescendantReorganization);
-    if (elevated && !globalThis.confirm(
-      "This Agent has autonomous descendant deletion or reorganization permissions. Copy it with those elevated permissions?",
-    )) return;
     const engineMapping = Object.fromEntries([...new Set(portable.agents.map((node) => node.engine))].map((engineId) => [engineId, engineId]));
     const imported = await api.importAgents(detail.agent.projectId, {
       package: portable,
@@ -592,20 +606,33 @@ export function AgentDetail({
       engineMapping,
       ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
     });
-    await queryClient.invalidateQueries({ queryKey: ["agents", detail.agent.projectId] });
+    await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(detail.agent.projectId) });
+    setElevatedCopyPackage(undefined);
     onOpenAgent(imported.rootAgentId);
+  };
+  const quickCopyIntoProjectChat = async () => {
+    if (!detail?.agent.conversationId) return;
+    const portable = await api.exportAgent(agentId, "full", false);
+    const elevated = portable.agents.some((node) =>
+      node.managementPermissions.allowAutomaticDescendantDeletion ||
+      node.managementPermissions.allowAutomaticDescendantReorganization);
+    if (elevated) {
+      setElevatedCopyPackage(portable);
+      return;
+    }
+    await importQuickCopy(portable, false);
   };
 
   const rename = useMutation({
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => (agent.id === updated.id ? updated : agent)),
       );
-      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: queryKeys.conversations.detailAll }, (current) =>
         current
           ? {
               ...current,
@@ -613,9 +640,9 @@ export function AgentDetail({
             }
           : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll });
       setRenameOpen(false);
     },
   });
@@ -626,11 +653,11 @@ export function AgentDetail({
       primaryConversationId: membershipIds.length ? primaryConversationId : undefined,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll });
       setMembershipOpen(false);
     },
   });
@@ -638,10 +665,10 @@ export function AgentDetail({
   const updateOrganization = useMutation({
     mutationFn: () => api.updateAgentOrganization(agentId, { managerAgentId: organizationParentId || null }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      void queryClient.invalidateQueries({ queryKey: ["agents", updated.projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(updated.projectId) });
       setOrganizationOpen(false);
     },
   });
@@ -650,10 +677,10 @@ export function AgentDetail({
     mutationFn: (managementPermissions: AgentDto["managementPermissions"]) =>
       api.updateAgent(agentId, { managementPermissions }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => agent.id === updated.id ? updated : agent),
       );
     },
@@ -666,13 +693,13 @@ export function AgentDetail({
       effort: settingsEffort || null,
     }),
     onSuccess: (updated) => {
-      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (current) =>
         current ? { ...current, agent: updated } : current,
       );
-      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: queryKeys.agents.all }, (current) =>
         current?.map((agent) => agent.id === updated.id ? updated : agent),
       );
-      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: queryKeys.conversations.detailAll }, (current) =>
         current ? { ...current, agents: current.agents.map((agent) => agent.id === updated.id ? updated : agent) } : current,
       );
       setRuntimeSettingsNotice("Saved. These runtime settings apply when the next Run starts.");
@@ -746,26 +773,12 @@ export function AgentDetail({
   const activeTelemetryStreams = telemetryStreamsForTab(tab);
   const hasOlderTelemetry = activeTelemetryStreams.some((stream) => detail.telemetryHistory?.[stream]?.hasMore);
 
-  const advertisedModels = engine?.models.filter((option) => option.id) ?? [];
-  const models = engine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
-    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
-    : advertisedModels;
-  const advertisedEfforts = effortOptionsForModel(engine, model);
-  const efforts = effort && effortSelectionIsCompatible(engine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
-    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
-    : advertisedEfforts;
+  const models = selectedRuntime.models;
+  const efforts = selectedRuntime.efforts;
   const settingsEngineRegistration = engines.find((candidate) => candidate.id === settingsEngine);
-  const advertisedSettingsModels = settingsEngineRegistration?.models.filter((option) => option.id) ?? [];
-  const settingsModels = settingsEngineRegistration?.modelCatalogKnown === false && settingsModel &&
-    !advertisedSettingsModels.some((option) => option.id === settingsModel)
-    ? [...advertisedSettingsModels, { id: settingsModel, label: `${settingsModel} (saved selection)` }]
-    : advertisedSettingsModels;
-  const advertisedSettingsEfforts = effortOptionsForModel(settingsEngineRegistration, settingsModel);
-  const settingsEfforts = settingsEffort &&
-    effortSelectionIsCompatible(settingsEngineRegistration, settingsModel, settingsEffort) &&
-    !advertisedSettingsEfforts.some((option) => option.id === settingsEffort)
-    ? [...advertisedSettingsEfforts, { id: settingsEffort, label: `${settingsEffort} (saved selection)` }]
-    : advertisedSettingsEfforts;
+  const settingsRuntime = runtimeControlState(settingsEngineRegistration, { model: settingsModel, effort: settingsEffort });
+  const settingsModels = settingsRuntime.models;
+  const settingsEfforts = settingsRuntime.efforts;
   const runtimeSettingsDirty = settingsEngine !== detail.agent.activeEngine ||
     settingsModel !== (detail.agent.model ?? "") ||
     settingsEffort !== (detail.agent.effort ?? "");
@@ -813,11 +826,11 @@ export function AgentDetail({
     effort={effort}
     efforts={efforts}
     onModelChange={(nextModel) => {
-      setModel(nextModel);
-      const resolved = resolveRuntimeSelection(engine, preferencesQuery.data, project, { model: nextModel });
-      setEffort(resolved.effort);
+      selectedRuntime.selectModel(nextModel);
     }}
-    onEffortChange={setEffort}
+    onEffortChange={(nextEffort) => {
+      selectedRuntime.selectEffort(nextEffort);
+    }}
   />;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
@@ -838,7 +851,7 @@ export function AgentDetail({
               onSuccess: (response) => {
                 setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
                 void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] });
-                void queryClient.invalidateQueries({ queryKey: ["agent-health", detail.agent.projectId] });
+                void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(detail.agent.projectId) });
               },
             },
           );
@@ -909,9 +922,7 @@ export function AgentDetail({
         />
         {settingsEngineRegistration?.authenticated && !engineIsAvailable(settingsEngineRegistration) ? <>
           <Typography variant="caption" color="warning.main">{settingsEngineRegistration.availabilityDetail ?? "The provider rejected runtime access."}</Typography>
-          <Button size="small" variant="outlined" disabled={recheckEngine.isPending} onClick={() => {
-            if (window.confirm("Test provider access now? This sends one minimal subscription-backed request.")) recheckEngine.mutate(settingsEngineRegistration.id);
-          }}>{recheckEngine.isPending ? "Testing Access…" : "Test Access"}</Button>
+          <Button size="small" variant="outlined" disabled={recheckEngine.isPending} onClick={() => setRecheckEngineOpen(true)}>{recheckEngine.isPending ? "Testing Access…" : "Test Access"}</Button>
         </> : null}
         <FormControl size="small" fullWidth>
           <InputLabel id="agent-detail-model-label">Model · next Run</InputLabel>
@@ -993,7 +1004,7 @@ export function AgentDetail({
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => { setTab("activity"); onViewChange?.("activity"); }} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
-    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
+    triggers: <TriggersPane agent={detail.agent} initialCreateOpen={createTrigger} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,
     settings: settingsPane,
     technical: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,
@@ -1196,6 +1207,40 @@ export function AgentDetail({
           onCancel={() => stopActiveRun()}
         />
       </Box> : null}
+
+      <ConfirmDialog
+        open={Boolean(elevatedCopyPackage)}
+        title="Copy Elevated Agent Permissions?"
+        confirmLabel="Copy Agent"
+        onCancel={() => setElevatedCopyPackage(undefined)}
+        onConfirm={() => {
+          if (elevatedCopyPackage) void importQuickCopy(elevatedCopyPackage, true);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>
+          This Agent can automatically delete or reorganize descendants. The copied Agent will retain those elevated organization permissions.
+        </Typography>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={recheckEngineOpen}
+        title="Test Provider Access?"
+        confirmLabel="Test Access"
+        pending={recheckEngine.isPending}
+        error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
+        onCancel={() => {
+          recheckEngine.reset();
+          setRecheckEngineOpen(false);
+        }}
+        onConfirm={() => {
+          if (!settingsEngineRegistration) return;
+          recheckEngine.mutate(settingsEngineRegistration.id, {
+            onSuccess: () => setRecheckEngineOpen(false),
+          });
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>This sends one minimal subscription-backed request to verify that the provider is available.</Typography>
+      </ConfirmDialog>
 
       <AgentDeletionDialog
         open={deleteOpen}

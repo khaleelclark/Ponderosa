@@ -46,8 +46,8 @@ export type Route =
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
-  | { kind: "agents"; projectId: string; create?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView }
+  | { kind: "agents"; projectId: string; create?: boolean; managerAgentId?: string; continueToTrigger?: boolean }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; createTrigger?: boolean }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -110,13 +110,20 @@ export function parseRoute(pathname: string, search = ""): Route {
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView === "technical" && technicalFocusId ? { technicalFocusId } : {}),
+      ...(!focusMessageId && !focusTelemetry && agentView === "triggers" && query.get("create") === "1" ? { createTrigger: true } : {}),
     };
   }
   if (parts[2] === "reviews" && parts[3]) {
     return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
   }
   if (parts[2] === "agents") {
-    return { kind: "agents", projectId, ...(query.get("create") === "1" ? { create: true } : {}) };
+    return {
+      kind: "agents",
+      projectId,
+      ...(query.get("create") === "1" ? { create: true } : {}),
+      ...(query.get("manager")?.trim() ? { managerAgentId: query.get("manager")!.trim() } : {}),
+      ...(query.get("continue") === "trigger" ? { continueToTrigger: true } : {}),
+    };
   }
   return { kind: "project", projectId };
 }
@@ -165,7 +172,13 @@ export function routeToPath(route: Route): string {
       return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
     }
     case "agents":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents${route.create ? "?create=1" : ""}`;
+      return `/projects/${encodeURIComponent(route.projectId)}/agents${route.create || route.managerAgentId || route.continueToTrigger
+        ? `?${new URLSearchParams({
+          ...(route.create ? { create: "1" } : {}),
+          ...(route.managerAgentId ? { manager: route.managerAgentId } : {}),
+          ...(route.continueToTrigger ? { continue: "trigger" } : {}),
+        }).toString()}`
+        : ""}`;
     case "agent": {
       const query = new URLSearchParams();
       if (route.focusMessageId) query.set("message", route.focusMessageId);
@@ -174,6 +187,7 @@ export function routeToPath(route: Route): string {
         query.set("item", route.focusTelemetry.id);
       } else if (route.view) query.set("view", route.view);
       if (route.view === "technical" && route.technicalFocusId) query.set("focus", route.technicalFocusId);
+      if (route.view === "triggers" && route.createTrigger) query.set("create", "1");
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
     }
     case "review":

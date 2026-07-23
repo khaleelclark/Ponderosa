@@ -1,9 +1,9 @@
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { MessageSenderLabel } from "../src/components/MessageSenderLabel";
 import { directMessageSender } from "../src/messageSender";
+import { ConversationMessage } from "../src/components/ConversationView";
 
 describe("message sender identity", () => {
   it("names both sides of a direct conversation", () => {
@@ -29,13 +29,23 @@ describe("message sender identity", () => {
   });
 
   it("keeps Project-chat identity navigation separate from the copyable sender label", () => {
-    const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    expect(source).toContain('<MessageSenderLabel name={senderName} />');
-    expect(source).toContain('component="article"');
-    expect(source).toContain('aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}');
-    expect(source).toContain('aria-label={`Open agent ${senderName} from profile image`}');
-    expect(source).toContain('aria-label={`Open agent ${senderName} from name`}');
-    expect(source).toContain('aria-label={`Mention ${senderName}`}');
-    expect(source).not.toContain("width: 28, height: 28");
+    const html = renderToStaticMarkup(<ConversationMessage
+      message={{
+        id: "message-1", conversationId: "chat-1", role: "assistant", authorAgentId: "agent-1",
+        text: "Finished.", createdAt: "2026-07-23T10:00:00.000Z",
+      }}
+      conversation="main"
+      agentTitle={() => "Pinnacles"}
+      agentIdForHandle={() => undefined}
+      onOpenAgent={() => undefined}
+      onMentionAgent={() => undefined}
+      projectId="project-1"
+    />);
+    expect(html).toContain('aria-label="Pinnacles message"');
+    expect(html).toContain('aria-label="Open agent Pinnacles from profile image"');
+    expect(html).toContain('aria-label="Open agent Pinnacles from name"');
+    expect(html).toContain('aria-label="Mention Pinnacles"');
+    expect(html).toContain('data-message-sender="true"');
+    expect(html).not.toContain("width:28px;height:28px");
   });
 });

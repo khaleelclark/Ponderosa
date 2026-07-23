@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
+import { act, create } from "react-test-renderer";
 import { describe, expect, it } from "vitest";
 import { mobileComposerScrollAction, mobileOperationalStatus } from "../src/mobileChat";
+import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
 const allChat = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
 const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx", import.meta.url), "utf8");
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 
@@ -37,10 +38,17 @@ describe("mobile feedback slice", () => {
   });
 
   it("keeps message timestamps hidden until a message reveals the compact mobile row", () => {
-    expect(panes).toContain("mobileTimestampMessageId");
-    expect(panes).toContain("mobileTimestampRevealed={mobileTimestampMessageId === message.id}");
-    expect(conversation).toContain("mobileTimestampRevealed={mobileTimestampRevealed}");
-    expect(allChat).toContain("mobileTimestampId === item.communicationEventId");
+    const view = create(<ChatMessageFrame message={{
+      id: "message-1",
+      author: { kind: "agent", name: "Pinnacles" },
+      createdAt: "2026-07-23T10:00:00.000Z",
+      body: <p>Finished.</p>,
+    }} />);
+    const revealedTimestamps = () => view.root.findAll((node) =>
+      node.type === "div" && node.props["data-mobile-message-timestamp"] === true);
+    expect(revealedTimestamps()).toHaveLength(0);
+    act(() => view.root.findByType("article").props.onClick());
+    expect(revealedTimestamps()).toHaveLength(1);
     expect(timestamps.indexOf("data-mobile-message-timestamp")).toBeLessThan(timestamps.indexOf("chat-message-action-buttons"));
   });
 

@@ -1,21 +1,23 @@
 import {
-  Alert, Avatar, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme,
+  Alert, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import type { AllChatItemDto, EngineCommand, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
 import type { Route } from "../routing";
-import { ChatMessageBody, Composer, isChatNearBottom, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
-import { MessageTimestamp } from "./MessageTimestamp";
+import { ChatMessageBody } from "./chat/ChatMessages";
+import { Composer } from "./chat/Composer";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
 import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
+import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { ChatSurface } from "./chat/ChatSurface";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -61,14 +63,8 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
   const [older, setOlder] = useState<{ items: AllChatItemDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
-  const [mobileTimestampId, setMobileTimestampId] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const firstLayout = useRef(true);
-  const followLatest = useRef(true);
-  const restoreDistance = useRef<number>();
-  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const theme = useTheme();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
   const mobileComposer = useMobileComposerAutoHide(mobileViewport);
@@ -76,6 +72,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
+  const layoutKey = items.map((item) => item.communicationEventId).join(":");
   const selected = items.find((item) => item.communicationEventId === selectedId);
   const selectedAgentId = selected?.directMessageAgent?.id;
   const selectedAgent = useQuery({
@@ -157,7 +154,6 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
     if (loadingOlder || !history.hasMore || !history.cursor) return;
     setLoadingOlder(true);
     try {
-      if (scrollRef.current) restoreDistance.current = scrollRef.current.scrollHeight - scrollRef.current.scrollTop;
       const page = await api.getAllChat(50, history.cursor);
       setOlder((current) => ({
         items: mergeAllChatItems(page.items, current?.items ?? [], query.data?.items ?? []),
@@ -168,23 +164,6 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
       setLoadingOlder(false);
     }
   };
-  const layoutKey = items.map((item) => item.communicationEventId).join(":");
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    if (restoreDistance.current !== undefined) {
-      element.scrollTop = element.scrollHeight - restoreDistance.current;
-      restoreDistance.current = undefined;
-      return;
-    }
-    if (firstLayout.current || followLatest.current) {
-      scrollChatToBottom(element);
-      firstLayout.current = false;
-      setShowScrollToLatest(false);
-      mobileComposer.showAtLatest(element);
-    }
-  }, [layoutKey]);
-
   return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -207,37 +186,35 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
       }
     }} />
 
-    <Box sx={{ minHeight: 0, position: "relative", overflow: "hidden" }}>
-    <Box ref={scrollRef} className="ponderosa-scroll" onScroll={() => {
-      if (!scrollRef.current) return;
-      followLatest.current = isChatNearBottom(scrollRef.current);
-      setShowScrollToLatest(!followLatest.current);
-      mobileComposer.observeScroll(scrollRef.current, followLatest.current);
-    }} sx={{ height: "100%", minHeight: 0, overflowY: "auto", p: { xs: 1.5, md: 2.5 } }}>
-      {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
-      {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>Messages could not be loaded.</Alert> : null}
-      {history.hasMore ? <Stack sx={{ alignItems: "center", mb: 2 }}><Button size="small" variant="outlined" disabled={loadingOlder} onClick={() => void loadOlder()}>{loadingOlder ? "Loading…" : "Load Older Messages"}</Button></Stack> : null}
+    <ChatSurface
+      layout="workspace"
+      layoutKey={layoutKey}
+      label="All messages"
+      follow={{ kind: "latest", onPositionChange: (element, atLatest) => mobileComposer.observeScroll(element, atLatest) }}
+      history={{ kind: "cursor", hasEarlier: history.hasMore, loading: loadingOlder, label: "Load Older Messages", onLoadEarlier: () => void loadOlder() }}
+      beforeMessages={<>
+        {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
+        {query.isError ? <Alert severity="error" action={<Button color="inherit" size="small" onClick={() => void query.refetch()}>Retry</Button>}>Messages could not be loaded.</Alert> : null}
+      </>}
+    >
       <Stack spacing={1.75} sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }}>
         {items.map((item) => {
           const fromUser = item.author.kind === "user";
-          return <Box
+          return <ChatMessageFrame
             key={item.communicationEventId}
-            component="article"
-            aria-label={allChatSourceAccessibleName(item)}
-            onClick={() => setMobileTimestampId((current) => current === item.communicationEventId ? undefined : item.communicationEventId)}
-            sx={{ display: "flex", justifyContent: fromUser ? "flex-end" : "flex-start", borderRadius: 2, "& .messages-hover-actions": { opacity: { xs: 1, sm: 0 }, transition: "opacity 120ms ease" }, "&:hover .messages-hover-actions, &:focus-within .messages-hover-actions": { opacity: 1 } }}
-          >
-            <Stack direction="row" spacing={1.25} sx={{ width: fromUser ? "fit-content" : "100%", maxWidth: fromUser ? { xs: "94%", sm: 920 } : 1120, alignItems: "flex-start" }}>
-              {!fromUser ? <ButtonBase aria-label={`Message ${item.author.label}`} onClick={(event) => { event.stopPropagation(); if (item.directMessageAgent) onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent.id }); }} sx={{ borderRadius: "50%", flex: "0 0 auto" }}><Avatar sx={{ width: 36, height: 36, bgcolor: "action.selected", color: "text.primary", fontSize: 14 }}>{item.author.label.slice(0, 1).toUpperCase()}</Avatar></ButtonBase> : null}
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                {fromUser
-                  ? <UserMessageLabel profile={workspacePreferences.data?.profile} createdAt={item.createdAt} />
-                  : <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "baseline", mb: 0.25 }}>
-                    <ButtonBase onClick={(event) => { event.stopPropagation(); if (item.directMessageAgent) onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent.id }); }} sx={{ borderRadius: 0.75 }}><Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography></ButtonBase>
-                    <MessageTimestamp value={item.createdAt} compact desktopOnly />
-                  </Stack>}
-                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? { xs: 1.5, sm: 1.75 } : 0, py: fromUser ? { xs: 1, sm: 1.15 } : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", minWidth: 0, "& p": { my: 0.15 }, "& li + li": { mt: 0.05 } }}>
-                  <ChatMessageBody
+            message={{
+              id: `all-message-${item.communicationEventId}`,
+              author: fromUser
+                ? { kind: "operator", profile: workspacePreferences.data?.profile }
+                : {
+                    kind: "agent",
+                    name: item.author.label,
+                    ...(item.directMessageAgent ? { onOpen: () => onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent!.id }) } : {}),
+                  },
+              createdAt: item.createdAt,
+              ariaLabel: allChatSourceAccessibleName(item),
+              onSelect: () => selectItem(item),
+              body: <ChatMessageBody
                     text={item.text}
                     collapseLongMessage
                     compactMarkdown
@@ -245,33 +222,22 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                     operatorHandle={workspacePreferences.data?.profile.handle}
                     agentMentionForHandle={(handle) => item.directMessageAgent && agentMentionHandle(item.directMessageAgent.title).toLocaleLowerCase() === handle.toLocaleLowerCase() ? { agentId: item.directMessageAgent.id, label: item.directMessageAgent.title } : undefined}
                     onOpenAgent={(agentId) => onNavigate({ kind: "agent", projectId: item.project.id, agentId })}
-                  />
-                </Box>
-                {mobileTimestampId === item.communicationEventId ? <Box sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mt: 0.5 }}><MessageTimestamp value={item.createdAt} compact align={fromUser ? "end" : "start"} /></Box> : null}
-                <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>
+                  />,
+              afterBody: <Stack direction="row" spacing={0.65} sx={{ mt: 0.5, justifyContent: fromUser ? "flex-end" : "flex-start", alignItems: "center", color: "text.secondary" }}>
                   <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate({ kind: "project", projectId: item.project.id }); }} sx={{ borderRadius: 0.75, typography: "caption", fontWeight: 650, px: 0.25 }}>{item.project.label}</ButtonBase>
                   <Typography variant="caption" aria-hidden>·</Typography>
                   <ButtonBase onClick={(event) => { event.stopPropagation(); onNavigate(allChatSourceRoute(item)); }} sx={{ borderRadius: 0.75, typography: "caption", px: 0.25 }}>{item.source.title}</ButtonBase>
-                </Stack>
-                <Stack className="messages-hover-actions" direction="row" spacing={0.25} sx={{ mt: 0.15, justifyContent: fromUser ? "flex-end" : "flex-start", minHeight: 28 }}>
+                </Stack>,
+              actions: <>
                   <Tooltip title="Copy"><IconButton size="small" aria-label="Copy message" onClick={() => void copyText(item.text)}><ContentCopyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip>
                   {item.directMessageAgent ? <Tooltip title={`Mention ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Mention ${item.directMessageAgent.title}`} onClick={() => mentionItem(item)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-                </Stack>
-              </Box>
-            </Stack>
-          </Box>;
+                </>,
+            }}
+          />;
         })}
         {!query.isLoading && !query.isError && items.length === 0 ? <Alert severity="info">No authored chat messages yet.</Alert> : null}
       </Stack>
-    </Box>
-    <ScrollToLatestButton visible={showScrollToLatest} onClick={() => {
-      if (!scrollRef.current) return;
-      followLatest.current = true;
-      scrollChatToBottom(scrollRef.current);
-      setShowScrollToLatest(false);
-      mobileComposer.showAtLatest(scrollRef.current);
-    }} />
-    </Box>
+    </ChatSurface>
 
     <Box
       className="mobile-chat-chrome mobile-chat-composer"

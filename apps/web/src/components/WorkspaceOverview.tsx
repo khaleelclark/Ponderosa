@@ -1,4 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
+import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
@@ -15,7 +17,6 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Menu,
   MenuItem,
   Stack,
   TextField,
@@ -23,35 +24,17 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQueries } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { api } from "../api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
-  const conversationQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["conversations", project.id],
-      queryFn: () => api.listConversations(project.id),
-      staleTime: 10_000,
-    })),
-  });
-  const agentQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["agents", project.id],
-      queryFn: () => api.listAgents(project.id),
-      staleTime: 4_000,
-    })),
-  });
-  const healthQueries = useQueries({
-    queries: projects.map((project) => ({
-      queryKey: ["agent-health", project.id],
-      queryFn: () => api.getAgentHealth(project.id),
-      staleTime: 5_000,
-    })),
-  });
+  const conversationQueries = useProjectConversations(projects);
+  const agentQueries = useProjectAgents(projects);
+  const healthQueries = useProjectAgentHealth(projects);
   return projects.map((project, index) => ({
     project,
     conversations: conversationQueries[index]?.data ?? [],
@@ -83,6 +66,22 @@ export function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
+export function projectMovePreferencePatch(
+  order: string[],
+  projectId: string,
+  direction: "before" | "after",
+): Pick<WorkspacePreferencesDto, "projectSort" | "projectOrder"> | undefined {
+  const currentIndex = order.indexOf(projectId);
+  const targetIndex = direction === "before" ? currentIndex - 1 : currentIndex + 1;
+  if (currentIndex < 0 || targetIndex < 0 || targetIndex >= order.length) return undefined;
+  return projectDropPreferencePatch(
+    order,
+    projectId,
+    order[targetIndex]!,
+    direction === "before" ? "before" : "after",
+  );
+}
+
 export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onManageProject, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
@@ -96,7 +95,22 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   const [filter, setFilter] = useState("");
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
-  const [tabMenu, setTabMenu] = useState<{ anchor: HTMLElement; route: Route }>();
+  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
+  const [orderAnnouncement, setOrderAnnouncement] = useState("");
+  const reorderButtonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const pendingReorderFocus = useRef<{ projectId: string; direction: "before" | "after" }>();
+  const projectOrderKey = projects.map((project) => project.id).join("\u0000");
+  useEffect(() => {
+    const pending = pendingReorderFocus.current;
+    if (!pending) return;
+    const requested = reorderButtonRefs.current.get(`${pending.projectId}:${pending.direction}`);
+    const fallbackDirection = pending.direction === "before" ? "after" : "before";
+    const target = requested?.disabled
+      ? reorderButtonRefs.current.get(`${pending.projectId}:${fallbackDirection}`)
+      : requested;
+    target?.focus();
+    pendingReorderFocus.current = undefined;
+  }, [projectOrderKey]);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -116,6 +130,15 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     if (patch) onPreferences(patch);
     setDraggedProjectId(undefined);
     setDropTarget(undefined);
+  };
+  const moveProject = (project: ProjectDto, direction: "before" | "after") => {
+    const currentOrder = projects.map((candidate) => candidate.id);
+    const patch = projectMovePreferencePatch(currentOrder, project.id, direction);
+    if (!patch) return;
+    const position = patch.projectOrder.indexOf(project.id) + 1;
+    pendingReorderFocus.current = { projectId: project.id, direction };
+    setOrderAnnouncement(`${project.label} moved to position ${position} of ${projects.length}.`);
+    onPreferences(patch);
   };
   const toggleStar = (projectId: string) => onPreferences(toggleWorkspaceResourceStar(preferences, "project", projectId));
   return <Box sx={{ width: "100%", minWidth: 0, minHeight: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
@@ -149,14 +172,18 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
       </Stack>
     </Stack>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>
+    <Box id="project-order-status" role="status" aria-live="polite" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{orderAnnouncement}</Box>
     <List aria-label="All projects" disablePadding sx={{ display: "grid", gap: 1, width: "100%" }}>
       {filteredSnapshots.map((snapshot) => {
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
+        const projectIndex = projects.findIndex((project) => project.id === snapshot.project.id);
+        const previousProject = projectIndex > 0 ? projects[projectIndex - 1] : undefined;
+        const nextProject = projectIndex >= 0 && projectIndex < projects.length - 1 ? projects[projectIndex + 1] : undefined;
         return <Stack
           key={snapshot.project.id}
           direction="row"
-          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: openProjectRoute(snapshot) }); }}
+          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: openProjectRoute(snapshot) }); }}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -181,6 +208,42 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             />
             {running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
           </ListItemButton>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={0} sx={{ alignSelf: "stretch", justifyContent: "center", flexShrink: 0 }}>
+            <Tooltip title={previousProject ? `Move before ${previousProject.label}` : "Already first"}>
+              <span>
+                <IconButton
+                  ref={(node) => {
+                    const key = `${snapshot.project.id}:before`;
+                    if (node) reorderButtonRefs.current.set(key, node);
+                    else reorderButtonRefs.current.delete(key);
+                  }}
+                  size="small"
+                  disabled={!previousProject}
+                  aria-label={previousProject ? `Move ${snapshot.project.label} before ${previousProject.label}` : `${snapshot.project.label} is first`}
+                  aria-describedby="project-order-status"
+                  onClick={() => moveProject(snapshot.project, "before")}
+                  sx={{ minWidth: 36, minHeight: 36 }}
+                ><ArrowUpwardIcon fontSize="small" /></IconButton>
+              </span>
+            </Tooltip>
+            <Tooltip title={nextProject ? `Move after ${nextProject.label}` : "Already last"}>
+              <span>
+                <IconButton
+                  ref={(node) => {
+                    const key = `${snapshot.project.id}:after`;
+                    if (node) reorderButtonRefs.current.set(key, node);
+                    else reorderButtonRefs.current.delete(key);
+                  }}
+                  size="small"
+                  disabled={!nextProject}
+                  aria-label={nextProject ? `Move ${snapshot.project.label} after ${nextProject.label}` : `${snapshot.project.label} is last`}
+                  aria-describedby="project-order-status"
+                  onClick={() => moveProject(snapshot.project, "after")}
+                  sx={{ minWidth: 36, minHeight: 36 }}
+                ><ArrowDownwardIcon fontSize="small" /></IconButton>
+              </span>
+            </Tooltip>
+          </Stack>
           <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
             <IconButton
               size="small"
@@ -207,6 +270,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
       })}
       {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
     </List>
-    {tabMenu ? <Menu anchorEl={tabMenu.anchor} open onClose={() => setTabMenu(undefined)}><MenuItem disabled={!onOpenInNewTab} onClick={() => { onOpenInNewTab?.(tabMenu.route); setTabMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+    <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }

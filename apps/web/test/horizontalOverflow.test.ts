@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ChatMarkdown } from "../src/components/chat/ChatMessages";
+import { Composer } from "../src/components/chat/Composer";
 
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const projectShell = readFileSync(new URL("../src/components/ProjectShell.tsx", import.meta.url), "utf8");
-const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 const copyMessageButton = readFileSync(new URL("../src/components/CopyMessageButton.tsx", import.meta.url), "utf8");
 const workspaceSidebar = readFileSync(new URL("../src/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
 
@@ -21,14 +25,23 @@ describe("horizontal overflow containment", () => {
   });
 
   it("retains local horizontal scrolling for wide code, tables, and task output", () => {
-    expect(panes).toMatch(/"& pre": \{ my: 0\.65, p: 1\.1,[^}]*overflowX: "auto"/);
-    expect(panes).toContain('"& table": { display: "block", maxWidth: "100%", overflowX: "auto"');
-    expect(panes).toContain('data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0');
+    const html = renderToStaticMarkup(createElement(
+      ChatMarkdown,
+      null,
+      "```text\nvery wide command output\n```\n\n| A | B |\n| - | - |\n| one | two |",
+    ));
+    expect(html).toContain("overflow-x:auto");
+    expect(html).toContain("<table>");
   });
 
   it("keeps hidden announcements, mobile controls, and long project lists inside their surfaces", () => {
     expect(copyMessageButton).toContain('width: "1px", height: "1px"');
-    expect(panes).toContain('maxWidth: "100%", overflowX: "auto"');
+    const composer = renderToStaticMarkup(createElement(
+      QueryClientProvider,
+      { client: new QueryClient() },
+      createElement(Composer, { disabled: false, running: false, onSend: () => undefined }),
+    ));
+    expect(composer).toContain("max-width:100%");
     expect(workspaceSidebar).toContain('width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width');
     expect(app).toContain('width: "min(100vw, 390px)", maxWidth: "100vw"');
     expect(workspaceSidebar).toContain('minHeight: 0, overflowY: "auto"');

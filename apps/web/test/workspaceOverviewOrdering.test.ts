@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectDropPreferencePatch, reorderProjectIds } from "../src/components/WorkspaceOverview";
+import { projectDropPreferencePatch, projectMovePreferencePatch, reorderProjectIds } from "../src/components/WorkspaceOverview";
 
 describe("custom project ordering", () => {
   it("moves a dragged project before its drop target", () => {
@@ -24,5 +24,18 @@ describe("custom project ordering", () => {
       projectOrder: ["gamma", "alpha", "beta"],
     });
     expect(projectDropPreferencePatch(["alpha", "beta"], "alpha", "alpha")).toBeUndefined();
+  });
+
+  it("persists accessible one-position moves and rejects boundary moves", () => {
+    expect(projectMovePreferencePatch(["alpha", "beta", "gamma"], "beta", "before")).toEqual({
+      projectSort: "custom",
+      projectOrder: ["beta", "alpha", "gamma"],
+    });
+    expect(projectMovePreferencePatch(["alpha", "beta", "gamma"], "beta", "after")).toEqual({
+      projectSort: "custom",
+      projectOrder: ["alpha", "gamma", "beta"],
+    });
+    expect(projectMovePreferencePatch(["alpha", "beta"], "alpha", "before")).toBeUndefined();
+    expect(projectMovePreferencePatch(["alpha", "beta"], "beta", "after")).toBeUndefined();
   });
 });

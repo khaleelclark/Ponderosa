@@ -10,7 +10,6 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   ButtonBase,
@@ -22,12 +21,6 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
-  List,
-  ListItem,
-  ListItemButton,
-  ListItemText,
-  Menu,
-  MenuItem,
   Stack,
   TextField,
   Tooltip,
@@ -41,26 +34,32 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { compactDefined } from "../collections";
-import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
+import { type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation, useNotifications } from "../hooks/queries";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
+import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
-import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, QueuedMessageTray, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom, UserMessageLabel } from "./panes";
-import { MessageSenderLabel } from "./MessageSenderLabel";
-import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
+import { ResponseFileActivity } from "./activity/ActivityPane";
+import { ChatMessageBody, CommunicationDocumentCard, chatMessageLayoutKey } from "./chat/ChatMessages";
+import { Composer } from "./chat/Composer";
+import { QueuedMessageTray } from "./chat/QueuedMessageTray";
+import { isChatNearBottom, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom } from "./chat/scroll";
 import { formatExecutionElapsed } from "./AgentDetail";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { ImportAgentDialog } from "./ImportAgentDialog";
-import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
+import { queryKeys } from "../queryKeys";
+import { ChatAttachments } from "./chat/ChatAttachments";
+import { ChatLiveBanner } from "./chat/ChatLiveBanner";
+import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -76,7 +75,7 @@ function mergeOperationalEvents(...groups: TeamOperationalEventDto[][]): TeamOpe
 }
 
 export function conversationComposerRuntime(
-  engine: Pick<EngineDto, "id" | "authenticated" | "available"> | undefined,
+  engine: Pick<EngineDto, "id" | "authenticated" | "available"> & { enabled?: boolean } | undefined,
   engineCapabilities: ProjectEngineCapabilitiesDto[],
 ): { commands: EngineCommand[]; capabilities: ProjectEngineCapabilitiesDto["composerCapabilities"] } {
   const discovered = engineCapabilities.find((item) => item.engineId === engine?.id);
@@ -102,14 +101,15 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
   if (responding.length === 0) return null;
   const names = responding.map(({ agent }) => agent.title).join(", ");
   const earliest = responding.map(({ activity }) => activity.startedAt).sort()[0]!;
-  return <Alert severity="info" role="status" aria-live="polite" sx={{ py: 0.25, mb: 1, width: "min(1180px, 100%)", mx: "auto", "& .MuiAlert-message": { py: 0.5 } }}>
+  return <ChatLiveBanner>
     {names} {responding.length === 1 ? "is" : "are"} responding · {formatExecutionElapsed(earliest, now)}
-  </Alert>;
+  </ChatLiveBanner>;
 }
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
 import { notificationTechnicalFocusId } from "../technicalFocus";
+import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
 export function ConversationMessage({
   message,
@@ -141,7 +141,6 @@ export function ConversationMessage({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
   // Older projections stored the structured broadcast scope as visible prose.
   // Agent-authored Project-chat messages already carry that scope structurally.
   const routedText = conversation === "main" && message.authorAgentId
@@ -152,115 +151,62 @@ export function ConversationMessage({
     : routedText;
   const senderName = fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId);
 
-  return (
-    <Box
-      id={`master-message-${message.id}`}
-      component="article"
-      className="chat-message"
-      aria-label={`${fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId)} message`}
-      tabIndex={-1}
-      onClick={() => setMobileTimestampRevealed((current) => !current)}
-      sx={{ alignSelf: "center", width: "min(1120px, 100%)", maxWidth: "100%", minWidth: 0, py: { xs: 0.75, sm: 1 } }}
-    >
-      <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromManager ? "flex-end" : "flex-start", minWidth: 0 }}>
-        {!fromManager ? <Tooltip title={`Open ${senderName}`}><ButtonBase
-          aria-label={`Open agent ${senderName} from profile image`}
-          onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
-          sx={{ borderRadius: "50%", flex: "0 0 auto" }}
-        ><Avatar sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderName.slice(0, 1).toLocaleUpperCase()}</Avatar></ButtonBase></Tooltip> : null}
-        <Box sx={{ minWidth: 0, width: fromManager ? "fit-content" : "min(100%, 960px)", maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
-          {!fromManager ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
-            <ButtonBase
-              aria-label={`Open agent ${senderName} from name`}
-              onClick={(event) => { event.stopPropagation(); onOpenAgent(message.authorAgentId!); }}
-              sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
-            ><MessageSenderLabel name={senderName} /></ButtonBase>
-            <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
-          </Stack> : null}
-          {fromManager && message.role === "user" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
-          <Box
-            data-message-bubble="true"
-            sx={{
-              px: fromManager ? { xs: 1.25, sm: 1.5 } : 0,
-              py: fromManager ? { xs: 1, sm: 1.15 } : 0,
-              borderRadius: 2,
-              bgcolor: fromManager ? (theme) => theme.palette.mode === "dark" ? "#27332F" : "#EFF0EB" : "transparent",
-              color: "text.primary",
-              border: 0,
-            }}
-          >
-        {fromManager && message.role === "user" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={operatorProfile?.displayName ?? "You"} /></Box> : null}
-        {message.replyTo ? (
-          <Box component="button" aria-label="Go to replied-to message" onClick={() => {
-            const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
-            target?.scrollIntoView({ behavior: "smooth", block: "center" });
-            target?.focus({ preventScroll: true });
-          }} sx={{ display: "block", width: "100%", mb: .75, p: .75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}>
-            <Typography variant="caption" component="div" noWrap>{message.replyTo.text || "Original message unavailable"}</Typography>
-          </Box>
-        ) : null}
-        <ChatMessageBody
-          text={visibleText}
-          compactMarkdown
-          citations={message.citations}
-          agentIdForHandle={agentIdForHandle}
-          agentMentionForHandle={(handle) => {
-            const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
-            return binding ? { agentId: binding.agentId, label: agentMentionHandle(agentTitle(binding.agentId)) } : undefined;
-          }}
-          operatorHandle={operatorProfile?.handle}
-          onOpenAgent={onOpenAgent}
-          projectId={projectId}
-          previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined}
-        />
-        {message.editedAt ? <Chip size="small" variant="outlined" label="Edited" sx={{ mt: 0.75 }} /> : null}
-        {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
-        {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
-        {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
-        {message.fileActivity?.length ? <ResponseFileActivity
-          files={message.fileActivity}
-          projectId={projectId}
-          onOpenFile={message.authorAgentId && onOpenFileActivity
-            ? (file) => onOpenFileActivity(message.authorAgentId!, file)
-            : undefined}
-          onViewAll={message.authorAgentId && onOpenReview
-            ? () => onOpenReview(message.authorAgentId!)
-            : undefined}
-        /> : null}
-        {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-          {message.attachments.map((attachment) => <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
-            {attachment.mediaType.startsWith("image/")
-              ? <Box component="img" src={attachment.previewUrl ?? attachment.url} alt={attachment.name} sx={{ display: "block", maxWidth: 320, maxHeight: 240, objectFit: "contain", borderRadius: 1 }} />
-              : <Stack spacing={.25} sx={{ p: .75, border: 1, borderColor: "divider", borderRadius: 1 }}><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography><Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography></Stack>}
-            <Stack direction="row" spacing={.5} sx={{ mt: .25 }}>
-              {attachment.previewUrl ? <Button size="small" component="a" href={attachment.previewUrl} target="_blank" rel="noreferrer" sx={{ minWidth: 0, px: .5 }}>Open</Button> : null}
-              <Button size="small" component="a" href={attachment.downloadUrl ?? attachment.url} target="_blank" rel="noreferrer" download aria-label={`Download ${attachment.name}`} sx={{ minWidth: 0, px: .5 }}>Download</Button>
-            </Stack>
-          </Box>)}
-        </Stack> : null}
-          </Box>
-          <MessageActionsAndTimestamp
-            mobileTimestampAlign={fromManager && message.role === "user" ? "end" : "start"}
-            mobileTimestampRevealed={mobileTimestampRevealed}
-            showTimestamp={false}
-            value={message.createdAt}
-            status={message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
-              projectId={projectId}
-              receipts={message.deliveryReceipts}
-              recipientName={(agentId) => agentTitle(agentId)}
-              onOpenAgent={onOpenAgent}
-              onOpenWorkLog={onOpenWorkLog}
-            /> : undefined}
-            actions={conversation === "main" ? <>
-        <CopyMessageButton text={visibleText} />
-        {message.authorAgentId && onMentionAgent ? <Tooltip title={`Mention ${senderName}`}><IconButton size="small" aria-label={`Mention ${senderName}`} onClick={() => onMentionAgent(message.authorAgentId!)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-        {conversation === "main" && onEdit ? <Tooltip title="Edit Message"><IconButton size="small" aria-label="Edit message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-          </> : undefined}
-          />
-        </Box>
-      </Stack>
-    </Box>
-  );
+  return <ChatMessageFrame message={{
+    id: `master-message-${message.id}`,
+    author: fromManager
+      ? message.role === "user"
+        ? { kind: "operator", profile: operatorProfile }
+        : { kind: "notice" }
+      : { kind: "agent", name: senderName, onOpen: () => onOpenAgent(message.authorAgentId!) },
+    createdAt: message.createdAt,
+    reply: message.replyTo ? {
+      text: message.replyTo.text || "Original message unavailable",
+      onOpen: () => {
+        const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.focus({ preventScroll: true });
+      },
+    } : undefined,
+    body: <ChatMessageBody
+      text={visibleText}
+      compactMarkdown
+      citations={message.citations}
+      agentIdForHandle={agentIdForHandle}
+      agentMentionForHandle={(handle) => {
+        const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
+        return binding ? { agentId: binding.agentId, label: agentMentionHandle(agentTitle(binding.agentId)) } : undefined;
+      }}
+      operatorHandle={operatorProfile?.handle}
+      onOpenAgent={onOpenAgent}
+      projectId={projectId}
+      previewScope={message.authorAgentId && message.executionId && activeRunId === message.executionId ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId } : undefined}
+    />,
+    afterBody: <>
+      {message.editedAt ? <Chip size="small" variant="outlined" label="Edited" sx={{ mt: 0.75 }} /> : null}
+      {message.correctionOfMessageId ? <Chip size="small" label="Correction" sx={{ mt: 0.75 }} /> : null}
+      {message.correctedByMessageId ? <Chip size="small" variant="outlined" label="Corrected below" sx={{ mt: 0.75 }} /> : null}
+      {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
+      {message.fileActivity?.length ? <ResponseFileActivity
+        files={message.fileActivity}
+        projectId={projectId}
+        onOpenFile={message.authorAgentId && onOpenFileActivity ? (file) => onOpenFileActivity(message.authorAgentId!, file) : undefined}
+        onViewAll={message.authorAgentId && onOpenReview ? () => onOpenReview(message.authorAgentId!) : undefined}
+      /> : null}
+      <ChatAttachments attachments={message.attachments ?? []} />
+    </>,
+    status: message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
+      projectId={projectId}
+      receipts={message.deliveryReceipts}
+      recipientName={(agentId) => agentTitle(agentId)}
+      onOpenAgent={onOpenAgent}
+      onOpenWorkLog={onOpenWorkLog}
+    /> : undefined,
+    actions: conversation === "main" ? <>
+      <CopyMessageButton text={visibleText} />
+      {message.authorAgentId && onMentionAgent ? <Tooltip title={`Mention ${senderName}`}><IconButton size="small" aria-label={`Mention ${senderName}`} onClick={() => onMentionAgent(message.authorAgentId!)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+      {onEdit ? <Tooltip title="Edit Message"><IconButton size="small" aria-label="Edit message" onClick={() => onEdit(message)}><EditOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+    </> : undefined,
+  }} />;
 }
 
 export function ConversationView({
@@ -275,10 +221,7 @@ export function ConversationView({
   onOpenProject,
   onOpenAgent,
   onOpenWorkLog,
-  onOpenRosterAgent,
-  onOpenRosterAgentInNewTab,
-  initialAgentsOpen = false,
-  onInitialAgentsOpenConsumed,
+  onOpenProjectAgents,
   onOpenReview,
   onOpenAgentWork,
   onOpenBrowser,
@@ -297,10 +240,7 @@ export function ConversationView({
   onOpenProject(): void;
   onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
   onOpenWorkLog?(agentId: string): void;
-  onOpenRosterAgent?(agentId: string): void;
-  onOpenRosterAgentInNewTab?(agentId: string): void;
-  initialAgentsOpen?: boolean;
-  onInitialAgentsOpenConsumed?(): void;
+  onOpenProjectAgents(): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(): void;
@@ -337,30 +277,24 @@ export function ConversationView({
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(initialAgentsOpen);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
-  const consumedInitialAgentsOpen = useRef(false);
-  const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
-  const [rosterMenu, setRosterMenu] = useState<{ anchor: HTMLElement; agentId: string }>();
   const [queuedReplyNotice, setQueuedReplyNotice] = useState<string | undefined>();
   const [replyTo, setReplyTo] = useState<ConversationMessageDto | undefined>();
   const [directReplyTargetId, setDirectReplyTargetId] = useState<string | undefined>();
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
   const [stoppedNotice, setStoppedNotice] = useState<string>();
+  const [stopConfirmation, setStopConfirmation] = useState<{
+    targets: { agentId: string; runId: string }[];
+    names: string;
+  }>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
-  useEffect(() => {
-    if (!initialAgentsOpen || consumedInitialAgentsOpen.current) return;
-    consumedInitialAgentsOpen.current = true;
-    setAgentsOpen(true);
-    onInitialAgentsOpenConsumed?.();
-  }, [initialAgentsOpen, onInitialAgentsOpenConsumed]);
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
       const uploaded = directReplyUploads.current.get(directReplyRequestId) ?? [];
@@ -571,11 +505,11 @@ export function ConversationView({
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
-    void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-    void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationPrefix(conversationId) });
     if (conversation) {
-      void queryClient.invalidateQueries({ queryKey: ["agents", conversation.projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(conversation.projectId) });
     }
   };
 
@@ -588,8 +522,8 @@ export function ConversationView({
       defaultEffort?: string | null;
     }) => api.updateConversation(conversationId, patch),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
-      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
     },
   });
 
@@ -656,7 +590,7 @@ export function ConversationView({
       if (activeIds.length === 0) setActiveOperation(undefined);
       else setActiveOperation({ agentIds: activeIds, state: "starting" });
       for (const agentId of variables.agentIds) {
-        void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
       }
     },
   });
@@ -716,7 +650,7 @@ export function ConversationView({
           : undefined
         : undefined);
       if (response.queued) setActiveOperation(undefined);
-      void queryClient.invalidateQueries({ queryKey: ["agent", response.targetAuthorAgentId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(response.targetAuthorAgentId) });
     },
   });
 
@@ -781,9 +715,9 @@ export function ConversationView({
   const deleteConversation = useMutation({
     mutationFn: () => api.deleteConversation(conversationId),
     onSuccess: () => {
-      queryClient.removeQueries({ queryKey: ["conversation", conversationId] });
-      void queryClient.invalidateQueries({ queryKey: ["conversations"] });
-      void queryClient.invalidateQueries({ queryKey: ["agents", conversation?.projectId] });
+      queryClient.removeQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(conversation?.projectId) });
       setDeleteOpen(false);
       onDeleted();
     },
@@ -800,6 +734,21 @@ export function ConversationView({
       setActiveOperation(undefined);
     }
   }, [activeOperation, busy, statusByAgentId]);
+
+  const activeEngine = engines.find((candidate) => candidate.id === engine);
+  const project = conversation
+    ? projectsQuery.data?.find((candidate: ProjectDto) => candidate.id === conversation.projectId)
+    : undefined;
+  const selectedRuntime = useRuntimeControls({
+    engine: activeEngine,
+    preferences: preferencesQuery.data,
+    project,
+    selection: { model, effort },
+    onChange: (next) => {
+      setModel(next.model);
+      setEffort(next.effort);
+    },
+  });
 
   if (detailQuery.isLoading) {
     return (
@@ -834,8 +783,6 @@ export function ConversationView({
     );
   }
 
-  const activeEngine = engines.find((candidate) => candidate.id === engine);
-  const project = projectsQuery.data?.find((candidate: ProjectDto) => candidate.id === conversation.projectId);
   const composerRuntime = conversationComposerRuntime(activeEngine, engineCapabilities);
   const commands = composerRuntime.commands;
   const directReplyAgent = agents.find((candidate) => candidate.id === directReplyTargetId);
@@ -845,15 +792,9 @@ export function ConversationView({
   const composerCommands = directReplyAgent
     ? directReplyEngineCapabilities?.commands ?? []
     : commands.filter((command) => command.invocation === "prompt");
-  const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
-  const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
-    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
-    : advertisedModels;
-  const advertisedEfforts = effortOptionsForModel(activeEngine, model);
-  const efforts = effort && effortSelectionIsCompatible(activeEngine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
-    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
-    : advertisedEfforts;
-  const engineReady = engineIsAvailable(activeEngine);
+  const models = selectedRuntime.models;
+  const efforts = selectedRuntime.efforts;
+  const engineReady = selectedRuntime.ready;
 
   const agentTitle = (agentId: string | undefined): string =>
     agents.find((agent) => agent.id === agentId)?.title ?? "Agent";
@@ -888,14 +829,7 @@ export function ConversationView({
     .map((agent) => agentMentionHandle(agent.title));
 
   const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
-  const stopOperation = async () => {
-    const targets = (activeOperation?.agentIds ?? []).flatMap((agentId) => {
-      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
-      return runId ? [{ agentId, runId }] : [];
-    });
-    if (targets.length === 0) return;
-    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
-    if (targets.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
+  const cancelOperationTargets = async (targets: { agentId: string; runId: string }[], names: string) => {
     setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
     const requestId = stopOperationRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     stopOperationRequestId.current = requestId;
@@ -904,8 +838,22 @@ export function ConversationView({
       idempotencyKey: `${requestId}:${runId}`,
     })));
     stopOperationRequestId.current = undefined;
+    setStopConfirmation(undefined);
     setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
     invalidate();
+  };
+  const stopOperation = async () => {
+    const targets = (activeOperation?.agentIds ?? []).flatMap((agentId) => {
+      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
+      return runId ? [{ agentId, runId }] : [];
+    });
+    if (targets.length === 0) return;
+    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
+    if (targets.length > 1) {
+      setStopConfirmation({ targets, names });
+      return;
+    }
+    await cancelOperationTargets(targets, names);
   };
 
   const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = [], draftOwnerId?: string) => {
@@ -971,59 +919,14 @@ export function ConversationView({
       persistDefaults.mutate({ defaultEngine: next as EngineDto["id"], defaultModel: resolved.model || null, defaultEffort: resolved.effort || null });
     }}
     onModelChange={(next) => {
-      const resolved = resolveRuntimeSelection(activeEngine, preferencesQuery.data, project, { model: next });
-      setModel(next); setEffort(resolved.effort);
-      persistDefaults.mutate({ defaultModel: next, defaultEffort: resolved.effort || null });
+      const resolved = selectedRuntime.selectModel(next);
+      persistDefaults.mutate({ defaultModel: resolved.model, defaultEffort: resolved.effort || null });
     }}
-    onEffortChange={(next) => { setEffort(next); persistDefaults.mutate({ defaultEffort: next }); }}
+    onEffortChange={(next) => {
+      const resolved = selectedRuntime.selectEffort(next);
+      persistDefaults.mutate({ defaultEffort: resolved.effort });
+    }}
   /> : null;
-
-  const agentRoster = <Box data-testid="project-chat-agents" sx={{ width: "min(960px, 100%)", mx: "auto", p: { xs: 1.5, sm: 2.5, md: 3 } }}>
-    <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
-      <Box sx={{ flex: 1 }}>
-        <Typography variant="h5" fontWeight={800}>Agents</Typography>
-        <Typography variant="body2" color="text.secondary">Agents assigned to this Chat and how work is delegated between them.</Typography>
-      </Box>
-      <Chip size="small" label={agents.length} />
-    </Stack>
-    {agents.length === 0 ? <Alert severity="info">No Agents yet. Send a message to start one or use Create Agent.</Alert> : (
-      <List dense disablePadding>
-        {orderedAgentOrganization(agents).map(({ agent, depth }) => {
-          const status = statusByAgentId.get(agent.id) ?? "idle";
-          const manager = agent.managerAgentId ? agents.find((candidate) => candidate.id === agent.managerAgentId) : undefined;
-          return <ListItem
-            key={agent.id}
-            disablePadding
-            sx={{ mb: 0.5, width: "100%", minWidth: 0, boxSizing: "border-box", pl: agentRosterIndent(depth) }}
-            secondaryAction={<Tooltip title="Delete Agent"><IconButton
-              edge="end"
-              size="small"
-              aria-label={`Delete agent ${agent.title}`}
-              onClick={(event) => { event.stopPropagation(); setPendingDelete(agent); }}
-            ><DeleteOutlineIcon fontSize="small" /></IconButton></Tooltip>}
-          >
-            <ListItemButton
-              onClick={() => (onOpenRosterAgent ?? onOpenAgent)(agent.id)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setRosterMenu({ anchor: event.currentTarget, agentId: agent.id });
-              }}
-              sx={{ minWidth: 0, borderRadius: 1, border: 1, borderLeftWidth: depth ? 3 : 1, borderColor: "divider", pr: 7 }}
-            >
-              <ListItemText
-                primary={agent.title}
-                secondary={`${manager ? `Delegated under ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
-                sx={{ minWidth: 0 }}
-                primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
-                secondaryTypographyProps={{ noWrap: true }}
-              />
-              <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} sx={{ mr: 0.5, flexShrink: 0 }} />
-            </ListItemButton>
-          </ListItem>;
-        })}
-      </List>
-    )}
-  </Box>;
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
@@ -1082,10 +985,10 @@ export function ConversationView({
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
         <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
-          <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} aria-pressed={agentsOpen} onClick={() => { clearReply(); setAgentWorkOpen(false); setAgentsOpen(true); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary", "&::after": agentsOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Agents</Button>
-          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} aria-pressed={agentWorkOpen} onClick={() => { clearReply(); setAgentsOpen(false); setAgentWorkOpen(true); }} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary", "&::after": agentWorkOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Work</Button>
+          <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
+          <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={onOpenProjectAgents} aria-label={`Open ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
+          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} aria-pressed={agentWorkOpen} onClick={() => { clearReply(); setAgentWorkOpen(true); }} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary", "&::after": agentWorkOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Work</Button>
         </Stack>
         </Collapse>
       </Box>
@@ -1112,8 +1015,7 @@ export function ConversationView({
           }}
           sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
         >
-        {agentsOpen ? agentRoster : null}
-        <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
+        <Box data-chat-column sx={{ display: "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
           {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => {
             const focusId = notificationTechnicalFocusId(item);
             if (item.agentId) onOpenAgent(item.agentId, "technical", focusId);
@@ -1202,7 +1104,7 @@ export function ConversationView({
 
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
-        data-mobile-composer-hidden={agentsOpen || agentWorkOpen || mobileComposer.hidden ? "true" : "false"}
+        data-mobile-composer-hidden={agentWorkOpen || mobileComposer.hidden ? "true" : "false"}
         onTransitionEnd={(event) => {
           if (
             event.currentTarget !== event.target
@@ -1283,8 +1185,6 @@ export function ConversationView({
         /> : null}
       </Box>
 
-      {rosterMenu ? <Menu anchorEl={rosterMenu.anchor} open onClose={() => setRosterMenu(undefined)}><MenuItem disabled={!onOpenRosterAgentInNewTab} onClick={() => { onOpenRosterAgentInNewTab?.(rosterMenu.agentId); setRosterMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
-
       <ImportAgentDialog
         open={importOpen}
         projectId={conversation.projectId}
@@ -1294,6 +1194,20 @@ export function ConversationView({
         onClose={() => setImportOpen(false)}
         onImported={onOpenAgent}
       />
+
+      <ConfirmDialog
+        open={Boolean(stopConfirmation)}
+        title="Stop Operation Tree?"
+        confirmLabel="Stop Operation"
+        onCancel={() => setStopConfirmation(undefined)}
+        onConfirm={() => {
+          if (stopConfirmation) void cancelOperationTargets(stopConfirmation.targets, stopConfirmation.names);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>
+          Stop work for {stopConfirmation?.names}? Partial output from every affected Agent will remain visible.
+        </Typography>
+      </ConfirmDialog>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>
@@ -1356,16 +1270,6 @@ export function ConversationView({
         </DialogActions>
       </Dialog>
 
-      <AgentDeletionDialog
-        open={Boolean(pendingDelete)}
-        projectId={conversation.projectId}
-        rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
-        onClose={() => setPendingDelete(undefined)}
-        onDeleted={() => {
-          invalidate();
-          setPendingDelete(undefined);
-        }}
-      />
     </Box>
   );
 }

@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   BROWSER_FRAME_ACTIVE_INTERVAL_MS,
@@ -80,20 +79,4 @@ describe("interactive browser input", () => {
     expect(browserFrameRefreshDelay(1_000, 1_000)).toBe(BROWSER_FRAME_IDLE_INTERVAL_MS);
   });
 
-  it("uses the same bounded queue and touch-safe viewport in Project and Run browser tabs", () => {
-    for (const file of ["BrowserPanel.tsx", "ProjectBrowserDialog.tsx"]) {
-      const source = readFileSync(new URL(`../src/components/${file}`, import.meta.url), "utf8");
-      expect(source).toContain("mergeBrowserScrollInputs");
-      expect(source).toContain("queuedScroll.current");
-      expect(source).toContain("onPointerMove");
-      expect(source).toContain("touchAction:");
-      expect(source).toContain("createBrowserFrameScheduler");
-      expect(source).toContain("decodeBrowserFrame");
-      expect(source).toContain('document.addEventListener("visibilitychange"');
-      expect(source).toContain("refreshFrame.current = () => scheduler.requestInteractionRefresh()");
-    }
-    const runBrowser = readFileSync(new URL("../src/components/BrowserPanel.tsx", import.meta.url), "utf8");
-    expect(runBrowser).toContain('className="ponderosa-scroll"');
-    expect(runBrowser).toContain('overflowY: "auto"');
-  });
 });

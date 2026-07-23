@@ -5,15 +5,18 @@ import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
-import { Box, Button, ButtonBase, Chip, Menu, MenuItem, Paper, Stack, Typography } from "@mui/material";
+import { Box, Button, ButtonBase, Chip, Paper, Stack, Typography } from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
+import { queryKeys } from "../queryKeys";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
 import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
+import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
 
@@ -54,11 +57,11 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   onOpenInbox(): void;
 }): JSX.Element {
   const [draggedResourceId, setDraggedResourceId] = useState<string>();
-  const [tabMenu, setTabMenu] = useState<{ anchor: HTMLElement; route: Route }>();
-  const conversationQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["conversations", project.id], queryFn: () => api.listConversations(project.id), staleTime: 10_000 })) });
-  const agentQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agents", project.id], queryFn: () => api.listAgents(project.id), staleTime: 5_000 })) });
-  const healthQueries = useQueries({ queries: projects.map((project) => ({ queryKey: ["agent-health", project.id], queryFn: () => api.getAgentHealth(project.id), staleTime: 5_000 })) });
-  const triggersQuery = useQuery({ queryKey: ["triggers"], queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
+  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
+  const conversationQueries = useProjectConversations(projects);
+  const agentQueries = useProjectAgents(projects);
+  const healthQueries = useProjectAgentHealth(projects);
+  const triggersQuery = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const conversations = conversationQueries.flatMap((query, index) => (query.data ?? []).map((conversation) => ({ conversation, project: projects[index]! })));
   const agents = agentQueries.flatMap((query, index) => (query.data ?? []).map((agent) => ({ agent, project: projects[index]! })));
   const agentDestinations = new Map(agents.map(({ agent, project }) => [agent.id, { agent, project }] as const));
@@ -105,16 +108,16 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}
 
-      {starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: item.route }); }} />)}</Stack></Box> : null}
+      {starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
 
       <Box component="section">
         <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "allChats" })}>View All Chats</Button></Stack>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-          {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderHomeResources(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
+          {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderHomeResources(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
           {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}
         </Box>
       </Box>
     </Stack>
-    {tabMenu ? <Menu anchorEl={tabMenu.anchor} open onClose={() => setTabMenu(undefined)}><MenuItem onClick={() => { onOpenInNewTab(tabMenu.route); setTabMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+    <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }

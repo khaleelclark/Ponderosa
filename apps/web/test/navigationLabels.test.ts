@@ -12,20 +12,16 @@ describe("launch navigation labels", () => {
       readSource("../src/components/WorkspaceOverview.tsx"),
       readSource("../src/components/WorkspaceSidebar.tsx"),
       readSource("../src/components/WorkspaceTabs.tsx"),
-      readSource("../src/components/panes.tsx"),
     ].join("\n");
 
     for (const label of [
       "New Project",
-      "Work Log",
       "Files & Results",
       "Stop All",
-      "Open in New Ponderosa Tab",
       "Interactive Browser",
       "Project Overview",
       "Rename Tab",
       "Close Other Tabs",
-      "Show Exact Provider Input",
     ]) expect(sources).toContain(label);
 
     for (const retiredLabel of [

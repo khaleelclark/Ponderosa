@@ -5,6 +5,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { scopedAttention } from "../attention";
 import { api } from "../api";
+import { notificationDecision } from "../decisions";
+import { DecisionCard } from "./decisions/DecisionCard";
 
 function outcomeLabel(outcome: NonNullable<WorkspaceNotificationDto["resolution"]>["outcome"]): string {
   return outcome.replaceAll("_", " ").replace(/^./, (value) => value.toUpperCase());
@@ -40,11 +42,6 @@ export function AttentionSurface({
       queryClient.invalidateQueries({ queryKey: ["agent-work"] }),
     ]);
   };
-  const respond = useMutation({
-    mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) =>
-      api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
-    onSuccess: refresh,
-  });
   const resolve = useMutation({
     mutationFn: (notificationId: string) => api.setNotificationStatus(notificationId, "resolved"),
     onSuccess: refresh,
@@ -52,7 +49,7 @@ export function AttentionSurface({
   if (!items.length) return null;
   const first = items[0]!;
   const urgent = items.some((item) => item.severity === "urgent");
-  const pending = respond.isPending || resolve.isPending;
+  const pending = resolve.isPending;
 
   return <>
     <Alert
@@ -73,10 +70,12 @@ export function AttentionSurface({
           {items.map((item, index) => <Box key={item.id}>
             {index ? <Divider sx={{ mb: 2 }} /> : null}
             <Stack spacing={1}>
-              <Box>
-                <Typography fontWeight={850}>{item.title}</Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, overflowWrap: "anywhere" }}>{item.body}</Typography>
-              </Box>
+              {item.kind === "decision" && item.decision
+                ? <DecisionCard decision={notificationDecision(item)!} title={item.title} context={item.body} />
+                : <Box>
+                    <Typography fontWeight={850}>{item.title}</Typography>
+                    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, overflowWrap: "anywhere" }}>{item.body}</Typography>
+                  </Box>}
               {item.resolution?.kind === "coordination_request" ? <>
                 <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
                   <Chip size="small" label={item.resolution.recipientTitle} />
@@ -90,20 +89,13 @@ export function AttentionSurface({
                   Recovery must be chosen through a contextual Decision so the affected Agent, assignment, and consequences are explicit. Technical Details remains read-only evidence.
                 </Alert> : null}
               </> : null}
-              {item.kind === "decision" && item.decision ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-                {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={pending} onClick={() => respond.mutate({ id: item.decision!.id, optionId: option.id })}>{option.label}</Button>)}
-                {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={pending} onClick={() => {
-                  const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?");
-                  if (answer?.trim()) respond.mutate({ id: item.decision!.id, text: answer.trim() });
-                }}>{item.decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
-              </Stack> : null}
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
                 {item.kind !== "decision" ? <Button size="small" variant="outlined" disabled={pending} onClick={() => resolve.mutate(item.id)}>No Further Action</Button> : null}
                 {onOpen ? <Button size="small" color="inherit" onClick={() => { setOpen(false); onOpen(item); }}>Open Technical Details</Button> : null}
               </Stack>
             </Stack>
           </Box>)}
-          {respond.isError || resolve.isError ? <Alert severity="error">The issue could not be updated. Review the current state and try again.</Alert> : null}
+          {resolve.isError ? <Alert severity="error">The issue could not be updated. Review the current state and try again.</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>

@@ -9,6 +9,17 @@ export const ponderosaFocusIndicator = {
   dark: "#9ED4AA",
 } as const;
 
+/** Shared geometry for navigation and collection surfaces. */
+export const ponderosaLayoutTokens = {
+  sidebarRailWidth: 72,
+  sidebarPanelWidth: 318,
+  contentMaxWidth: 1320,
+  compactControlHeight: 40,
+  touchTarget: 44,
+  collectionRowRadius: 12,
+  panelRadius: 12,
+} as const;
+
 export const ponderosaColorTokens = {
   light: {
     background: "#F8F6EF",
@@ -129,6 +140,10 @@ export function createPonderosaTheme(mode: ColorMode) {
             backgroundColor: colors.background,
             color: colors.textPrimary,
             "--ponderosa-focus-ring": focusIndicator,
+            "--ponderosa-sidebar": colors.sidebar,
+            "--ponderosa-surface-secondary": colors.surfaceSecondary,
+            "--ponderosa-elevated": colors.elevated,
+            "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
           },
           "::selection": {
             backgroundColor: dark ? "rgba(124,191,138,.28)" : "rgba(92,138,101,.22)",

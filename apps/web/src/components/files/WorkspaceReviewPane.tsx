@@ -1,0 +1,208 @@
+import DifferenceIcon from "@mui/icons-material/Difference";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
+import RefreshIcon from "@mui/icons-material/Refresh";
+import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
+import type { ChangedFileDto } from "@ponderosa/core";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { api } from "../../api";
+import { ResourceContextMenu } from "../ResourceContextMenu";
+import type { ResourceContextMenuState } from "../ResourceContextMenu";
+import { UnifiedDiffViewer } from "../filePreview/FilePreview";
+import { languageForPath } from "../filePreview/fileTypes";
+
+export function resolveWorkspaceReviewPath(
+  changes: ReadonlyArray<{ path: string }>,
+  selectedPath?: string,
+  initialPath?: string,
+): string | undefined {
+  if (selectedPath && changes.some((change) => change.path === selectedPath)) return selectedPath;
+  if (initialPath && changes.some((change) => change.path === initialPath)) return initialPath;
+  return changes[0]?.path;
+}
+
+export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onOpenInNewTab }: {
+  projectId: string;
+  agentId?: string;
+  files: ChangedFileDto[];
+  running: boolean;
+  initialPath?: string;
+  onOpenInNewTab?(path: string): void;
+}): JSX.Element {
+  const workspace = useQuery({
+    queryKey: ["workspace", projectId],
+    queryFn: () => api.getWorkspaceStatus(projectId),
+    refetchInterval: running ? 1_500 : 10_000,
+  });
+  const provenance = new Map(files.map((file) => [file.path, file]));
+  const changes = workspace.data?.changes ?? [];
+  const [selectedPath, setSelectedPath] = useState<string | undefined>(initialPath);
+  const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
+  const lastInitialPath = useRef(initialPath);
+  const activePath = resolveWorkspaceReviewPath(changes, selectedPath, initialPath);
+
+  useEffect(() => {
+    setSelectedPath((current) => {
+      const initialChanged = lastInitialPath.current !== initialPath;
+      lastInitialPath.current = initialPath;
+      return resolveWorkspaceReviewPath(changes, initialChanged ? undefined : current, initialPath);
+    });
+  }, [changes, initialPath]);
+
+  const review = useQuery({
+    queryKey: ["workspace-file", projectId, activePath],
+    queryFn: () => api.getWorkspaceFile(projectId, activePath ?? ""),
+    enabled: Boolean(activePath),
+    refetchInterval: running ? 1_500 : false,
+  });
+  const selectedChange = changes.find((change) => change.path === activePath);
+  const selectedProvenanceSummary = activePath ? provenance.get(activePath) : undefined;
+  const selectedProvenanceQuery = useQuery({
+    queryKey: ["changed-file", agentId, activePath, selectedProvenanceSummary?.lastSeq],
+    queryFn: () => api.getChangedFileDetail(agentId!, activePath!),
+    enabled: Boolean(agentId && activePath),
+    staleTime: Infinity,
+  });
+  const selectedProvenance = selectedProvenanceQuery.data ?? selectedProvenanceSummary;
+
+  return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
+    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
+      <Typography variant="overline" color="text.secondary">Review</Typography>
+      {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
+      {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
+      <Chip size="small" label={`${changes.length} change${changes.length === 1 ? "" : "s"}`} color={changes.length ? "warning" : "default"} />
+      <Box sx={{ flex: 1 }} />
+      <Tooltip title="Refresh Workspace Changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
+    </Stack>
+    {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
+      : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
+        : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Run-related file events remain available in Activity and Changed Files.</Alert>
+          : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
+            : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
+              <Stack sx={{ overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", maxHeight: { xs: 220, lg: "none" } }}>
+                {changes.map((change) => {
+                  const touched = provenance.get(change.path);
+                  return <Button
+                    key={change.path}
+                    data-testid="workspace-change"
+                    data-workspace-path={change.path}
+                    onClick={() => setSelectedPath(change.path)}
+                    onContextMenu={(event) => {
+                      if (!onOpenInNewTab) return;
+                      event.preventDefault();
+                      setFileMenu({ anchor: event.currentTarget, resource: change.path });
+                    }}
+                    variant={change.path === activePath ? "contained" : "text"}
+                    color={change.path === activePath ? "primary" : "inherit"}
+                    sx={{ borderRadius: 0, justifyContent: "flex-start", textAlign: "left", px: 1.5, py: 1, minHeight: 48 }}
+                  >
+                    <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
+                      <Chip size="small" label={change.kind} color={change.kind === "delete" ? "error" : change.kind === "create" ? "success" : "default"} />
+                      <Box sx={{ minWidth: 0, flex: 1 }}>
+                        <Typography variant="body2" noWrap>{change.path}</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {[change.staged && "staged", change.unstaged && "unstaged", change.untracked && "untracked", touched && "this agent"].filter(Boolean).join(" · ")}
+                        </Typography>
+                      </Box>
+                    </Stack>
+                  </Button>;
+                })}
+              </Stack>
+              <Box data-testid="workspace-diff" sx={{ overflow: "auto", minWidth: 0, p: 1.5 }}>
+                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
+                  <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activePath}</Typography>
+                  {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
+                  {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
+                  {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
+                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
+                  {activePath && onOpenInNewTab ? <Button size="small" color="inherit" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in New Tab</Button> : null}
+                </Stack>
+                <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
+                  <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
+                  <Button size="small" variant={reviewMode === "file" ? "contained" : "outlined"} onClick={() => setReviewMode("file")}>Current File</Button>
+                </Stack>
+                {review.isLoading ? <CircularProgress size={22} />
+                  : review.isError ? <Alert severity="error">Diff could not be loaded. {String(review.error)}</Alert>
+                    : reviewMode === "file" ? (review.data?.content !== undefined
+                      ? <Box data-testid="workspace-file"><SyntaxHighlighter language={languageForPath(review.data.path)} style={oneLight} PreTag="div" customStyle={{ margin: 0 }}>{review.data.content}</SyntaxHighlighter></Box>
+                      : <Alert severity="info">The current file cannot be displayed. It may be deleted, binary, or above the safe viewer limit.</Alert>)
+                    : review.data?.diff ? <>
+                      {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}
+                      <UnifiedDiffViewer diff={review.data.diff} />
+                    </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
+              </Box>
+            </Box>}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+  </Box>;
+}
+
+/** Durable execution provenance, distinct from the live Git working-tree Review surface. */
+function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
+  agentId: string;
+  file: ChangedFileDto;
+  onOpenReviewInNewTab?(path: string): void;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
+  const detail = useQuery({
+    queryKey: ["changed-file", agentId, file.path, file.lastSeq],
+    queryFn: () => api.getChangedFileDetail(agentId, file.path),
+    enabled: expanded && file.diffAvailable,
+    staleTime: Infinity,
+  });
+  const current = detail.data ?? file;
+  return <Paper
+    variant="outlined"
+    onContextMenu={(event) => {
+      if (!onOpenReviewInNewTab) return;
+      event.preventDefault();
+      setFileMenu({ anchor: event.currentTarget, resource: file.path });
+    }}
+    sx={{ p: 1.25 }}
+  >
+    <Button
+      fullWidth
+      color="inherit"
+      onClick={() => setExpanded((value) => !value)}
+      aria-label={`${expanded ? "Hide" : "Open"} recorded diff for ${file.path}`}
+      aria-expanded={expanded}
+      sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
+    >
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
+        <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
+        <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere", textAlign: "left" }}>{file.path}</Typography>
+      </Stack>
+    </Button>
+    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
+      Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
+    </Typography>
+    <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5 }}>{expanded ? "Hide Current Diff" : "Open Current Diff"}</Button>
+    {expanded ? !file.diffAvailable
+      ? <Alert severity="info" sx={{ mt: 1 }}>A durable recorded diff is unavailable for this historical Agent file event. Current working-tree state is separate and is not used here.</Alert>
+      : detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
+        : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>The durable recorded diff could not be loaded.</Alert>
+          : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
+            : <Alert severity="info" sx={{ mt: 1 }}>The Agent did not provide a durable recorded diff for this historical file event. Current working-tree state is separate and is not used here.</Alert>
+      : null}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenReviewInNewTab} />
+  </Paper>;
+}
+
+export function ChangedFilesPane({ agentId, files, onOpenReviewInNewTab }: {
+  agentId: string;
+  files: ChangedFileDto[];
+  onOpenReviewInNewTab?(path: string): void;
+}): JSX.Element {
+  const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
+  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
+    <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
+      <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
+    </Stack>
+    {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
+      <ChangedFileEntry key={file.path} agentId={agentId} file={file} onOpenReviewInNewTab={onOpenReviewInNewTab} />)}
+  </Stack>;
+}

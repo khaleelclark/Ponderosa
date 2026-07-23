@@ -112,12 +112,19 @@ describe("All Chat view contract", () => {
       clearTimeout,
       queueMicrotask,
     });
-    act(() => buttons("Mention Verifier")[0]!.props.onClick());
+    const verifierRow = messages()[1]!;
+    expect(verifierRow.props.role).toBe("button");
+    expect(verifierRow.props.tabIndex).toBe(0);
+    const currentTarget = {};
+    act(() => verifierRow.props.onKeyDown({
+      key: "Enter", target: currentTarget, currentTarget, preventDefault: vi.fn(),
+    }));
     await vi.waitFor(() => expect(api.getEngineCapabilities).toHaveBeenCalledWith("project-1", expect.objectContaining({ agentId: "agent-2", engineId: "codex" })));
 
     const composer = view.root.find((node) => node.props.placeholder === "Message Verifier");
     expect(composer.props.replyTo).toBeUndefined();
     expect(composer.props.guidance).toBeUndefined();
+    expect(composer.props.insertTextRequest).toBeUndefined();
     await act(async () => { await composer.props.onCommand({ name: "status" }); });
     expect(invokeCommand).toHaveBeenCalledWith("agent-2", { name: "status" });
     await act(async () => { await composer.props.onSend("Private follow-up"); });

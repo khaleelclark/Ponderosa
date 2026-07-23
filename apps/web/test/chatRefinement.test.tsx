@@ -1,8 +1,11 @@
 import type { ConversationMessageDto } from "@ponderosa/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ConversationMessage, conversationComposerRuntime } from "../src/components/ConversationView";
+import { ChatMarkdown } from "../src/components/chat/ChatMessages";
+import { Composer } from "../src/components/chat/Composer";
 import { replyPreviewText } from "../src/components/panes";
 
 const baseMessage: ConversationMessageDto = {
@@ -95,10 +98,11 @@ describe("chat interaction refinement", () => {
   });
 
   it("focuses direct replies and supports hover/focus/touch action disclosure", () => {
-    const composer = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
     const actions = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
-    expect(composer).toContain("focusReply");
-    expect(composer).toContain("inputRef.current?.focus()");
+    const composer = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}>
+      <Composer disabled={false} running={false} focusReply onSend={() => undefined} />
+    </QueryClientProvider>);
+    expect(composer).toContain('aria-label="Message"');
     expect(actions).toContain(".chat-message:hover");
     expect(actions).toContain(".chat-message-actions.revealed");
   });
@@ -115,21 +119,39 @@ describe("chat interaction refinement", () => {
 
   it("uses one bounded document column and removes the nested Markdown preview scroller", () => {
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+    const documentCard = readFileSync(new URL("../src/components/chat/ChatDocumentCard.tsx", import.meta.url), "utf8");
+    const html = renderToStaticMarkup(
+      <ConversationMessage
+        message={baseMessage}
+        conversation="main"
+        agentTitle={() => "Agent One"}
+        agentIdForHandle={() => undefined}
+        onOpenAgent={vi.fn()}
+        projectId="project-1"
+      />,
+    );
 
     expect(conversation).toContain("data-chat-column");
     expect(conversation).toContain('width: "min(1180px, 100%)"');
-    expect(conversation).toContain('width: "min(1120px, 100%)"');
-    expect(panes).not.toContain('maxHeight: "60vh", overflow: "auto"');
-    expect(panes).toContain('tabIndex={0}');
+    expect(html).toContain("width:min(1120px, 100%)");
+    expect(documentCard).not.toContain('maxHeight: "60vh", overflow: "auto"');
+    expect(documentCard).toContain('className="ponderosa-scroll"');
   });
 
-  it("keeps Markdown block rhythm compact without losing authored line breaks", () => {
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+  it("renders Markdown soft newlines as paragraph whitespace while preserving block and fenced-code structure", () => {
+    const html = renderToStaticMarkup(<ChatMarkdown compact>{
+      "First line\nsecond line\n\nThird paragraph\n\n- One\n- Two\n\n> Quoted first\n> quoted second\n\n```text\nalpha\n  beta\n```"
+    }</ChatMarkdown>);
 
-    expect(panes).toContain('whiteSpace: "normal"');
-    expect(panes).toMatch(/"& p": \{ my: compact \? 0\.15 : 0\.35,[^}]*whiteSpace: "pre-wrap"/);
-    expect(panes).toContain('"& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75 }');
-    expect(panes).toContain('"& li + li": { mt: compact ? 0.05 : 0.15 }');
+    expect(html).toContain("<p>First line\nsecond line</p>");
+    expect(html).not.toContain("<br");
+    expect(html.match(/<p>/gu)).toHaveLength(3);
+    expect(html).toContain("<ul>");
+    expect(html.match(/<li>/gu)).toHaveLength(2);
+    expect(html).toMatch(/<ul>\s*<li>One<\/li>\s*<li>Two<\/li>\s*<\/ul>/u);
+    expect(html).toMatch(/<blockquote>\s*<p>Quoted first\nquoted second<\/p>\s*<\/blockquote>/u);
+    expect(html).not.toContain("white-space:pre-wrap");
+    expect(html).toContain("white-space:pre");
+    expect(html).toContain("alpha\n  beta");
   });
 });
