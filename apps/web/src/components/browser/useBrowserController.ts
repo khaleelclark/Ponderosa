@@ -27,9 +27,10 @@ export function useBrowserController<Session extends BrowserSession>({
     retry: false,
     refetchInterval: (current) => current.state.data?.status === "opening" ? 750 : 2_500,
   });
-  sessionRef.current = query.data;
   const missing = query.error instanceof ApiRequestError && query.error.status === 404;
   const queryError = missing ? undefined : query.error;
+  const session = missing || queryError ? undefined : query.data;
+  sessionRef.current = session;
   const update = useCallback((next: Session) => {
     sessionRef.current = next;
     queryClient.setQueryData(adapter.queryKey, next);
@@ -88,7 +89,7 @@ export function useBrowserController<Session extends BrowserSession>({
 
   return {
     query,
-    session: query.data,
+    session,
     missing,
     queryError,
     open,

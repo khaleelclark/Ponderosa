@@ -147,6 +147,82 @@ describe("shared browser surfaces", () => {
     client.clear();
   });
 
+  it.each([
+    ["HTTP failure", new ApiRequestError(500, "Project browser service unavailable")],
+    ["network failure", new Error("Project browser network failed")],
+  ])("gives a Project browser refetch %s precedence over a retained ready session", async (_label, queryError) => {
+    vi.spyOn(api, "getProjectBrowser")
+      .mockResolvedValueOnce(projectSession)
+      .mockRejectedValue(queryError);
+    vi.spyOn(api, "listAgents").mockResolvedValue([]);
+    vi.spyOn(api, "getAgentHealth").mockResolvedValue({
+      projectId: "project-1",
+      generatedAt: now,
+      agents: [],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><ProjectBrowserDialog
+        projectId="project-1"
+        open
+        embedded
+        onClose={vi.fn()}
+      /></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("Mock browser viewport"));
+
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["project-browser", "project-1"] });
+    });
+    await vi.waitFor(() => {
+      const output = JSON.stringify(view.toJSON());
+      expect(output).toContain("Interactive browser could not be loaded");
+      expect(output).toContain("Retry");
+      expect(output).not.toContain("Mock browser viewport");
+      expect(output).not.toContain("No Interactive Browser is open");
+      expect(output).not.toContain("Open Browser");
+    });
+    view.unmount();
+    client.clear();
+  });
+
+  it("gives a Project browser refetch 404 precedence over a retained ready session", async () => {
+    vi.spyOn(api, "getProjectBrowser")
+      .mockResolvedValueOnce(projectSession)
+      .mockRejectedValue(new ApiRequestError(404, "Project browser not found"));
+    vi.spyOn(api, "listAgents").mockResolvedValue([]);
+    vi.spyOn(api, "getAgentHealth").mockResolvedValue({
+      projectId: "project-1",
+      generatedAt: now,
+      agents: [],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><ProjectBrowserDialog
+        projectId="project-1"
+        open
+        embedded
+        onClose={vi.fn()}
+      /></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(JSON.stringify(view.toJSON())).toContain("Mock browser viewport"));
+
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ["project-browser", "project-1"] });
+    });
+    await vi.waitFor(() => {
+      const output = JSON.stringify(view.toJSON());
+      expect(output).toContain("No Interactive Browser is open");
+      expect(output).toContain("Open Browser");
+      expect(output).not.toContain("Mock browser viewport");
+      expect(output).not.toContain("Interactive browser could not be loaded");
+    });
+    view.unmount();
+    client.clear();
+  });
+
   it("renders the compact Run session and routes Open Tab interaction", async () => {
     vi.spyOn(api, "getBrowserSession").mockResolvedValue(runSession);
     const openTab = vi.fn();
