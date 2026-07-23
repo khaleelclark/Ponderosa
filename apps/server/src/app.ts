@@ -4543,6 +4543,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   function ensureDecisionResponseActivation(decision: DecisionDto): string | undefined {
     if (decision.status !== "resolved" || !decision.response) return undefined;
+    const project = store.getProject(decision.projectId);
+    const agent = store.getAgent(decision.agentId);
+    if (!project || !agent || agent.projectId !== project.id || agent.archived) return undefined;
+    if (decision.conversationId) {
+      const conversation = store.getConversation(decision.conversationId);
+      if (!conversation || conversation.projectId !== project.id || conversation.archived ||
+          !agent.conversationIds.includes(conversation.id)) return undefined;
+    }
     return coordinationV3.enqueueMessageActivation({
       projectId: decision.projectId,
       agentId: decision.agentId,

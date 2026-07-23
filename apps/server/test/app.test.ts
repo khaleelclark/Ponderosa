@@ -1546,6 +1546,56 @@ describe("Agent work inspector", () => {
     await app.close();
   });
 
+  it.each(["agent", "project"] as const)(
+    "ignores a historical resolved continuation Decision after its %s is deleted",
+    async (deletedOwner) => {
+      const project = store.createProject({
+        label: `Deleted Decision ${deletedOwner}`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const conversation = store.createConversation(project.id, { title: "Historical room" });
+      const agent = store.createAgent(project.id, {
+        title: "Historical owner",
+        engine: "codex",
+        conversationId: conversation.id,
+      });
+      const workspace = new WorkspaceStore(dataDir);
+      const pending = workspace.createDecision({
+        projectId: project.id,
+        conversationId: conversation.id,
+        agentId: agent.id,
+        runId: `deleted-${deletedOwner}-run`,
+        coordinationRunId: `deleted-${deletedOwner}-run`,
+        continuationRequestIds: ["historical-question-request"],
+        mode: "approval",
+        question: "Continue?",
+        options: [{ id: "yes", label: "Yes" }],
+        allowOther: false,
+        blocking: true,
+        idempotencyKey: `deleted-${deletedOwner}-decision`,
+      });
+      workspace.resolveDecision(pending.id, {
+        optionId: "yes",
+        respondedAt: "2026-07-23T12:00:00.000Z",
+      });
+      expect(deletedOwner === "agent"
+        ? store.deleteAgent(agent.id)
+        : store.deleteProject(project.id)).toBe(true);
+
+      const app = createServer({
+        dataDir,
+        store,
+        engines,
+        logger: false,
+        communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+      });
+      const response = await app.inject({ method: "GET", url: "/api/projects" });
+      expect(response.statusCode, response.body).toBe(200);
+      await app.close();
+    },
+  );
+
   it("returns a scoped read-only trace projection with Decisions", async () => {
     const project = store.createProject({ label: "Inspector", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Work room" });
