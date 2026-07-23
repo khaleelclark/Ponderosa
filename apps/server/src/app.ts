@@ -4414,7 +4414,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const app = Fastify({
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
-    pluginTimeout: 120_000,
+    // Startup recovery intentionally completes before the listener accepts work.
+    // Large durable test datasets can require several minutes to reconcile, so
+    // keep the boundary bounded without forcing a restart loop.
+    pluginTimeout: 10 * 60_000,
     logger: opts.logger === false ? false : {
       redact: {
         paths: ["req.headers.authorization", "req.headers.x-ponderosa-prompt-access"],
