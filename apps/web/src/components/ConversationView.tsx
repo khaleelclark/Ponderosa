@@ -40,7 +40,11 @@ import { useCollaborationView, useConversation, useNotifications } from "../hook
 import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
-import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Composer, isChatNearBottom, QueuedMessageTray, ResponseFileActivity, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom } from "./panes";
+import { ResponseFileActivity } from "./activity/ActivityPane";
+import { ChatMessageBody, CommunicationDocumentCard, chatMessageLayoutKey } from "./chat/ChatMessages";
+import { Composer } from "./chat/Composer";
+import { QueuedMessageTray } from "./chat/QueuedMessageTray";
+import { isChatNearBottom, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom } from "./chat/scroll";
 import { formatExecutionElapsed } from "./AgentDetail";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";

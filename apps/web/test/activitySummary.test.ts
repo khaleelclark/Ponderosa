@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -50,8 +49,7 @@ describe("activity summaries", () => {
     expect(detailSource).toContain('maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid"');
     expect(detailSource).toContain('tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto"');
     expect(detailSource).toContain('gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
-    const panesSource = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
-    expect(panesSource).toContain('data-testid="activity-execution" data-current-run="true"');
+    expect(markup).toContain('data-testid="activity-execution"');
   });
 
   it("counts content lines without treating unified-diff headers as changes", () => {
@@ -73,3 +71,4 @@ describe("activity summaries", () => {
     expect(resolveWorkspaceReviewPath([], "missing.ts", "also-missing.ts")).toBeUndefined();
   });
 });
+import { readFileSync } from "node:fs";

@@ -18,7 +18,7 @@ import {
 import type { AgentDto, AgentHealthDto, ArtifactDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
-import { artifactDisplayLabel } from "./panes";
+import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 
 const attentionAgentStates = new Set(["blocked", "failed", "interrupted", "stalled"]);
 

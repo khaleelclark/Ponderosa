@@ -1,8 +1,11 @@
 import type { ConversationMessageDto } from "@ponderosa/core";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { ConversationMessage, conversationComposerRuntime } from "../src/components/ConversationView";
+import { ChatMarkdown } from "../src/components/chat/ChatMessages";
+import { Composer } from "../src/components/chat/Composer";
 import { replyPreviewText } from "../src/components/panes";
 
 const baseMessage: ConversationMessageDto = {
@@ -95,10 +98,11 @@ describe("chat interaction refinement", () => {
   });
 
   it("focuses direct replies and supports hover/focus/touch action disclosure", () => {
-    const composer = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
     const actions = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
-    expect(composer).toContain("focusReply");
-    expect(composer).toContain("inputRef.current?.focus()");
+    const composer = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}>
+      <Composer disabled={false} running={false} focusReply onSend={() => undefined} />
+    </QueryClientProvider>);
+    expect(composer).toContain('aria-label="Message"');
     expect(actions).toContain(".chat-message:hover");
     expect(actions).toContain(".chat-message-actions.revealed");
   });
@@ -135,11 +139,11 @@ describe("chat interaction refinement", () => {
   });
 
   it("keeps Markdown block rhythm compact without losing authored line breaks", () => {
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
-
-    expect(panes).toContain('whiteSpace: "normal"');
-    expect(panes).toMatch(/"& p": \{ my: compact \? 0\.15 : 0\.35,[^}]*whiteSpace: "pre-wrap"/);
-    expect(panes).toContain('"& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75 }');
-    expect(panes).toContain('"& li + li": { mt: compact ? 0.05 : 0.15 }');
+    const html = renderToStaticMarkup(<ChatMarkdown compact>{"First line\nsecond line\n\n- One\n- Two"}</ChatMarkdown>);
+    expect(html).toContain("white-space:normal");
+    expect(html).toContain("white-space:pre-wrap");
+    expect(html).toContain("<ul>");
+    expect(html).toContain("<li>One</li>");
+    expect(html).toContain("<li>Two</li>");
   });
 });

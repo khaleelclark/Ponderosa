@@ -54,7 +54,6 @@ describe("Agent workspace redesign", () => {
     const detail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     const inspector = readFileSync(new URL("../src/components/AgentWorkInspector.tsx", import.meta.url), "utf8");
     const api = readFileSync(new URL("../src/api/real.ts", import.meta.url), "utf8");
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 
     expect(detail).toContain("useAgent(agentId, 100)");
     expect(detail).toContain('api.getAgentHistory(agentId, stream, 100, detail.telemetryHistory?.[stream]?.cursor)');
@@ -72,8 +71,9 @@ describe("Agent workspace redesign", () => {
     expect(inspector).toContain("Advanced Technical Model");
     expect(inspector).toContain("limit: 200");
     expect(api).not.toContain("retryCoordinationRequest");
-    expect(panes).not.toContain("Retry Assignment");
-    expect(panes).not.toContain("Stop Assignment");
+    const activityHtml = renderToStaticMarkup(<ActivityPane activity={[]} connected running={false} />);
+    expect(activityHtml).not.toContain("Retry Assignment");
+    expect(activityHtml).not.toContain("Stop Assignment");
   });
 
   it("uses one durable exact-record focus contract from every chat issue surface", () => {

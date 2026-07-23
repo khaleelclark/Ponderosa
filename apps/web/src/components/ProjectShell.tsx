@@ -21,7 +21,7 @@ import { AgentWorkInspector } from "./AgentWorkInspector";
 import { BrowserPanel } from "./BrowserPanel";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
-import { WorkspaceReviewPane } from "./panes";
+import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 

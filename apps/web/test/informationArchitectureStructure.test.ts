@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { ArtifactsPane } from "../src/components/filePreview/ArtifactsPane";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -23,8 +26,20 @@ describe("workspace information architecture", () => {
   });
 
   it("keeps command logs out of Files & Results", () => {
-    const panes = read("../src/components/panes.tsx");
-    expect(panes).toContain('artifacts.filter((artifact) => artifact.kind !== "log")');
-    expect(panes).toContain("command output is available in Activity");
+    const html = renderToStaticMarkup(createElement(ArtifactsPane, {
+      artifacts: [{
+        id: "log",
+        agentId: "agent",
+        kind: "log",
+        path: "command.log",
+        createdAt: "2026-07-23T10:00:00.000Z",
+      }],
+      agentId: "agent",
+      agentTitle: "Agent",
+      timeline: [],
+      onOpenRun: () => undefined,
+    }));
+    expect(html).not.toContain("command.log");
+    expect(html).toContain("command output is available in Activity");
   });
 });

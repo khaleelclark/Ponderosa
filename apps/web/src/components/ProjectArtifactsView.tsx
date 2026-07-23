@@ -33,7 +33,7 @@ import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@pondero
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { artifactDisplayLabel } from "./panes";
+import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
