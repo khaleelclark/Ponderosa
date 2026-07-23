@@ -8980,14 +8980,36 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM coordination_join_members WHERE join_id = ?
     `).get(fanoutResult.joinId)).toEqual({ count: 2 });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
 
     const record = await runtime.handleDynamicToolCall!({
       name: "ponderosa_coordinate",
       arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
     });
     expect(record.success, record.text).toBe(true);
-    const recordResult = JSON.parse(record.text) as { requestIds: string[]; joinId?: string };
+    const recordResult = JSON.parse(record.text) as {
+      requestIds: string[];
+      joinId?: string;
+      requestDeliveries: Array<{
+        requestId: string;
+        recipientAgentId: string;
+        deliveryState: string;
+        interruptsActiveRun: boolean;
+        activeRunId?: string;
+      }>;
+      executionDirective: string;
+    };
     expect(recordResult.joinId).toBeUndefined();
+    expect(recordResult.requestDeliveries).toHaveLength(1);
+    expect(recordResult.requestDeliveries[0]).toMatchObject({
+      requestId: recordResult.requestIds[0],
+      recipientAgentId: first.id,
+      deliveryState: "queued_for_next_run",
+      interruptsActiveRun: false,
+    });
+    expect(recordResult.requestDeliveries[0]!.activeRunId).toEqual(expect.any(String));
+    expect(recordResult.executionDirective).toContain("already running");
+    expect(recordResult.executionDirective).toContain("queued behind active work");
     expect(store.sqlite.prepare(`SELECT json_extract(payload_json, '$.completionMode') AS mode
       FROM coordination_requests WHERE id = ?`).get(recordResult.requestIds[0]!)).toEqual({ mode: "record" });
 

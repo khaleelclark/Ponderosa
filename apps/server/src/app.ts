@@ -1105,6 +1105,8 @@ function communicationV3Prompt(): string[] {
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
+    "A new Request is ordinary next-Run work and never interrupts an active recipient. Never create another Request just to tell a busy Agent to stop.",
+    "To end work you requested, cancel the exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}). To enforceably stop an active descendant Run, use ponderosa_manage stop_agent.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
     "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
@@ -7090,16 +7092,30 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishCoordinationV3Changed(author.id);
     for (const item of normalized) publishCoordinationV3Changed(item.recipientAgentId);
     coordinationV3Scheduler?.notify();
+    const requestDeliveries = normalized.map((item, index) => {
+      const activeRun = coordinationV3.agentSnapshot(item.recipientAgentId).activeRun;
+      return {
+        requestId: result.requestIds[index]!,
+        recipientAgentId: item.recipientAgentId,
+        deliveryState: "queued_for_next_run" as const,
+        interruptsActiveRun: false,
+        ...(activeRun ? { activeRunId: activeRun.id } : {}),
+      };
+    });
+    const queueDirective = requestDeliveries.some((delivery) => delivery.activeRunId)
+      ? "At least one recipient is already running. These ordinary Requests are queued behind active work and have not reached or interrupted it. To stop your requested work, cancel its exact Request; to enforceably stop an active descendant Run, use ponderosa_manage stop_agent."
+      : "These ordinary Requests are queued for recipient Runs and do not provide active-work interruption.";
     return {
       ...result,
+      requestDeliveries,
       ...(result.joinId ? {
         executionDirective: join?.wakePolicy === "each_result"
-          ? "End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied."
-          : "End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.",
+          ? `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied.`
+          : `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.`,
       } : completionMode === "record" ? {
-        executionDirective: "The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.",
+        executionDirective: `${queueDirective} The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.`,
       } : completionMode === "callback" ? {
-        executionDirective: "The Request is tracked without a Join; its terminal result will wake you as an individual callback.",
+        executionDirective: `${queueDirective} The Request is tracked without a Join; its terminal result will wake you as an individual callback.`,
       } : {}),
     };
   });
