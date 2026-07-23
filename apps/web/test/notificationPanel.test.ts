@@ -65,7 +65,7 @@ describe("notification panel grouping", () => {
       action: { kind: "open_agent" as const, targetId: "agent-a" },
     };
     expect(notificationWorkRoute(coordination)).toEqual({
-      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "runs",
+      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "technical",
     });
     expect(notificationWorkRoute({ ...coordination, action: undefined, communicationEventId: "event-a" })).toEqual({
       kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "event-a",

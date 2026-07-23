@@ -28,6 +28,8 @@ describe("mobile-critical durable navigation", () => {
     { kind: "agents", projectId: "project / one", create: true },
     { kind: "agent", projectId: "project / one", agentId: "agent #1" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "triggers" },
+    { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "settings" },
+    { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "technical" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", focusTelemetry: { stream: "activity", id: "agent #1:activity:7" } },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {
     expect(parseRoute(routeToPath(route))).toEqual(route);

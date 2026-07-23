@@ -109,10 +109,9 @@ describe("chat transcript export", () => {
     const agentDetail = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
     expect(agentDetail).toContain('label="Agent Chat Actions"');
-    expect(agentDetail).toContain('detailsLabel="Run Settings"');
-    expect(agentDetail).toContain('aria-label="Run settings" sx={{ px: 2, py: 1.5 }}');
-    expect(agentDetail).toContain("<Divider flexItem />");
-    expect(agentDetail).toContain('label: "Start Fresh Provider Session",\n                icon: <RestartAltIcon');
+    expect(agentDetail).toContain('aria-label="Agent settings"');
+    expect(agentDetail).toContain("Start Fresh Provider Session for Next Run");
+    expect(agentDetail).toContain('label: "Technical Details"');
     expect(agentDetail).toContain('label: "Assign Chats"');
     expect(agentDetail).toContain('icon: <ForumOutlinedIcon fontSize="small" />');
     expect(agentDetail).toContain('label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon');

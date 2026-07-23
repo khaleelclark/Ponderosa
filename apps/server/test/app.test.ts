@@ -1099,6 +1099,54 @@ describe("runtime settings API", () => {
     expect(new WorkspaceStore(dataDir).getPreferences()).toMatchObject({ maxConcurrentAgentRuns: 3, onboardingCompletedAt: "2026-07-21T00:00:00.000Z" });
     await app.close();
   });
+
+  it("injects global instructions before Project and Agent instructions", async () => {
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const updated = await app.inject({
+      method: "PATCH",
+      url: "/api/workspace/preferences",
+      payload: { globalInstructions: "GLOBAL_INSTRUCTION_CONTRACT" },
+    });
+    expect(updated.statusCode).toBe(200);
+
+    const project = store.createProject({
+      label: "Instruction precedence",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    store.updateProject(project.id, { instructions: "PROJECT_INSTRUCTION_CONTRACT" });
+    const preset = store.createAgentPreset(project.id, {
+      name: "Instruction contract",
+      description: "Verifies Agent guidance order",
+      guidance: "AGENT_INSTRUCTION_CONTRACT",
+      engine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Instruction verifier",
+      engine: "codex",
+      presetId: preset.id,
+    });
+
+    await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "CURRENT_WORK_REQUEST_CONTRACT", sourceChannel: "individual" },
+    });
+    await waitForRun(agent.id);
+
+    const prompt = adapter.seeds[0]?.prompt ?? "";
+    const runtimeIndex = prompt.indexOf("[IDENTITY · CURRENT RUN | AUTHORITATIVE]");
+    const globalIndex = prompt.indexOf("Global operator rules:\nGLOBAL_INSTRUCTION_CONTRACT");
+    const projectIndex = prompt.indexOf("Project rules:\nPROJECT_INSTRUCTION_CONTRACT");
+    const agentIndex = prompt.indexOf("Agent preset snapshot (Instruction contract):\nAGENT_INSTRUCTION_CONTRACT");
+    const requestIndex = prompt.indexOf("CURRENT_WORK_REQUEST_CONTRACT");
+    expect([runtimeIndex, globalIndex, projectIndex, agentIndex, requestIndex]).not.toContain(-1);
+    expect(runtimeIndex).toBeLessThan(globalIndex);
+    expect(globalIndex).toBeLessThan(projectIndex);
+    expect(projectIndex).toBeLessThan(agentIndex);
+    expect(agentIndex).toBeLessThan(requestIndex);
+    await app.close();
+  });
 });
 
 describe("notification panel actions", () => {

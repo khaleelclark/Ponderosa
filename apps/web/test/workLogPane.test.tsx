@@ -1,17 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { WorkLogPane } from "../src/components/panes";
+import { ActivityPane } from "../src/components/panes";
 import { AGENT_DETAIL_TAB_LABELS } from "../src/components/AgentDetail";
 
-describe("WorkLogPane", () => {
-  it("is a dedicated agent-detail tab beside the existing panes", () => {
-    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Work", "Work Log", "Activity", "Diagnostics", "Files & Results"]);
+describe("merged Activity", () => {
+  it("merges into Activity while the primary workspace exposes exactly the approved tabs", () => {
+    expect(AGENT_DETAIL_TAB_LABELS).toEqual(["Chat", "Activity", "Triggers", "Files & Results", "Settings"]);
   });
 
   it("renders completed responses and transient reasoning distinctly in chronological order", () => {
-    const html = renderToStaticMarkup(<WorkLogPane entries={[
+    const html = renderToStaticMarkup(<ActivityPane activity={[]} connected running={false} runOutput={[
       {
-        id: "later", agentId: "agent", executionId: "run-2", kind: "reasoning", text: "Checking constraints",
+        id: "later", agentId: "agent", executionId: "run-1", kind: "reasoning", text: "Checking constraints",
         completed: false, seq: 8, sourceSeqStart: 8, sourceSeqEnd: 8, createdAt: "2026-07-12T01:00:02.000Z",
       },
       {
@@ -24,9 +24,9 @@ describe("WorkLogPane", () => {
       },
     ]} />);
 
-    expect(html).toContain('aria-label="Agent work log"');
+    expect(html).toContain('aria-label="Agent activity"');
     expect(html).toContain("Response");
-    expect(html).toContain("Reasoning");
+    expect(html).toContain("Thinking");
     expect(html).toContain("1 changed file");
     expect(html).toContain("+2");
     expect(html).toContain("−1");
@@ -34,7 +34,7 @@ describe("WorkLogPane", () => {
   });
 
   it("labels unpreviewable files for the Files & results fallback without rendering a diff", () => {
-    const html = renderToStaticMarkup(<WorkLogPane projectId="project" entries={[{
+    const html = renderToStaticMarkup(<ActivityPane activity={[]} connected running={false} projectId="project" runOutput={[{
       id: "binary", agentId: "agent", executionId: "run-3", kind: "response", text: "Generated image",
       completed: true, seq: 10, sourceSeqStart: 9, sourceSeqEnd: 10, createdAt: "2026-07-12T01:00:03.000Z",
       fileActivity: [{

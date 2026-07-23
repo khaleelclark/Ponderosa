@@ -65,9 +65,10 @@ describe("current issue resolution surface", () => {
     const dialog = JSON.stringify(view.toJSON());
     expect(dialog).toContain("Current Issues");
     expect(dialog).toContain("Verify the release and report the evidence.");
-    expect(dialog).toContain("Retry Assignment");
+    expect(dialog).toContain("Recovery must be chosen through a contextual Decision");
     expect(dialog).toContain("No Further Action");
-    expect(dialog).toContain("Open Diagnostics");
+    expect(dialog).toContain("Open Technical Details");
+    expect(dialog).not.toContain("Retry Assignment");
     expect(dialog).not.toContain("needs your attention");
     view.unmount();
     client.clear();

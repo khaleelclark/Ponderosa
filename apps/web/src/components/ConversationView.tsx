@@ -51,6 +51,7 @@ import { chatMessageLayoutKey, ChatMessageBody, CommunicationDocumentCard, Compo
 import { MessageSenderLabel } from "./MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { formatExecutionElapsed } from "./AgentDetail";
+import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
@@ -128,7 +129,7 @@ export function ConversationMessage({
   conversation: "main" | "collaboration";
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
-  onOpenAgent(agentId: string, view?: "runs"): void;
+  onOpenAgent(agentId: string, view?: "technical"): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
@@ -270,6 +271,7 @@ export function ConversationView({
   onRefreshCapabilities,
   statusByAgentId,
   healthByAgentId,
+  onOpenProject,
   onOpenAgent,
   onOpenWorkLog,
   onOpenRosterAgent,
@@ -291,7 +293,8 @@ export function ConversationView({
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
-  onOpenAgent(agentId: string, view?: "runs"): void;
+  onOpenProject(): void;
+  onOpenAgent(agentId: string, view?: "technical"): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   onOpenRosterAgentInNewTab?(agentId: string): void;
@@ -1035,7 +1038,7 @@ export function ConversationView({
             <Typography variant="h5" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
-            <Typography variant="caption" color="text.secondary" noWrap>{project?.label ?? "Project"}</Typography>
+            <ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />
           </Box>
           </Collapse>
           <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
@@ -1110,7 +1113,7 @@ export function ConversationView({
         >
         {agentsOpen ? agentRoster : null}
         <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
-          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "runs") : onOpenAgentWork(item.communicationEventId)} /> : null}
+          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "technical") : onOpenAgentWork(item.communicationEventId)} /> : null}
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}

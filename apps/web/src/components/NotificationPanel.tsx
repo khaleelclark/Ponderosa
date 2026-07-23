@@ -71,7 +71,7 @@ export function groupNotificationsByProject(notifications: WorkspaceNotification
 export function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
   if (!item.projectId) return undefined;
   if (item.action?.kind === "open_agent" && item.action.targetId) {
-    return { kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "runs" };
+    return { kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical" };
   }
   const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
   return {
@@ -139,7 +139,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       onClose();
       onNavigate({
         kind: "agent", projectId: item.projectId, agentId: item.action.targetId,
-        ...(item.category === "coordination" ? { view: "runs" as const } : {}),
+        ...(item.category === "coordination" ? { view: "technical" as const } : {}),
       });
       return;
     }

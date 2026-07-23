@@ -194,7 +194,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
     <AttentionSurface notifications={notifications} onOpen={(item) => {
       if (!item.projectId) return;
       if (item.action?.kind === "open_agent" && item.action.targetId) {
-        onNavigate({ kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "runs" });
+        onNavigate({ kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical" });
       } else if (item.conversationId) {
         onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId });
       } else {

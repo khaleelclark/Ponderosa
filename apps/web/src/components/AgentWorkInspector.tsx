@@ -1,4 +1,5 @@
 import RefreshIcon from "@mui/icons-material/Refresh";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import {
   Accordion,
   AccordionDetails,
@@ -8,6 +9,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  Paper,
   Stack,
   Tooltip,
   Typography,
@@ -16,6 +18,7 @@ import type { AgentWorkItemDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { copyText } from "../clipboard";
 
 export interface AgentWorkFocus {
   id: string;
@@ -63,7 +66,7 @@ export function AgentWorkTechnicalDetails({
     onToggle={(event) => setExpanded(event.currentTarget.open)}
     sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}
   >
-    <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
+    <Typography component="summary" variant="caption" color="text.secondary">Raw fields and provider data</Typography>
     {query.isLoading ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 0.75 }}>
       <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
     </Stack> : null}
@@ -75,6 +78,36 @@ export function AgentWorkTechnicalDetails({
         <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace" }}>{detail.value}</Typography>
       </Box>)}
     </Stack> : null}
+  </Box>;
+}
+
+function CopyRecordId({ id }: { id: string }): JSX.Element {
+  const [copied, setCopied] = useState(false);
+  return <Tooltip title={copied ? "Copied" : `Copy ID ${id}`}>
+    <IconButton size="small" aria-label={`Copy ID ${id}`} onClick={() => {
+      void copyText(id).then(() => {
+        setCopied(true);
+        globalThis.setTimeout(() => setCopied(false), 1_500);
+      });
+    }}><ContentCopyIcon fontSize="inherit" /></IconButton>
+  </Tooltip>;
+}
+
+function TechnicalRecord({ projectId, conversationId, item }: { projectId: string; conversationId?: string; item: AgentWorkItemDto }): JSX.Element {
+  return <Box id={`agent-work-${item.id}`} data-agent-work-item={item.id} sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: "action.hover" }}>
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+      <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
+      <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
+      <Chip size="small" label={agentWorkStateLabel(item.state)} />
+    </Stack>
+    <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
+    <Stack direction="row" spacing={0.5} sx={{ mt: 0.5, alignItems: "center", minWidth: 0 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>
+        {new Date(item.createdAt).toLocaleString()} · ID {item.recordId}
+      </Typography>
+      <CopyRecordId id={item.recordId} />
+    </Stack>
+    <AgentWorkTechnicalDetails projectId={projectId} conversationId={conversationId} item={item} />
   </Box>;
 }
 
@@ -95,7 +128,7 @@ export function AgentWorkInspector({
 }): JSX.Element {
   const query = useQuery({
     queryKey: ["agent-work", projectId, conversationId ?? "", agentId ?? ""],
-    queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, limit: 500 }),
+    queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, limit: 200 }),
     enabled: open,
   });
   const [expandedTraceId, setExpandedTraceId] = useState<string>();
@@ -129,28 +162,44 @@ export function AgentWorkInspector({
   }, { active: 0, attention: 0, finished: 0 }) ?? { active: 0, attention: 0, finished: 0 };
 
   if (!open) return <></>;
-  return <Stack data-testid="agent-work-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+  const orderedItems = [...(query.data?.items ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id));
+  const executionItems = orderedItems.filter((item) => item.kind === "run" || item.kind === "activation");
+  const technicalKinds = ["request", "join", "activation", "run", "decision", "trigger"] as const;
+
+  return <Stack data-testid="technical-details-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6">Work</Typography>
-          <Typography variant="caption" color="text.secondary">Assignments, dependencies, recovery, and decisions</Typography>
+          <Typography variant="h6">Technical Details</Typography>
+          <Typography variant="caption" color="text.secondary">Read-only coordination and execution evidence</Typography>
         </Box>
-        <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
-      </Stack>
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
-        <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} Active`} />
-        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Issues`} />
-        <Chip size="small" variant="outlined" label={`${stateCounts.finished} Finished`} />
-        {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Agent work" /> : null}
+        <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Technical Details" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
       </Stack>
       <Box className="ponderosa-scroll" sx={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: 1.5 }}>
-        {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading Work…</Typography></Stack> : null}
-        {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Work could not be loaded."}</Alert> : null}
+        {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading technical evidence…</Typography></Stack> : null}
+        {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Technical Details could not be loaded."}</Alert> : null}
         {query.data?.truncated ? <Alert severity="info" sx={{ mb: 1 }}>
-          Showing a bounded connected history. Some records are outside this view’s safety limit.
+          Showing a bounded recent evidence window. Older canonical records remain preserved.
         </Alert> : null}
-        {query.data && query.data.traces.length === 0 ? <Alert severity="info">No coordinated work has been recorded in this scope yet.</Alert> : null}
-        <Stack spacing={1}>
+        {query.data ? <Stack spacing={2}>
+          <Box component="section" aria-labelledby="technical-current-state">
+            <Typography id="technical-current-state" variant="overline" color="text.secondary">Current State</Typography>
+            <Paper variant="outlined" sx={{ p: 1.25 }}>
+              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} Active`} />
+                <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Issues`} />
+                <Chip size="small" variant="outlined" label={`${stateCounts.finished} Finished`} />
+                {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Technical Details" /> : null}
+              </Stack>
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                {stateCounts.attention ? "One or more records need operator context. Resolve current issues from Chat." : stateCounts.active ? "Work is active or waiting on a dependency." : "No coordination issue currently requires attention."}
+              </Typography>
+            </Paper>
+          </Box>
+
+          <Box component="section" aria-labelledby="coordination-timeline">
+            <Typography id="coordination-timeline" variant="overline" color="text.secondary">Coordination Timeline</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Why work started, what it depends on, and what happened next.</Typography>
+            {query.data.traces.length === 0 ? <Alert severity="info">No coordinated work has been recorded in this scope yet.</Alert> : null}
           {(query.data?.traces ?? []).map((trace) => {
             const traceItems = trace.itemIds.map((id) => items.get(id)).filter((item): item is AgentWorkItemDto => Boolean(item));
             return <Accordion
@@ -184,6 +233,10 @@ export function AgentWorkInspector({
                       </Box>
                       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
                       <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+                      <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                        <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>ID {item.recordId}</Typography>
+                        <CopyRecordId id={item.recordId} />
+                      </Stack>
                       <AgentWorkTechnicalDetails projectId={projectId} conversationId={conversationId} item={item} />
                     </Box>;
                   })}
@@ -191,7 +244,37 @@ export function AgentWorkInspector({
               </AccordionDetails>
             </Accordion>;
           })}
-        </Stack>
+          </Box>
+
+          <Box component="section" aria-labelledby="execution-history">
+            <Typography id="execution-history" variant="overline" color="text.secondary">Execution History</Typography>
+            <Stack spacing={0.75}>
+              {executionItems.map((item) => <Accordion key={item.id} disableGutters variant="outlined">
+                <AccordionSummary><Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
+                  <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
+                  <Chip size="small" label={agentWorkStateLabel(item.state)} />
+                  <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+                </Stack></AccordionSummary>
+                <AccordionDetails><TechnicalRecord projectId={projectId} conversationId={conversationId} item={item} /></AccordionDetails>
+              </Accordion>)}
+              {executionItems.length === 0 ? <Typography variant="body2" color="text.secondary">No execution records in this window.</Typography> : null}
+            </Stack>
+          </Box>
+
+          <Box component="section" aria-labelledby="technical-model">
+            <Typography id="technical-model" variant="overline" color="text.secondary">Advanced Technical Model</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Requests, Joins, Activations, Runs, Decisions, and Trigger occurrences.</Typography>
+            <Stack spacing={0.75}>
+              {technicalKinds.map((kind) => {
+                const records = orderedItems.filter((item) => item.kind === kind);
+                return <Accordion key={kind} disableGutters variant="outlined">
+                  <AccordionSummary><Typography variant="subtitle2">{kindLabel(kind)} records · {records.length}</Typography></AccordionSummary>
+                  <AccordionDetails><Stack spacing={1}>{records.length ? records.map((item) => <TechnicalRecord key={item.id} projectId={projectId} conversationId={conversationId} item={item} />) : <Typography variant="body2" color="text.secondary">No records in this window.</Typography>}</Stack></AccordionDetails>
+                </Accordion>;
+              })}
+            </Stack>
+          </Box>
+        </Stack> : null}
       </Box>
   </Stack>;
 }

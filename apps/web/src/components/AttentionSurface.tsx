@@ -27,7 +27,6 @@ export function AttentionSurface({
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const [confirmingRequestId, setConfirmingRequestId] = useState<string>();
   const items = scopedAttention(notifications, {
     ...(projectId ? { projectId } : {}),
     ...(conversationId ? { conversationId } : {}),
@@ -46,13 +45,6 @@ export function AttentionSurface({
       api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
     onSuccess: refresh,
   });
-  const retry = useMutation({
-    mutationFn: (requestId: string) => api.retryCoordinationRequest(requestId),
-    onSuccess: async () => {
-      setConfirmingRequestId(undefined);
-      await refresh();
-    },
-  });
   const resolve = useMutation({
     mutationFn: (notificationId: string) => api.setNotificationStatus(notificationId, "resolved"),
     onSuccess: refresh,
@@ -60,7 +52,7 @@ export function AttentionSurface({
   if (!items.length) return null;
   const first = items[0]!;
   const urgent = items.some((item) => item.severity === "urgent");
-  const pending = respond.isPending || retry.isPending || resolve.isPending;
+  const pending = respond.isPending || resolve.isPending;
 
   return <>
     <Alert
@@ -94,12 +86,8 @@ export function AttentionSurface({
                   <Typography variant="caption" color="text.secondary" fontWeight={800}>ASSIGNMENT</Typography>
                   <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.resolution.assignment}</Typography>
                 </Box>
-                {confirmingRequestId === item.resolution.requestId ? <Alert severity="warning">
-                  <Typography variant="body2">Retrying starts a new assignment for {item.resolution.recipientTitle}. The Agent will audit current state before continuing.</Typography>
-                  <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                    <Button size="small" variant="contained" disabled={pending} onClick={() => retry.mutate(item.resolution!.requestId)}>Start Retry</Button>
-                    <Button size="small" disabled={pending} onClick={() => setConfirmingRequestId(undefined)}>Cancel</Button>
-                  </Stack>
+                {item.resolution.retryAvailable ? <Alert severity="info">
+                  Recovery must be chosen through a contextual Decision so the affected Agent, assignment, and consequences are explicit. Technical Details remains read-only evidence.
                 </Alert> : null}
               </> : null}
               {item.kind === "decision" && item.decision ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
@@ -110,13 +98,12 @@ export function AttentionSurface({
                 }}>{item.decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
               </Stack> : null}
               <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-                {item.resolution?.kind === "coordination_request" && item.resolution.retryAvailable && confirmingRequestId !== item.resolution.requestId ? <Button size="small" variant="contained" disabled={pending} onClick={() => setConfirmingRequestId(item.resolution!.requestId)}>Retry Assignment</Button> : null}
                 {item.kind !== "decision" ? <Button size="small" variant="outlined" disabled={pending} onClick={() => resolve.mutate(item.id)}>No Further Action</Button> : null}
-                {onOpen ? <Button size="small" color="inherit" onClick={() => { setOpen(false); onOpen(item); }}>Open Diagnostics</Button> : null}
+                {onOpen ? <Button size="small" color="inherit" onClick={() => { setOpen(false); onOpen(item); }}>Open Technical Details</Button> : null}
               </Stack>
             </Stack>
           </Box>)}
-          {respond.isError || retry.isError || resolve.isError ? <Alert severity="error">The issue could not be updated. Review the current state and try again.</Alert> : null}
+          {respond.isError || resolve.isError ? <Alert severity="error">The issue could not be updated. Review the current state and try again.</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>
