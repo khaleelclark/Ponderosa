@@ -132,24 +132,24 @@ export function AgentWorkInspector({
   return <Stack data-testid="agent-work-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6">Agent Work</Typography>
-          <Typography variant="caption" color="text.secondary">Requests, waiting, wake-ups, Runs, Triggers, and Decisions</Typography>
+          <Typography variant="h6">Work</Typography>
+          <Typography variant="caption" color="text.secondary">Assignments, dependencies, recovery, and decisions</Typography>
         </Box>
-        <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Agent work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
+        <Tooltip title="Refresh Now"><span><IconButton aria-label="Refresh Work" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
       </Stack>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} Active`} />
-        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Need Attention`} />
+        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Review`} />
         <Chip size="small" variant="outlined" label={`${stateCounts.finished} Finished`} />
         {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Agent work" /> : null}
       </Stack>
       <Box className="ponderosa-scroll" sx={{ flex: 1, minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: 1.5 }}>
-        {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading Agent work…</Typography></Stack> : null}
-        {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Agent work could not be loaded."}</Alert> : null}
+        {query.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading Work…</Typography></Stack> : null}
+        {query.isError ? <Alert severity="error">{query.error instanceof Error ? query.error.message : "Work could not be loaded."}</Alert> : null}
         {query.data?.truncated ? <Alert severity="info" sx={{ mb: 1 }}>
           Showing a bounded connected history. Some records are outside this view’s safety limit.
         </Alert> : null}
-        {query.data && query.data.traces.length === 0 ? <Alert severity="info">No coordinated Agent work has been recorded in this scope yet.</Alert> : null}
+        {query.data && query.data.traces.length === 0 ? <Alert severity="info">No coordinated work has been recorded in this scope yet.</Alert> : null}
         <Stack spacing={1}>
           {(query.data?.traces ?? []).map((trace) => {
             const traceItems = trace.itemIds.map((id) => items.get(id)).filter((item): item is AgentWorkItemDto => Boolean(item));

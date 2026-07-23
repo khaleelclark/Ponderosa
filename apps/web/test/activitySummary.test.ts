@@ -49,7 +49,7 @@ describe("activity summaries", () => {
     expect(detailSource).toContain('height: "100%", maxHeight: "100%", minHeight: 0');
     expect(detailSource).toContain('maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid"');
     expect(detailSource).toContain('tab === "chat" || tab === "activity" ? "hidden" : "auto"');
-    expect(detailSource).toContain('gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
+    expect(detailSource).toContain('gridTemplateRows: tab === "chat" ? "auto auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
     const panesSource = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
     expect(panesSource).toContain('data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "visible" }}');
   });

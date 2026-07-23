@@ -112,7 +112,7 @@ export function ProjectOverview({
               {attentionWork.length ? <Typography variant="body2">{attentionWork.length} work {attentionWork.length === 1 ? "trace" : "traces"} need attention</Typography> : null}
               {attentionAgents.length ? <Typography variant="body2">{attentionAgents.length} {attentionAgents.length === 1 ? "Agent is" : "Agents are"} blocked, failed, or interrupted</Typography> : null}
             </Stack>}
-            <Button size="small" startIcon={<AccountTreeOutlinedIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Agent Work</Button>
+            <Button size="small" startIcon={<AccountTreeOutlinedIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Work</Button>
           </Box>
           <Box sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="overline" color="text.secondary">Current activity</Typography>

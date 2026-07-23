@@ -12,6 +12,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
+import { isOpenAttention } from "../attention";
 import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
@@ -62,8 +63,8 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const agents = agentQueries.flatMap((query, index) => (query.data ?? []).map((agent) => ({ agent, project: projects[index]! })));
   const agentDestinations = new Map(agents.map(({ agent, project }) => [agent.id, { agent, project }] as const));
   const activeAgents = healthQueries.reduce((count, query) => count + (query.data?.agents ?? []).filter((item) => item.status === "running" || item.status === "compacting").length, 0);
-  const needsAttention = notifications.filter((item) => !item.readAt && (item.severity === "urgent" || item.severity === "attention")).length;
-  const unread = notifications.filter((item) => !item.readAt).length;
+  const needsAttention = notifications.filter(isOpenAttention).length;
+  const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
   const provider = engineAvailabilityPresentation(engines);
   const allResources: RecentResource[] = [
     ...projects.map((project) => ({ id: `project:${project.id}`, title: project.label, detail: "Project", updatedAt: project.lastUsedAt ?? project.createdAt, route: { kind: "project", projectId: project.id } as Route, icon: <FolderOutlinedIcon fontSize="small" /> })),

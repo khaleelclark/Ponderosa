@@ -31,7 +31,7 @@ const activeStatus = (status: AgentLifecycleStatus): boolean => status === "runn
 export function unreadByConversation(notifications: WorkspaceNotificationDto[]): Map<string, number> {
   const unread = new Map<string, number>();
   for (const notification of notifications) {
-    if (notification.readAt || !notification.conversationId) continue;
+    if (notification.readAt || (notification.status ?? "open") !== "open" || !notification.conversationId) continue;
     unread.set(notification.conversationId, (unread.get(notification.conversationId) ?? 0) + 1);
   }
   return unread;
@@ -42,7 +42,7 @@ export function hasUnreadConversationNotifications(
   conversationId: string | undefined,
 ): boolean {
   return Boolean(conversationId && notifications.some((notification) =>
-    notification.conversationId === conversationId && !notification.readAt));
+    notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open"));
 }
 
 export function workspaceChats(

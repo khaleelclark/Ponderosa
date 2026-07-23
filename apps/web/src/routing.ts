@@ -42,6 +42,7 @@ export type Route =
   | { kind: "usage"; projectId?: string }
   | { kind: "wiki"; articleId?: string }
   | { kind: "project"; projectId: string }
+  | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
@@ -82,6 +83,9 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "home" };
   }
   const projectId = decodeURIComponent(parts[1]);
+  if (parts[2] === "files" && parts[3] === "view" && query.get("path")) {
+    return { kind: "workspaceFile", projectId, path: query.get("path")! };
+  }
   if (parts[2] === "work") {
     const conversationId = query.get("chat")?.trim() || undefined;
     const focusId = query.get("focus")?.trim() || undefined;
@@ -139,6 +143,8 @@ export function routeToPath(route: Route): string {
       return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
     case "project":
       return `/projects/${encodeURIComponent(route.projectId)}`;
+    case "workspaceFile":
+      return `/projects/${encodeURIComponent(route.projectId)}/files/view?path=${encodeURIComponent(route.path)}`;
     case "projectWork": {
       const query = new URLSearchParams();
       if (route.conversationId) query.set("chat", route.conversationId);

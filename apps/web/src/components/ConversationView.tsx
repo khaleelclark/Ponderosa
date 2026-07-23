@@ -43,7 +43,7 @@ import { CopyMessageButton } from "./CopyMessageButton";
 import { compactDefined } from "../collections";
 import { agentRosterIndent, agentStatusColor, agentStatusLabel, orderedAgentOrganization, relativeTime, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useCollaborationView, useConversation } from "../hooks/queries";
+import { useCollaborationView, useConversation, useNotifications } from "../hooks/queries";
 import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -59,6 +59,7 @@ import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
+import { AttentionSurface } from "./AttentionSurface";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -127,7 +128,7 @@ export function ConversationMessage({
   conversation: "main" | "collaboration";
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
-  onOpenAgent(agentId: string): void;
+  onOpenAgent(agentId: string, view?: "runs"): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
@@ -287,7 +288,7 @@ export function ConversationView({
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
-  onOpenAgent(agentId: string): void;
+  onOpenAgent(agentId: string, view?: "runs"): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   onOpenRosterAgentInNewTab?(agentId: string): void;
@@ -324,6 +325,7 @@ export function ConversationView({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const decisionsQuery = useQuery({ queryKey: ["decisions", "conversation", conversationId], queryFn: () => api.listDecisions({ conversationId, status: "pending" }) });
+  const notificationsQuery = useNotifications();
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
   const respondDecision = useMutation({
@@ -1086,7 +1088,7 @@ export function ConversationView({
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
           <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
-          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Agent Work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agent Work</Button>
+          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Work</Button>
         </Stack>
         </Collapse>
       </Box>
@@ -1115,6 +1117,7 @@ export function ConversationView({
         >
         {agentsOpen ? agentRoster : null}
         <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
+          {activeView === "main" ? <AttentionSurface notifications={(notificationsQuery.data ?? []).filter((item) => item.kind !== "decision")} projectId={conversation.projectId} conversationId={conversationId} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "runs") : onOpenAgentWork(item.communicationEventId)} /> : null}
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}
@@ -1157,7 +1160,7 @@ export function ConversationView({
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
                   ? <Box key={event.id} sx={sx}>{content}</Box>
-                  : <ButtonBase key={event.id} onClick={() => { setAgentsOpen(false); setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Agent Work details`} sx={sx}>{content}</ButtonBase>;
+                  : <ButtonBase key={event.id} onClick={() => { setAgentsOpen(false); setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Work details`} sx={sx}>{content}</ButtonBase>;
               })}
             </Stack> : null}
             {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (

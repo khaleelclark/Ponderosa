@@ -280,7 +280,7 @@ export default function App({
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
     // redirect back to the most recent chat.
-    if (["project", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
+    if (["project", "workspaceFile", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
     if (!target) return;
@@ -642,7 +642,7 @@ export default function App({
               sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "pointer" }}
             />
           </Tooltip>
-          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt && (item.status ?? "open") === "open").length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={openOperatorProfile} sx={{ ml: .5, p: 0, width: 44, height: 44 }}><OperatorAvatar profile={preferences.profile} size={32} /></IconButton></Tooltip>
           <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
@@ -684,7 +684,7 @@ export default function App({
           preferences={preferences}
           activeKey={activeWorkspaceTabKey}
           onActivate={activateWorkspaceView}
-          notificationCount={(notificationsQuery.data ?? []).filter((item) => !item.readAt).length}
+          notificationCount={(notificationsQuery.data ?? []).filter((item) => !item.readAt && (item.status ?? "open") === "open").length}
           onCreate={createWorkspaceView}
           onClose={closeWorkspaceView}
           onSearch={() => setGlobalSearchOpen(true)}
@@ -733,7 +733,7 @@ export default function App({
             onOpenInbox={() => setNotificationPanelOpen(true)}
           />
         ) : route.kind === "allChat" ? (
-          <AllChatView onNavigate={navigateWorkspace} />
+          <AllChatView onNavigate={navigateWorkspace} notifications={notificationsQuery.data ?? []} />
         ) : route.kind === "projects" ? (
           <AllProjectsView
             projects={projects}

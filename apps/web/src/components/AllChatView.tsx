@@ -4,7 +4,7 @@ import {
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import ReplyOutlinedIcon from "@mui/icons-material/ReplyOutlined";
 import TagIcon from "@mui/icons-material/Tag";
-import type { AllChatItemDto, EngineCommand } from "@ponderosa/core";
+import type { AllChatItemDto, EngineCommand, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -15,6 +15,7 @@ import { MessageTimestamp } from "./MessageTimestamp";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
 import { agentMentionHandle } from "../mentions";
+import { AttentionSurface } from "./AttentionSurface";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -53,7 +54,7 @@ export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | u
   return undefined;
 }
 
-export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }): JSX.Element {
+export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(route: Route): void; notifications?: WorkspaceNotificationDto[] }): JSX.Element {
   const queryClient = useQueryClient();
   const query = useAllChat();
   const workspacePreferences = useWorkspacePreferences();
@@ -184,13 +185,23 @@ export function AllChatView({ onNavigate }: { onNavigate(route: Route): void }):
     }
   }, [layoutKey]);
 
-  return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
+  return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography variant="h5" component="h1" fontWeight={800}>Messages</Typography>
         <Typography variant="body2" color="text.secondary">Everything sent to or from you across Ponderosa.</Typography>
       </Box>
     </Stack>
+    <AttentionSurface notifications={notifications} onOpen={(item) => {
+      if (!item.projectId) return;
+      if (item.action?.kind === "open_agent" && item.action.targetId) {
+        onNavigate({ kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "runs" });
+      } else if (item.conversationId) {
+        onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId });
+      } else {
+        onNavigate({ kind: "projectWork", projectId: item.projectId });
+      }
+    }} />
 
     <Box sx={{ minHeight: 0, position: "relative", overflow: "hidden" }}>
     <Box ref={scrollRef} className="ponderosa-scroll" onScroll={() => {

@@ -55,7 +55,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
-import { useAgent } from "../hooks/queries";
+import { useAgent, useNotifications } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
@@ -68,6 +68,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { BrowserPanel } from "./BrowserPanel";
 import { conversationDisplayTitle } from "../conversationLabels";
+import { AttentionSurface } from "./AttentionSurface";
 import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 import { telemetryElementId } from "../telemetryFocus";
 import { TriggersPane } from "./TriggersPane";
@@ -222,10 +223,10 @@ function AgentRunState({
 
 const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Element }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "agentWork", label: "Agent Work", icon: <AccountTreeOutlinedIcon /> },
+  { value: "agentWork", label: "Work", icon: <AccountTreeOutlinedIcon /> },
   { value: "runOutput", label: "Work Log", icon: <PsychologyOutlinedIcon /> },
   { value: "activity", label: "Activity", icon: <TimelineIcon /> },
-  { value: "runs", label: "Runs", icon: <TaskAltOutlinedIcon /> },
+  { value: "runs", label: "Diagnostics", icon: <TaskAltOutlinedIcon /> },
   { value: "artifacts", label: "Files & Results", icon: <Inventory2OutlinedIcon /> },
 ];
 
@@ -299,6 +300,7 @@ export function AgentDetail({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId, 100);
+  const notificationsQuery = useNotifications();
   const [olderMessages, setOlderMessages] = useState<{ messages: MessageDto[]; cursor?: string; hasMore: boolean }>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -1088,8 +1090,9 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: (tab === "chat" ? detail.history?.hasMore : hasOlderTelemetry) ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
+        {tab === "chat" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={() => { setTab("runs"); onViewChange?.("runs"); }} /> : null}
         {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}
       </Box>

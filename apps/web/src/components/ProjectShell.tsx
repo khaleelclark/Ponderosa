@@ -21,6 +21,7 @@ import { BrowserPanel } from "./BrowserPanel";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./panes";
+import { WorkspaceFileView } from "./WorkspaceFileView";
 
 interface AgentDialogState {
   open: boolean;
@@ -244,7 +245,7 @@ export function ProjectShell({
         onRefreshCapabilities={refreshCapabilities}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        onOpenAgent={(agentId) => openAgentFromConversation(agentId, false)}
+        onOpenAgent={(agentId, view) => view ? navigate({ kind: "agent", projectId, agentId, view }) : openAgentFromConversation(agentId, false)}
         onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
         onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
@@ -328,6 +329,8 @@ export function ProjectShell({
       initialPath={route.path}
       onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
     />;
+  } else if (route.kind === "workspaceFile") {
+    main = <WorkspaceFileView projectId={projectId} path={route.path} />;
   } else if (route.kind === "projectWork") {
     main = <AgentWorkInspector open projectId={projectId} conversationId={route.conversationId} focus={route.focusId ? { id: route.focusId } : undefined} onClose={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "project") {

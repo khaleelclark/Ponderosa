@@ -102,6 +102,7 @@ import type {
   WebPushSubscriptionDto,
   WorkspaceEventEnvelope,
   WorkspaceFileReviewDto,
+  WorkspaceFileViewDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
   WorkspaceStatusDto,
@@ -536,6 +537,11 @@ export const realApi = {
   getWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFileReviewDto> {
     return requestJson<WorkspaceFileReviewDto>(
       `/api/projects/${encodeURIComponent(projectId)}/workspace/file${toQuery({ path })}`,
+    );
+  },
+  getWorkspaceFileView(projectId: string, path: string): Promise<WorkspaceFileViewDto> {
+    return requestJson<WorkspaceFileViewDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/workspace-files/view-info${toQuery({ path })}`,
     );
   },
   getArtifact(agentId: string, artifactId: string): Promise<ArtifactContentDto> {

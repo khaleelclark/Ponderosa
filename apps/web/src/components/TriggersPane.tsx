@@ -73,7 +73,7 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
       <Chip size="small" label={occurrence.state} color={occurrence.state === "dead_lettered" ? "error" : occurrence.state === "cancelled" ? "default" : "success"} />
       <Typography variant="caption">{new Date(occurrence.occurredAt).toLocaleString()}</Typography>
       <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{occurrence.artifactId}</Typography>
-      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>View Agent Work</Button> : null}
+      {onOpenAgentWork ? <Button size="small" onClick={() => onOpenAgentWork(occurrence.id)}>Review Work</Button> : null}
     </Stack>
     {occurrence.lastError ? <Typography variant="caption" color="error" display="block">{occurrence.lastError}</Typography> : null}
     <Box component="details" sx={{ mt: 0.5 }}>

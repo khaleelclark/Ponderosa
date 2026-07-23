@@ -49,11 +49,12 @@ describe("notification panel grouping", () => {
     expect(filterNotifications([mention, response], "all")).toEqual([mention, response]);
   });
 
-  it("shows only open urgent intervention items in the Urgent filter", () => {
+  it("keeps every open attention item visible after it has been read", () => {
     const urgent = { ...notification("urgent", "project-a", "chat-a", "2026-07-16T03:00:00.000Z"), severity: "urgent" as const, status: "open" as const };
     const resolved = { ...urgent, id: "resolved", status: "resolved" as const };
-    const attention = { ...urgent, id: "attention", severity: "attention" as const };
-    expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([urgent]);
+    const attention = { ...urgent, id: "attention", severity: "attention" as const, readAt: "2026-07-16T04:00:00.000Z" };
+    expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([attention, urgent]);
+    expect(filterNotifications([attention], "all")).toEqual([attention]);
   });
 
   it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {

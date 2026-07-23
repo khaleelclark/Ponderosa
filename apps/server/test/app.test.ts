@@ -1163,6 +1163,49 @@ describe("notification panel actions", () => {
     await app.close();
   });
 
+  it("surfaces failed coordinated work as durable plain-language attention", async () => {
+    const project = store.createProject({ label: "Coordination attention", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Operations" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const worker = store.createAgent(project.id, { title: "Worker", engine: "codex", conversationId: conversation.id });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id, conversationId: conversation.id, requesterAgentId: manager.id,
+      actorScope: `agent:${manager.id}`, idempotencyKey: "attention-request",
+      requests: [{
+        requestId: "attention-request", recipientAgentId: worker.id,
+        lifetime: { kind: "indefinite" }, payload: { assignment: "Complete the handoff" },
+      }],
+    });
+    const lease = coordination.leaseNextRun({ workerId: "attention-worker", now: "2099-07-23T05:00:00.000Z" })!;
+    expect(coordination.failRun({
+      runId: lease.runId, fencingToken: lease.fencingToken, workerId: "attention-worker",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "provider stopped before returning the handoff", now: "2099-07-23T05:00:01.000Z",
+    })).toBe("terminal");
+    const app = createServer({ dataDir, store, engines, logger: false, communicationV3: { maxConcurrentRuns: 0 } });
+    const recoveryLease = coordination.leaseNextRun({ workerId: "attention-manager", now: "2099-07-23T05:00:02.000Z" })!;
+    expect(coordination.failRun({
+      runId: recoveryLease.runId, fencingToken: recoveryLease.fencingToken, workerId: "attention-manager",
+      sameRunResumable: false, retryable: false, terminalOutcome: "permanent_failure",
+      error: "manager recovery also failed", now: "2099-07-23T05:00:03.000Z",
+    })).toBe("terminal");
+
+    const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
+      agentId?: string; category?: string; severity?: string; title: string; body: string;
+      action?: { kind: string; targetId?: string };
+    }>>();
+    expect(notifications).toEqual(expect.arrayContaining([expect.objectContaining({
+      agentId: manager.id,
+      category: "coordination",
+      severity: "attention",
+      title: expect.stringContaining("Manager"),
+      body: expect.not.stringMatching(/[0-9a-f]{8}/i),
+      action: { kind: "open_agent", targetId: manager.id },
+    })]));
+    await app.close();
+  });
+
   it("marks every notification read and clears them through canonical workspace events", async () => {
     const project = store.createProject({ label: "Notifications", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Release chat" });
@@ -1380,7 +1423,7 @@ describe("Agent work inspector", () => {
       projectId: project.id, conversationId: conversation.id, agentId: agent.id,
       agents: [{ id: agent.id, title: "Coordinator" }],
       items: [expect.objectContaining({ id: `decision:${decision.id}`, kind: "decision", state: "pending" })],
-      traces: [expect.objectContaining({ state: "active", itemIds: [`decision:${decision.id}`] })],
+      traces: [expect.objectContaining({ state: "attention", itemIds: [`decision:${decision.id}`] })],
     });
     expect(response.json<{ items: Array<{ details?: unknown }> }>().items[0]?.details).toBeUndefined();
     const details = await app.inject({
@@ -1627,6 +1670,30 @@ describe("generated artifact endpoints", () => {
     expect(preview.headers["content-disposition"]).toContain("inline");
     expect(preview.rawPayload).toEqual(png);
 
+    const markdownView = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/view-info?path=${encodeURIComponent("notes.md")}`,
+    });
+    expect(markdownView.statusCode, markdownView.body).toBe(200);
+    expect(markdownView.json()).toMatchObject({
+      projectId: project.id,
+      path: "notes.md",
+      mediaType: "text/markdown",
+      text: "# Notes\n",
+      previewable: false,
+      truncated: false,
+    });
+    const absoluteImageView = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/view-info?path=${encodeURIComponent(path.join(repoDir, "concept.png"))}`,
+    });
+    expect(absoluteImageView.statusCode, absoluteImageView.body).toBe(200);
+    expect(absoluteImageView.json()).toMatchObject({ path: "concept.png", mediaType: "image/png", previewable: true });
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/view-info?path=${encodeURIComponent("../outside.png")}`,
+    })).statusCode).toBe(404);
+
     const unsupportedPreview = await app.inject({
       method: "GET",
       url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("notes.md")}`,
@@ -1637,6 +1704,10 @@ describe("generated artifact endpoints", () => {
       method: "GET",
       url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("fake.png")}`,
     })).statusCode).toBe(404);
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/workspace-files/view-info?path=${encodeURIComponent("fake.png")}`,
+    })).json()).toMatchObject({ mediaType: "image/png", previewable: false, downloadUrl: expect.any(String) });
     expect((await app.inject({
       method: "GET",
       url: `/api/projects/${project.id}/workspace-files/preview?path=${encodeURIComponent("../outside.png")}`,
@@ -4522,6 +4593,20 @@ describe("persistent engine steering", () => {
 
     await expect(app.close()).rejects.toThrow(/Ponderosa server shutdown did not complete/);
     expect(persistent.closed).toBe(1);
+  });
+
+  it("does not let a stalled non-authority cleanup exceed the shutdown deadline", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      shutdownFaults: {
+        backgroundCleanupTimeoutMs: 20,
+        backgroundCleanup: () => new Promise<void>(() => undefined),
+      },
+    });
+
+    const startedAt = Date.now();
+    await app.close();
+    expect(Date.now() - startedAt).toBeLessThan(500);
   });
 
   it("attempts every runtime barrier before reporting aggregate shutdown failure", async () => {

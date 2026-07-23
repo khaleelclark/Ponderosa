@@ -34,6 +34,7 @@ import type {
   HostFolderBrowseDto,
   WorkspaceChangeDto,
   WorkspaceFileReviewDto,
+  WorkspaceFileViewDto,
   WorkspaceStatusDto,
   CreateProjectRequest,
   UpdateProjectRequest,
@@ -565,6 +566,9 @@ export interface CreateServerOptions {
   /** Deterministic shutdown fault seam; never enabled in production. */
   shutdownFaults?: {
     backgroundCleanup?: () => void | Promise<void>;
+    /** Maximum time non-authority cleanup may delay process shutdown. Provider
+     * and browser process termination remain strict, separately awaited barriers. */
+    backgroundCleanupTimeoutMs?: number;
   };
   /** Deterministic same-process event-consumer fault seam; never enabled in production configuration. */
   runtimeEventFaults?: {
@@ -2099,6 +2103,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     body: string;
     projectId?: string;
     conversationId?: string;
+    agentId?: string;
     action?: WorkspaceNotificationDto["action"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
@@ -2138,6 +2143,50 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ? { kind: "open_conversation", targetId: conversation.id }
           : { kind: "open_project", targetId: failure.projectId },
       });
+    }
+  };
+  let lastCoordinationAttentionReconciliationAt = 0;
+  const reconcileCoordinationAttentionNotifications = (): void => {
+    const now = Date.now();
+    if (now - lastCoordinationAttentionReconciliationAt < 5_000) return;
+    lastCoordinationAttentionReconciliationAt = now;
+    const retained = new Set<string>();
+    const communicationFailureActivationIds = new Set(coordinationV3.terminalActivations(undefined, 500)
+      .filter((failure) => failure.communicationEventId && failure.communicationIntent !== "collaboration"
+        && ["human_message", "urgent_message", "ordinary_message"].includes(failure.kind))
+      .map((failure) => failure.id));
+    for (const project of store.listProjects()) {
+      const inspector = agentWorkInspector({ projectId: project.id, limit: 200 });
+      const items = new Map(inspector.items.map((item) => [item.id, item]));
+      for (const trace of inspector.traces.filter((candidate) => candidate.state === "attention")) {
+        const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
+        if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
+        if (related.some((item) => item.kind === "activation" && communicationFailureActivationIds.has(item.recordId))) continue;
+        const failedRequest = related.find((item) => item.kind === "request"
+          && ["outcome_unknown", "failed", "recipient_unavailable"].includes(item.state));
+        const responsibleAgentId = failedRequest?.requesterAgentId ?? failedRequest?.recipientAgentId ?? trace.agentIds[0];
+        const agent = responsibleAgentId ? store.getAgent(responsibleAgentId) : undefined;
+        const conversationId = agent?.conversationIds.length === 1 ? agent.conversationIds[0] : undefined;
+        const key = `coordination-attention:${trace.id}`;
+        retained.add(key);
+        createOperationalNotification({
+          dedupeKey: key,
+          category: "coordination",
+          severity: "attention",
+          title: agent ? `${agent.title} could not finish coordinated work automatically` : "Coordinated work needs review",
+          body: "A dependency, assignment, or recovery ended without a successful handoff. Review what happened and choose the next step.",
+          projectId: project.id,
+          ...(conversationId ? { conversationId } : {}),
+          ...(agent ? { agentId: agent.id, action: { kind: "open_agent" as const, targetId: agent.id } } : {
+            action: { kind: "open_project" as const, targetId: project.id },
+          }),
+        });
+      }
+    }
+    for (const notification of workspace.listNotifications()) {
+      if (!notification.dedupeKey?.startsWith("coordination-attention:")) continue;
+      if ((notification.status ?? "open") !== "open" || retained.has(notification.dedupeKey)) continue;
+      resolveOperationalNotification(notification.dedupeKey);
     }
   };
   const reconcileTriggerOperationalNotifications = (): void => {
@@ -4265,8 +4314,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
         return false;
       };
-      const state = ordered.some(needsAttention) ? "attention"
-        : ordered.some((item) => activeStates.has(item.state)) ? "active" : "finished";
+      const attentionItems = ordered.filter(needsAttention);
+      const active = ordered.some((item) => activeStates.has(item.state));
+      const pendingDecision = ordered.some((item) => item.kind === "decision" && item.state === "pending");
+      const latestFailureAt = attentionItems.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, "");
+      const recoveredAfterFailure = Boolean(latestFailureAt) && ordered.some((item) =>
+        (item.kind === "run" || item.kind === "request") && item.state === "completed" && item.updatedAt >= latestFailureAt);
+      const state = pendingDecision ? "attention"
+        : active ? "active"
+          : attentionItems.length > 0 && !recoveredAfterFailure ? "attention" : "finished";
       const counts = new Map<AgentWorkItemDto["kind"], number>();
       for (const item of ordered) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
       const summary = kindOrder.flatMap((kind) => {
@@ -5365,6 +5421,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   app.retryProviderRuntimeShutdown = finalizeProviderRuntimeShutdown;
 
+  const boundedBackgroundShutdown = async (label: string, operation: () => void | Promise<void>): Promise<void> => {
+    const timeoutMs = opts.shutdownFaults?.backgroundCleanupTimeoutMs ?? 5_000;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    try {
+      const result = await Promise.race([
+        Promise.resolve().then(operation).then(() => "completed" as const),
+        timeout,
+      ]);
+      if (result === "timeout") {
+        app.log.warn({ cleanup: label, timeoutMs }, "Non-authority shutdown cleanup exceeded its deadline; process exit will release it");
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   app.addHook("onClose", async () => {
     closed = true;
     if (assetSweep) clearInterval(assetSweep);
@@ -5390,13 +5465,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     projectBrowserGrants.clear();
     const backgroundOperation = Promise.allSettled([
-      Promise.resolve().then(() => webPushDelivery?.stop()),
-      Promise.resolve().then(() => triggerSources.stop()),
-      Promise.resolve().then(() => coordinationV3Scheduler.stop()),
+      boundedBackgroundShutdown("web-push delivery", () => webPushDelivery?.stop()),
+      boundedBackgroundShutdown("trigger sources", () => triggerSources.stop()),
+      boundedBackgroundShutdown("coordination scheduler", () => coordinationV3Scheduler.stop()),
       ...runBrowserClosures,
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),
-      Promise.resolve().then(() => opts.shutdownFaults?.backgroundCleanup?.()),
+      boundedBackgroundShutdown("injected background cleanup", () => opts.shutdownFaults?.backgroundCleanup?.()),
     ]);
     // Provider authority revocation is an independent barrier. No earlier
     // watcher, scheduler, push, or browser failure can skip it.
@@ -5765,6 +5840,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     workspace.createNotification({
       projectId: decision.projectId,
       conversationId: decision.conversationId,
+      agentId: decision.agentId,
       kind: "decision",
       category: "decision",
       severity: decision.blocking ? "urgent" : "attention",
@@ -6126,6 +6202,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       workspace.createNotification({
         projectId: decision.projectId,
         conversationId: decision.conversationId,
+        agentId: decision.agentId,
         kind: "decision",
         category: "decision",
         severity: "urgent",
@@ -12741,6 +12818,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.get("/api/notifications", async () => {
     reconcileCommunicationFailureNotifications();
+    reconcileCoordinationAttentionNotifications();
     return workspace.listNotifications();
   });
   app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
@@ -13996,6 +14074,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   }
 
+  function workspaceFileContentType(file: string): string {
+    const extension = path.extname(file).toLowerCase();
+    return ({
+      ".md": "text/markdown", ".mdown": "text/markdown", ".txt": "text/plain",
+      ".csv": "text/csv", ".tsv": "text/tab-separated-values", ".xml": "application/xml",
+      ".yaml": "text/yaml", ".yml": "text/yaml", ".log": "text/plain",
+    } as Record<string, string>)[extension] ?? contentTypeForStatic(file.toLowerCase()).split(";", 1)[0]!;
+  }
+
   function validProjectPreviewMagic(mediaType: string, header: Buffer): boolean {
     if (mediaType === "image/png") return header.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
     if (mediaType === "image/jpeg") return header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
@@ -14059,6 +14146,68 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       await handle?.close().catch(() => undefined);
     }
   }
+
+  async function projectFileView(projectId: string, input: string | undefined): Promise<WorkspaceFileViewDto | undefined> {
+    const project = store.getProject(projectId);
+    if (!project || !input?.trim()) return undefined;
+    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+    try {
+      const root = await fs.realpath(project.hostPath);
+      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
+      const candidate = path.isAbsolute(requested) ? requested : path.resolve(root, safeRelativePath(requested));
+      const resolved = await fs.realpath(candidate);
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
+      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
+      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
+      handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
+      if (openedPath !== root && !openedPath.startsWith(`${root}${path.sep}`)) return undefined;
+      const info = await handle.stat();
+      if (!info.isFile()) return undefined;
+      const mediaType = workspaceFileContentType(resolved);
+      let previewable = projectPreviewMediaTypes.has(mediaType) && info.size <= PROJECT_PREVIEW_MAX_BYTES;
+      if (previewable) {
+        const header = Buffer.alloc(16);
+        const { bytesRead } = await handle.read(header, 0, header.length, 0);
+        previewable = validProjectPreviewMagic(mediaType, header.subarray(0, bytesRead));
+      }
+      const textMedia = mediaType.startsWith("text/") || [
+        "application/json", "application/javascript", "application/xml",
+      ].includes(mediaType);
+      let text: string | undefined;
+      if (textMedia && info.size <= MAX_FILE_BYTES) {
+        const body = await handle.readFile();
+        if (isUtf8(body)) text = body.toString("utf8");
+      }
+      const encodedPath = encodeURIComponent(relative);
+      return {
+        projectId,
+        path: relative,
+        name: path.basename(resolved),
+        mediaType,
+        size: info.size,
+        previewable,
+        ...(text !== undefined ? { text } : {}),
+        truncated: (textMedia && text === undefined) || info.size > PROJECT_DOWNLOAD_MAX_BYTES,
+        ...(previewable ? { previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}` } : {}),
+        ...(info.size <= PROJECT_DOWNLOAD_MAX_BYTES ? { downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}` } : {}),
+      };
+    } catch {
+      return undefined;
+    } finally {
+      await handle?.close().catch(() => undefined);
+    }
+  }
+
+  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
+    "/api/projects/:projectId/workspace-files/view-info",
+    async (request, reply) => {
+      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
+      const file = await projectFileView(request.params.projectId, request.query.path);
+      if (!file) return reply.code(404).send({ error: "project file is missing or unavailable" });
+      return reply.header("Cache-Control", "private, no-store").send(file);
+    },
+  );
 
   app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
     "/api/projects/:projectId/workspace-files/preview",
