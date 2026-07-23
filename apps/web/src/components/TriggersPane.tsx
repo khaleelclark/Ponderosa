@@ -30,6 +30,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { ConfirmDialog, DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
@@ -116,6 +117,9 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
   const [createOpen, setCreateOpen] = useState(initialCreateOpen);
   const [editing, setEditing] = useState<TriggerDefinitionDto>();
   const [secret, setSecret] = useState<{ trigger: TriggerDefinitionDto; value: string }>();
+  const [allowanceTrigger, setAllowanceTrigger] = useState<TriggerDefinitionDto>();
+  const [rotateTrigger, setRotateTrigger] = useState<TriggerDefinitionDto>();
+  const [deleteTrigger, setDeleteTrigger] = useState<TriggerDefinitionDto>();
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -235,18 +239,25 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
   });
   const remove = useMutation({
     mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey });
+      setDeleteTrigger(undefined);
+    },
   });
   const rotate = useMutation({
     mutationFn: (trigger: TriggerDefinitionDto) => api.rotateTriggerSecret(trigger.id),
     onSuccess: (response) => {
       void queryClient.invalidateQueries({ queryKey });
       if (response.webhookSecret) setSecret({ trigger: response.trigger, value: response.webhookSecret });
+      setRotateTrigger(undefined);
     },
   });
   const allowRuns = useMutation({
     mutationFn: ({ trigger, additionalRuns }: { trigger: TriggerDefinitionDto; additionalRuns: number }) => api.allowTriggerRuns(trigger.id, additionalRuns),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey });
+      setAllowanceTrigger(undefined);
+    },
   });
   const occurrences = useQuery({
     queryKey: queryKeys.triggers.occurrence(expandedId),
@@ -306,19 +317,9 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
           <FormControlLabel control={<Switch inputProps={{ "aria-label": `${trigger.enabled ? "Disable" : "Enable"} ${trigger.name}` }} checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "Enabled" : "Disabled"} />
           <Button size="small" aria-expanded={expandedId === trigger.id} onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide Full Details" : "Open Full Details"}</Button>
           <Button size="small" aria-label={`Edit ${trigger.name}`} onClick={() => openEditor(trigger)}>Edit</Button>
-          {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => {
-            const value = window.prompt("How many additional automatic Runs should this Trigger receive for the current period?", "5");
-            if (value === null) return;
-            const additionalRuns = Number(value);
-            if (!Number.isSafeInteger(additionalRuns) || additionalRuns < 1) return window.alert("Enter a positive whole number.");
-            allowRuns.mutate({ trigger, additionalRuns });
-          }}>Allow More Runs</Button> : null}
-          {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => {
-            if (window.confirm("Rotate this webhook secret? Existing senders will stop working immediately.")) rotate.mutate(trigger);
-          }}>Rotate Secret</Button> : null}
-          <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} disabled={remove.isPending} onClick={() => {
-            if (window.confirm(`Delete “${trigger.name}”? Pending occurrences will be cancelled.`)) remove.mutate(trigger);
-          }}>Delete</Button>
+          {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => setAllowanceTrigger(trigger)}>Allow More Runs</Button> : null}
+          {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => setRotateTrigger(trigger)}>Rotate Secret</Button> : null}
+          <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} disabled={remove.isPending} onClick={() => setDeleteTrigger(trigger)}>Delete</Button>
         </CardActions>
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
@@ -337,6 +338,60 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
         </CardContent>
       </Card> : null}
     </Stack>
+
+    <TextInputDialog
+      open={Boolean(allowanceTrigger)}
+      title="Allow more automatic Runs"
+      label="Additional Runs"
+      initialValue="5"
+      helperText="Applies to the Trigger’s current budget period."
+      confirmLabel="Allow Runs"
+      pendingLabel="Saving…"
+      pending={allowRuns.isPending}
+      error={allowRuns.isError ? allowRuns.error.message : undefined}
+      validate={(value) => Number.isSafeInteger(Number(value)) && Number(value) >= 1 ? undefined : "Enter a positive whole number."}
+      onCancel={() => {
+        allowRuns.reset();
+        setAllowanceTrigger(undefined);
+      }}
+      onConfirm={(value) => {
+        if (allowanceTrigger) allowRuns.mutate({ trigger: allowanceTrigger, additionalRuns: Number(value) });
+      }}
+    />
+    <ConfirmDialog
+      open={Boolean(rotateTrigger)}
+      title="Rotate this webhook secret?"
+      confirmLabel="Rotate Secret"
+      pendingLabel="Rotating…"
+      pending={rotate.isPending}
+      error={rotate.isError ? rotate.error.message : undefined}
+      onCancel={() => {
+        rotate.reset();
+        setRotateTrigger(undefined);
+      }}
+      onConfirm={() => {
+        if (rotateTrigger) rotate.mutate(rotateTrigger);
+      }}
+    >
+      <Typography sx={{ pt: 1 }}>Existing senders will stop working immediately.</Typography>
+    </ConfirmDialog>
+    <DestructiveConfirmDialog
+      open={Boolean(deleteTrigger)}
+      title={deleteTrigger ? `Delete “${deleteTrigger.name}”?` : "Delete Trigger?"}
+      confirmLabel="Delete Trigger"
+      pendingLabel="Deleting…"
+      pending={remove.isPending}
+      error={remove.isError ? remove.error.message : undefined}
+      onCancel={() => {
+        remove.reset();
+        setDeleteTrigger(undefined);
+      }}
+      onConfirm={() => {
+        if (deleteTrigger) remove.mutate(deleteTrigger);
+      }}
+    >
+      <Typography sx={{ pt: 1 }}>Pending occurrences will be cancelled. Immutable occurrence history remains available.</Typography>
+    </DestructiveConfirmDialog>
 
     <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setEditing(undefined); }} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>

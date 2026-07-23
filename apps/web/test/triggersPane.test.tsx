@@ -1,8 +1,21 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Button, TextField } from "@mui/material";
+import type { ReactNode } from "react";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TriggerDefinitionDto, TriggerOccurrenceDto } from "@ponderosa/core";
+import { api } from "../src/api";
 import { changedSourceConfig, filesystemWindowErrors, intervalSourceConfig, isoToDatetimeLocal, latestOccurrenceByTrigger, triggerSourceSummary, TriggersPane } from "../src/components/TriggersPane";
+
+vi.mock("@mui/material", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mui/material")>();
+  const { createElement, forwardRef } = await import("react");
+  return {
+    ...actual,
+    Dialog: forwardRef<HTMLDivElement, { open: boolean; children?: ReactNode }>(({ open, children }, ref) =>
+      open ? createElement("div", { ref, role: "dialog" }, children) : null),
+  };
+});
 
 describe("Agent Triggers", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -107,6 +120,56 @@ describe("Agent Triggers", () => {
     expect(view.root.findByProps({ "aria-expanded": false })).toBeTruthy();
     expect(latestOccurrenceByTrigger(occurrences).get(trigger.id)?.id).toBe("occurrence-1");
     expect(triggerSourceSummary(trigger)).toBe("Cron schedule · UTC");
+    view.unmount();
+    client.clear();
+  });
+
+  it("validates budget allowance and confirms secret rotation and deletion without native dialogs", async () => {
+    const trigger: TriggerDefinitionDto = {
+      id: "trigger-actions", projectId: "project", conversationId: "chat", agentId: "agent",
+      name: "Action trigger", instructions: "Review changes", sourceKind: "webhook",
+      sourceConfig: { replayWindowSeconds: 300 }, enabled: true, fullAccess: true,
+      runBudget: { limit: 10, period: "month" },
+      budgetState: { used: 10, allowance: 0, held: true, periodStartedAt: "2026-07-01T00:00:00.000Z" },
+      webhookPath: "/api/trigger-webhooks/trigger-actions", secretFingerprint: "abc123",
+      createdAt: "2026-07-01T00:00:00.000Z", updatedAt: "2026-07-23T09:00:00.000Z",
+    };
+    const allow = vi.spyOn(api, "allowTriggerRuns").mockResolvedValue({ ...trigger, budgetState: { ...trigger.budgetState!, allowance: 5 } });
+    const rotate = vi.spyOn(api, "rotateTriggerSecret").mockResolvedValue({ trigger, webhookSecret: "rotated-secret" });
+    const remove = vi.spyOn(api, "deleteTrigger").mockResolvedValue({ deleted: true });
+    vi.spyOn(api, "listTriggers").mockResolvedValue([trigger]);
+    vi.spyOn(api, "listAgentTriggerOccurrences").mockResolvedValue([]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    client.setQueryData(["triggers", "agent"], [trigger]);
+    client.setQueryData(["agent-trigger-occurrences", "agent"], []);
+    const view = create(<QueryClientProvider client={client}><TriggersPane agent={{
+      id: "agent", projectId: "project", conversationId: "chat", conversationIds: ["chat"],
+      title: "Worker", activeEngine: "codex", state: {}, createdAt: "2026-07-16T12:00:00.000Z",
+      updatedAt: "2026-07-16T12:00:00.000Z", archived: false,
+    }} /></QueryClientProvider>);
+
+    act(() => view.root.findAllByType(Button).find((button) => button.props.children === "Allow More Runs")!.props.onClick());
+    const allowanceField = view.root.findAllByType(TextField).find((field) => field.props.label === "Additional Runs")!;
+    act(() => allowanceField.props.onChange({ target: { value: "0" } }));
+    expect(JSON.stringify(view.toJSON())).toContain("Enter a positive whole number.");
+    expect(allow).not.toHaveBeenCalled();
+    act(() => view.root.findAllByType(TextField).find((field) => field.props.label === "Additional Runs")!.props.onChange({ target: { value: "5" } }));
+    await act(async () => {
+      view.root.findAllByType(Button).find((button) => button.props.children === "Allow Runs")!.props.onClick();
+    });
+    expect(allow).toHaveBeenCalledWith(trigger.id, 5);
+
+    act(() => view.root.findAllByType(Button).find((button) => button.props.children === "Rotate Secret")!.props.onClick());
+    expect(JSON.stringify(view.toJSON())).toContain("Existing senders will stop working immediately.");
+    act(() => view.root.findAllByType(Button).find((button) => button.props.children === "Cancel")!.props.onClick());
+    expect(rotate).not.toHaveBeenCalled();
+
+    act(() => view.root.findAllByType(Button).find((button) => button.props.children === "Delete")!.props.onClick());
+    expect(JSON.stringify(view.toJSON())).toContain("Pending occurrences will be cancelled.");
+    await act(async () => {
+      view.root.findAllByType(Button).find((button) => button.props.children === "Delete Trigger")!.props.onClick();
+    });
+    expect(remove).toHaveBeenCalledWith(trigger.id);
     view.unmount();
     client.clear();
   });
