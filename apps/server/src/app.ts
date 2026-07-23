@@ -86,6 +86,7 @@ import type {
   WorkspaceEventEnvelope,
   WorkspaceEvent,
   WorkspaceNotificationDto,
+  DecisionDto,
   NotificationPreferencesDto,
   NotificationPreference,
   VerifiedCitationDto,
@@ -4540,6 +4541,29 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     });
   }
 
+  function ensureDecisionResponseActivation(decision: DecisionDto): string | undefined {
+    if (decision.status !== "resolved" || !decision.response) return undefined;
+    return coordinationV3.enqueueMessageActivation({
+      projectId: decision.projectId,
+      agentId: decision.agentId,
+      scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
+      messageId: `decision:${decision.id}:response`,
+      kind: "human",
+      payload: {
+        decision: {
+          id: decision.id,
+          question: decision.question,
+          response: decision.response,
+        },
+      },
+      bypassCapacity: true,
+      ...(decision.continuationRequestIds?.length
+        ? { questionDependency: { kind: "decision" as const, id: decision.id } }
+        : {}),
+      now: decision.response.respondedAt,
+    });
+  }
+
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);
 
   function agentHealth(scope: AgentHealthProjectionDto["scope"], agents: AgentDto[]): AgentHealthProjectionDto {
@@ -5451,6 +5475,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         requestIds: decision.continuationRequestIds,
         strict: false,
       });
+    }
+    for (const decision of workspace.listDecisions({ status: "resolved" })) {
+      if (decision.continuationRequestIds?.length) ensureDecisionResponseActivation(decision);
     }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
@@ -13056,7 +13083,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const current = workspace.getDecision(request.params.id);
     if (!current) return reply.code(404).send({ error: "Decision not found" });
     if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    if (current.status !== "pending") return current;
+    if (current.status !== "pending") {
+      if (current.status === "resolved") {
+        ensureDecisionResponseActivation(current);
+        coordinationV3Scheduler.notify();
+      }
+      return current;
+    }
     const optionId = request.body?.optionId?.trim();
     const text = request.body?.text?.trim();
     if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
@@ -13077,18 +13110,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
     if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     publishWorkspaceSince(cursor);
-    coordinationV3.enqueueMessageActivation({
-      projectId: decision.projectId,
-      agentId: decision.agentId,
-      scopeKey: decision.conversationId ? `conversation:${decision.conversationId}` : `agent:${decision.agentId}`,
-      messageId: `decision:${decision.id}:response`,
-      kind: "human",
-      payload: { decision: { id: decision.id, question: decision.question, response: decision.response } },
-      ...(decision.continuationRequestIds?.length
-        ? { questionDependency: { kind: "decision" as const, id: decision.id } }
-        : {}),
-      now: respondedAt,
-    });
+    ensureDecisionResponseActivation(decision);
     publishMessageDeliveryChanged(decision.agentId);
     coordinationV3Scheduler.notify();
     return decision;

@@ -441,6 +441,8 @@ export interface EnqueueMessageActivationInput {
   dispatchPolicy?: ActivationDispatchPolicy;
   promptClass?: ActivationPromptClass;
   payload: unknown;
+  /** Server-owned durable continuations may bypass ordinary intake backpressure. */
+  bypassCapacity?: boolean;
   questionDependency?: { kind: "decision"; id: string };
   now?: string;
 }
@@ -2133,7 +2135,7 @@ export class CoordinationV3Store {
         payload,
         sourceKind: "message",
         sourceId: input.messageId,
-        externalIntake: true,
+        externalIntake: !input.bypassCapacity,
         now,
       });
       if (input.questionDependency) this.attachQuestionDependencyToActivation(
@@ -6715,7 +6717,53 @@ export class CoordinationV3Store {
     }
   }
 
+  private cancelUninjectedRunsForClearedQuestion(questionUpdateId: string, now: string): void {
+    const runs = this.sqlite.prepare(`
+      SELECT DISTINCT run.id, run.agent_id, run.fencing_token
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id
+        AND source.source_kind = 'request_update'
+        AND source.source_id = ?
+      JOIN scheduler_run_activations attached ON attached.activation_id = activation.id
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      WHERE activation.kind = 'coordination_question'
+        AND activation.state = 'attached'
+        AND run.status IN ('leased', 'running')
+        AND run.prompt_injection_state = 'not_injected'
+    `).all(questionUpdateId) as Array<{
+      id: string;
+      agent_id: string;
+      fencing_token: number;
+    }>;
+    for (const run of runs) {
+      const replacementFence = this.nextFence(run.agent_id);
+      const cancelled = this.sqlite.prepare(`
+        UPDATE scheduler_runs
+        SET status = 'cancelled', fencing_token = ?,
+          side_effects_fenced_at = COALESCE(side_effects_fenced_at, ?),
+          updated_at = ?, terminal_at = ?
+        WHERE id = ? AND fencing_token = ?
+          AND status IN ('leased', 'running')
+          AND prompt_injection_state = 'not_injected'
+      `).run(replacementFence, now, now, now, run.id, run.fencing_token).changes;
+      if (cancelled !== 1) continue;
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'retry_pending', available_at = ?, updated_at = ?
+        WHERE state = 'attached'
+          AND id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+      `).run(now, now, run.id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, run.id);
+    }
+  }
+
   private settleClearedQuestion(questionUpdateId: string, now: string): void {
+    this.cancelUninjectedRunsForClearedQuestion(questionUpdateId, now);
     this.sqlite.prepare(`
       UPDATE agent_activations
       SET state = 'cancelled', terminal_at = ?, updated_at = ?,

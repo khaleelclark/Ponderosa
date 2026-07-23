@@ -966,6 +966,48 @@ describe("CoordinationV3Store transactions", () => {
     expect(store.leaseNextRun({ workerId: "server", now: scenario.now })?.agentId).toBe(recipientA);
   });
 
+  it("fences an uninjected dedicated question Run when the exact question is answered", () => {
+    const scenario = openQuestionScenario("answered-after-question-lease");
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    const dedicated = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
+    expect(dedicated.activationIds).toEqual(scenario.steering.activationIds);
+
+    store.updateRequest({
+      requestId: scenario.requestId,
+      updateId: "answer-after-question-lease",
+      kind: "answer",
+      actor: { kind: "agent", id: requesterId },
+      inReplyToUpdateId: scenario.questionUpdateId,
+      payload: { text: "Use the original contract" },
+      now: scenario.now,
+    });
+
+    expect(opened.client.prepare(`
+      SELECT status, prompt_injection_state, side_effects_fenced_at
+      FROM scheduler_runs WHERE id = ?
+    `).get(dedicated.runId)).toEqual({
+      status: "cancelled",
+      prompt_injection_state: "not_injected",
+      side_effects_fenced_at: scenario.now,
+    });
+    expect(opened.client.prepare(`
+      SELECT state FROM scheduler_prompt_injections WHERE id = ?
+    `).get(dedicated.injectionId)).toEqual({ state: "cancelled" });
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(scenario.steering.activationIds[0]!)).toEqual({ state: "cancelled" });
+    expect(() => store.markPromptSubmitted({
+      injectionId: dedicated.injectionId,
+      runId: dedicated.runId,
+      fencingToken: dedicated.fencingToken,
+      now: scenario.now,
+    })).toThrow("stale run fencing token");
+  });
+
   it("suspends an outbound question on a delegated Join and restores answer authority", () => {
     const scenario = openQuestionScenario("join-suspended-question");
     const delegated = store.coordinate({
@@ -4208,6 +4250,34 @@ describe("CoordinationV3Store scheduler", () => {
       projectId, agentId: recipientA, messageId: "bounded-2", kind: "ordinary", payload: { text: "two" },
     })).toThrow("pending activation limit reached");
     expect(store.pendingActivations(projectId)).toHaveLength(1);
+  });
+
+  it("admits and deduplicates a server-owned continuation at ordinary intake capacity", () => {
+    store = new CoordinationV3Store(opened.client, { maxPendingActivationsPerAgent: 1 });
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      messageId: "occupy-continuation-capacity",
+      kind: "ordinary",
+      payload: { text: "ordinary intake" },
+    });
+    const response = store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      messageId: "decision:resolved:response",
+      kind: "human",
+      payload: { decision: { id: "resolved", response: { text: "approved" } } },
+      bypassCapacity: true,
+    });
+    expect(store.enqueueMessageActivation({
+      projectId,
+      agentId: recipientA,
+      messageId: "decision:resolved:response",
+      kind: "human",
+      payload: { decision: { id: "resolved", response: { text: "approved" } } },
+      bypassCapacity: true,
+    })).toBe(response);
+    expect(store.pendingActivations(projectId)).toHaveLength(2);
   });
 
   it("dead-letters malformed and repeatedly failing outbox records", () => {
