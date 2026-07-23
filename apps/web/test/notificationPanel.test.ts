@@ -63,12 +63,22 @@ describe("notification panel grouping", () => {
       kind: "operational" as const,
       category: "coordination" as const,
       action: { kind: "open_agent" as const, targetId: "agent-a" },
+      resolution: {
+        kind: "coordination_request" as const,
+        traceId: "trace-a",
+        requestId: "request-a",
+        recipientAgentId: "agent-a",
+        recipientTitle: "Agent A",
+        assignment: "Verify the result.",
+        outcome: "outcome_unknown",
+        retryAvailable: false,
+      },
     };
     expect(notificationWorkRoute(coordination)).toEqual({
-      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "technical",
+      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "technical", technicalFocusId: "request:request-a",
     });
     expect(notificationWorkRoute({ ...coordination, action: undefined, communicationEventId: "event-a" })).toEqual({
-      kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "event-a",
+      kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "request:request-a",
     });
   });
 

@@ -28,6 +28,7 @@ import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
 import { isOpenAttention, visibleNotification } from "../attention";
+import { notificationTechnicalFocusId } from "../technicalFocus";
 
 export interface NotificationGroup {
   key: string;
@@ -70,10 +71,13 @@ export function groupNotificationsByProject(notifications: WorkspaceNotification
 
 export function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
   if (!item.projectId) return undefined;
+  const focusId = notificationTechnicalFocusId(item);
   if (item.action?.kind === "open_agent" && item.action.targetId) {
-    return { kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical" };
+    return {
+      kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical",
+      ...(focusId ? { technicalFocusId: focusId } : {}),
+    };
   }
-  const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
   return {
     kind: "projectWork", projectId: item.projectId,
     ...(item.conversationId ? { conversationId: item.conversationId } : {}),

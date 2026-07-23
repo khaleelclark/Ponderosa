@@ -15,6 +15,7 @@ import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
 import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
+import { notificationTechnicalFocusId } from "../technicalFocus";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -193,12 +194,16 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
     </Stack>
     <AttentionSurface notifications={notifications} onOpen={(item) => {
       if (!item.projectId) return;
+      const focusId = notificationTechnicalFocusId(item);
       if (item.action?.kind === "open_agent" && item.action.targetId) {
-        onNavigate({ kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical" });
+        onNavigate({
+          kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical",
+          ...(focusId ? { technicalFocusId: focusId } : {}),
+        });
       } else if (item.conversationId) {
-        onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId });
+        onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId, ...(focusId ? { focusId } : {}) });
       } else {
-        onNavigate({ kind: "projectWork", projectId: item.projectId });
+        onNavigate({ kind: "projectWork", projectId: item.projectId, ...(focusId ? { focusId } : {}) });
       }
     }} />
 

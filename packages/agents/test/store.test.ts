@@ -1925,9 +1925,32 @@ describe("agent organizational hierarchy", () => {
     });
     expect(agent).toMatchObject({ model: "gpt-specialist", effort: "medium" });
 
+    expect(store.updateAgent(agent.id, {
+      activeEngine: "claude",
+      model: "claude-sonnet",
+      effort: "high",
+    })).toMatchObject({
+      activeEngine: "claude",
+      model: "claude-sonnet",
+      effort: "high",
+    });
+    expect(JSON.parse(readFileSync(join(agentDir(dir, project.id, agent.id), "agent.json"), "utf8"))).toMatchObject({
+      activeEngine: "claude",
+      model: "claude-sonnet",
+      effort: "high",
+    });
     store.rebuildProjections();
 
-    expect(store.getAgent(agent.id)).toMatchObject({ model: "gpt-specialist", effort: "medium" });
+    expect(store.getAgent(agent.id)).toMatchObject({
+      activeEngine: "claude",
+      model: "claude-sonnet",
+      effort: "high",
+    });
+    expect(store.updateAgent(agent.id, { model: null, effort: null })).toMatchObject({
+      activeEngine: "claude",
+      model: undefined,
+      effort: undefined,
+    });
   });
 });
 

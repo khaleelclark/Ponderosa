@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { ActivityPane } from "../src/components/panes";
+import { act, create } from "react-test-renderer";
+import { describe, expect, it, vi } from "vitest";
+import { ActivityPane, scrollActivityToCurrent } from "../src/components/panes";
 import { AGENT_DETAIL_TAB_LABELS } from "../src/components/AgentDetail";
 
 describe("merged Activity", () => {
@@ -48,5 +49,36 @@ describe("merged Activity", () => {
     expect(html).toContain("Download");
     expect(html).toContain("/api/projects/project/artifacts/generated-9/download");
     expect(html).not.toContain("diff --git");
+  });
+
+  it("offers and activates Back to Current Work when the current Run has no loaded entries", () => {
+    const scrollNode = {
+      scrollTop: 0,
+      clientHeight: 100,
+      scrollTo: vi.fn(),
+    };
+    const view = create(<ActivityPane
+      activity={[]}
+      connected
+      running
+      activeExecutionId="run-current"
+      runs={[
+        { id: "run-previous", agentId: "agent", engine: "codex", status: "completed", title: "Previous", startedAt: "2026-07-12T00:00:00.000Z", completedAt: "2026-07-12T00:01:00.000Z" },
+        { id: "run-current", agentId: "agent", engine: "codex", status: "running", title: "Current", startedAt: "2026-07-12T01:00:00.000Z" },
+      ]}
+      runOutput={[{
+        id: "previous-output", agentId: "agent", executionId: "run-previous", kind: "response", text: "Earlier work",
+        completed: true, seq: 1, sourceSeqStart: 1, sourceSeqEnd: 1, createdAt: "2026-07-12T00:00:30.000Z",
+      }]}
+    />, {
+      createNodeMock: (element) => element.props["data-testid"] === "activity-scroll-region" ? scrollNode : {},
+    });
+    const region = view.root.findByProps({ "data-testid": "activity-scroll-region" });
+    scrollNode.scrollTop = 240;
+    act(() => region.props.onScroll({ currentTarget: scrollNode }));
+    expect(view.root.findByProps({ "aria-label": "Back to Current Work" })).toBeDefined();
+    scrollActivityToCurrent(scrollNode as unknown as HTMLElement);
+    expect(scrollNode.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+    view.unmount();
   });
 });

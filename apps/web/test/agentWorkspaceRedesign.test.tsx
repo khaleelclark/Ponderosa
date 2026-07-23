@@ -60,7 +60,11 @@ describe("Agent workspace redesign", () => {
     expect(detail).toContain('api.getAgentHistory(agentId, stream, 100, detail.telemetryHistory?.[stream]?.cursor)');
     expect(detail).toContain("Load Earlier Activity");
     expect(detail).toContain('aria-label="Agent settings"');
-    expect(detail).toContain("apply only to the next Run");
+    expect(detail).toContain("Provider, model, and reasoning are persistent Agent defaults.");
+    expect(detail).toContain("Changes apply when the next Run starts");
+    expect(detail).toContain("Save Runtime Settings");
+    expect(detail).toContain("activeEngine: settingsEngine");
+    expect(detail).not.toContain("unsaved message overrides shared with the Chat composer");
     expect(detail).toContain('label: "Technical Details"');
     expect(inspector).toContain("Current State");
     expect(inspector).toContain("Coordination Timeline");
@@ -70,5 +74,18 @@ describe("Agent workspace redesign", () => {
     expect(api).not.toContain("retryCoordinationRequest");
     expect(panes).not.toContain("Retry Assignment");
     expect(panes).not.toContain("Stop Assignment");
+  });
+
+  it("uses one durable exact-record focus contract from every chat issue surface", () => {
+    const agent = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
+    const allChat = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
+    const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
+    for (const source of [agent, allChat, conversation]) {
+      expect(source).toContain("notificationTechnicalFocusId(item)");
+    }
+    expect(agent).toContain("onOpenTechnicalDetails(focusId)");
+    expect(allChat).toContain("technicalFocusId: focusId");
+    expect(conversation).toContain('onOpenAgent(item.agentId, "technical", focusId)');
+    expect(conversation).toContain("onOpenAgentWork(event.id)");
   });
 });

@@ -10811,14 +10811,42 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (deletingAgentIds.has(request.params.id)) {
         return reply.code(409).send({ error: "Agent deletion is already in progress" });
       }
+      const current = store.getAgent(request.params.id);
+      if (!current) return reply.code(404).send({ error: "agent not found" });
+      const body = request.body ?? {};
+      const allowedFields = new Set(["title", "archived", "activeEngine", "model", "effort", "managementPermissions"]);
+      if (Object.keys(body).some((key) => !allowedFields.has(key))) {
+        return reply.code(400).send({ error: "unknown agent field" });
+      }
       const permissions = request.body?.managementPermissions;
       if (permissions && (
         typeof permissions.allowAutomaticDescendantDeletion !== "boolean"
         || typeof permissions.allowAutomaticDescendantReorganization !== "boolean"
       )) return reply.code(400).send({ error: "managementPermissions requires two boolean settings" });
-      const agent = store.updateAgent(request.params.id, request.body ?? {});
+      if (body.activeEngine !== undefined && (typeof body.activeEngine !== "string" || !body.activeEngine.trim())) {
+        return reply.code(400).send({ error: "activeEngine must be a configured engine" });
+      }
+      if (body.model !== undefined && body.model !== null && typeof body.model !== "string") {
+        return reply.code(400).send({ error: "model must be a string or null" });
+      }
+      if (body.effort !== undefined && body.effort !== null && typeof body.effort !== "string") {
+        return reply.code(400).send({ error: "effort must be a string or null" });
+      }
+      const runtimeSettingsChanged = body.activeEngine !== undefined || body.model !== undefined || body.effort !== undefined;
+      let runtimePatch: Pick<UpdateAgentRequest, "activeEngine" | "model" | "effort"> = {};
+      if (runtimeSettingsChanged) {
+        const activeEngine = body.activeEngine?.trim() || current.activeEngine;
+        const configured = engines.get(activeEngine);
+        if (!configured) return reply.code(400).send({ error: "unknown engine" });
+        const model = body.model === undefined ? current.model : body.model?.trim() || undefined;
+        const effort = body.effort === undefined ? current.effort : body.effort?.trim() || undefined;
+        const selectionError = runtimeSelectionError(configured.adapter, model, effort);
+        if (selectionError) return reply.code(400).send({ error: selectionError });
+        runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
+      }
+      const agent = store.updateAgent(request.params.id, { ...body, ...runtimePatch });
       if (agent && request.body?.archived !== undefined) await triggerSources.refresh();
-      return agent ?? reply.code(404).send({ error: "agent not found" });
+      return agent!;
     },
   );
 
@@ -11096,7 +11124,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (Object.keys(request.body ?? {}).some((key) => !allowedMessageFields.has(key))) {
         return reply.code(400).send({ error: "unknown message field" });
       }
-      const engine = engines.get(agent.activeEngine);
+      const priorRuns = store.getRuns(agent.id);
+      const latestRun = priorRuns.at(-1);
+      // Saved Agent runtime settings are next-Run defaults. A message delivered
+      // into an already-running Run must keep that Run's captured provider and
+      // runtime selection, even if Settings changed while it was working.
+      const activeRunSnapshot = latestRun?.status === "running" ? latestRun : undefined;
+      const runtimeEngineId = activeRunSnapshot?.engine ?? agent.activeEngine;
+      const engine = engines.get(runtimeEngineId);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
       const text = request.body?.text?.trim() ?? "";
       const userMessageIdempotencyKey = request.body?.idempotencyKey?.trim();
@@ -11123,24 +11158,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
-      const priorRuns = store.getRuns(agent.id);
-      const latestRun = priorRuns.at(-1);
       const recovered = concreteRuntimeSelection(engine.adapter, [
-        {
-          model: latestRun ? latestRun.model : agent.model ?? agent.presetSnapshot?.model,
-          effort: latestRun ? latestRun.effort : agent.effort ?? agent.presetSnapshot?.effort,
-        },
-        project.defaultEngine === agent.activeEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
-        workspace.getPreferences().engineDefaults?.[agent.activeEngine],
+        activeRunSnapshot
+          ? { model: activeRunSnapshot.model, effort: activeRunSnapshot.effort }
+          : {
+              model: agent.model ?? agent.presetSnapshot?.model,
+              effort: agent.effort ?? agent.presetSnapshot?.effort,
+            },
+        project.defaultEngine === runtimeEngineId ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
+        workspace.getPreferences().engineDefaults?.[runtimeEngineId],
       ]);
-      const hasModelOverride = request.body.model !== undefined;
+      const hasModelOverride = !activeRunSnapshot && request.body.model !== undefined;
       const requestedModel = request.body.model?.trim() || undefined;
       if (hasModelOverride) {
         const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined);
         if (modelError) return reply.code(400).send({ error: modelError });
       }
       const effectiveModel = hasModelOverride ? requestedModel : recovered.model;
-      const hasEffortOverride = request.body.effort !== undefined;
+      const hasEffortOverride = !activeRunSnapshot && request.body.effort !== undefined;
       const requestedEffort = request.body.effort?.trim() || undefined;
       if (hasEffortOverride) {
         const effortError = runtimeSelectionError(engine.adapter, effectiveModel, requestedEffort);
@@ -11149,7 +11184,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const effectiveEffort = hasEffortOverride
         ? requestedEffort
         : hasModelOverride
-          ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[agent.activeEngine]]).effort
+          ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]]).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
       const providerSlash = !internalV3Dispatch ? /^\/([\p{L}\p{N}_:-]+)(?:\s|$)/u.exec(text) : undefined;
       if (providerSlash) {
@@ -11613,7 +11648,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const cursorScope = resumeSessionId && cursorConversationId && cursorChannel
         ? {
             agentId: agent.id,
-            engine: agent.activeEngine,
+            engine: runtimeEngineId,
             model: cursorModel,
             sessionId: resumeSessionId,
             conversationId: cursorConversationId,
@@ -11622,7 +11657,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         : undefined;
       const latestSessionCursor = resumeSessionId ? contextCursors.latestForSession(agent.id, resumeSessionId) : undefined;
       const sameEngineModelEpoch = !latestSessionCursor ||
-        (latestSessionCursor.engine === agent.activeEngine && latestSessionCursor.model === cursorModel);
+        (latestSessionCursor.engine === runtimeEngineId && latestSessionCursor.model === cursorModel);
       const previousCursor = cursorScope && sameEngineModelEpoch ? contextCursors.get(cursorScope) : undefined;
       const contextSourceLimit = MAX_SEED_HISTORY_MESSAGES + 1;
       const roomDeltaPage = conversation && sourceChannel === "main" && previousCursor
@@ -11669,7 +11704,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const broadcastCursorScope = resumeSessionId && routingConversationId && sourceChannel !== "main"
         ? {
             agentId: agent.id,
-            engine: agent.activeEngine,
+            engine: runtimeEngineId,
             model: cursorModel,
             sessionId: resumeSessionId,
             conversationId: routingConversationId,
@@ -12461,7 +12496,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               if (deletingAgentIds.has(agent.id) || closed || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
               if (!receiveRuntimeEvent(agent.id, activeRun)) break;
               if (opts.runtimeEventFaults?.beforePersist && !await waitBeforeRuntimePersist(agent.id, activeRun, event)) break;
-              if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(agent.activeEngine, event.message)) {
+              if (event.type === "error" && sessionId && !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event.message)) {
                 // The provider confirmed the resumed session failed before
                 // sampling. Discard its buffered session event and retry once
                 // with the separately persisted canonical fresh-seed packet.
@@ -12595,31 +12630,31 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             if (runError && !schedulerCancelled) {
               if (classifyProviderFailure(runError) === "authentication") {
                 engineAvailability.record({
-                  engineId: agent.activeEngine,
+                  engineId: runtimeEngineId,
                   available: false,
                   detail: runError,
                   source: "provider_run",
                 });
-                if (providerEnabled(agent.activeEngine)) createOperationalNotification({
-                  dedupeKey: `provider:${agent.activeEngine}:unavailable`,
+                if (providerEnabled(runtimeEngineId)) createOperationalNotification({
+                  dedupeKey: `provider:${runtimeEngineId}:unavailable`,
                   category: "provider",
                   severity: "attention",
-                  title: `${engines.get(agent.activeEngine)?.adapter.displayName ?? agent.activeEngine} stopped accepting work`,
+                  title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
                   body: `${runError} Queued Runs using this provider are now held.`,
                   projectId: agent.projectId,
                   conversationId: agent.conversationId,
-                  action: { kind: "open_settings", targetId: agent.activeEngine },
+                  action: { kind: "open_settings", targetId: runtimeEngineId },
                 });
               }
               notifyManagerOfChildFailure(agent.id, runId, runError);
-            } else if (!schedulerCancelled && engineAvailability.denial(agent.activeEngine)) {
+            } else if (!schedulerCancelled && engineAvailability.denial(runtimeEngineId)) {
               engineAvailability.record({
-                engineId: agent.activeEngine,
+                engineId: runtimeEngineId,
                 available: true,
                 detail: "provider Run completed successfully",
                 source: "provider_run",
               });
-              resolveOperationalNotification(`provider:${agent.activeEngine}:unavailable`);
+              resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
             }
           }
           const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
@@ -12666,7 +12701,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             if (acceptedSessionId && cursorConversationId && cursorChannel) {
               contextCursors.commit({
                 agentId: agent.id,
-                engine: agent.activeEngine,
+                engine: runtimeEngineId,
                 model: cursorModel,
                 sessionId: acceptedSessionId,
                 conversationId: cursorConversationId,
@@ -12683,7 +12718,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             if (acceptedSessionId && routingConversationId && sourceChannel !== "main") {
               contextCursors.commit({
                 agentId: agent.id,
-                engine: agent.activeEngine,
+                engine: runtimeEngineId,
                 model: cursorModel,
                 sessionId: acceptedSessionId,
                 conversationId: routingConversationId,

@@ -6142,7 +6142,64 @@ describe("server chunk F", () => {
     });
     expect(unknownCache.statusCode, unknownCache.body).toBe(202);
     await waitForRun(agent.id, 3);
-    expect(adapter.continues.at(-1)).toMatchObject({ model: undefined, effort: undefined });
+    expect(adapter.continues.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+    models.mockRestore();
+    efforts.mockRestore();
+    await app.close();
+  });
+
+  it("persists Agent runtime settings and applies them when each next Run starts", async () => {
+    const models = vi.spyOn(adapter, "listModels").mockReturnValue([
+      { id: "mock-model", label: "Mock Model", efforts: [{ id: "high", label: "High" }] },
+      { id: "alternate", label: "Alternate", efforts: [{ id: "low", label: "Low" }] },
+    ]);
+    const efforts = vi.spyOn(adapter, "listEfforts").mockImplementation((model) =>
+      model === "alternate" ? [{ id: "low", label: "Low" }] : [{ id: "high", label: "High" }],
+    );
+    const app = createServer({ dataDir, store, engines, logger: false });
+    const project = store.createProject({ label: "Persistent Agent runtime", hostPath: repoDir });
+    const agent = store.createAgent(project.id, {
+      title: "Specialist", engine: "codex", model: "mock-model", effort: "high",
+    });
+
+    const invalid = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${agent.id}`,
+      payload: { activeEngine: "codex", model: "alternate", effort: "high" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(store.getAgent(agent.id)).toMatchObject({ model: "mock-model", effort: "high" });
+
+    const alternate = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${agent.id}`,
+      payload: { activeEngine: "codex", model: "alternate", effort: "low" },
+    });
+    expect(alternate.statusCode, alternate.body).toBe(200);
+    expect(alternate.json()).toMatchObject({ activeEngine: "codex", model: "alternate", effort: "low" });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Use the saved alternate runtime." },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id);
+    expect(adapter.seeds.at(-1)).toMatchObject({ model: "alternate", effort: "low" });
+
+    const restored = await app.inject({
+      method: "PATCH",
+      url: `/api/agents/${agent.id}`,
+      payload: { activeEngine: "codex", model: "mock-model", effort: "high" },
+    });
+    expect(restored.statusCode, restored.body).toBe(200);
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Use the restored saved runtime." },
+    })).statusCode).toBe(202);
+    await waitForRun(agent.id, 2);
+    expect(adapter.continues.at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+    expect(store.getRuns(agent.id).at(-1)).toMatchObject({ model: "mock-model", effort: "high" });
+
     models.mockRestore();
     efforts.mockRestore();
     await app.close();

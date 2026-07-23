@@ -2,11 +2,24 @@ import type { AgentWorkItemDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentWorkTechnicalDetails } from "../src/components/AgentWorkInspector";
+import { AgentWorkTechnicalDetails, agentWorkItemMatchesFocus } from "../src/components/AgentWorkInspector";
 
 afterEach(() => vi.restoreAllMocks());
 
 describe("Agent work inspector", () => {
+  it("resolves durable namespaced, bare, and related-record focus to the exact technical item", () => {
+    const item: AgentWorkItemDto = {
+      id: "request:request-one", recordId: "request-one", referenceIds: ["activation-one"], kind: "request",
+      state: "open", title: "Assigned work", summary: "The assigned work is still open.",
+      agentIds: ["agent"], relatedItemIds: [],
+      createdAt: "2026-07-17T00:00:00.000Z", updatedAt: "2026-07-17T00:00:00.000Z",
+    };
+    expect(agentWorkItemMatchesFocus(item, "request:request-one")).toBe(true);
+    expect(agentWorkItemMatchesFocus(item, "request-one")).toBe(true);
+    expect(agentWorkItemMatchesFocus(item, "activation:activation-one")).toBe(true);
+    expect(agentWorkItemMatchesFocus(item, "request:other")).toBe(false);
+  });
+
   it("loads payload-bearing technical details only after the operator expands them", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({
       projectId: "project", itemId: "request:request-one", recordId: "request-one",

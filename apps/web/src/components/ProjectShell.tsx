@@ -161,8 +161,8 @@ export function ProjectShell({
   };
 
   const openAgentWorkLog = (agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "runOutput");
-    navigate({ kind: "agent", projectId, agentId });
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "activity");
+    navigate({ kind: "agent", projectId, agentId, view: "activity" });
   };
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
@@ -240,7 +240,9 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenProject={() => navigate({ kind: "project", projectId })}
-        onOpenAgent={(agentId, view) => view ? navigate({ kind: "agent", projectId, agentId, view }) : openAgentFromConversation(agentId, false)}
+        onOpenAgent={(agentId, view, technicalFocusId) => view
+          ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
+          : openAgentFromConversation(agentId, false)}
         onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
         onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
@@ -264,8 +266,13 @@ export function ProjectShell({
         agentId={route.agentId}
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
+        technicalFocusId={route.technicalFocusId}
         initialView={route.view}
         onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
+        onOpenTechnicalDetails={(technicalFocusId) => navigate({
+          kind: "agent", projectId, agentId: route.agentId, view: "technical",
+          ...(technicalFocusId ? { technicalFocusId } : {}),
+        })}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}

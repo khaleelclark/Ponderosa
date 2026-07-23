@@ -109,6 +109,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
 import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
+import { notificationTechnicalFocusId } from "../technicalFocus";
 
 export function ConversationMessage({
   message,
@@ -129,7 +130,7 @@ export function ConversationMessage({
   conversation: "main" | "collaboration";
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
-  onOpenAgent(agentId: string, view?: "technical"): void;
+  onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
@@ -294,7 +295,7 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenProject(): void;
-  onOpenAgent(agentId: string, view?: "technical"): void;
+  onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   onOpenRosterAgentInNewTab?(agentId: string): void;
@@ -1113,7 +1114,11 @@ export function ConversationView({
         >
         {agentsOpen ? agentRoster : null}
         <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
-          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "technical") : onOpenAgentWork(item.communicationEventId)} /> : null}
+          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => {
+            const focusId = notificationTechnicalFocusId(item);
+            if (item.agentId) onOpenAgent(item.agentId, "technical", focusId);
+            else onOpenAgentWork(focusId);
+          }} /> : null}
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}
@@ -1148,7 +1153,7 @@ export function ConversationView({
                 const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
                 return event.kind === "organization"
                   ? <Box key={event.id} sx={sx}>{content}</Box>
-                  : <ButtonBase key={event.id} onClick={() => { setAgentsOpen(false); setAgentWorkFocus(event.id); setAgentWorkOpen(true); }} aria-label={`${event.text}. Open Work details`} sx={sx}>{content}</ButtonBase>;
+                  : <ButtonBase key={event.id} onClick={() => onOpenAgentWork(event.id)} aria-label={`${event.text}. Open Work details`} sx={sx}>{content}</ButtonBase>;
               })}
             </Stack> : null}
             {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (

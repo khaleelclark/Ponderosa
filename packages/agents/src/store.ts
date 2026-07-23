@@ -2561,6 +2561,9 @@ export class AgentStore {
     const now = new Date().toISOString();
     const title = patch.title ?? row.title;
     const archived = patch.archived ?? row.archived === 1;
+    const activeEngine = patch.activeEngine?.trim() || row.activeEngine;
+    const model = patch.model === undefined ? row.model ?? undefined : patch.model?.trim() || undefined;
+    const effort = patch.effort === undefined ? row.effort ?? undefined : patch.effort?.trim() || undefined;
     const managementPermissions = patch.managementPermissions
       ? requireManagementPermissions(patch.managementPermissions)
       : {
@@ -2581,6 +2584,9 @@ export class AgentStore {
       ...json,
       title,
       archived,
+      activeEngine,
+      model,
+      effort,
       managementPermissions,
       updatedAt: now,
     });
@@ -2589,6 +2595,9 @@ export class AgentStore {
       .set({
         title,
         archived: archived ? 1 : 0,
+        activeEngine,
+        model: model ?? null,
+        effort: effort ?? null,
         allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
         allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
         updatedAt: now,

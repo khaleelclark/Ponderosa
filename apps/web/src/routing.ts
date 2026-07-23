@@ -47,7 +47,7 @@ export type Route =
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
   | { kind: "agents"; projectId: string; create?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; view?: AgentDetailView }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -62,6 +62,7 @@ export function parseRoute(pathname: string, search = ""): Route {
     ? { stream: telemetryStream as AgentTelemetryStream, id: telemetryId }
     : undefined;
   const reviewPath = query.get("path")?.trim() || undefined;
+  const technicalFocusId = query.get("focus")?.trim() || undefined;
   const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
@@ -108,6 +109,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
+      ...(!focusMessageId && !focusTelemetry && agentView === "technical" && technicalFocusId ? { technicalFocusId } : {}),
     };
   }
   if (parts[2] === "reviews" && parts[3]) {
@@ -171,6 +173,7 @@ export function routeToPath(route: Route): string {
         query.set("stream", route.focusTelemetry.stream);
         query.set("item", route.focusTelemetry.id);
       } else if (route.view) query.set("view", route.view);
+      if (route.view === "technical" && route.technicalFocusId) query.set("focus", route.technicalFocusId);
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
     }
     case "review":

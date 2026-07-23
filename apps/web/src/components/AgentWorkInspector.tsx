@@ -37,7 +37,7 @@ export function agentWorkStateLabel(state: string): string {
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
-function itemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
+export function agentWorkItemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
   if (!focusId) return false;
   const bareId = focusId.includes(":") ? focusId.slice(focusId.indexOf(":") + 1) : focusId;
   return item.id === focusId || item.recordId === focusId || item.referenceIds.includes(focusId)
@@ -93,8 +93,13 @@ function CopyRecordId({ id }: { id: string }): JSX.Element {
   </Tooltip>;
 }
 
-function TechnicalRecord({ projectId, conversationId, item }: { projectId: string; conversationId?: string; item: AgentWorkItemDto }): JSX.Element {
-  return <Box id={`agent-work-${item.id}`} data-agent-work-item={item.id} sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: "action.hover" }}>
+function TechnicalRecord({ projectId, conversationId, item, elementId, focused = false }: { projectId: string; conversationId?: string; item: AgentWorkItemDto; elementId?: string; focused?: boolean }): JSX.Element {
+  return <Box
+    id={elementId}
+    tabIndex={focused ? -1 : undefined}
+    data-agent-work-item={item.id}
+    sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}
+  >
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
       <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
       <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
@@ -136,9 +141,10 @@ export function AgentWorkInspector({
   const focusedTraceId = useMemo(() => query.data?.traces.find((trace) =>
     trace.itemIds.some((itemId) => {
       const item = items.get(itemId);
-      return item ? itemMatchesFocus(item, focus?.id) : false;
+      return item ? agentWorkItemMatchesFocus(item, focus?.id) : false;
     }))?.id, [focus?.id, items, query.data?.traces]);
-  const focusedItemId = useMemo(() => query.data?.items.find((item) => itemMatchesFocus(item, focus?.id))?.id, [focus?.id, query.data?.items]);
+  const focusedItemId = useMemo(() => query.data?.items.find((item) => agentWorkItemMatchesFocus(item, focus?.id))?.id, [focus?.id, query.data?.items]);
+  const focusedItem = focusedItemId ? items.get(focusedItemId) : undefined;
 
   useEffect(() => {
     if (!open) return;
@@ -147,14 +153,14 @@ export function AgentWorkInspector({
   }, [open, focusedTraceId, query.data?.traces, expandedTraceId]);
 
   useEffect(() => {
-    if (!open || !focusedItemId || expandedTraceId !== focusedTraceId) return;
+    if (!open || !focusedItemId) return;
     const frame = window.requestAnimationFrame(() => {
-      const target = document.getElementById(`agent-work-${focusedItemId}`);
+      const target = document.getElementById(`agent-work-focus-${focusedItemId}`);
       target?.scrollIntoView({ block: "center" });
       target?.focus({ preventScroll: true });
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [expandedTraceId, focusedItemId, focusedTraceId, open]);
+  }, [focusedItemId, open]);
 
   const stateCounts = query.data?.traces.reduce((counts, trace) => {
     counts[trace.state] += 1;
@@ -196,6 +202,17 @@ export function AgentWorkInspector({
             </Paper>
           </Box>
 
+          {focusedItem ? <Box component="section" aria-labelledby="focused-technical-record">
+            <Typography id="focused-technical-record" variant="overline" color="text.secondary">Focused Record</Typography>
+            <TechnicalRecord
+              projectId={projectId}
+              conversationId={conversationId}
+              item={focusedItem}
+              elementId={`agent-work-focus-${focusedItem.id}`}
+              focused
+            />
+          </Box> : focus?.id ? <Alert severity="warning">The focused technical record is not available in this bounded evidence window.</Alert> : null}
+
           <Box component="section" aria-labelledby="coordination-timeline">
             <Typography id="coordination-timeline" variant="overline" color="text.secondary">Coordination Timeline</Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>Why work started, what it depends on, and what happened next.</Typography>
@@ -223,7 +240,7 @@ export function AgentWorkInspector({
               <AccordionDetails sx={{ pt: 0 }}>
                 <Stack spacing={0} sx={{ borderLeft: 2, borderColor: "divider", ml: 1 }}>
                   {traceItems.map((item) => {
-                    const focused = itemMatchesFocus(item, focus?.id);
+                    const focused = agentWorkItemMatchesFocus(item, focus?.id);
                     return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} data-agent-work-item={item.id} sx={{ position: "relative", minWidth: 0, ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
                       <Box sx={{ position: "absolute", width: 10, height: 10, borderRadius: "50%", bgcolor: "text.secondary", left: -21, top: 18 }} />
                       <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto", gap: 0.75, alignItems: "start" }}>

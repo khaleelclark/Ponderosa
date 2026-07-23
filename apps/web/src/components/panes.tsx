@@ -1539,6 +1539,14 @@ export function mergeActivityByRun(activity: AgentActivityDto[], runOutput: RunO
   });
 }
 
+export function scrollActivityToCurrent(
+  element: Pick<HTMLElement, "scrollTo">,
+  target?: Pick<HTMLElement, "scrollIntoView">,
+): void {
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  else element.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 function ActivityElapsed({ startedAt, completedAt }: { startedAt: string; completedAt?: string }): JSX.Element {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -1649,8 +1657,10 @@ export function ActivityPane({ activity, runOutput = [], runs = [], connected, r
     tabIndex={0}
     onScroll={(event) => {
       const target = currentTargetId ? document.getElementById(currentTargetId) : undefined;
-      const visible = !target || (target.offsetTop >= event.currentTarget.scrollTop - 64
-        && target.offsetTop + target.offsetHeight <= event.currentTarget.scrollTop + event.currentTarget.clientHeight + 64);
+      const visible = target
+        ? target.offsetTop >= event.currentTarget.scrollTop - 64
+          && target.offsetTop + target.offsetHeight <= event.currentTarget.scrollTop + event.currentTarget.clientHeight + 64
+        : event.currentTarget.scrollTop <= 64;
       followCurrent.current = visible;
       setShowCurrent(!visible);
     }}
@@ -1686,8 +1696,7 @@ export function ActivityPane({ activity, runOutput = [], runs = [], connected, r
     if (!scrollRef.current) return;
     followCurrent.current = true;
     const target = currentTargetId ? document.getElementById(currentTargetId) : undefined;
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    else scrollRef.current.scrollTo({ top: 0, behavior: "smooth" });
+    scrollActivityToCurrent(scrollRef.current, target ?? undefined);
     setShowCurrent(false);
   }} />
   </Box>;

@@ -24,4 +24,10 @@ describe("agent detail navigation", () => {
     expect(projectShellSource).toContain('openInNewTab?.({ kind: "review", projectId, agentId: route.agentId');
     expect(projectShellSource).toContain('onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}');
   });
+
+  it("routes legacy Work Log links to the merged Activity view", () => {
+    expect(projectShellSource).toContain('writeChatState(chatStateKey("view", `agent.${agentId}`), "activity")');
+    expect(projectShellSource).toContain('navigate({ kind: "agent", projectId, agentId, view: "activity" })');
+    expect(projectShellSource).not.toContain('writeChatState(chatStateKey("view", `agent.${agentId}`), "runOutput")');
+  });
 });

@@ -30,6 +30,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "triggers" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "settings" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "technical" },
+    { kind: "agent", projectId: "project / one", agentId: "agent #1", view: "technical", technicalFocusId: "request #1" },
     { kind: "agent", projectId: "project / one", agentId: "agent #1", focusTelemetry: { stream: "activity", id: "agent #1:activity:7" } },
   ])("round-trips $kind URLs across refresh and browser history", (route) => {
     expect(parseRoute(routeToPath(route))).toEqual(route);
@@ -72,5 +73,17 @@ describe("mobile-critical durable navigation", () => {
     const agent: Route = { kind: "agent", projectId: "project", agentId: "agent", focusMessageId: "message #2" };
     expect(parseRoute(routeToPath(conversation))).toEqual(conversation);
     expect(parseRoute(routeToPath(agent))).toEqual(agent);
+  });
+
+  it("keeps exact Technical Details focus durable in the Agent URL", () => {
+    const route: Route = {
+      kind: "agent",
+      projectId: "project",
+      agentId: "agent",
+      view: "technical",
+      technicalFocusId: "request:request / 1",
+    };
+    expect(routeToPath(route)).toBe("/projects/project/agents/agent?view=technical&focus=request%3Arequest+%2F+1");
+    expect(parseRoute(routeToPath(route))).toEqual(route);
   });
 });

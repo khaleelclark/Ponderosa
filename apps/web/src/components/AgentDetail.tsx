@@ -74,6 +74,7 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { TriggersPane } from "./TriggersPane";
 import { AgentHeaderRelationships, orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
+import { notificationTechnicalFocusId } from "../technicalFocus";
 
 type AgentTab = AgentDetailView;
 
@@ -244,8 +245,10 @@ export function AgentDetail({
   agentId,
   focusMessageId,
   focusTelemetry,
+  technicalFocusId,
   initialView,
   onViewChange,
+  onOpenTechnicalDetails,
   engines,
   engineCapabilities,
   onRefreshCapabilities,
@@ -268,8 +271,10 @@ export function AgentDetail({
   agentId: string;
   focusMessageId?: string;
   focusTelemetry?: AgentTelemetryFocus;
+  technicalFocusId?: string;
   initialView?: AgentDetailView;
   onViewChange?(view: AgentDetailView): void;
+  onOpenTechnicalDetails(focusId?: string): void;
   engines: EngineDto[];
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
@@ -309,6 +314,10 @@ export function AgentDetail({
   });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [settingsEngine, setSettingsEngine] = useState("");
+  const [settingsModel, setSettingsModel] = useState("");
+  const [settingsEffort, setSettingsEffort] = useState("");
+  const [runtimeSettingsNotice, setRuntimeSettingsNotice] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -360,6 +369,10 @@ export function AgentDetail({
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
   }, [agentId, initialView]);
+
+  useEffect(() => {
+    setAgentWorkFocus(technicalFocusId);
+  }, [agentId, technicalFocusId]);
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `agent.${agentId}`), tab);
@@ -474,18 +487,25 @@ export function AgentDetail({
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = engineCapability?.commands ?? [];
 
-  const latestRun = detail?.runs.at(-1);
   const persistedModel = detail
-    ? latestRun ? latestRun.model ?? inheritedRuntime.model : detail.agent.model ?? inheritedRuntime.model
+    ? detail.agent.model ?? inheritedRuntime.model
     : "";
   const persistedEffort = detail
-    ? latestRun ? latestRun.effort ?? inheritedRuntime.effort : detail.agent.effort ?? inheritedRuntime.effort
+    ? detail.agent.effort ?? inheritedRuntime.effort
     : "";
 
   useEffect(() => {
     setModel(persistedModel);
     setEffort(persistedEffort);
   }, [agentId, persistedModel, persistedEffort]);
+
+  useEffect(() => {
+    if (!detail) return;
+    setSettingsEngine(detail.agent.activeEngine);
+    setSettingsModel(detail.agent.model ?? "");
+    setSettingsEffort(detail.agent.effort ?? "");
+    setRuntimeSettingsNotice(undefined);
+  }, [agentId, detail?.agent.activeEngine, detail?.agent.effort, detail?.agent.model]);
 
   useEffect(() => {
     if (!engine) {
@@ -639,6 +659,27 @@ export function AgentDetail({
     },
   });
 
+  const updateRuntimeSettings = useMutation({
+    mutationFn: () => api.updateAgent(agentId, {
+      activeEngine: settingsEngine,
+      model: settingsModel || null,
+      effort: settingsEffort || null,
+    }),
+    onSuccess: (updated) => {
+      queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (current) =>
+        current ? { ...current, agent: updated } : current,
+      );
+      queryClient.setQueriesData<AgentDto[]>({ queryKey: ["agents"] }, (current) =>
+        current?.map((agent) => agent.id === updated.id ? updated : agent),
+      );
+      queryClient.setQueriesData<ConversationDetailDto>({ queryKey: ["conversation"] }, (current) =>
+        current ? { ...current, agents: current.agents.map((agent) => agent.id === updated.id ? updated : agent) } : current,
+      );
+      setRuntimeSettingsNotice("Saved. These runtime settings apply when the next Run starts.");
+    },
+    onError: () => setRuntimeSettingsNotice(undefined),
+  });
+
   const loadOlderMessages = async () => {
     const cursor = detail?.history?.cursor;
     if (!detail?.history?.hasMore || !cursor || loadingOlder) return;
@@ -713,6 +754,21 @@ export function AgentDetail({
   const efforts = effort && effortSelectionIsCompatible(engine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
     ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
     : advertisedEfforts;
+  const settingsEngineRegistration = engines.find((candidate) => candidate.id === settingsEngine);
+  const advertisedSettingsModels = settingsEngineRegistration?.models.filter((option) => option.id) ?? [];
+  const settingsModels = settingsEngineRegistration?.modelCatalogKnown === false && settingsModel &&
+    !advertisedSettingsModels.some((option) => option.id === settingsModel)
+    ? [...advertisedSettingsModels, { id: settingsModel, label: `${settingsModel} (saved selection)` }]
+    : advertisedSettingsModels;
+  const advertisedSettingsEfforts = effortOptionsForModel(settingsEngineRegistration, settingsModel);
+  const settingsEfforts = settingsEffort &&
+    effortSelectionIsCompatible(settingsEngineRegistration, settingsModel, settingsEffort) &&
+    !advertisedSettingsEfforts.some((option) => option.id === settingsEffort)
+    ? [...advertisedSettingsEfforts, { id: settingsEffort, label: `${settingsEffort} (saved selection)` }]
+    : advertisedSettingsEfforts;
+  const runtimeSettingsDirty = settingsEngine !== detail.agent.activeEngine ||
+    settingsModel !== (detail.agent.model ?? "") ||
+    settingsEffort !== (detail.agent.effort ?? "");
   const master = detail.agent.conversationId
     ? conversations.find((candidate) => candidate.id === detail.agent.conversationId)
     : undefined;
@@ -804,6 +860,11 @@ export function AgentDetail({
   }));
   const completedWorkDurationLabel = (message: MessageDto): string | undefined =>
     message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined;
+  const openTechnicalDetails = (focusId?: string) => {
+    setAgentWorkFocus(focusId);
+    setTab("technical");
+    onOpenTechnicalDetails(focusId);
+  };
 
   const openActivityFile = (file: ResponseFileActivityDto) => {
     if (file.artifactId) onOpenArtifact(file.artifactId);
@@ -816,42 +877,74 @@ export function AgentDetail({
   const settingsPane = <Stack spacing={2} aria-label="Agent settings" className="ponderosa-scroll" sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}>
     <Box>
       <Typography variant="h6">Agent Settings</Typography>
-      <Typography variant="body2" color="text.secondary">Persistent Agent controls and settings used when new work starts.</Typography>
+      <Typography variant="body2" color="text.secondary">Agent controls, assignments, permissions, and runtime choices for upcoming work.</Typography>
     </Box>
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Typography variant="subtitle1" fontWeight={800}>Provider and next Run</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>Model and reasoning overrides below apply only to the next Run started from this workspace.</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+        Provider, model, and reasoning are persistent Agent defaults. Changes apply when the next Run starts; steering an active Run keeps that Run&apos;s captured runtime.
+      </Typography>
       <Stack spacing={1.5}>
+        <FormControl size="small" fullWidth>
+          <InputLabel id="agent-detail-engine-label">Provider · next Run</InputLabel>
+          <Select
+            labelId="agent-detail-engine-label"
+            value={settingsEngine}
+            label="Provider · next Run"
+            onChange={(event: SelectChangeEvent) => {
+              setSettingsEngine(event.target.value);
+              setSettingsModel("");
+              setSettingsEffort("");
+              setRuntimeSettingsNotice(undefined);
+            }}
+          >
+            {engines.map((option) => <MenuItem key={option.id} value={option.id}>{option.displayName}</MenuItem>)}
+          </Select>
+        </FormControl>
         <Chip
           size="small"
-          label={`${engine?.displayName ?? detail.agent.activeEngine}${engineIsAvailable(engine) ? "" : engine?.authenticated ? " · access unavailable" : " · not signed in"}`}
-          color={engineIsAvailable(engine) ? "default" : "warning"}
+          label={`${settingsEngineRegistration?.displayName ?? settingsEngine}${engineIsAvailable(settingsEngineRegistration) ? "" : settingsEngineRegistration?.authenticated ? " · access unavailable" : " · not signed in"}`}
+          color={engineIsAvailable(settingsEngineRegistration) ? "default" : "warning"}
           sx={{ alignSelf: "flex-start" }}
         />
-        {engine?.authenticated && !engineIsAvailable(engine) ? <>
-          <Typography variant="caption" color="warning.main">{engine.availabilityDetail ?? "The provider rejected runtime access."}</Typography>
+        {settingsEngineRegistration?.authenticated && !engineIsAvailable(settingsEngineRegistration) ? <>
+          <Typography variant="caption" color="warning.main">{settingsEngineRegistration.availabilityDetail ?? "The provider rejected runtime access."}</Typography>
           <Button size="small" variant="outlined" disabled={recheckEngine.isPending} onClick={() => {
-            if (window.confirm("Test provider access now? This sends one minimal subscription-backed request.")) recheckEngine.mutate(engine.id);
+            if (window.confirm("Test provider access now? This sends one minimal subscription-backed request.")) recheckEngine.mutate(settingsEngineRegistration.id);
           }}>{recheckEngine.isPending ? "Testing Access…" : "Test Access"}</Button>
         </> : null}
         <FormControl size="small" fullWidth>
           <InputLabel id="agent-detail-model-label">Model · next Run</InputLabel>
-          <Select labelId="agent-detail-model-label" value={models.some((option) => option.id === model) ? model : ""} label="Model · next Run" onChange={(event: SelectChangeEvent) => {
+          <Select labelId="agent-detail-model-label" value={settingsModels.some((option) => option.id === settingsModel) ? settingsModel : ""} label="Model · next Run" onChange={(event: SelectChangeEvent) => {
             const nextModel = event.target.value;
-            setModel(nextModel);
-            if (!effortSelectionIsCompatible(engine, nextModel, effort)) setEffort("");
+            setSettingsModel(nextModel);
+            if (!effortSelectionIsCompatible(settingsEngineRegistration, nextModel, settingsEffort)) setSettingsEffort("");
+            setRuntimeSettingsNotice(undefined);
           }}>
             <MenuItem value="">Engine Default</MenuItem>
-            {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+            {settingsModels.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
           </Select>
         </FormControl>
         <FormControl size="small" fullWidth>
           <InputLabel id="agent-detail-effort-label">Reasoning · next Run</InputLabel>
-          <Select labelId="agent-detail-effort-label" value={efforts.some((option) => option.id === effort) ? effort : ""} label="Reasoning · next Run" onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}>
+          <Select labelId="agent-detail-effort-label" value={settingsEfforts.some((option) => option.id === settingsEffort) ? settingsEffort : ""} label="Reasoning · next Run" onChange={(event: SelectChangeEvent) => {
+            setSettingsEffort(event.target.value);
+            setRuntimeSettingsNotice(undefined);
+          }}>
             <MenuItem value="">Engine Default</MenuItem>
-            {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+            {settingsEfforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
           </Select>
         </FormControl>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={!runtimeSettingsDirty || updateRuntimeSettings.isPending || !settingsEngine}
+          onClick={() => updateRuntimeSettings.mutate()}
+        >
+          {updateRuntimeSettings.isPending ? "Saving…" : "Save Runtime Settings"}
+        </Button>
+        {runtimeSettingsNotice ? <Alert severity="success">{runtimeSettingsNotice}</Alert> : null}
+        {updateRuntimeSettings.isError ? <Alert severity="error">{String(updateRuntimeSettings.error)}</Alert> : null}
         <Button size="small" variant="outlined" startIcon={<RestartAltIcon />} onClick={() => {
           setQueuedMessageNotice("Starting this Agent with a fresh provider session next time…");
           void api.compactSession(agentId)
@@ -900,8 +993,8 @@ export function AgentDetail({
   const panes: Record<AgentTab, JSX.Element> = {
     chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => { setTab("activity"); onViewChange?.("activity"); }} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
-    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => { setAgentWorkFocus(`trigger:${occurrenceId}`); setTab("technical"); onViewChange?.("technical"); }} />,
-    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => { setAgentWorkFocus(`run:${runId}`); setTab("technical"); onViewChange?.("technical"); }} />,
+    triggers: <TriggersPane agent={detail.agent} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
+    artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,
     settings: settingsPane,
     technical: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,
   };
@@ -978,11 +1071,7 @@ export function AgentDetail({
               {
                 label: "Technical Details",
                 icon: <DataObjectOutlinedIcon fontSize="small" />,
-                onSelect: () => {
-                  setAgentWorkFocus(undefined);
-                  setTab("technical");
-                  onViewChange?.("technical");
-                },
+                onSelect: () => openTechnicalDetails(),
               },
               {
                 label: "Rename",
@@ -1048,9 +1137,7 @@ export function AgentDetail({
 
       <Box role="tabpanel" aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={(item) => {
-          setAgentWorkFocus(item.resolution?.traceId);
-          setTab("technical");
-          onViewChange?.("technical");
+          openTechnicalDetails(notificationTechnicalFocusId(item));
         }} /> : null}
         {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : tab === "activity" ? "Load Earlier Activity" : "Load Earlier Records"}</Button> : null}
         {panes[tab]}
