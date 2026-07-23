@@ -746,7 +746,7 @@ export function AgentDetail({
     : undefined;
   const lineageAgent = spawningAgent ?? organizationalParent;
   const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
-  const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";
+  const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Delegated under";
   const agentRuntimeControls = <ComposerRuntimeSelector
     engine={engine?.id ?? ""}
     engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
@@ -805,7 +805,7 @@ export function AgentDetail({
     message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} /></Box>,
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => setTab("runOutput")} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     agentWork: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,
     runOutput: <WorkLogPane
       entries={detail.runOutput}
@@ -997,7 +997,7 @@ export function AgentDetail({
               <Typography variant="caption" color="text.secondary">
                 {master ? <>Assigned to <Link component="button" variant="caption" onClick={() => onOpenMaster(master.id)}>{master.title}</Link></> : "Unassigned"}
                 {" · "}{organizationalParent
-                  ? <>Reports to <Link component="button" variant="caption" onClick={() => onOpenAgent(organizationalParent.id)}>{organizationalParent.title}</Link></>
+                  ? <>Delegated under <Link component="button" variant="caption" onClick={() => onOpenAgent(organizationalParent.id)}>{organizationalParent.title}</Link></>
                   : "Top level"}
               </Typography>
               <Tooltip title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}>
@@ -1045,7 +1045,7 @@ export function AgentDetail({
               { label: "Import Agent or Organization", icon: <FileUploadOutlinedIcon fontSize="small" />, onSelect: () => setImportOpen(true) },
               ...(detail.agent.conversationId ? [{ label: "Quick Copy into Project Chat", icon: <ContentCopyOutlinedIcon fontSize="small" />, onSelect: () => void quickCopyIntoProjectChat() }] : []),
               {
-                label: "Reports To",
+                label: "Delegated Under",
                 icon: <AccountTreeOutlinedIcon fontSize="small" />,
                 onSelect: () => {
                   setOrganizationParentId(detail.agent.managerAgentId ?? "");
@@ -1082,8 +1082,7 @@ export function AgentDetail({
         {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
       </Tabs>
 
-      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {tab === "chat" && detail.history?.hasMore ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderMessages()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older History"}</Button> : null}
+      <Box role="tabpanel" aria-label={`${tab === "changed_files" ? "Changed files" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" || tab === "runOutput" || tab === "runs" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={() => { setTab("runs"); onViewChange?.("runs"); }} /> : null}
         {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : "Load Older Records"}</Button> : null}
         {panes[tab]}
@@ -1247,11 +1246,11 @@ export function AgentDetail({
         <DialogTitle>Agent organization</DialogTitle>
         <DialogContent>
           <FormControl fullWidth sx={{ mt: 1 }}>
-            <InputLabel id="agent-organizational-parent-label">Reports to</InputLabel>
+            <InputLabel id="agent-organizational-parent-label">Delegated under</InputLabel>
             <Select
               labelId="agent-organizational-parent-label"
               value={organizationParentId}
-              label="Reports to"
+              label="Delegated under"
               onChange={(event) => setOrganizationParentId(event.target.value)}
             >
               <MenuItem value="">Top Level</MenuItem>
@@ -1260,7 +1259,7 @@ export function AgentDetail({
             </Select>
           </FormControl>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            This changes the agent's direct manager. Its run and message history remain attached to the same agent.
+            This changes which Agent delegates work to this Agent. Its Run and message history remain attached to the same Agent.
           </Typography>
           {updateOrganization.isError ? <Alert severity="error" sx={{ mt: 1 }}>{String(updateOrganization.error)}</Alert> : null}
         </DialogContent>

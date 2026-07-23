@@ -6,7 +6,7 @@ export interface PushSendError extends Error {
 }
 
 export interface WebPushSender {
-  send(subscription: { endpoint: string; expirationTime?: number | null; keys: { p256dh: string; auth: string } }, payload: string, options: { TTL: number; urgency: "normal"; topic: string }): Promise<void>;
+  send(subscription: { endpoint: string; expirationTime?: number | null; keys: { p256dh: string; auth: string } }, payload: string, options: { TTL: number; urgency: "normal"; topic: string; timeout: number }): Promise<void>;
 }
 
 export interface WebPushDeliveryOptions {
@@ -17,9 +17,11 @@ export interface WebPushDeliveryOptions {
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   retryDelaysMs?: readonly number[];
+  sendTimeoutMs?: number;
 }
 
 const DEFAULT_RETRY_DELAYS_MS = [2_000, 10_000, 60_000, 5 * 60_000] as const;
+export const DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS = 4_000;
 
 /**
  * Drains canonical per-device delivery records. Web Push acknowledgements are
@@ -84,6 +86,7 @@ export class WebPushDeliveryManager {
           TTL: 60 * 60,
           urgency: "normal",
           topic: pushTopic(notification.id),
+          timeout: this.options.sendTimeoutMs ?? DEFAULT_WEB_PUSH_SEND_TIMEOUT_MS,
         });
         const cursor = this.options.store.cursor();
         this.options.store.updatePushDelivery({

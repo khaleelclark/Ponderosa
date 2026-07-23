@@ -101,7 +101,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
   if (responding.length === 0) return null;
   const names = responding.map(({ agent }) => agent.title).join(", ");
   const earliest = responding.map(({ activity }) => activity.startedAt).sort()[0]!;
-  return <Alert severity="info" role="status" aria-live="polite" sx={{ mb: 1.5 }}>
+  return <Alert severity="info" role="status" aria-live="polite" sx={{ py: 0.25, mb: 1, width: "min(1180px, 100%)", mx: "auto", "& .MuiAlert-message": { py: 0.5 } }}>
     {names} {responding.length === 1 ? "is" : "are"} responding · {formatExecutionElapsed(earliest, now)}
   </Alert>;
 }
@@ -142,9 +142,12 @@ export function ConversationMessage({
   const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
   // Older projections stored the structured broadcast scope as visible prose.
   // Agent-authored Project-chat messages already carry that scope structurally.
-  const visibleText = conversation === "main" && message.authorAgentId
+  const routedText = conversation === "main" && message.authorAgentId
     ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
     : message.text;
+  const visibleText = message.document
+    ? routedText.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")
+    : routedText;
   const senderName = fromManager ? operatorProfile?.displayName ?? "You" : agentTitle(message.authorAgentId);
 
   return (
@@ -196,6 +199,7 @@ export function ConversationMessage({
         ) : null}
         <ChatMessageBody
           text={visibleText}
+          compactMarkdown
           citations={message.citations}
           agentIdForHandle={agentIdForHandle}
           agentMentionForHandle={(handle) => {
@@ -270,7 +274,6 @@ export function ConversationView({
   onOpenWorkLog,
   onOpenRosterAgent,
   onOpenRosterAgentInNewTab,
-  onOpenProjectAgents,
   initialAgentsOpen = false,
   onInitialAgentsOpenConsumed,
   onOpenReview,
@@ -292,7 +295,6 @@ export function ConversationView({
   onOpenWorkLog?(agentId: string): void;
   onOpenRosterAgent?(agentId: string): void;
   onOpenRosterAgentInNewTab?(agentId: string): void;
-  onOpenProjectAgents(): void;
   initialAgentsOpen?: boolean;
   onInitialAgentsOpenConsumed?(): void;
   onOpenReview?(agentId: string): void;
@@ -976,7 +978,7 @@ export function ConversationView({
     <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1.5 }}>
       <Box sx={{ flex: 1 }}>
         <Typography variant="h5" fontWeight={800}>Agents</Typography>
-        <Typography variant="body2" color="text.secondary">Agents assigned to this Chat and how they report to one another.</Typography>
+        <Typography variant="body2" color="text.secondary">Agents assigned to this Chat and how work is delegated between them.</Typography>
       </Box>
       <Chip size="small" label={agents.length} />
     </Stack>
@@ -1006,7 +1008,7 @@ export function ConversationView({
             >
               <ListItemText
                 primary={agent.title}
-                secondary={`${manager ? `Reports to ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
+                secondary={`${manager ? `Delegated under ${manager.title} · ` : ""}${agent.activeEngine} · updated ${relativeTime(agent.updatedAt)}`}
                 sx={{ minWidth: 0 }}
                 primaryTypographyProps={{ fontWeight: 700, noWrap: true }}
                 secondaryTypographyProps={{ noWrap: true }}
@@ -1078,8 +1080,8 @@ export function ConversationView({
         <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentsOpen && !agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentsOpen(false); setAgentWorkOpen(false); clearReply(); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentsOpen && !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={() => { clearReply(); onOpenProjectAgents(); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
-          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} onClick={() => onOpenAgentWork()} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Work</Button>
+          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} aria-pressed={agentsOpen} onClick={() => { clearReply(); setAgentWorkOpen(false); setAgentsOpen(true); }} aria-label={`View ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: agentsOpen ? "text.primary" : "text.secondary", "&::after": agentsOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Agents</Button>
+          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} aria-pressed={agentWorkOpen} onClick={() => { clearReply(); setAgentsOpen(false); setAgentWorkOpen(true); }} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary", "&::after": agentWorkOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Work</Button>
         </Stack>
         </Collapse>
       </Box>

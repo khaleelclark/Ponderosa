@@ -24,7 +24,7 @@ describe("composer surface ownership", () => {
 
   it("keeps managed-agent lineage visible beside the agent title", () => {
     expect(agentDetail).toContain('const lineageAgent = spawningAgent ?? organizationalParent;');
-    expect(agentDetail).toContain('const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Reports to";');
+    expect(agentDetail).toContain('const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Delegated under";');
     expect(agentDetail).toContain('{lineageAgentId ? <Typography variant="caption"');
   });
 

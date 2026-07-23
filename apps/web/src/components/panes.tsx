@@ -901,6 +901,9 @@ export function ChatPane({
   operatorProfile,
   projectId,
   completedWorkDurationLabel,
+  hasOlder = false,
+  loadingOlder = false,
+  onLoadOlder,
 }: {
   messages: MessageDto[];
   agentName?: string;
@@ -917,6 +920,9 @@ export function ChatPane({
   projectId?: string;
   /** Authoritative finalized duration for the exact Run that authored a message. */
   completedWorkDurationLabel?(message: MessageDto): string | undefined;
+  hasOlder?: boolean;
+  loadingOlder?: boolean;
+  onLoadOlder?(): void;
 }): JSX.Element {
   const chatMessages = messages.filter(
     (message) => message.role === "user" || message.role === "assistant",
@@ -968,6 +974,11 @@ export function ChatPane({
       }}
       sx={{ px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(1120px, 100%)", alignSelf: "center" } }}
     >
+      {hasOlder ? <Stack sx={{ alignItems: "center", mb: 1.5 }}>
+        <Button size="small" color="inherit" disabled={loadingOlder} onClick={onLoadOlder}>
+          {loadingOlder ? "Loading…" : "Load Older History"}
+        </Button>
+      </Stack> : null}
       {chatMessages.length === 0 ? (
         <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
       ) : null}
@@ -1035,9 +1046,12 @@ export function ChatPane({
               </Box>
             ) : null}
             <ChatMessageBody
-              text={message.text}
+              text={message.document
+                ? message.text.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")
+                : message.text}
               citations={message.citations}
               collapseLongMessage={fromUser}
+              compactMarkdown
               agentIdForHandle={agentIdForHandle}
               agentMentionForHandle={(handle) => {
                 const binding = message.agentMentions?.find((item) => item.handle.toLocaleLowerCase() === handle.toLocaleLowerCase());
@@ -1275,8 +1289,31 @@ export function WorkLogPane({ entries, focusId, onOpenFile, onOpenFileInNewTab, 
   projectId?: string;
 }): JSX.Element {
   const ordered = [...entries].sort((a, b) => a.seq - b.seq);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const firstLayout = useRef(true);
+  const followLatest = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  const layoutKey = ordered.at(-1)?.id ?? "empty";
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || (!firstLayout.current && !followLatest.current)) return;
+    scrollChatToBottom(element);
+    firstLayout.current = false;
+    setShowLatest(false);
+  }, [layoutKey]);
   return (
-    <Stack spacing={1.25} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Agent work log">
+    <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
+    <Stack
+      ref={scrollRef}
+      spacing={1.25}
+      className="ponderosa-scroll"
+      onScroll={(event) => {
+        followLatest.current = isChatNearBottom(event.currentTarget);
+        setShowLatest(!followLatest.current);
+      }}
+      sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overscrollBehavior: "contain" }}
+      aria-label="Agent work log"
+    >
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Work log</Typography>
         <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
@@ -1298,6 +1335,13 @@ export function WorkLogPane({ entries, focusId, onOpenFile, onOpenFileInNewTab, 
         </Paper>
       ))}
     </Stack>
+    <ScrollToLatestButton visible={showLatest} onClick={() => {
+      if (!scrollRef.current) return;
+      followLatest.current = true;
+      scrollChatToBottom(scrollRef.current);
+      setShowLatest(false);
+    }} />
+    </Box>
   );
 }
 
@@ -1316,8 +1360,30 @@ export function RunsPane({
   focus?: { stream: "runs" | "workItems"; id: string };
   onOpenAgentWork?(runId?: string): void;
 }): JSX.Element {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const firstLayout = useRef(true);
+  const followLatest = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  const layoutKey = runs.at(-1)?.id ?? workItems.at(-1)?.id ?? "empty";
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || (!firstLayout.current && !followLatest.current)) return;
+    scrollChatToBottom(element);
+    firstLayout.current = false;
+    setShowLatest(false);
+  }, [layoutKey]);
   return (
-    <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }}>
+    <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
+    <Stack
+      ref={scrollRef}
+      spacing={1}
+      className="ponderosa-scroll"
+      onScroll={(event) => {
+        followLatest.current = isChatNearBottom(event.currentTarget);
+        setShowLatest(!followLatest.current);
+      }}
+      sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overscrollBehavior: "contain" }}
+    >
       <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
         <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
           Runs
@@ -1353,8 +1419,6 @@ export function RunsPane({
             display: "flex",
             flexDirection: "column",
             gap: 1.25,
-            overflowY: "auto",
-            maxHeight: { xs: "32vh", md: "34vh" },
             pr: 0.5,
           }}
         >
@@ -1422,8 +1486,6 @@ export function RunsPane({
           sx={{
             display: "flex",
             flexDirection: "column",
-            overflowY: "auto",
-            maxHeight: { xs: "44vh", md: "48vh" },
             pr: 0.5,
           }}
         >
@@ -1433,6 +1495,13 @@ export function RunsPane({
         </Box>
       )}
     </Stack>
+    <ScrollToLatestButton visible={showLatest} onClick={() => {
+      if (!scrollRef.current) return;
+      followLatest.current = true;
+      scrollChatToBottom(scrollRef.current);
+      setShowLatest(false);
+    }} />
+    </Box>
   );
 }
 
@@ -1524,11 +1593,29 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
   focusId?: string;
 }): JSX.Element {
   const groups = groupActivityByExecution(activity);
-  return <Stack
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const firstLayout = useRef(true);
+  const followLatest = useRef(true);
+  const [showLatest, setShowLatest] = useState(false);
+  const layoutKey = activity.at(-1)?.id ?? "empty";
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || (!firstLayout.current && !followLatest.current)) return;
+    scrollChatToBottom(element);
+    firstLayout.current = false;
+    setShowLatest(false);
+  }, [layoutKey]);
+  return <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
+  <Stack
+    ref={scrollRef}
     spacing={1}
     className="ponderosa-scroll"
     data-testid="activity-scroll-region"
     tabIndex={0}
+    onScroll={(event) => {
+      followLatest.current = isChatNearBottom(event.currentTarget);
+      setShowLatest(!followLatest.current);
+    }}
     sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", alignSelf: "stretch", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
     aria-label="Agent activity"
   >
@@ -1557,7 +1644,14 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
         </Stack>
       </Paper>;
     })}
-  </Stack>;
+  </Stack>
+  <ScrollToLatestButton visible={showLatest} onClick={() => {
+    if (!scrollRef.current) return;
+    followLatest.current = true;
+    scrollChatToBottom(scrollRef.current);
+    setShowLatest(false);
+  }} />
+  </Box>;
 }
 
 function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element | null {

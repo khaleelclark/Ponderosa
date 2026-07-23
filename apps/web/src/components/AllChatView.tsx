@@ -2,7 +2,6 @@ import {
   Alert, Avatar, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import ReplyOutlinedIcon from "@mui/icons-material/ReplyOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import type { AllChatItemDto, EngineCommand, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -188,7 +187,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
   return <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto", bgcolor: "background.default" }}>
     <Stack direction="row" spacing={1.5} sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "center", borderBottom: 1, borderColor: "divider", bgcolor: "background.paper" }}>
       <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="h5" component="h1" fontWeight={800}>Messages</Typography>
+        <Typography variant="h5" component="h1" fontWeight={800}>All Messages</Typography>
         <Typography variant="body2" color="text.secondary">Everything sent to or from you across Ponderosa.</Typography>
       </Box>
     </Stack>
@@ -232,7 +231,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                     <ButtonBase onClick={(event) => { event.stopPropagation(); if (item.directMessageAgent) onNavigate({ kind: "agent", projectId: item.project.id, agentId: item.directMessageAgent.id }); }} sx={{ borderRadius: 0.75 }}><Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{item.author.label}</Typography></ButtonBase>
                     <MessageTimestamp value={item.createdAt} compact desktopOnly />
                   </Stack>}
-                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? 1.5 : 0, py: fromUser ? 1 : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", minWidth: 0, "& p": { my: 0.15 }, "& li + li": { mt: 0.05 } }}>
+                <Box sx={{ width: fromUser ? "fit-content" : "auto", maxWidth: "100%", ml: fromUser ? "auto" : 0, px: fromUser ? { xs: 1.5, sm: 1.75 } : 0, py: fromUser ? { xs: 1, sm: 1.15 } : 0, borderRadius: 2.5, bgcolor: fromUser ? "action.selected" : "transparent", minWidth: 0, "& p": { my: 0.15 }, "& li + li": { mt: 0.05 } }}>
                   <ChatMessageBody
                     text={item.text}
                     collapseLongMessage
@@ -252,7 +251,6 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                 <Stack className="messages-hover-actions" direction="row" spacing={0.25} sx={{ mt: 0.15, justifyContent: fromUser ? "flex-end" : "flex-start", minHeight: 28 }}>
                   <Tooltip title="Copy"><IconButton size="small" aria-label="Copy message" onClick={() => void copyText(item.text)}><ContentCopyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip>
                   {item.directMessageAgent ? <Tooltip title={`Mention ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Mention ${item.directMessageAgent.title}`} onClick={() => mentionItem(item)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
-                  {item.directMessageAgent ? <Tooltip title={`Reply to ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Reply to ${item.directMessageAgent.title}`} onClick={() => selectItem(item)}><ReplyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip> : null}
                 </Stack>
               </Box>
             </Stack>
@@ -297,13 +295,9 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                 running={false}
                 attachmentsEnabled
                 placeholder={`Message ${selected.directMessageAgent.title}`}
-                replyTo={{ text: selected.text }}
-                replyLabel={`Direct reply to #${selected.directMessageAgent.title}`}
-                onCancelReply={() => { setSelectedId(undefined); setNotice(undefined); send.reset(); }}
                 insertTextRequest={mentionInsertRequest}
                 draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
                 conversationDraftId={`agent:${selected.directMessageAgent.id}`}
-                guidance="Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages."
                 onSend={(body, files, draftAttachmentIds = [], draftOwnerId) => send.mutateAsync({ body, files, draftAttachmentIds, draftOwnerId })}
               />
             </Stack>}

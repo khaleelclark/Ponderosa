@@ -127,7 +127,7 @@ export function WorkspaceTabs({
                       : tabRoute.kind === "profile" ? "Operator Profile"
                         : tabRoute.kind === "usage" ? "Provider Activity"
                   : tabRoute.kind === "home" ? "Home"
-                    : tabRoute.kind === "allChat" ? "Messages"
+                    : tabRoute.kind === "allChat" ? "All Messages"
                   : tabRoute.kind === "project" ? "Project Overview"
                     : tabRoute.kind === "wiki" ? "Wiki"
                     : "Projects";
