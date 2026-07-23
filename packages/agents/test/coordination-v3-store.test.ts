@@ -213,6 +213,65 @@ function acknowledgeLease(lease: NonNullable<ReturnType<CoordinationV3Store["lea
   });
 }
 
+function openQuestionScenario(prefix: string, input: { submitSteer?: boolean; acknowledgeSteer?: boolean } = {}) {
+  const now = "2026-07-15T00:00:00.000Z";
+  const requestId = `${prefix}-request`;
+  const questionUpdateId = `${prefix}-question`;
+  const joinId = `${prefix}-join`;
+  store.enqueueMessageActivation({
+    projectId, agentId: requesterId, messageId: `${prefix}-human`,
+    kind: "human", payload: { text: "Delegate" }, now,
+  });
+  const requesterRun = store.leaseNextRun({ workerId: "server", now })!;
+  acknowledgeLease(requesterRun);
+  store.coordinate({
+    projectId,
+    requesterAgentId: requesterId,
+    actorScope: `agent:${requesterId}`,
+    idempotencyKey: `${prefix}-coordinate`,
+    requests: [{ requestId, recipientAgentId: recipientA, lifetime: indefinite }],
+    join: { id: joinId, mode: "all" },
+  }, now);
+  const recipientRun = store.leaseNextRun({ workerId: "server", now })!;
+  acknowledgeLease(recipientRun);
+  store.updateRequest({
+    requestId,
+    updateId: questionUpdateId,
+    kind: "question",
+    actor: { kind: "agent", id: recipientA },
+    payload: { text: "Which contract?" },
+    now,
+  });
+  store.completeRun(recipientRun.runId, recipientRun.fencingToken, now);
+  const steering = store.leaseNextSteering({ workerId: "server", now })!;
+  store.preparePromptInjection({
+    injectionId: steering.injectionId,
+    runId: steering.runId,
+    fencingToken: steering.fencingToken,
+    prompt: "question",
+  });
+  if (input.submitSteer !== false) store.markPromptSubmitted({
+    injectionId: steering.injectionId,
+    runId: steering.runId,
+    fencingToken: steering.fencingToken,
+    now,
+  });
+  if (input.acknowledgeSteer !== false) store.acknowledgePromptInjection({
+    injectionId: steering.injectionId,
+    runId: steering.runId,
+    fencingToken: steering.fencingToken,
+    now,
+  });
+  return {
+    now,
+    requestId,
+    questionUpdateId,
+    joinId,
+    requesterRun,
+    steering,
+  };
+}
+
 function createUncertainHumanSteer(eventId: string, now: string) {
   store.enqueueMessageActivation({
     projectId, agentId: recipientA, messageId: `base:${eventId}`, kind: "ordinary", payload: { text: "Base work" }, now,
@@ -763,6 +822,277 @@ describe("CoordinationV3Store transactions", () => {
       FROM agent_activations
       WHERE agent_id = ? AND kind = 'coordination_join_impossible' AND state = 'pending'
     `).get(requesterId)).toEqual({ count: 1 });
+  });
+
+  it("terminalizes an unanswered correlated question when its requester Run is cancelled", () => {
+    const scenario = openQuestionScenario("cancelled-question");
+    store.cancelAgentRun({
+      agentId: requesterId,
+      expectedRunId: scenario.requesterRun.runId,
+      idempotencyKey: "cancel-question-requester",
+      now: scenario.now,
+    });
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(scenario.joinId)).toEqual({ state: "impossible" });
+  });
+
+  it("terminalizes an unanswered correlated question on provider outcome uncertainty", () => {
+    const scenario = openQuestionScenario("provider-unknown-question");
+    expect(store.failRun({
+      runId: scenario.requesterRun.runId,
+      fencingToken: scenario.requesterRun.fencingToken,
+      workerId: "server",
+      sameRunResumable: false,
+      error: "provider transport closed after execution",
+      now: scenario.now,
+    })).toBe("outcome_unknown");
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(scenario.joinId)).toEqual({ state: "impossible" });
+  });
+
+  it("terminalizes an unanswered question when its dedicated delivery exhausts retries", () => {
+    const scenario = openQuestionScenario("question-retry-exhausted");
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    const dedicated = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
+    expect(dedicated.agentId).toBe(requesterId);
+
+    expect(store.failRun({
+      runId: dedicated.runId,
+      fencingToken: dedicated.fencingToken,
+      workerId: "server",
+      sameRunResumable: false,
+      confirmedNotExecuted: true,
+      retryable: false,
+      terminalOutcome: "permanent_failure",
+      maxDeliveryFailures: 1,
+      error: "provider is unavailable",
+      now: scenario.now,
+    })).toBe("terminal");
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(scenario.joinId)).toEqual({ state: "impossible" });
+  });
+
+  it("cancels a promoted question Activation when its Request is cancelled", () => {
+    const scenario = openQuestionScenario("cancelled-after-promotion");
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    store.updateRequest({
+      requestId: scenario.requestId,
+      updateId: "cancel-after-promotion",
+      kind: "cancelled",
+      actor: { kind: "agent", id: requesterId },
+      now: scenario.now,
+    });
+
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(scenario.steering.activationIds[0]!)).toEqual({ state: "cancelled" });
+    expect(store.getRequest(scenario.requestId)?.state).toBe("cancelled");
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count FROM agent_activations
+      WHERE kind = 'coordination_question' AND state IN ('pending', 'retry_pending')
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("terminalizes an unanswered correlated question during injected-Run restart recovery", () => {
+    const scenario = openQuestionScenario("restart-question");
+    expect(store.recoverOrphanedRuns("replacement-worker", scenario.now)).toEqual({
+      retried: 0,
+      outcomeUnknown: 1,
+    });
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(scenario.joinId)).toEqual({ state: "impossible" });
+  });
+
+  it("terminalizes only the correlated question whose steering delivery is uncertain", () => {
+    const scenario = openQuestionScenario("uncertain-question", { acknowledgeSteer: false });
+    store.markSteeringOutcomeUnknown({
+      injectionId: scenario.steering.injectionId,
+      runId: scenario.steering.runId,
+      fencingToken: scenario.steering.fencingToken,
+      now: scenario.now,
+      error: "transport closed after submission",
+    });
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = ?
+    `).get(scenario.joinId)).toEqual({ state: "impossible" });
+  });
+
+  it("cancels a promoted question Activation when the exact question is answered", () => {
+    const scenario = openQuestionScenario("answered-after-promotion");
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(scenario.steering.activationIds[0]!)).toEqual({ state: "retry_pending" });
+
+    store.updateRequest({
+      requestId: scenario.requestId,
+      updateId: "answer-after-promotion",
+      kind: "answer",
+      actor: { kind: "agent", id: requesterId },
+      inReplyToUpdateId: scenario.questionUpdateId,
+      payload: { text: "Use the original contract" },
+      now: scenario.now,
+    });
+
+    expect(opened.client.prepare(`
+      SELECT state FROM agent_activations WHERE id = ?
+    `).get(scenario.steering.activationIds[0]!)).toEqual({ state: "cancelled" });
+    expect(store.leaseNextRun({ workerId: "server", now: scenario.now })?.agentId).toBe(recipientA);
+  });
+
+  it("suspends an outbound question on a delegated Join and restores answer authority", () => {
+    const scenario = openQuestionScenario("join-suspended-question");
+    const delegated = store.coordinate({
+      projectId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "question-dependency-join",
+      requests: [{
+        requestId: "question-dependency-work",
+        recipientAgentId: recipientB,
+        lifetime: indefinite,
+      }],
+      join: {
+        id: "question-dependency-join",
+        mode: "all",
+        continuationRequestIds: [scenario.requestId],
+      },
+    }, scenario.now);
+    expect(delegated.joinId).toBe("question-dependency-join");
+
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    expect(store.getRequest(scenario.requestId)?.state).toBe("awaiting_answer");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_question_suspensions
+      WHERE dependency_kind = 'join' AND dependency_id = 'question-dependency-join'
+    `).get()).toEqual({ state: "open" });
+
+    const helperRun = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
+    expect(helperRun.agentId).toBe(recipientB);
+    acknowledgeLease(helperRun);
+    store.updateRequest({
+      requestId: "question-dependency-work",
+      updateId: "question-dependency-completed",
+      kind: "completed",
+      actor: { kind: "agent", id: recipientB },
+      runAuthorization: {
+        runId: helperRun.runId,
+        agentId: recipientB,
+        fencingToken: helperRun.fencingToken,
+      },
+      payload: { answer: "Use contract B" },
+      now: scenario.now,
+    });
+    store.completeRun(helperRun.runId, helperRun.fencingToken, scenario.now);
+
+    const continuationRun = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
+    expect(continuationRun.agentId).toBe(requesterId);
+    acknowledgeLease(continuationRun);
+    expect(store.requestIdsAttachedToRun(continuationRun.runId, requesterId))
+      .toContain(scenario.requestId);
+    store.updateRequest({
+      requestId: scenario.requestId,
+      updateId: "join-informed-answer",
+      kind: "answer",
+      actor: { kind: "agent", id: requesterId },
+      runAuthorization: {
+        runId: continuationRun.runId,
+        agentId: requesterId,
+        fencingToken: continuationRun.fencingToken,
+      },
+      inReplyToUpdateId: scenario.questionUpdateId,
+      payload: { text: "Use contract B" },
+      now: scenario.now,
+    });
+    store.completeRun(continuationRun.runId, continuationRun.fencingToken, scenario.now);
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("in_progress");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_question_suspensions
+      WHERE dependency_kind = 'join' AND dependency_id = 'question-dependency-join'
+    `).get()).toEqual({ state: "resolved" });
+  });
+
+  it("suspends an outbound question on a blocking Decision and restores answer authority", () => {
+    const scenario = openQuestionScenario("decision-suspended-question");
+    expect(store.suspendQuestionsForDecision({
+      runId: scenario.requesterRun.runId,
+      agentId: requesterId,
+      decisionId: "decision-1",
+      requestIds: [scenario.requestId],
+      now: scenario.now,
+    })).toEqual([scenario.requestId]);
+    store.completeRun(
+      scenario.requesterRun.runId,
+      scenario.requesterRun.fencingToken,
+      scenario.now,
+    );
+    expect(store.getRequest(scenario.requestId)?.state).toBe("awaiting_answer");
+
+    store.enqueueMessageActivation({
+      projectId,
+      agentId: requesterId,
+      messageId: "decision-1:response",
+      kind: "human",
+      payload: { decision: { id: "decision-1", response: { text: "Contract A" } } },
+      questionDependency: { kind: "decision", id: "decision-1" },
+      now: scenario.now,
+    });
+    const decisionRun = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
+    acknowledgeLease(decisionRun);
+    expect(store.requestIdsAttachedToRun(decisionRun.runId, requesterId))
+      .toContain(scenario.requestId);
+    store.updateRequest({
+      requestId: scenario.requestId,
+      updateId: "decision-informed-answer",
+      kind: "answer",
+      actor: { kind: "agent", id: requesterId },
+      runAuthorization: {
+        runId: decisionRun.runId,
+        agentId: requesterId,
+        fencingToken: decisionRun.fencingToken,
+      },
+      inReplyToUpdateId: scenario.questionUpdateId,
+      payload: { text: "Contract A" },
+      now: scenario.now,
+    });
+    store.completeRun(decisionRun.runId, decisionRun.fencingToken, scenario.now);
+
+    expect(store.getRequest(scenario.requestId)?.state).toBe("in_progress");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_question_suspensions
+      WHERE dependency_kind = 'decision' AND dependency_id = 'decision-1'
+    `).get()).toEqual({ state: "resolved" });
   });
 
   it("rolls back the whole coordinate operation if one recipient is invalid", () => {

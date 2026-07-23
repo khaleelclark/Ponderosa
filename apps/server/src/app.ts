@@ -2294,6 +2294,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
     const cursor = workspace.cursor();
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
+      coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
       const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
       if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     }
@@ -5441,6 +5442,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         body: artifactFilesystem.detail,
       });
     }
+    for (const decision of workspace.listDecisions({ status: "pending" })) {
+      if (!decision.blocking || !(decision.continuationRequestIds?.length)) continue;
+      coordinationV3.suspendQuestionsForDecision({
+        runId: decision.coordinationRunId ?? decision.runId,
+        agentId: decision.agentId,
+        decisionId: decision.id,
+        requestIds: decision.continuationRequestIds,
+        strict: false,
+      });
+    }
     coordinationV3.recoverOrphanedRuns(coordinationV3WorkerId);
     coordinationV3.reconcileUnavailableActivationRecipients();
     coordinationV3.expireDue();
@@ -5946,6 +5957,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           mode, question, context: decisionContext ?? null, options: normalizedOptions,
           allowOther: true, blocking: body.blocking !== false,
         });
+    const continuationRequestIds = body.blocking === false
+      ? []
+      : coordinationV3.outboundAwaitingQuestionRequestIdsAttachedToRun(
+          capability.runId, agent.id,
+        );
     const cursor = workspace.cursor();
     const decision = workspace.createDecision({
       idempotencyKey,
@@ -5953,12 +5969,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ...(active.conversationId ? { conversationId: active.conversationId } : {}),
       agentId: agent.id,
       runId: active.runId,
+      coordinationRunId: capability.runId,
       mode: mode as "approval" | "choice" | "text",
       question,
       ...(decisionContext ? { context: decisionContext } : {}),
       options: normalizedOptions,
       allowOther: true,
+      ...(continuationRequestIds.length ? { continuationRequestIds } : {}),
       blocking: body.blocking !== false,
+    });
+    if (decision.blocking && decision.continuationRequestIds?.length) coordinationV3.suspendQuestionsForDecision({
+      runId: capability.runId,
+      agentId: agent.id,
+      decisionId: decision.id,
+      requestIds: decision.continuationRequestIds,
     });
     workspace.createNotification({
       projectId: decision.projectId,
@@ -6322,6 +6346,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         });
       } catch (error) {
         workspace.cancelDecision(decision.id);
+        coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
         return reply.code(409).send({ error: error instanceof Error ? error.message : "could not create scoped management approval" });
       }
       workspace.createNotification({
@@ -6956,7 +6981,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const continuationRequestIds = join
         ? coordinationV3.requestIdsAttachedToRun(capability.runId, author.id).filter((requestId) => {
             const attached = coordinationV3.getRequest(requestId);
-            return attached?.recipientAgentId === author.id && !TERMINAL_REQUEST_STATES.has(attached.state);
+            return (
+              attached?.recipientAgentId === author.id
+              && !TERMINAL_REQUEST_STATES.has(attached.state)
+            ) || (
+              attached?.requesterAgentId === author.id
+              && attached.state === "awaiting_answer"
+            );
           })
         : [];
       result = coordinationV3.coordinate({
@@ -13053,6 +13084,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       messageId: `decision:${decision.id}:response`,
       kind: "human",
       payload: { decision: { id: decision.id, question: decision.question, response: decision.response } },
+      ...(decision.continuationRequestIds?.length
+        ? { questionDependency: { kind: "decision" as const, id: decision.id } }
+        : {}),
       now: respondedAt,
     });
     publishMessageDeliveryChanged(decision.agentId);

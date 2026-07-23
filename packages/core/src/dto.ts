@@ -228,11 +228,16 @@ export interface DecisionDto {
   conversationId?: string;
   agentId: string;
   runId: string;
+  /** Authoritative V3 scheduler Run that created the Decision. */
+  coordinationRunId?: string;
   mode: DecisionMode;
   question: string;
   context?: string;
   options: DecisionOptionDto[];
   allowOther: boolean;
+  /** Correlated questions intentionally suspended while this blocking Decision
+   * is pending. Server-owned; provider input cannot supply this lineage. */
+  continuationRequestIds?: string[];
   blocking: boolean;
   /** Server-owned destructive authorization scope. Provider-authored Decisions
    * never populate this field. */

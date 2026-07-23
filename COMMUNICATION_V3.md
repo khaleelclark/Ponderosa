@@ -247,6 +247,16 @@ If that dedicated Run also completes without answering, Ponderosa terminalizes
 the Request as `outcome_unknown` and reevaluates every attached Join. The
 question Activation may never be consumed while silently leaving its Request in
 `awaiting_answer`; recovery is bounded and must not create a retry storm.
+Provider uncertainty, restart recovery, operator cancellation, and exhausted
+delivery retries use the same settlement rule.
+
+A blocking Decision or delegated Join may durably suspend that fail-closed
+transition. The suspension records the exact question update, Request, owner,
+and dependency. Dependency result Activations inherit the original question as
+a structural source so the resumed Run can answer it with exact authority.
+Answering, cancelling, superseding, or expiring the Request cancels any queued
+question retry. Resolving or cancelling the dependency closes its suspension;
+no dependency may leave an invisible indefinite question wait.
 
 Priority is human/steering, agent question or urgent event, actionable join
 problem, satisfied join, new request, ordinary message, then passive progress.
