@@ -26,6 +26,7 @@ import { ProjectShell } from "./components/ProjectShell";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
+import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { AllProjectsView } from "./components/WorkspaceOverview";
 import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection } from "./components/GlobalChatSearch";
@@ -547,6 +548,10 @@ export default function App({
           onRename={renameWorkspaceView}
           onReorder={reorderWorkspaceViews}
         /> : null}
+        <WorkspaceErrorBoundary
+          title="This workspace view could not be displayed."
+          resetKey={`${activeWorkspaceTabKey}:${JSON.stringify(route)}`}
+        >
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
         {route.kind === "wiki" ? (
           <WikiView articleId={route.articleId} navigate={navigateWorkspace} />
@@ -656,6 +661,7 @@ export default function App({
           <Box />
         )}
         </Box>
+        </WorkspaceErrorBoundary>
       </Box>
       </Box>
 

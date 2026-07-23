@@ -59,6 +59,7 @@ import { queryKeys } from "../queryKeys";
 import { ChatAttachments } from "./chat/ChatAttachments";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   const byId = new Map<string, ConversationMessageDto>();
@@ -284,6 +285,10 @@ export function ConversationView({
   const [directReplyRequestId, setDirectReplyRequestId] = useState<string | undefined>();
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
   const [stoppedNotice, setStoppedNotice] = useState<string>();
+  const [stopConfirmation, setStopConfirmation] = useState<{
+    targets: { agentId: string; runId: string }[];
+    names: string;
+  }>();
   const directReplyUploads = useRef(new Map<string, ImageAttachmentDto[]>());
   const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
@@ -824,14 +829,7 @@ export function ConversationView({
     .map((agent) => agentMentionHandle(agent.title));
 
   const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
-  const stopOperation = async () => {
-    const targets = (activeOperation?.agentIds ?? []).flatMap((agentId) => {
-      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
-      return runId ? [{ agentId, runId }] : [];
-    });
-    if (targets.length === 0) return;
-    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
-    if (targets.length > 1 && !window.confirm(`Stop this operation tree (${names})? Partial output will remain visible.`)) return;
+  const cancelOperationTargets = async (targets: { agentId: string; runId: string }[], names: string) => {
     setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
     const requestId = stopOperationRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
     stopOperationRequestId.current = requestId;
@@ -840,8 +838,22 @@ export function ConversationView({
       idempotencyKey: `${requestId}:${runId}`,
     })));
     stopOperationRequestId.current = undefined;
+    setStopConfirmation(undefined);
     setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
     invalidate();
+  };
+  const stopOperation = async () => {
+    const targets = (activeOperation?.agentIds ?? []).flatMap((agentId) => {
+      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
+      return runId ? [{ agentId, runId }] : [];
+    });
+    if (targets.length === 0) return;
+    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
+    if (targets.length > 1) {
+      setStopConfirmation({ targets, names });
+      return;
+    }
+    await cancelOperationTargets(targets, names);
   };
 
   const submit = async (text: string, files: File[], activeRunDelivery: "steer" | "queue" = "steer", draftAttachmentIds: string[] = [], draftOwnerId?: string) => {
@@ -1182,6 +1194,20 @@ export function ConversationView({
         onClose={() => setImportOpen(false)}
         onImported={onOpenAgent}
       />
+
+      <ConfirmDialog
+        open={Boolean(stopConfirmation)}
+        title="Stop Operation Tree?"
+        confirmLabel="Stop Operation"
+        onCancel={() => setStopConfirmation(undefined)}
+        onConfirm={() => {
+          if (stopConfirmation) void cancelOperationTargets(stopConfirmation.targets, stopConfirmation.names);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>
+          Stop work for {stopConfirmation?.names}? Partial output from every affected Agent will remain visible.
+        </Typography>
+      </ConfirmDialog>
 
       <Dialog open={renameOpen} onClose={() => setRenameOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>Rename Project chat</DialogTitle>

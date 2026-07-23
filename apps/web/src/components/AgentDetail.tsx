@@ -81,6 +81,7 @@ import { AgentHeaderRelationships, orderedAgentHeaderChats } from "./HeaderRelat
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { queryKeys } from "../queryKeys";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
+import { ConfirmDialog } from "./ConfirmationDialogs";
 
 type AgentTab = AgentDetailView;
 
@@ -338,6 +339,8 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
+  const [elevatedCopyPackage, setElevatedCopyPackage] = useState<Awaited<ReturnType<typeof api.exportAgent>>>();
+  const [recheckEngineOpen, setRecheckEngineOpen] = useState(false);
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
@@ -594,15 +597,8 @@ export function AgentDetail({
     downloadJson(portable, portablePackageFileName(detail?.agent.title ?? "agent", organization, mode));
     setQueuedMessageNotice(`${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`);
   };
-  const quickCopyIntoProjectChat = async () => {
+  const importQuickCopy = async (portable: Awaited<ReturnType<typeof api.exportAgent>>, elevated: boolean) => {
     if (!detail?.agent.conversationId) return;
-    const portable = await api.exportAgent(agentId, "full", false);
-    const elevated = portable.agents.some((node) =>
-      node.managementPermissions.allowAutomaticDescendantDeletion ||
-      node.managementPermissions.allowAutomaticDescendantReorganization);
-    if (elevated && !globalThis.confirm(
-      "This Agent has autonomous descendant deletion or reorganization permissions. Copy it with those elevated permissions?",
-    )) return;
     const engineMapping = Object.fromEntries([...new Set(portable.agents.map((node) => node.engine))].map((engineId) => [engineId, engineId]));
     const imported = await api.importAgents(detail.agent.projectId, {
       package: portable,
@@ -611,7 +607,20 @@ export function AgentDetail({
       ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
     });
     await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(detail.agent.projectId) });
+    setElevatedCopyPackage(undefined);
     onOpenAgent(imported.rootAgentId);
+  };
+  const quickCopyIntoProjectChat = async () => {
+    if (!detail?.agent.conversationId) return;
+    const portable = await api.exportAgent(agentId, "full", false);
+    const elevated = portable.agents.some((node) =>
+      node.managementPermissions.allowAutomaticDescendantDeletion ||
+      node.managementPermissions.allowAutomaticDescendantReorganization);
+    if (elevated) {
+      setElevatedCopyPackage(portable);
+      return;
+    }
+    await importQuickCopy(portable, false);
   };
 
   const rename = useMutation({
@@ -913,9 +922,7 @@ export function AgentDetail({
         />
         {settingsEngineRegistration?.authenticated && !engineIsAvailable(settingsEngineRegistration) ? <>
           <Typography variant="caption" color="warning.main">{settingsEngineRegistration.availabilityDetail ?? "The provider rejected runtime access."}</Typography>
-          <Button size="small" variant="outlined" disabled={recheckEngine.isPending} onClick={() => {
-            if (window.confirm("Test provider access now? This sends one minimal subscription-backed request.")) recheckEngine.mutate(settingsEngineRegistration.id);
-          }}>{recheckEngine.isPending ? "Testing Access…" : "Test Access"}</Button>
+          <Button size="small" variant="outlined" disabled={recheckEngine.isPending} onClick={() => setRecheckEngineOpen(true)}>{recheckEngine.isPending ? "Testing Access…" : "Test Access"}</Button>
         </> : null}
         <FormControl size="small" fullWidth>
           <InputLabel id="agent-detail-model-label">Model · next Run</InputLabel>
@@ -1200,6 +1207,40 @@ export function AgentDetail({
           onCancel={() => stopActiveRun()}
         />
       </Box> : null}
+
+      <ConfirmDialog
+        open={Boolean(elevatedCopyPackage)}
+        title="Copy Elevated Agent Permissions?"
+        confirmLabel="Copy Agent"
+        onCancel={() => setElevatedCopyPackage(undefined)}
+        onConfirm={() => {
+          if (elevatedCopyPackage) void importQuickCopy(elevatedCopyPackage, true);
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>
+          This Agent can automatically delete or reorganize descendants. The copied Agent will retain those elevated organization permissions.
+        </Typography>
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={recheckEngineOpen}
+        title="Test Provider Access?"
+        confirmLabel="Test Access"
+        pending={recheckEngine.isPending}
+        error={recheckEngine.isError ? String(recheckEngine.error) : undefined}
+        onCancel={() => {
+          recheckEngine.reset();
+          setRecheckEngineOpen(false);
+        }}
+        onConfirm={() => {
+          if (!settingsEngineRegistration) return;
+          recheckEngine.mutate(settingsEngineRegistration.id, {
+            onSuccess: () => setRecheckEngineOpen(false),
+          });
+        }}
+      >
+        <Typography sx={{ pt: 1 }}>This sends one minimal subscription-backed request to verify that the provider is available.</Typography>
+      </ConfirmDialog>
 
       <AgentDeletionDialog
         open={deleteOpen}

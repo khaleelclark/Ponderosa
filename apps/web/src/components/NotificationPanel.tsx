@@ -284,5 +284,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
-  </Dialog></>;
+  </Dialog>
+  </>;
 }

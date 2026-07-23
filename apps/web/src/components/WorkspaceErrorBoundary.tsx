@@ -5,6 +5,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 interface WorkspaceErrorBoundaryProps {
   children: ReactNode;
   title?: string;
+  resetKey?: string;
   onReset?(): void;
 }
 
@@ -22,6 +23,12 @@ export class WorkspaceErrorBoundary extends Component<WorkspaceErrorBoundaryProp
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error("Workspace surface failed", error, info.componentStack);
+  }
+
+  override componentDidUpdate(previous: Readonly<WorkspaceErrorBoundaryProps>): void {
+    if (previous.resetKey !== this.props.resetKey && this.state.error) {
+      this.setState({ error: undefined });
+    }
   }
 
   private reset = (): void => {
