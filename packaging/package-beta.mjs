@@ -1,0 +1,169 @@
+#!/usr/bin/env node
+
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { execFileSync } from "node:child_process";
+import os from "node:os";
+import path from "node:path";
+
+function option(name, fallback) {
+  const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
+  if (inline) return inline.slice(name.length + 3);
+  const index = process.argv.indexOf(`--${name}`);
+  return index >= 0 ? process.argv[index + 1] : fallback;
+}
+
+function run(command, args) {
+  execFileSync(command, args, { stdio: "inherit", windowsHide: true });
+}
+
+function writeExecutable(pathname, content) {
+  writeFileSync(pathname, content, { mode: 0o755 });
+  try { chmodSync(pathname, 0o755); } catch { /* Windows ignores POSIX modes. */ }
+}
+
+const bundle = path.resolve(option(
+  "bundle",
+  path.join("dist", "beta", `${process.platform}-${process.arch}`, "Ponderosa"),
+));
+const output = path.resolve(option("output", path.join("dist", "installers")));
+const format = option("format", process.platform === "darwin" ? "dmg" : process.platform === "win32" ? "exe" : "appimage");
+const manifest = JSON.parse(readFileSync(path.join(bundle, "build-manifest.json"), "utf8"));
+const artifactBase = `Ponderosa-${manifest.version}-${manifest.target.platform}-${manifest.target.arch}`;
+mkdirSync(output, { recursive: true });
+
+if (format === "dmg") {
+  if (process.platform !== "darwin") throw new Error("DMG packages must be built on macOS.");
+  const stage = path.join(os.tmpdir(), `ponderosa-dmg-${process.pid}`);
+  const app = path.join(stage, "Ponderosa Beta.app");
+  rmSync(stage, { recursive: true, force: true });
+  mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
+  mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
+  cpSync(bundle, path.join(app, "Contents", "Resources", "Ponderosa"), { recursive: true });
+  writeExecutable(path.join(app, "Contents", "MacOS", "Ponderosa"), `#!/bin/sh
+set -eu
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../Resources/Ponderosa" && pwd)"
+exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "$ROOT"
+`);
+  writeFileSync(path.join(app, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleName</key><string>Ponderosa Beta</string>
+<key>CFBundleDisplayName</key><string>Ponderosa Beta</string>
+<key>CFBundleIdentifier</key><string>app.ponderosa.beta</string>
+<key>CFBundleVersion</key><string>${manifest.version}</string>
+<key>CFBundleShortVersionString</key><string>${manifest.version}</string>
+<key>CFBundleExecutable</key><string>Ponderosa</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+</dict></plist>`);
+  const target = path.join(output, `${artifactBase}.dmg`);
+  rmSync(target, { force: true });
+  run("hdiutil", ["create", "-volname", "Ponderosa Beta", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
+  rmSync(stage, { recursive: true, force: true });
+  process.stdout.write(`${target}\n`);
+} else if (format === "appimage") {
+  if (process.platform !== "linux") throw new Error("AppImage packages must be built on Linux.");
+  const appDir = path.join(os.tmpdir(), `ponderosa-appimage-${process.pid}.AppDir`);
+  rmSync(appDir, { recursive: true, force: true });
+  mkdirSync(path.join(appDir, "usr", "lib"), { recursive: true });
+  mkdirSync(path.join(appDir, "usr", "share", "icons", "hicolor", "256x256", "apps"), { recursive: true });
+  cpSync(bundle, path.join(appDir, "usr", "lib", "ponderosa-beta"), { recursive: true });
+  cpSync(
+    path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
+    path.join(appDir, "ponderosa-beta.png"),
+  );
+  writeExecutable(path.join(appDir, "AppRun"), `#!/bin/sh
+set -eu
+ROOT="$APPDIR/usr/lib/ponderosa-beta"
+exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "$ROOT"
+`);
+  writeFileSync(path.join(appDir, "ponderosa-beta.desktop"), `[Desktop Entry]
+Type=Application
+Name=Ponderosa Beta
+Exec=ponderosa-beta
+Icon=ponderosa-beta
+Categories=Development;
+Terminal=false
+`);
+  const tool = process.env.APPIMAGETOOL?.trim() || "appimagetool";
+  const target = path.join(output, `${artifactBase}.AppImage`);
+  run(tool, [appDir, target]);
+  chmodSync(target, 0o755);
+  rmSync(appDir, { recursive: true, force: true });
+  process.stdout.write(`${target}\n`);
+} else if (format === "deb") {
+  if (process.platform !== "linux") throw new Error("Debian packages must be built on Linux.");
+  const root = path.join(os.tmpdir(), `ponderosa-deb-${process.pid}`);
+  rmSync(root, { recursive: true, force: true });
+  mkdirSync(path.join(root, "DEBIAN"), { recursive: true });
+  mkdirSync(path.join(root, "opt"), { recursive: true });
+  mkdirSync(path.join(root, "usr", "bin"), { recursive: true });
+  mkdirSync(path.join(root, "usr", "share", "applications"), { recursive: true });
+  cpSync(bundle, path.join(root, "opt", "ponderosa-beta"), { recursive: true });
+  writeExecutable(path.join(root, "usr", "bin", "ponderosa-beta"), `#!/bin/sh
+exec /opt/ponderosa-beta/runtime/node /opt/ponderosa-beta/app/launcher/dist/cli.js open --install-root /opt/ponderosa-beta "$@"
+`);
+  writeFileSync(path.join(root, "usr", "share", "applications", "ponderosa-beta.desktop"), `[Desktop Entry]
+Type=Application
+Name=Ponderosa Beta
+Exec=ponderosa-beta
+Icon=/opt/ponderosa-beta/app/web/dist/icons/app-icon.png
+Categories=Development;
+Terminal=false
+`);
+  writeFileSync(path.join(root, "DEBIAN", "control"), [
+    "Package: ponderosa-beta",
+    `Version: ${manifest.version.replace(/[^0-9A-Za-z.+~:-]/gu, "-")}`,
+    `Architecture: ${manifest.target.arch === "x64" ? "amd64" : manifest.target.arch === "arm64" ? "arm64" : manifest.target.arch}`,
+    "Maintainer: Ponderosa Private Beta",
+    "Section: devel",
+    "Priority: optional",
+    "Description: Self-hosted AI Agent orchestration workbench (private beta)",
+    "",
+  ].join("\n"));
+  const target = path.join(output, `${artifactBase}.deb`);
+  run("dpkg-deb", ["--root-owner-group", "--build", root, target]);
+  rmSync(root, { recursive: true, force: true });
+  process.stdout.write(`${target}\n`);
+} else if (format === "exe") {
+  if (process.platform !== "win32") throw new Error("Windows installers must be built on Windows.");
+  const iscc = process.env.ISCC?.trim() || "ISCC.exe";
+  const script = path.join(os.tmpdir(), `ponderosa-${process.pid}.iss`);
+  const escapedBundle = bundle.replaceAll("\\", "\\\\");
+  const escapedOutput = output.replaceAll("\\", "\\\\");
+  writeFileSync(script, `#define MyAppVersion "${manifest.version}"
+[Setup]
+AppId={{F6108742-BCEE-4C42-89D5-642384612310}
+AppName=Ponderosa Beta
+AppVersion={#MyAppVersion}
+DefaultDirName={localappdata}\\Programs\\Ponderosa Beta
+PrivilegesRequired=lowest
+OutputDir=${escapedOutput}
+OutputBaseFilename=${artifactBase}
+Compression=lzma2
+SolidCompression=yes
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+
+[Files]
+Source: "${escapedBundle}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\\Ponderosa Beta"; Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; WorkingDir: "{app}"
+
+[Run]
+Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Description: "Open Ponderosa Beta"; Flags: nowait postinstall skipifsilent runhidden
+`);
+  run(iscc, [script]);
+  rmSync(script, { force: true });
+} else {
+  throw new Error(`Unknown package format: ${format}`);
+}

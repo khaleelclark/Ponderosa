@@ -1,0 +1,37 @@
+{
+  "schema": "ponderosa.beta-starter-results.v1",
+  "scenarios": {
+    "first-agent": {
+      "providerRuns": 1,
+      "requiredFile": "verification-output.txt",
+      "requiredContent": "PONDEROSA_BETA_VERIFIED\n",
+      "noExternalNetworkRequired": true
+    },
+    "communication": {
+      "roles": 3,
+      "managementPermissionsDefaultOff": true,
+      "internalMessagesExcludedFromUserMessages": true,
+      "finalManagerResultRequired": true
+    },
+    "pause-resume": {
+      "cancelledRunDoesNotPublish": true,
+      "successorRunsExactlyOnce": true,
+      "providerTreeCleanupRequired": true
+    },
+    "trigger": {
+      "importedTriggerEnabled": false,
+      "explicitEnableRequired": true,
+      "occurrenceProvenanceRequired": true
+    },
+    "deletion-recovery": {
+      "stateSurvivesRestart": true,
+      "sourceFolderSurvivesProjectDeletion": true,
+      "maximumDaemonsPerDataDirectory": 1
+    }
+  },
+  "supportEvidence": [
+    "ponderosa doctor --json",
+    "ponderosa diagnostics",
+    "build-manifest.json"
+  ]
+}

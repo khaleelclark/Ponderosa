@@ -14,6 +14,9 @@
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
     "engines:try": "node packages/engines/dist/harness.js",
-    "start:prod": "NODE_ENV=production node apps/server/dist/main.js"
+    "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
+    "beta:bundle": "pnpm build && node packaging/build-beta-bundle.mjs",
+    "beta:package": "node packaging/package-beta.mjs",
+    "beta:verify": "node packaging/verify-beta-bundle.mjs"
   }
 }

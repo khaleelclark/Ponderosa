@@ -1,0 +1,34 @@
+{
+  "schema": "ponderosa.agent-package.v1",
+  "mode": "full",
+  "kind": "agent",
+  "exportedAt": "2026-07-23T00:00:00.000Z",
+  "sourceLabel": "Ponderosa private-beta starter / Scheduled observer",
+  "rootRef": "scheduled-observer",
+  "agents": [
+    {
+      "ref": "scheduled-observer",
+      "title": "Scheduled Observer",
+      "engine": "codex",
+      "initialInstructions": "When explicitly enabled by the user, inspect the Project's current state and report only material changes or blockers.",
+      "managementPermissions": {
+        "allowAutomaticDescendantDeletion": false,
+        "allowAutomaticDescendantReorganization": false
+      },
+      "history": [],
+      "triggers": [
+        {
+          "name": "Daily Project Check",
+          "instructions": "Inspect current Project state. Report material changes, active blockers, and the next safe action. Do not contact outside services.",
+          "sourceKind": "schedule",
+          "sourceConfig": {
+            "scheduleKind": "cron",
+            "expression": "0 9 * * *",
+            "timezone": "UTC"
+          },
+          "enabled": false
+        }
+      ]
+    }
+  ]
+}
