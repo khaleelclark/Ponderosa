@@ -4866,6 +4866,58 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: stri
 }
 
 describe("server chunk F", () => {
+  it("terminalizes a missing Project workspace once without starting the provider", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+    const missingWorkspace = path.join(dataDir, "removed-project-workspace");
+    mkdirSync(missingWorkspace, { recursive: true });
+    const project = store.createProject({ label: "Removed workspace", hostPath: missingWorkspace });
+    const agent = store.createAgent(project.id, { title: "Cannot start", engine: "codex" });
+    rmSync(missingWorkspace, { recursive: true, force: true });
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Continue the work" },
+    });
+    expect(sent.statusCode, sent.body).toBe(202);
+
+    const coordination = new CoordinationV3Store(store.sqlite);
+    await vi.waitFor(() => expect(coordination.terminalActivations(project.id)).toContainEqual(
+      expect.objectContaining({
+        agentId: agent.id,
+        outcome: "permanent_failure",
+        deliveryFailures: 1,
+        lastDeliveryError: expect.stringContaining("project_workspace_unavailable"),
+      }),
+    ));
+    expect(adapter.seeds).toHaveLength(0);
+    expect(adapter.continues).toHaveLength(0);
+    expect(coordination.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0,
+      failedRuns: 1,
+    });
+    await sleep(25);
+    expect(coordination.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0,
+      failedRuns: 1,
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" }))
+      .json<Array<{ dedupeKey?: string; title?: string; body?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          dedupeKey: `project:${project.id}:workspace-unavailable`,
+          title: "Project folder is unavailable",
+          body: expect.stringContaining(missingWorkspace),
+          status: "open",
+        }),
+      ]));
+    await app.close();
+  });
+
   it("repairs unavailable pending recipients before the startup scheduler can claim them", async () => {
     const project = store.createProject({ label: "Startup repair", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Deleted", engine: "codex" });
