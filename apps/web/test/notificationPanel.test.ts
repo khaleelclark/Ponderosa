@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
-import { filterNotifications, groupNotificationsByProject } from "../src/components/NotificationPanel";
+import { filterNotifications, groupNotificationsByProject, notificationWorkRoute } from "../src/components/NotificationPanel";
 import { createPonderosaTheme } from "../src/theme";
 
 function luminance(color: string): number {
@@ -49,11 +49,27 @@ describe("notification panel grouping", () => {
     expect(filterNotifications([mention, response], "all")).toEqual([mention, response]);
   });
 
-  it("shows only open urgent intervention items in the Urgent filter", () => {
+  it("keeps every open attention item visible after it has been read", () => {
     const urgent = { ...notification("urgent", "project-a", "chat-a", "2026-07-16T03:00:00.000Z"), severity: "urgent" as const, status: "open" as const };
     const resolved = { ...urgent, id: "resolved", status: "resolved" as const };
-    const attention = { ...urgent, id: "attention", severity: "attention" as const };
-    expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([urgent]);
+    const attention = { ...urgent, id: "attention", severity: "attention" as const, readAt: "2026-07-16T04:00:00.000Z" };
+    expect(filterNotifications([attention, resolved, urgent], "urgent")).toEqual([attention, urgent]);
+    expect(filterNotifications([attention], "all")).toEqual([attention]);
+  });
+
+  it("routes work review into the normal workspace instead of an overlay", () => {
+    const coordination = {
+      ...notification("coordination", "project-a", "chat-a", "2026-07-16T03:00:00.000Z"),
+      kind: "operational" as const,
+      category: "coordination" as const,
+      action: { kind: "open_agent" as const, targetId: "agent-a" },
+    };
+    expect(notificationWorkRoute(coordination)).toEqual({
+      kind: "agent", projectId: "project-a", agentId: "agent-a", view: "runs",
+    });
+    expect(notificationWorkRoute({ ...coordination, action: undefined, communicationEventId: "event-a" })).toEqual({
+      kind: "projectWork", projectId: "project-a", conversationId: "chat-a", focusId: "event-a",
+    });
   });
 
   it.each(["light", "dark"] as const)("keeps the project label readable in %s mode", (mode) => {

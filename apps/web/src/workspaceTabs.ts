@@ -58,6 +58,7 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
   if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
   if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
   if (candidate.kind === "project") return true;
+  if (candidate.kind === "workspaceFile") return typeof candidate.path === "string" && Boolean(candidate.path);
   if (candidate.kind === "agents") {
     return candidate.create === undefined || typeof candidate.create === "boolean";
   }
@@ -87,6 +88,7 @@ export function workspaceTabKey(route: Route): string {
     case "usage": return `usage:${route.projectId ?? "overall"}`;
     case "wiki": return `wiki:${route.articleId ?? "home"}`;
     case "project": return `project:${route.projectId}`;
+    case "workspaceFile": return `workspace-file:${route.projectId}:${route.path}`;
     case "projectWork": return `project-work:${route.projectId}:${route.conversationId ?? "project"}`;
     case "browser": return `browser:${route.projectId}:${route.agentId ?? "project"}:${route.runId ?? "persistent"}`;
     case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;

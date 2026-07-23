@@ -17,6 +17,7 @@ describe("mobile-critical durable navigation", () => {
     { kind: "wiki" },
     { kind: "wiki", articleId: "communication-scopes" },
     { kind: "project", projectId: "project / one" },
+    { kind: "workspaceFile", projectId: "project / one", path: "docs/first look.md" },
     { kind: "browser", projectId: "project / one" },
     { kind: "browser", projectId: "project / one", agentId: "agent #1", runId: "run / 1" },
     { kind: "conversation", projectId: "project / one", conversationId: "control room" },

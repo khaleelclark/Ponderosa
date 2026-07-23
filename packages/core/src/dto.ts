@@ -181,6 +181,7 @@ export interface WorkspaceNotificationDto {
   id: string;
   projectId?: string;
   conversationId?: string;
+  agentId?: string;
   communicationEventId?: string;
   kind: Exclude<NotificationPreference, "none"> | "collaboration" | "operational" | "decision";
   category?: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
@@ -349,6 +350,20 @@ export interface WorkspaceFileReviewDto {
   stagedDiff: string;
   unstagedDiff: string;
   truncated: boolean;
+}
+
+/** Safe, user-facing resolution of a file inside one Project workspace. */
+export interface WorkspaceFileViewDto {
+  projectId: string;
+  path: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  previewable: boolean;
+  text?: string;
+  truncated: boolean;
+  previewUrl?: string;
+  downloadUrl?: string;
 }
 
 /** One ephemeral host browser bound to an exact active Run. */

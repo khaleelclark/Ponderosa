@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ChatMarkdown, linkPresentation, linkPreviewScopeForMessage } from "../src/components/panes";
+import { ChatMarkdown, linkPresentation, linkPreviewScopeForMessage, projectFileViewerHref } from "../src/components/panes";
 import { createFaviconResourceCache, faviconEndpoint, faviconIdentity } from "../src/faviconCache";
 
 describe("chat link presentation", () => {
@@ -17,6 +17,18 @@ describe("chat link presentation", () => {
     expect(linkPresentation("http://localhost:5173/dashboard")?.loopback).toBe(true);
     expect(linkPresentation("http://127.0.0.1:3000/")?.loopback).toBe(true);
     expect(linkPresentation("javascript:alert(1)")).toBeUndefined();
+  });
+
+  it("routes workspace paths through the stable Ponderosa file viewer", () => {
+    expect(projectFileViewerHref("project-1", "docs/notes.md")).toBe("/projects/project-1/files/view?path=docs%2Fnotes.md");
+    expect(projectFileViewerHref("project-1", "/srv/project/image.png")).toBe("/projects/project-1/files/view?path=%2Fsrv%2Fproject%2Fimage.png");
+    expect(projectFileViewerHref("project-1", "https://example.com/file.png")).toBeUndefined();
+  });
+
+  it("renders a workspace file as the stable top-level viewer route", () => {
+    const html = renderToStaticMarkup(createElement(ChatMarkdown, { children: "[First look](docs/FIRST_LOOK.md)", projectId: "project-1" }));
+    expect(html).toContain('href="/projects/project-1/files/view?path=docs%2FFIRST_LOOK.md"');
+    expect(html).not.toContain("workspace-files/preview");
   });
 
   it("uses the canonical host favicon identity through the narrow same-origin endpoint", () => {

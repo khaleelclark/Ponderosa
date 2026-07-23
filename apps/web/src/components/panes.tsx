@@ -99,6 +99,12 @@ function projectFileHref(projectId: string | undefined, href: string | undefined
   return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?path=${encodeURIComponent(href)}`;
 }
 
+export function projectFileViewerHref(projectId: string | undefined, href: string | undefined): string | undefined {
+  if (!projectId || !href) return undefined;
+  if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;
+  return `/projects/${encodeURIComponent(projectId)}/files/view?path=${encodeURIComponent(href)}`;
+}
+
 export function linkPreviewScopeForMessage(
   message: Pick<MessageDto, "role" | "authorAgentId" | "executionId">,
   activeScope?: LinkPreviewScope,
@@ -110,7 +116,7 @@ export function linkPreviewScopeForMessage(
 
 function ChatLink({ href, children, previewScope, projectId }: { href: string; children: ReactNode; previewScope?: LinkPreviewScope; projectId?: string }): JSX.Element {
   const projectBrowser = useProjectBrowser();
-  const projectFilePreview = projectFileHref(projectId ?? previewScope?.projectId, href, "preview");
+  const projectFilePreview = projectFileViewerHref(projectId ?? previewScope?.projectId, href);
   const link = linkPresentation(href);
   const [chooserOpen, setChooserOpen] = useState(false);
   const [faviconFailed, setFaviconFailed] = useState(false);
@@ -1381,7 +1387,7 @@ export function RunsPane({
                   ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
                   : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
               </Typography>
-              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>View Agent Work</Button> : null}
+              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>Review Work</Button> : null}
               {run.providerInput ? <RunProviderInput run={run} /> : null}
             </Paper>
           ))}
@@ -1447,8 +1453,7 @@ function RetryRequestButton({ requestId }: { requestId: string }): JSX.Element {
         await queryClient.invalidateQueries();
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
       finally { setBusy(false); }
-    }}>{busy ? "Retrying…" : "Retry Failed Work"}</Button>
-    <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>Request {requestId.slice(0, 8)}</Typography>
+    }}>{busy ? "Retrying…" : "Retry Assignment"}</Button>
     {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
   </Box>;
 }
@@ -1470,7 +1475,7 @@ function CancelRequestButton({ requestId }: { requestId: string }): JSX.Element 
         await queryClient.invalidateQueries();
       } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
       finally { setBusy(false); }
-    }}>{busy ? "Cancelling…" : `Cancel request ${requestId.slice(0, 8)}`}</Button>
+    }}>{busy ? "Stopping…" : "Stop Assignment"}</Button>
     {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
   </Box>;
 }

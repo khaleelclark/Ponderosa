@@ -27,7 +27,7 @@ import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
-import { AgentWorkInspector } from "./AgentWorkInspector";
+import { isOpenAttention, visibleNotification } from "../attention";
 
 export interface NotificationGroup {
   key: string;
@@ -44,10 +44,10 @@ export function notificationsNewestFirst(notifications: WorkspaceNotificationDto
 }
 
 export function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
-  const unread = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open");
-  if (filter === "mentions") return unread.filter((item) => item.kind === "mentions");
-  if (filter === "urgent") return unread.filter((item) => item.severity === "urgent");
-  return unread;
+  const visible = notifications.filter(visibleNotification);
+  if (filter === "mentions") return visible.filter((item) => !item.readAt && item.kind === "mentions");
+  if (filter === "urgent") return visible.filter(isOpenAttention);
+  return visible;
 }
 
 export function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
@@ -66,6 +66,19 @@ export function groupNotificationsByProject(notifications: WorkspaceNotification
     group.items.sort(compareNotificationsNewestFirst);
   }
   return [...groups.values()].sort((a, b) => compareNotificationsNewestFirst(a.items[0]!, b.items[0]!));
+}
+
+export function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
+  if (!item.projectId) return undefined;
+  if (item.action?.kind === "open_agent" && item.action.targetId) {
+    return { kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "runs" };
+  }
+  const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
+  return {
+    kind: "projectWork", projectId: item.projectId,
+    ...(item.conversationId ? { conversationId: item.conversationId } : {}),
+    ...(focusId ? { focusId } : {}),
+  };
 }
 
 function notificationTime(value: string): string {
@@ -90,7 +103,6 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const [filter, setFilter] = useState<"all" | "mentions" | "urgent">("all");
   const [error, setError] = useState<string>();
   const [respondingDecisionId, setRespondingDecisionId] = useState<string>();
-  const [agentWorkTarget, setAgentWorkTarget] = useState<{ projectId: string; conversationId?: string; focusId?: string }>();
   const visibleNotifications = filterNotifications(notifications, filter);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
@@ -104,7 +116,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const conversations = new Map<string, ConversationDto>();
   conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
   const groups = groupNotificationsByProject(visibleNotifications);
-  const unreadCount = notifications.filter((item) => !item.readAt).length;
+  const unreadCount = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
 
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
@@ -121,6 +133,14 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     if (item.action?.kind === "open_settings") {
       onClose();
       onOpenSettings?.();
+      return;
+    }
+    if (item.projectId && item.action?.kind === "open_agent" && item.action.targetId) {
+      onClose();
+      onNavigate({
+        kind: "agent", projectId: item.projectId, agentId: item.action.targetId,
+        ...(item.category === "coordination" ? { view: "runs" as const } : {}),
+      });
       return;
     }
     if (!item.projectId) return;
@@ -224,7 +244,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     </DialogTitle>
     <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="all" label={`All (${filterNotifications(notifications, "all").length})`} sx={{ minHeight: 42 }} />
-      <Tab value="urgent" label={`Urgent (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
+      <Tab value="urgent" label={`Needs Attention (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
       <Tab value="mentions" label={`Mentions (${filterNotifications(notifications, "mentions").length})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
@@ -257,10 +277,10 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                     </Stack> : item.kind === "operational" && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={1}><Button size="small" onClick={(event) => { event.stopPropagation(); void setStatus(item, "resolved"); }}>Mark Resolved</Button><Button size="small" color="inherit" onClick={(event) => { event.stopPropagation(); void setStatus(item, "dismissed"); }}>Dismiss</Button></Stack> : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     {item.projectId && (item.kind === "operational" || ["coordination", "trigger", "decision"].includes(item.category ?? "")) ? <Button size="small" sx={{ alignSelf: "flex-start" }} onClick={(event) => {
                       event.stopPropagation();
-                      const focusId = item.decision?.id ? `decision:${item.decision.id}` : item.communicationEventId;
-                      setAgentWorkTarget({ projectId: item.projectId!, ...(item.conversationId ? { conversationId: item.conversationId } : {}), ...(focusId ? { focusId } : {}) });
+                      const route = notificationWorkRoute(item);
                       onClose();
-                    }}>View Agent Work</Button> : null}</Stack>}
+                      if (route) onNavigate(route);
+                    }}>Review Work Details</Button> : null}</Stack>}
                     secondaryTypographyProps={{ sx: { display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 2 } }}
                   />
                 </ListItemButton>
@@ -268,19 +288,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "No urgent issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Communication failures and critical issues needing intervention will appear here." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "Nothing needs attention" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>
       <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
-  </Dialog>
-  {agentWorkTarget ? <AgentWorkInspector
-    open
-    projectId={agentWorkTarget.projectId}
-    conversationId={agentWorkTarget.conversationId}
-    focus={agentWorkTarget.focusId ? { id: agentWorkTarget.focusId } : undefined}
-    onClose={() => setAgentWorkTarget(undefined)}
-  /> : null}</>;
+  </Dialog></>;
 }
