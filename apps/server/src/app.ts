@@ -7092,19 +7092,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishCoordinationV3Changed(author.id);
     for (const item of normalized) publishCoordinationV3Changed(item.recipientAgentId);
     coordinationV3Scheduler?.notify();
-    const requestDeliveries = normalized.map((item, index) => {
-      const activeRun = coordinationV3.agentSnapshot(item.recipientAgentId).activeRun;
-      return {
-        requestId: result.requestIds[index]!,
-        recipientAgentId: item.recipientAgentId,
-        deliveryState: "queued_for_next_run" as const,
-        interruptsActiveRun: false,
-        ...(activeRun ? { activeRunId: activeRun.id } : {}),
-      };
+    const requestDeliveries = result.requestIds.flatMap((requestId) => {
+      const delivery = coordinationV3.requestDelivery(requestId);
+      return delivery ? [delivery] : [];
     });
-    const queueDirective = requestDeliveries.some((delivery) => delivery.activeRunId)
-      ? "At least one recipient is already running. These ordinary Requests are queued behind active work and have not reached or interrupted it. To stop your requested work, cancel its exact Request; to enforceably stop an active descendant Run, use ponderosa_manage stop_agent."
-      : "These ordinary Requests are queued for recipient Runs and do not provide active-work interruption.";
+    const queueDirective = normalized.length === 0
+      ? "No new Requests were created; this operation only grouped existing Requests."
+      : "See requestDeliveries for each new Request's current delivery state. Ordinary Requests never interrupt active work; queued_behind_active_run means the recipient has not received that Request yet.";
     return {
       ...result,
       requestDeliveries,
