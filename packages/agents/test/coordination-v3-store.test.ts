@@ -1059,7 +1059,7 @@ describe("CoordinationV3Store transactions", () => {
     );
     expect(store.getRequest(scenario.requestId)?.state).toBe("awaiting_answer");
 
-    store.enqueueMessageActivation({
+    const decisionActivationId = store.enqueueMessageActivation({
       projectId,
       agentId: requesterId,
       messageId: "decision-1:response",
@@ -1067,6 +1067,15 @@ describe("CoordinationV3Store transactions", () => {
       payload: { decision: { id: "decision-1", response: { text: "Contract A" } } },
       questionDependency: { kind: "decision", id: "decision-1" },
       now: scenario.now,
+    });
+    expect(JSON.parse((opened.client.prepare(`
+      SELECT payload_json FROM agent_activations WHERE id = ?
+    `).get(decisionActivationId) as { payload_json: string }).payload_json)).toMatchObject({
+      continuationQuestions: [{
+        requestId: scenario.requestId,
+        inReplyToUpdateId: scenario.questionUpdateId,
+      }],
+      continuationInstruction: expect.stringContaining("exact inReplyToUpdateId"),
     });
     const decisionRun = store.leaseNextRun({ workerId: "server", now: scenario.now })!;
     acknowledgeLease(decisionRun);

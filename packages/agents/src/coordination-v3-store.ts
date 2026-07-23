@@ -2112,6 +2112,15 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       this.requireProject(input.projectId);
       this.requireAgent(input.projectId, input.agentId);
+      const continuationQuestions = input.questionDependency
+        ? this.questionDependencyContinuations(
+            input.questionDependency.kind, input.questionDependency.id,
+          )
+        : [];
+      const payload = continuationQuestions.length && input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
+        ? { ...input.payload, continuationQuestions,
+            continuationInstruction: "Answer each correlated question with its exact inReplyToUpdateId before ending this Run." }
+        : input.payload;
       const activationId = this.createActivation({
         projectId: input.projectId,
         agentId: input.agentId,
@@ -2121,7 +2130,7 @@ export class CoordinationV3Store {
         dispatchPolicy: input.dispatchPolicy ?? (input.kind === "ordinary" ? "next_run" : "steer_or_run"),
         promptClass: input.promptClass ?? (input.kind === "human" ? "human" : input.kind === "urgent" ? "blocker" : "ordinary"),
         dedupeKey: `message:${input.messageId}`,
-        payload: input.payload,
+        payload,
         sourceKind: "message",
         sourceId: input.messageId,
         externalIntake: true,
@@ -6013,6 +6022,9 @@ export class CoordinationV3Store {
         requestId: request.id,
         state: request.state,
         direction: request.recipient_agent_id === join.owner_agent_id ? "inbound" : "outbound_question",
+        ...(request.recipient_agent_id === join.owner_agent_id || !request.open_question_update_id
+          ? {}
+          : { inReplyToUpdateId: request.open_question_update_id }),
         request: JSON.parse(request.payload_json) as unknown,
       };
     });
@@ -6719,6 +6731,26 @@ export class CoordinationV3Store {
       SET state = 'resolved', updated_at = ?, terminal_at = ?
       WHERE question_update_id = ? AND state = 'open'
     `).run(now, now, questionUpdateId);
+  }
+
+  private questionDependencyContinuations(
+    dependencyKind: "decision" | "join",
+    dependencyId: string,
+  ): Array<{ requestId: string; inReplyToUpdateId: string }> {
+    return this.sqlite.prepare(`
+      SELECT suspension.request_id AS requestId,
+        suspension.question_update_id AS inReplyToUpdateId
+      FROM coordination_question_suspensions suspension
+      JOIN coordination_requests request ON request.id = suspension.request_id
+      WHERE suspension.dependency_kind = ? AND suspension.dependency_id = ?
+        AND suspension.state = 'open'
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id = suspension.question_update_id
+      ORDER BY suspension.created_at, suspension.question_update_id
+    `).all(dependencyKind, dependencyId) as Array<{
+      requestId: string;
+      inReplyToUpdateId: string;
+    }>;
   }
 
   private attachQuestionDependencyToActivation(
