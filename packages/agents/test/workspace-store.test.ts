@@ -133,10 +133,18 @@ describe("WorkspaceStore canonical replay", () => {
       dedupeKey: "provider:claude:denied", title: "Claude needs attention", body: "Subscription unavailable",
       action: { kind: "open_settings", targetId: "providers" },
     });
-    expect(store.createNotification({
+    const updatedNotification = store.createNotification({
       kind: "operational", category: "provider", severity: "urgent", status: "open",
       dedupeKey: "provider:claude:denied", title: "Duplicate", body: "Duplicate",
-    }).id).toBe(notification.id);
+      conversationIds: ["chat", "other-chat"],
+    });
+    expect(updatedNotification).toMatchObject({
+      id: notification.id,
+      createdAt: notification.createdAt,
+      title: "Duplicate",
+      conversationIds: ["chat", "other-chat"],
+    });
+    expect(new WorkspaceStore(dir).getNotification(notification.id)).toMatchObject(updatedNotification);
     const decision = store.createDecision({
       idempotencyKey: "publish-v1", projectId: "project", conversationId: "chat", agentId: "agent", runId: "run",
       mode: "approval", question: "Publish the release?", options: [{ id: "approve", label: "Approve" }, { id: "do_not_approve", label: "Do not approve" }],

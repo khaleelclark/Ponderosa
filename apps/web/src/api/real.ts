@@ -69,6 +69,7 @@ import type {
   LetCurrentRunFinishResponse,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
+  RetryCoordinationRequestResponse,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
@@ -225,6 +226,15 @@ export const realApi = {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work/items/${encodeURIComponent(kind)}/${encodeURIComponent(recordId)}${toQuery({
       conversationId: filter.conversationId,
     })}`);
+  },
+  retryCoordinationRequest(requestId: string): Promise<RetryCoordinationRequestResponse> {
+    return requestJson<RetryCoordinationRequestResponse>(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify({
+        idempotencyKey: `operator-retry:${requestId}`,
+        createJoin: true,
+      }),
+    });
   },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;

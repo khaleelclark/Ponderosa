@@ -2838,6 +2838,14 @@ export class CoordinationV3Store {
           WHERE join_record.project_id = @projectId
             AND (@conversationId IS NULL OR join_record.conversation_id = @conversationId)
           UNION ALL
+          SELECT 'request', retry.id, 'request', original.id
+          FROM coordination_requests retry
+          JOIN coordination_requests original
+            ON original.id = CASE WHEN json_valid(retry.payload_json) THEN json_extract(retry.payload_json, '$.retryOfRequestId') END
+          WHERE retry.project_id = @projectId AND original.project_id = @projectId
+            AND json_valid(retry.payload_json)
+            AND (@conversationId IS NULL OR retry.conversation_id = @conversationId)
+          UNION ALL
           SELECT 'activation', source.activation_id,
             CASE source.source_kind
               WHEN 'request' THEN 'request'
@@ -2943,7 +2951,7 @@ export class CoordinationV3Store {
     };
     const requestSelection = selection("request", "id");
     const requestRows = trimUnscopedOverflow(this.sqlite.prepare(`
-      SELECT id, requester_agent_id, recipient_agent_id, state, communication_event_id, created_at, updated_at
+      SELECT id, requester_agent_id, recipient_agent_id, state, payload_json, communication_event_id, created_at, updated_at
       FROM coordination_requests
       WHERE project_id = ?
         AND (? IS NULL OR conversation_id = ?)
@@ -2955,6 +2963,7 @@ export class CoordinationV3Store {
       ...requestSelection.params, queryLimit,
     ) as Array<{
       id: string; requester_agent_id: string | null; recipient_agent_id: string; state: string;
+      payload_json: string;
       communication_event_id: string | null; created_at: string; updated_at: string;
     }>);
     for (const row of requestRows) {
@@ -2971,6 +2980,13 @@ export class CoordinationV3Store {
         relatedItemIds: [],
         createdAt: row.created_at, updatedAt: row.updated_at,
       });
+    }
+    for (const row of requestRows) {
+      if (!row.payload_json) continue;
+      const payload = JSON.parse(row.payload_json) as { retryOfRequestId?: unknown } | null;
+      if (payload && typeof payload.retryOfRequestId === "string") {
+        relate(`request:${row.id}`, `request:${payload.retryOfRequestId}`);
+      }
     }
 
     const joinSelection = selection("join", "id");
@@ -3566,6 +3582,23 @@ export class CoordinationV3Store {
       state: row.state,
       version: row.version,
       payload: JSON.parse(row.payload_json) as unknown,
+    };
+  }
+
+  requestRetryStatus(requestId: string): {
+    activeRequestId?: string;
+    completedRequestId?: string;
+  } {
+    const rows = this.sqlite.prepare(`
+      SELECT id, state FROM coordination_requests
+      WHERE CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.retryOfRequestId') END = ?
+      ORDER BY created_at DESC, id DESC
+    `).all(requestId) as Array<{ id: string; state: string }>;
+    const active = rows.find((row) => ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state));
+    const completed = rows.find((row) => row.state === "completed");
+    return {
+      ...(active ? { activeRequestId: active.id } : {}),
+      ...(completed ? { completedRequestId: completed.id } : {}),
     };
   }
 

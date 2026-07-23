@@ -88,7 +88,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
         <Stat label="Active Agents" value={activeAgents} />
-        <Stat label="Needs Attention" value={needsAttention} onClick={onOpenInbox} />
+        <Stat label="Open Issues" value={needsAttention} onClick={onOpenInbox} />
         <Stat label="Unread Messages" value={unread} onClick={() => onNavigate({ kind: "allChat" })} />
         <Stat label="Provider Health" value={provider.label} />
       </Box>
@@ -103,7 +103,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
         </Box>
       </Paper>
 
-      {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} {needsAttention === 1 ? "item needs" : "items need"} attention</Typography><Typography variant="body2" color="text.secondary">Review decisions, failures, and other operational issues.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}
+      {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}
 
       {starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, route: item.route }); }} />)}</Stack></Box> : null}
 

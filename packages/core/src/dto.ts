@@ -181,7 +181,11 @@ export interface WorkspaceNotificationDto {
   id: string;
   projectId?: string;
   conversationId?: string;
+  /** Every Project chat where the affected Agent currently participates. */
+  conversationIds?: string[];
   agentId?: string;
+  /** All Agents directly affected by this current issue. */
+  agentIds?: string[];
   communicationEventId?: string;
   kind: Exclude<NotificationPreference, "none"> | "collaboration" | "operational" | "decision";
   category?: "communication" | "provider" | "trigger" | "budget" | "coordination" | "decision" | "system";
@@ -196,6 +200,24 @@ export interface WorkspaceNotificationDto {
   readAt?: string;
   resolvedAt?: string;
   decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status">;
+  /** Human-facing recovery context for one current coordination problem. */
+  resolution?: {
+    kind: "coordination_request";
+    traceId: string;
+    requestId: string;
+    recipientAgentId: string;
+    recipientTitle: string;
+    assignment: string;
+    outcome: string;
+    retryAvailable: boolean;
+  };
+}
+
+export interface RetryCoordinationRequestResponse {
+  requestIds: string[];
+  joinId?: string;
+  replayed: boolean;
+  retryOfRequestId: string;
 }
 
 export type DecisionMode = "approval" | "choice" | "text";
@@ -236,7 +258,7 @@ export type WorkspaceEvent =
   | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }
   | { type: "draft_conflict"; conversationId: string; revision: number }
-  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "read" | "cleared" }
+  | { type: "notification_changed"; notificationId?: string; conversationId?: string; action: "created" | "updated" | "read" | "cleared" }
   | { type: "queued_message_changed"; conversationId: string; deliveryId: string; action: "queued" | "edited" | "steered" | "cancelled" | "started" }
   | { type: "message_delivery_changed"; /** Absent on legacy persisted events. */ projectId?: string; agentId: string; conversationIds?: string[] }
   | { type: "coordination_changed"; projectId: string; agentId: string }

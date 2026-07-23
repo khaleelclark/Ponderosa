@@ -324,18 +324,9 @@ export function ConversationView({
     queryKey: ["queued-messages", conversationId],
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
-  const decisionsQuery = useQuery({ queryKey: ["decisions", "conversation", conversationId], queryFn: () => api.listDecisions({ conversationId, status: "pending" }) });
   const notificationsQuery = useNotifications();
   const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
   const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
-  const respondDecision = useMutation({
-    mutationFn: ({ id, optionId, text }: { id: string; optionId?: string; text?: string }) => api.respondDecision(id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}) }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["decisions", "conversation", conversationId] });
-      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
-    },
-  });
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -1117,7 +1108,7 @@ export function ConversationView({
         >
         {agentsOpen ? agentRoster : null}
         <Box data-chat-column sx={{ display: agentsOpen ? "none" : "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
-          {activeView === "main" ? <AttentionSurface notifications={(notificationsQuery.data ?? []).filter((item) => item.kind !== "decision")} projectId={conversation.projectId} conversationId={conversationId} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "runs") : onOpenAgentWork(item.communicationEventId)} /> : null}
+          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => item.agentId ? onOpenAgent(item.agentId, "runs") : onOpenAgentWork(item.communicationEventId)} /> : null}
           {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
             Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
           </Alert> : null}
@@ -1128,14 +1119,6 @@ export function ConversationView({
             </Alert>
           ) : null}
           {activeView === "main" && projectBrowser.data?.status === "ready" ? <Alert severity="info" action={<Button color="inherit" size="small" onClick={onOpenBrowser}>Open Tab</Button>} sx={{ mb: 1.5 }}>Interactive Browser is active{projectBrowser.data.title ? ` · ${projectBrowser.data.title}` : ""}.</Alert> : null}
-          {(decisionsQuery.data ?? []).map((decision) => <Alert key={decision.id} severity={decision.blocking ? "warning" : "info"} sx={{ mb: 1.5 }}>
-            <Typography variant="subtitle2">{agentTitle(decision.agentId)} needs your decision</Typography>
-            <Typography variant="body2" sx={{ mb: 1 }}>{decision.question}</Typography>
-            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-              {decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => respondDecision.mutate({ id: decision.id, optionId: option.id })}>{option.label}</Button>)}
-              {(decision.allowOther || decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondDecision.isPending} onClick={() => { const text = window.prompt(decision.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (text?.trim()) respondDecision.mutate({ id: decision.id, text: text.trim() }); }}>{decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
-            </Stack>
-          </Alert>)}
 
           <Stack spacing={0} sx={{ mb: 2 }}>
             {(activeView === "collaboration" ? collaborationHistory.hasMore || collaborationHistory.operationHasMore : mainHistory.hasMore) ? (

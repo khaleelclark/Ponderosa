@@ -361,7 +361,27 @@ export class WorkspaceStore {
     }
     if (input.dedupeKey) {
       const existing = [...this.notifications.values()].find((item) => item.dedupeKey === input.dedupeKey);
-      if (existing) return existing;
+      if (existing) {
+        if ((existing.status ?? "open") !== "open") return existing;
+        const updated: WorkspaceNotificationDto = {
+          ...existing,
+          ...input,
+          id: existing.id,
+          createdAt: existing.createdAt,
+          ...(existing.readAt ? { readAt: existing.readAt } : {}),
+        };
+        if (JSON.stringify(updated) === JSON.stringify(existing)) return existing;
+        this.append(
+          {
+            type: "notification_changed",
+            notificationId: existing.id,
+            conversationId: updated.conversationId,
+            action: "updated",
+          },
+          { kind: "notification", notification: updated },
+        );
+        return updated;
+      }
     }
     const notification = {
       category: input.kind === "operational" ? "system" as const : "communication" as const,
