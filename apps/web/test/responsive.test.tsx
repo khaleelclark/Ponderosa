@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { isCompactViewport } from "../src/responsive";
+import { renderToStaticMarkup } from "react-dom/server";
+import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("../src/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
-const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
 const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx", import.meta.url), "utf8");
 const artifacts = readFileSync(new URL("../src/components/ProjectArtifactsView.tsx", import.meta.url), "utf8");
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
@@ -81,7 +82,15 @@ describe("responsive compact controls", () => {
   });
 
   it("keeps touched chat actions, user bubbles, and file previews usable at narrow widths", () => {
-    expect(conversation).toContain('maxWidth: fromManager ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" }');
+    const html = renderToStaticMarkup(<ChatMessageFrame message={{
+      id: "message-1",
+      author: { kind: "operator" },
+      createdAt: "2026-07-23T10:00:00.000Z",
+      body: <p>Compact message</p>,
+    }} />);
+    expect(html).toContain("max-width:94%");
+    expect(html).toContain("max-width:88%");
+    expect(html).toContain("max-width:min(78%, 780px)");
     expect(timestamps).toContain('useFlexGap flexWrap="wrap"');
     expect(timestamps).toContain('minWidth: { xs: 44, sm: 28 }');
     expect(globalCss).toContain("@media (hover: none), (pointer: coarse)");

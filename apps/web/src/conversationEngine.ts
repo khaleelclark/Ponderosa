@@ -1,6 +1,6 @@
 import type { EffortOption, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 
-export function engineIsAvailable(engine: Pick<EngineDto, "authenticated" | "available" | "enabled"> | undefined): boolean {
+export function engineIsAvailable(engine: { authenticated: boolean; available: boolean; enabled?: boolean } | undefined): boolean {
   return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
 }
 
@@ -111,6 +111,66 @@ export function effortSelectionIsCompatible(engine: EngineDto | undefined, model
 export interface RuntimeSelection {
   model: string;
   effort: string;
+}
+
+export interface RuntimeOption {
+  id: string;
+  label: string;
+  disabled?: boolean;
+  detail?: string;
+}
+
+export interface RuntimeControlState extends RuntimeSelection {
+  models: RuntimeOption[];
+  efforts: RuntimeOption[];
+  ready: boolean;
+}
+
+/**
+ * One canonical presentation state for creation dialogs, settings, presets, and
+ * chat composers. Saved selections remain visible only when a provider has an
+ * intentionally open catalog; closed catalogs fail back to advertised values.
+ */
+export function runtimeControlState(
+  engine: EngineDto | undefined,
+  selection: RuntimeSelection,
+): RuntimeControlState {
+  if (!engine) return { ...selection, models: [], efforts: [], ready: false };
+  const advertisedModels = engine.models.filter((option) => option.id);
+  const models = engine.modelCatalogKnown === false
+    && selection.model
+    && !advertisedModels.some((option) => option.id === selection.model)
+    ? [...advertisedModels, { id: selection.model, label: `${selection.model} (saved selection)` }]
+    : advertisedModels;
+  const advertisedEfforts = effortOptionsForModel(engine, selection.model);
+  const efforts = selection.effort
+    && effortSelectionIsCompatible(engine, selection.model, selection.effort)
+    && !advertisedEfforts.some((option) => option.id === selection.effort)
+    ? [...advertisedEfforts, { id: selection.effort, label: `${selection.effort} (saved selection)` }]
+    : advertisedEfforts;
+  return {
+    ...selection,
+    models,
+    efforts,
+    ready: engineIsAvailable(engine),
+  };
+}
+
+export function runtimeSelectionAfterChange(
+  engine: EngineDto | undefined,
+  preferences: Pick<WorkspacePreferencesDto, "engineDefaults"> | undefined,
+  project: Pick<ProjectDto, "defaultEngine" | "defaultModel" | "defaultEffort"> | undefined,
+  current: RuntimeSelection,
+  change: { model: string } | { effort: string },
+): RuntimeSelection {
+  if ("model" in change) {
+    const resolved = resolveRuntimeSelection(engine, preferences, project, { model: change.model });
+    return { model: change.model, effort: resolved.effort };
+  }
+  return {
+    model: current.model,
+    effort: effortSelectionIsCompatible(engine, current.model, change.effort) ? change.effort : "",
+  };
 }
 
 /** Resolve inherited settings to concrete provider options before rendering or dispatch. */

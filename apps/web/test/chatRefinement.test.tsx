@@ -115,13 +115,23 @@ describe("chat interaction refinement", () => {
 
   it("uses one bounded document column and removes the nested Markdown preview scroller", () => {
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
+    const documentCard = readFileSync(new URL("../src/components/chat/ChatDocumentCard.tsx", import.meta.url), "utf8");
+    const html = renderToStaticMarkup(
+      <ConversationMessage
+        message={baseMessage}
+        conversation="main"
+        agentTitle={() => "Agent One"}
+        agentIdForHandle={() => undefined}
+        onOpenAgent={vi.fn()}
+        projectId="project-1"
+      />,
+    );
 
     expect(conversation).toContain("data-chat-column");
     expect(conversation).toContain('width: "min(1180px, 100%)"');
-    expect(conversation).toContain('width: "min(1120px, 100%)"');
-    expect(panes).not.toContain('maxHeight: "60vh", overflow: "auto"');
-    expect(panes).toContain('tabIndex={0}');
+    expect(html).toContain("width:min(1120px, 100%)");
+    expect(documentCard).not.toContain('maxHeight: "60vh", overflow: "auto"');
+    expect(documentCard).toContain('className="ponderosa-scroll"');
   });
 
   it("keeps Markdown block rhythm compact without losing authored line breaks", () => {

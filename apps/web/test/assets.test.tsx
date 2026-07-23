@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { artifactDisplayLabel } from "../src/components/panes";
 import { AttachmentPreview } from "../src/components/filePreview/AttachmentPreview";
+import { ChatAttachments } from "../src/components/chat/ChatAttachments";
 
 const panes = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
 const api = readFileSync(new URL("../src/api/real.ts", import.meta.url), "utf8");
@@ -23,7 +24,7 @@ describe("general asset UI contract", () => {
   });
 
   it("renders safe previews separately from general download metadata", () => {
-    const html = renderToStaticMarkup(createElement(AttachmentPreview, { attachment: {
+    const previewHtml = renderToStaticMarkup(createElement(AttachmentPreview, { attachment: {
       id: "file-1",
       name: "report.pdf",
       mediaType: "application/pdf",
@@ -32,11 +33,21 @@ describe("general asset UI contract", () => {
       previewUrl: "/asset/preview",
       downloadUrl: "/asset/download",
     } }));
-    expect(html).toContain('data-preview-capability="pdf"');
-    expect(html).not.toContain("<iframe");
-    expect(html).toContain('href="/asset/preview"');
-    expect(html).toContain('href="/asset/download"');
-    expect(html).toContain('aria-label="Download report.pdf"');
+    expect(previewHtml).toContain('data-preview-capability="pdf"');
+    expect(previewHtml).not.toContain("<iframe");
+    expect(previewHtml).toContain('href="/asset/preview"');
+    expect(previewHtml).toContain('href="/asset/download"');
+    expect(previewHtml).toContain('aria-label="Download report.pdf"');
+
+    const attachmentHtml = renderToStaticMarkup(<ChatAttachments attachments={[
+      { id: "image", agentId: "a", name: "preview.png", mediaType: "image/png", size: 10, url: "/image", previewUrl: "/preview" },
+      { id: "pdf", agentId: "a", name: "brief.pdf", mediaType: "application/pdf", size: 20, url: "/pdf", downloadUrl: "/download" },
+    ]} />);
+    expect(attachmentHtml).toContain('src="/preview"');
+    expect(attachmentHtml).toContain("application/pdf · 20 bytes");
+    expect(attachmentHtml).toContain('href="/download"');
+    expect(attachmentHtml).toContain('aria-label="Download brief.pdf"');
+    expect(attachmentHtml).toContain("min-height:44px");
   });
 
   it("uploads bytes through the binary parser while preserving declared type separately", () => {

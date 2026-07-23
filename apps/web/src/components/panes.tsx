@@ -13,7 +13,6 @@ import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import LanguageIcon from "@mui/icons-material/Language";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import SearchIcon from "@mui/icons-material/Search";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
@@ -21,7 +20,6 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Chip,
@@ -57,7 +55,7 @@ import {
   unifiedDiffLineTotals,
   utf8ByteLength,
 } from "@ponderosa/core";
-import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactDto, AssetLimitsDto, ChangedFileDto, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, AgentCoordinationV3Dto, ArtifactDto, AssetLimitsDto, ChangedFileDto, CommunicationDocumentReference, ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto, MessageDto, OperatorProfileDto, ProviderInputDto, QueuedConversationMessageDto, ResponseFileActivityDto, WorkItemDto, RunOutputDto, VerifiedCitationDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useLayoutEffect, useReducer, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -67,24 +65,26 @@ import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { copyText } from "../clipboard";
-import { readChatState, readScrollPosition, writeChatState } from "../chatState";
+import { readChatState, writeChatState } from "../chatState";
 import { telemetryElementId } from "../telemetryFocus";
 import type { ExecutionItem } from "../hooks/useAgentStream";
 import { agentMentionHandle, findMentionedHandles } from "../mentions";
-import { MessageSenderLabel } from "./MessageSenderLabel";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { CopyMessageButton } from "./CopyMessageButton";
-import { MessageActionsAndTimestamp, MessageTimestamp } from "./MessageTimestamp";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { useProjectBrowser } from "./ProjectBrowserContext";
 import { acquireFavicon, faviconIdentity, markFaviconFailed } from "../faviconCache";
-import { OperatorAvatar } from "./OperatorAvatar";
-import { CommunicationDocumentCard } from "./filePreview/CommunicationDocumentCard";
 import { AgentArtifactPreview } from "./filePreview/ArtifactPreview";
 import { UnifiedDiffViewer } from "./filePreview/FilePreview";
-import { AttachmentPreview } from "./filePreview/AttachmentPreview";
-export { CommunicationDocumentCard } from "./filePreview/CommunicationDocumentCard";
 export { UnifiedDiffViewer, diffLineKind } from "./filePreview/FilePreview";
+import { ChatOperatorLabel } from "./chat/ChatOperatorLabel";
+import { ChatAttachments } from "./chat/ChatAttachments";
+import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { ChatSurface } from "./chat/ChatSurface";
+import { isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "./chat/scroll";
+import type { ChatComposerContract } from "./chat/composerContracts";
+import { ChatDocumentCard } from "./chat/ChatDocumentCard";
+export { CHAT_BOTTOM_THRESHOLD, isChatNearBottom, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom } from "./chat/scroll";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -470,14 +470,6 @@ export function artifactDisplayLabel(artifact: Pick<ArtifactDto, "kind" | "path"
   return summary || fileName(artifact.path) || "Result";
 }
 
-export const CHAT_BOTTOM_THRESHOLD = 48;
-
-export function isChatNearBottom(
-  element: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,
-): boolean {
-  return element.scrollHeight - element.clientHeight - element.scrollTop <= CHAT_BOTTOM_THRESHOLD;
-}
-
 /**
  * Stable layout signal for chat follow-mode. Query refreshes often allocate a
  * new message array even when its rendered content is unchanged; using that
@@ -495,61 +487,6 @@ export function chatMessageLayoutKey(messages: ReadonlyArray<{
   return last
     ? `${messages.length}:${last.id}:${last.createdAt}:${last.text.length}:${last.attachments?.length ?? 0}:${last.fileActivity?.length ?? 0}`
     : "0";
-}
-
-export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {
-  element.scrollTop = element.scrollHeight;
-}
-
-export function ScrollToLatestButton({ visible, onClick, label = "Jump to latest message" }: { visible: boolean; onClick(): void; label?: string }): JSX.Element | null {
-  if (!visible) return null;
-  const sharedSx = {
-    position: "absolute",
-    right: { xs: 12, sm: 20 },
-    bottom: 14,
-    zIndex: 2,
-    boxShadow: 3,
-  } as const;
-  if (label === "Jump to latest message") return <Tooltip title="Jump to Latest Message">
-    <IconButton
-      aria-label="Jump to latest message"
-      onClick={onClick}
-      sx={{
-        ...sharedSx,
-        width: 36,
-        height: 36,
-        color: "primary.light",
-        bgcolor: "background.paper",
-        border: 1,
-        borderColor: "divider",
-        "&:hover": { bgcolor: "action.selected" },
-      }}
-    ><KeyboardArrowDownIcon /></IconButton>
-  </Tooltip>;
-  return <Tooltip title={label}>
-    <Button
-      aria-label={label}
-      size="small"
-      variant="contained"
-      onClick={onClick}
-      startIcon={<KeyboardArrowDownIcon />}
-      sx={sharedSx}
-    >{label}</Button>
-  </Tooltip>;
-}
-
-const scrollActivityTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
-
-/** Reveal the already-reserved scrollbar thumb for touch, wheel, and keyboard scrolling. */
-export function revealChatScrollbar(element: HTMLElement): void {
-  element.classList.add("is-scrolling");
-  const activeTimer = scrollActivityTimers.get(element);
-  if (activeTimer) clearTimeout(activeTimer);
-  const timer = setTimeout(() => {
-    element.classList.remove("is-scrolling");
-    scrollActivityTimers.delete(element);
-  }, 700);
-  scrollActivityTimers.set(element, timer);
 }
 
 export function replyFallbackText(text: string): string {
@@ -807,6 +744,10 @@ export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle,
   return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compact}>{text}</ChatMarkdown>;
 }
 
+export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
+  return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown>{content}</ChatMarkdown>} />;
+}
+
 export function ChatMessageBody({ text, citations, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compactMarkdown = false }: {
   text: string;
   citations?: VerifiedCitationDto[];
@@ -857,14 +798,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
 }
 
 export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorProfileDto; createdAt?: string }): JSX.Element {
-  const name = profile?.displayName ?? "User";
-  return (
-    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
-      {createdAt ? <Box data-user-message-timestamp sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} compact align="end" desktopOnly /></Box> : null}
-      <Box data-user-message-name sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
-      <Box data-user-message-avatar sx={{ display: "flex", flex: "0 0 auto" }}><OperatorAvatar profile={profile} compactOnMobile /></Box>
-    </Stack>
-  );
+  return <ChatOperatorLabel profile={profile} createdAt={createdAt} />;
 }
 
 function CompletedWorkDurationStatus({ agentName, label }: { agentName: string; label: string }): JSX.Element {
@@ -920,60 +854,15 @@ export function ChatPane({
     (message) => message.role === "user" || message.role === "assistant",
   );
   const messageLayoutKey = chatMessageLayoutKey(chatMessages);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const shouldFollowNewMessages = useRef(true);
-  const restoredScrollKey = useRef<string>();
-  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
-  const [mobileTimestampMessageId, setMobileTimestampMessageId] = useState<string>();
-
-  useLayoutEffect(() => {
-    if (!scrollRef.current) return;
-    if (scrollStorageKey && restoredScrollKey.current !== scrollStorageKey) {
-      restoredScrollKey.current = scrollStorageKey;
-      const saved = readScrollPosition(scrollStorageKey);
-      if (saved !== undefined) {
-        scrollRef.current.scrollTop = saved;
-        shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
-        setShowScrollToLatest(!shouldFollowNewMessages.current);
-        onScrollPositionChange?.(scrollRef.current, shouldFollowNewMessages.current);
-        return;
-      }
-    }
-    if (shouldFollowNewMessages.current) {
-      scrollChatToBottom(scrollRef.current);
-      setShowScrollToLatest(false);
-      onScrollPositionChange?.(scrollRef.current, true);
-    }
-  }, [messageLayoutKey, scrollStorageKey]);
 
   return (
-    <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0 }}>
-    <Stack
-      component="section"
-      aria-label="Conversation"
-      className="chat-scroll-region"
-      ref={scrollRef}
-      spacing={0}
-      tabIndex={0}
-      onScroll={(event) => {
-        revealChatScrollbar(event.currentTarget);
-        if (scrollRef.current) {
-          shouldFollowNewMessages.current = isChatNearBottom(scrollRef.current);
-          setShowScrollToLatest(!shouldFollowNewMessages.current);
-          onScrollPositionChange?.(scrollRef.current, shouldFollowNewMessages.current);
-          if (scrollStorageKey) writeChatState(scrollStorageKey, String(scrollRef.current.scrollTop));
-        }
-      }}
-      sx={{ px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3, height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain", "& > *": { width: "min(1120px, 100%)", alignSelf: "center" } }}
+    <ChatSurface
+      layout="agent"
+      layoutKey={messageLayoutKey}
+      follow={{ kind: "latest", ...(scrollStorageKey ? { storageKey: scrollStorageKey } : {}), onPositionChange: onScrollPositionChange }}
+      history={{ kind: "cursor", hasEarlier: hasOlder, loading: loadingOlder, onLoadEarlier: () => onLoadOlder?.() }}
+      empty="Send a message to this agent to start the conversation."
     >
-      {hasOlder ? <Stack sx={{ alignItems: "center", mb: 1.5 }}>
-        <Button size="small" color="inherit" disabled={loadingOlder} onClick={onLoadOlder}>
-          {loadingOlder ? "Loading…" : "Load Older History"}
-        </Button>
-      </Stack> : null}
-      {chatMessages.length === 0 ? (
-        <Alert severity="info">Send a message to this agent to start the conversation.</Alert>
-      ) : null}
       {chatMessages.map((message) => {
         const visibleAgentName = message.authorAgentId
           ? agentNameForId?.(message.authorAgentId) ?? "Agent"
@@ -983,61 +872,23 @@ export function ChatPane({
           : individualChatSenderLabel(message.role, visibleAgentName);
         const fromUser = message.role === "user";
         const workDurationLabel = message.role === "assistant" ? completedWorkDurationLabel?.(message) : undefined;
-        return (
-        <Box
+        return <ChatMessageFrame
           key={message.id}
-          id={`message-${message.id}`}
-          component="article"
-          className="chat-message"
-          aria-label={`${senderLabel} message`}
-          tabIndex={-1}
-          onClick={() => setMobileTimestampMessageId((current) => current === message.id ? undefined : message.id)}
-          sx={{
-            alignSelf: "center",
-            width: "min(1120px, 100%)",
-            maxWidth: "100%",
-            minWidth: 0,
-            py: { xs: 0.75, sm: 1 },
-          }}
-        >
-          <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromUser ? "flex-end" : "flex-start", minWidth: 0 }}>
-            {!fromUser ? <Avatar aria-label={`${senderLabel} avatar`} sx={{ width: { xs: 32, sm: 36 }, height: { xs: 32, sm: 36 }, flex: "0 0 auto", bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC", color: "text.primary", fontSize: { xs: 13, sm: 15 }, fontWeight: 750 }}>{senderLabel.slice(0, 1).toLocaleUpperCase()}</Avatar> : null}
-            <Box sx={{ minWidth: 0, width: fromUser ? "fit-content" : "min(100%, 960px)", maxWidth: fromUser ? { xs: "94%", sm: "88%", md: "min(78%, 780px)" } : "100%" }}>
-              {!fromUser ? <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
-                <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderLabel} /></Box>
-                <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
-              </Stack> : null}
-              {fromUser ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><UserMessageLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
-              <Box
-                data-message-bubble="true"
-                sx={{
-                  width: fromUser ? "fit-content" : "auto",
-                  maxWidth: "100%",
-                  ml: fromUser ? "auto" : 0,
-                  px: fromUser ? { xs: 1.25, sm: 1.5 } : 0,
-                  py: fromUser ? { xs: 1, sm: 1.15 } : 0,
-                  borderRadius: 2,
-                  bgcolor: fromUser ? (theme) => theme.palette.mode === "dark" ? "#27332F" : "#EFF0EB" : "transparent",
-                  color: "text.primary",
-                  border: 0,
-                }}
-              >
-            {fromUser ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name="You" /></Box> : null}
-            {message.replyTo ? (
-              <Box
-                component="button"
-                onClick={() => {
-                  const target = document.getElementById(`message-${message.replyTo!.messageId}`);
-                  target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  target?.focus({ preventScroll: true });
-                }}
-                sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, textAlign: "left", border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", cursor: "pointer", borderRadius: 1 }}
-                aria-label="Go to replied-to message"
-              >
-                <Typography variant="caption" component="div" noWrap>{replyFallbackText(message.replyTo.text)}</Typography>
-              </Box>
-            ) : null}
-            <ChatMessageBody
+          message={{
+            id: `message-${message.id}`,
+            author: fromUser
+              ? { kind: "operator", profile: operatorProfile }
+              : { kind: "agent", name: senderLabel },
+            createdAt: message.createdAt,
+            reply: message.replyTo ? {
+              text: replyFallbackText(message.replyTo.text),
+              onOpen: () => {
+                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
+                target?.scrollIntoView({ behavior: "smooth", block: "center" });
+                target?.focus({ preventScroll: true });
+              },
+            } : undefined,
+            body: <ChatMessageBody
               text={message.document
                 ? message.text.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")
                 : message.text}
@@ -1057,49 +908,29 @@ export function ChatPane({
                 : undefined}
               previewScope={linkPreviewScopeForMessage(message, previewScope)}
               projectId={projectId ?? previewScope?.projectId}
-            />
-            {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
-            {message.attachments?.length ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: message.text ? 1 : 0 }}>
-              {message.attachments.map((attachment) => <AttachmentPreview key={attachment.id} attachment={attachment} maxWidth={220} />)}
-            </Stack> : null}
-              </Box>
-              {workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : null}
-              <MessageActionsAndTimestamp
-                mobileTimestampAlign={fromUser ? "end" : "start"}
-                mobileTimestampRevealed={mobileTimestampMessageId === message.id}
-                showTimestamp={false}
-                value={message.createdAt}
-                status={message.role === "user" && message.deliveryReceipts?.length
-                  ? <MessageDeliveryStatus
-                    projectId={projectId ?? previewScope?.projectId}
-                    receipts={message.deliveryReceipts}
-                    recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
-                    onOpenAgent={onOpenAgent}
-                    onOpenWorkLog={onOpenWorkLog}
-                  />
-                  : undefined}
-                actions={<>
+            />,
+            afterBody: <>
+              {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
+              <ChatAttachments attachments={message.attachments ?? []} density="compact" />
+            </>,
+            belowBody: workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : undefined,
+            status: message.role === "user" && message.deliveryReceipts?.length
+              ? <MessageDeliveryStatus
+                  projectId={projectId ?? previewScope?.projectId}
+                  receipts={message.deliveryReceipts}
+                  recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
+                  onOpenAgent={onOpenAgent}
+                  onOpenWorkLog={onOpenWorkLog}
+                />
+              : undefined,
+            actions: <>
               {message.role === "assistant" && onMentionAgent ? <Tooltip title={`Mention ${senderLabel}`}><IconButton size="small" aria-label={`Mention ${senderLabel}`} onClick={onMentionAgent}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
               <CopyMessageButton text={message.text} />
-                </>}
-              />
-            </Box>
-          </Stack>
-        </Box>
-        );
+            </>,
+          }}
+        />;
       })}
-    </Stack>
-    <ScrollToLatestButton
-      visible={showScrollToLatest}
-      onClick={() => {
-        if (!scrollRef.current) return;
-        shouldFollowNewMessages.current = true;
-        scrollChatToBottom(scrollRef.current);
-        setShowScrollToLatest(false);
-        onScrollPositionChange?.(scrollRef.current, true);
-      }}
-    />
-    </Box>
+    </ChatSurface>
   );
 }
 
@@ -2146,6 +1977,30 @@ export function QueuedMessageTray({ messages, agentNameForId, busy, onSteer, onE
   </Paper>;
 }
 
+export interface ComposerProps extends ChatComposerContract {
+  /** Keep the composer available while other Agents in this shared chat are working. */
+  allowSendWhileRunning?: boolean;
+  placeholder?: string;
+  projectId?: string;
+  mentionHandles?: string[];
+  onCapabilitiesOpen?(): Promise<unknown> | unknown;
+  attachmentsEnabled?: boolean;
+  attachmentsUnavailableReason?: string;
+  busyMentionHandles?: string[];
+  allowUnmentionedSend?: boolean;
+  preferQueue?: boolean;
+  queuedMentionHandles?: string[];
+  agentResponding?: boolean;
+  onCancel?(): void;
+  replyTo?: { text: string };
+  onCancelReply?(): void;
+  replyLabel?: string;
+  draftStorageKey?: string;
+  conversationDraftId?: string;
+  focusReply?: boolean;
+  insertTextRequest?: { id: string; text: string };
+}
+
 export function Composer({
   disabled,
   running,
@@ -2176,57 +2031,7 @@ export function Composer({
   guidance,
   focusReply = false,
   insertTextRequest,
-}: {
-  disabled: boolean;
-  running: boolean;
-  /** Keep the composer available while other Agents in this shared chat are working. */
-  allowSendWhileRunning?: boolean;
-  placeholder?: string;
-  /** Project scope used by `@` file/folder reference autocomplete. */
-  projectId?: string;
-  /** When provided, typing `#` autocompletes these agent handles (group chat). */
-  mentionHandles?: string[];
-  /** Engine/system capabilities shown when the composer starts with `/`. */
-  commands?: EngineCommand[];
-  /** Adapter-normalized capabilities for the selected authenticated runtime. */
-  capabilities?: EngineComposerCapability[];
-  /** Refresh discovery immediately before the capability menu is shown. */
-  onCapabilitiesOpen?(): Promise<unknown> | unknown;
-  /** Whether this communication surface currently accepts staged assets. */
-  attachmentsEnabled?: boolean;
-  attachmentsUnavailableReason?: string;
-  /** Mentioned agents that cannot accept a new turn yet. */
-  busyMentionHandles?: string[];
-  /** Whether text without a valid mention may be submitted. */
-  allowUnmentionedSend?: boolean;
-  onSend(text: string, files: File[], draftAttachmentIds?: string[], draftOwnerId?: string): Promise<unknown> | unknown;
-  /** Structured provider commands bypass ordinary user-text submission. */
-  onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
-  /** Explicitly enqueue this draft instead of steering the active agent turn. */
-  onQueue?(text: string, files: File[], draftAttachmentIds?: string[], draftOwnerId?: string): Promise<unknown> | unknown;
-  /** Make the primary send action enqueue while this direct Agent already has pending work. */
-  preferQueue?: boolean;
-  /** Agent handles whose existing pending work should make a targeted follow-up enqueue by default. */
-  queuedMentionHandles?: string[];
-  /** Canonical server-owned activity; used only to reveal the explicit Queue action. */
-  agentResponding?: boolean;
-  onCancel?(): void;
-  replyTo?: { text: string };
-  onCancelReply?(): void;
-  replyLabel?: string;
-  /** Stable surface key used to preserve an unsent draft across tabs and refreshes. */
-  draftStorageKey?: string;
-  /** Enables server-authoritative, revisioned draft persistence for this chat surface. */
-  conversationDraftId?: string;
-  /** Compact engine/model/effort controls rendered in the bottom action row. */
-  controls?: ReactNode;
-  /** Context-specific targeting/file guidance rendered inside the shared shell. */
-  guidance?: ReactNode;
-  /** Focus the normal composer when a direct reply is selected. */
-  focusReply?: boolean;
-  /** Inserts text into the draft when a message action explicitly requests it. */
-  insertTextRequest?: { id: string; text: string };
-}): JSX.Element {
+}: ComposerProps): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [draftOwnerId] = useState(() => {
     if (typeof window === "undefined") return "server";

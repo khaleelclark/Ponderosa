@@ -58,7 +58,7 @@ import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection } from "../conversationEngine";
+import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveRuntimeSelection, runtimeControlState } from "../conversationEngine";
 import { ActivityPane, ArtifactsPane, ChatPane, Composer, QueuedMessageTray } from "./panes";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
@@ -76,6 +76,7 @@ import { TriggersPane } from "./TriggersPane";
 import { AgentHeaderRelationships, orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { queryKeys } from "../queryKeys";
+import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
 type AgentTab = AgentDetailView;
 
@@ -486,6 +487,16 @@ export function AgentDetail({
   const engine =
     engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
   const project = projectsQuery.data?.find((candidate) => candidate.id === detail?.agent.projectId);
+  const selectedRuntime = useRuntimeControls({
+    engine,
+    preferences: preferencesQuery.data,
+    project,
+    selection: { model, effort },
+    onChange: (next) => {
+      setModel(next.model);
+      setEffort(next.effort);
+    },
+  });
   const inheritedRuntime = resolveRuntimeSelection(engine, preferencesQuery.data, project);
   const engineCapability = engineCapabilities.find((item) => item.engineId === engine?.id);
   const commands: EngineCommand[] = engineCapability?.commands ?? [];
@@ -749,26 +760,12 @@ export function AgentDetail({
   const activeTelemetryStreams = telemetryStreamsForTab(tab);
   const hasOlderTelemetry = activeTelemetryStreams.some((stream) => detail.telemetryHistory?.[stream]?.hasMore);
 
-  const advertisedModels = engine?.models.filter((option) => option.id) ?? [];
-  const models = engine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
-    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
-    : advertisedModels;
-  const advertisedEfforts = effortOptionsForModel(engine, model);
-  const efforts = effort && effortSelectionIsCompatible(engine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
-    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
-    : advertisedEfforts;
+  const models = selectedRuntime.models;
+  const efforts = selectedRuntime.efforts;
   const settingsEngineRegistration = engines.find((candidate) => candidate.id === settingsEngine);
-  const advertisedSettingsModels = settingsEngineRegistration?.models.filter((option) => option.id) ?? [];
-  const settingsModels = settingsEngineRegistration?.modelCatalogKnown === false && settingsModel &&
-    !advertisedSettingsModels.some((option) => option.id === settingsModel)
-    ? [...advertisedSettingsModels, { id: settingsModel, label: `${settingsModel} (saved selection)` }]
-    : advertisedSettingsModels;
-  const advertisedSettingsEfforts = effortOptionsForModel(settingsEngineRegistration, settingsModel);
-  const settingsEfforts = settingsEffort &&
-    effortSelectionIsCompatible(settingsEngineRegistration, settingsModel, settingsEffort) &&
-    !advertisedSettingsEfforts.some((option) => option.id === settingsEffort)
-    ? [...advertisedSettingsEfforts, { id: settingsEffort, label: `${settingsEffort} (saved selection)` }]
-    : advertisedSettingsEfforts;
+  const settingsRuntime = runtimeControlState(settingsEngineRegistration, { model: settingsModel, effort: settingsEffort });
+  const settingsModels = settingsRuntime.models;
+  const settingsEfforts = settingsRuntime.efforts;
   const runtimeSettingsDirty = settingsEngine !== detail.agent.activeEngine ||
     settingsModel !== (detail.agent.model ?? "") ||
     settingsEffort !== (detail.agent.effort ?? "");
@@ -816,11 +813,11 @@ export function AgentDetail({
     effort={effort}
     efforts={efforts}
     onModelChange={(nextModel) => {
-      setModel(nextModel);
-      const resolved = resolveRuntimeSelection(engine, preferencesQuery.data, project, { model: nextModel });
-      setEffort(resolved.effort);
+      selectedRuntime.selectModel(nextModel);
     }}
-    onEffortChange={setEffort}
+    onEffortChange={(nextEffort) => {
+      selectedRuntime.selectEffort(nextEffort);
+    }}
   />;
 
   const submitAgentMessage = (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>

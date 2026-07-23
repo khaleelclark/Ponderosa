@@ -16,7 +16,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentPresetDto, EngineDto, ConversationDto, AgentDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
-import { effortOptionsForModel, effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
+import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, runtimeControlState } from "../conversationEngine";
 
 const UNSET = "";
 
@@ -38,14 +38,9 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
   const edit = (preset?: AgentPresetDto) => { setEditing(preset); setName(preset?.name ?? ""); setDescription(preset?.description ?? ""); setGuidance(preset?.guidance ?? ""); setEngine(preset?.engine ?? engines[0]?.id ?? ""); setModel(preset?.model ?? ""); setEffort(preset?.effort ?? ""); setEnabled(preset?.enabled ?? true); };
   useEffect(() => { if (open && !editing && !engine && engines[0]) setEngine(engines[0].id); }, [editing, engine, engines, open]);
   const selected = engines.find((item) => item.id === engine);
-  const advertisedModels = selected?.models.filter((option) => option.id) ?? [];
-  const models = selected?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
-    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
-    : advertisedModels;
-  const advertisedEfforts = effortOptionsForModel(selected, model);
-  const efforts = effort && effortSelectionIsCompatible(selected, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
-    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
-    : advertisedEfforts;
+  const runtime = runtimeControlState(selected, { model, effort });
+  const models = runtime.models;
+  const efforts = runtime.efforts;
   return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md"><DialogTitle>Agent presets</DialogTitle><DialogContent>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ pt: 1 }}>
       <Stack sx={{ minWidth: 260 }}><Button onClick={() => edit()}>New Preset</Button><List>{presets.map((preset) => <ListItem key={preset.id} secondaryAction={<Button color="error" onClick={() => onDelete(preset.id)}>Delete</Button>}><ListItemText primary={preset.name} secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`} onClick={() => edit(preset)} sx={{ cursor: "pointer" }} /></ListItem>)}</List></Stack>
@@ -239,14 +234,9 @@ export function CreateAgentDialog({
   }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, defaultManagerAgentId, fixedConversationId, engines]);
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
-  const advertisedModels = activeEngine?.models.filter((option) => option.id) ?? [];
-  const models = activeEngine?.modelCatalogKnown === false && model && !advertisedModels.some((option) => option.id === model)
-    ? [...advertisedModels, { id: model, label: `${model} (saved selection)` }]
-    : advertisedModels;
-  const advertisedEfforts = effortOptionsForModel(activeEngine, model);
-  const efforts = effort && effortSelectionIsCompatible(activeEngine, model, effort) && !advertisedEfforts.some((option) => option.id === effort)
-    ? [...advertisedEfforts, { id: effort, label: `${effort} (saved selection)` }]
-    : advertisedEfforts;
+  const runtime = runtimeControlState(activeEngine, { model, effort });
+  const models = runtime.models;
+  const efforts = runtime.efforts;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
