@@ -441,6 +441,9 @@ export interface EnqueueMessageActivationInput {
   dispatchPolicy?: ActivationDispatchPolicy;
   promptClass?: ActivationPromptClass;
   payload: unknown;
+  /** Server-owned durable continuations may bypass ordinary intake backpressure. */
+  bypassCapacity?: boolean;
+  questionDependency?: { kind: "decision"; id: string };
   now?: string;
 }
 
@@ -1796,11 +1799,57 @@ export class CoordinationV3Store {
       JOIN json_each(join_record.continuation_request_ids_json) continuation
       JOIN coordination_requests request ON request.id = continuation.value
       WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND request.recipient_agent_id = run.agent_id
+        AND (
+          request.recipient_agent_id = run.agent_id
+          OR (request.requester_agent_id = run.agent_id
+            AND request.state = 'awaiting_answer')
+        )
     `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
     return [...new Map([...directRows, ...continuationRows].map((row) => [row.id, row])).values()]
       .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
       .map((row) => row.id);
+  }
+
+  outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
+    const attached = this.requestIdsAttachedToRun(runId, agentId);
+    if (attached.length === 0) return [];
+    const placeholders = attached.map(() => "?").join(", ");
+    return (this.sqlite.prepare(`
+      SELECT id
+      FROM coordination_requests
+      WHERE id IN (${placeholders})
+        AND requester_agent_id = ?
+        AND state = 'awaiting_answer'
+        AND open_question_update_id IS NOT NULL
+      ORDER BY created_at, id
+    `).all(...attached, agentId) as Array<{ id: string }>).map((row) => row.id);
+  }
+
+  suspendQuestionsForDecision(input: {
+    runId: string;
+    agentId: string;
+    decisionId: string;
+    requestIds?: string[];
+    strict?: boolean;
+    now?: string;
+  }): string[] {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      const attached = new Set(this.outboundAwaitingQuestionRequestIdsAttachedToRun(input.runId, input.agentId));
+      const requested = input.requestIds ?? [...attached];
+      const requestIds = [...new Set(requested)].filter((requestId) => attached.has(requestId));
+      if (input.strict !== false && requestIds.length !== new Set(requested).size) {
+        throw new Error("Decision question suspension is not attached to the originating Run");
+      }
+      this.insertQuestionSuspensions(requestIds, input.agentId, "decision", input.decisionId, now);
+      return requestIds;
+    })();
+  }
+
+  releaseDecisionQuestionSuspensions(decisionId: string, now = new Date().toISOString()): void {
+    this.sqlite.transaction(() => {
+      this.releaseQuestionDependency("decision", decisionId, now);
+    })();
   }
 
   /** Ordinary recipient-to-requester messages during correlated work are
@@ -1969,10 +2018,17 @@ export class CoordinationV3Store {
         const continuationRequestIds = [...new Set(input.join.continuationRequestIds ?? [])];
         for (const requestId of continuationRequestIds) {
           const continuation = this.getRequestRow(requestId);
-          if (continuation.project_id !== input.projectId || continuation.recipient_agent_id !== input.requesterAgentId ||
+          const isInbound = continuation.recipient_agent_id === input.requesterAgentId
+            && !TERMINAL_REQUEST_STATES.has(continuation.state);
+          const isOutboundQuestion = continuation.requester_agent_id === input.requesterAgentId
+            && continuation.state === "awaiting_answer"
+            && continuation.open_question_update_id !== null;
+          if (continuation.project_id !== input.projectId ||
               continuation.conversation_id !== (input.conversationId ?? null) ||
-              TERMINAL_REQUEST_STATES.has(continuation.state)) {
-            throw new Error("every join continuation must be a nonterminal request assigned to the join owner");
+              (!isInbound && !isOutboundQuestion)) {
+            throw new Error(
+              "every join continuation must be nonterminal work assigned to the owner or an attached outbound question",
+            );
           }
         }
         joinId = input.join.id ?? randomUUID();
@@ -2024,6 +2080,15 @@ export class CoordinationV3Store {
           INSERT INTO coordination_join_members (join_id, request_id, position) VALUES (?, ?, ?)
         `);
         memberRequestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
+        const outboundQuestionIds = continuationRequestIds.filter((requestId) => {
+          const continuation = this.getRequestRow(requestId);
+          return continuation.requester_agent_id === input.requesterAgentId
+            && continuation.state === "awaiting_answer"
+            && continuation.open_question_update_id !== null;
+        });
+        this.insertQuestionSuspensions(
+          outboundQuestionIds, input.requesterAgentId, "join", joinId, now,
+        );
         for (const requestId of continuationRequestIds) {
           const continuation = this.getRequestRow(requestId);
           if (continuation.state === "open" || continuation.state === "in_progress") this.updateRequest({
@@ -2049,7 +2114,16 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       this.requireProject(input.projectId);
       this.requireAgent(input.projectId, input.agentId);
-      return this.createActivation({
+      const continuationQuestions = input.questionDependency
+        ? this.questionDependencyContinuations(
+            input.questionDependency.kind, input.questionDependency.id,
+          )
+        : [];
+      const payload = continuationQuestions.length && input.payload && typeof input.payload === "object" && !Array.isArray(input.payload)
+        ? { ...input.payload, continuationQuestions,
+            continuationInstruction: "Answer each correlated question with its exact inReplyToUpdateId before ending this Run." }
+        : input.payload;
+      const activationId = this.createActivation({
         projectId: input.projectId,
         agentId: input.agentId,
         scopeKey: input.scopeKey ?? `agent:${input.agentId}`,
@@ -2058,12 +2132,17 @@ export class CoordinationV3Store {
         dispatchPolicy: input.dispatchPolicy ?? (input.kind === "ordinary" ? "next_run" : "steer_or_run"),
         promptClass: input.promptClass ?? (input.kind === "human" ? "human" : input.kind === "urgent" ? "blocker" : "ordinary"),
         dedupeKey: `message:${input.messageId}`,
-        payload: input.payload,
+        payload,
         sourceKind: "message",
         sourceId: input.messageId,
-        externalIntake: true,
+        externalIntake: !input.bypassCapacity,
         now,
       });
+      if (input.questionDependency) this.attachQuestionDependencyToActivation(
+        activationId, input.questionDependency.kind, input.questionDependency.id, now,
+        true,
+      );
+      return activationId;
     })();
   }
 
@@ -3582,6 +3661,10 @@ export class CoordinationV3Store {
         next.state, next.version, next.openQuestionUpdateId ?? null, now,
         terminalAt(next.state, now), request.id, request.version,
       );
+      if (
+        request.open_question_update_id
+        && request.open_question_update_id !== (next.openQuestionUpdateId ?? null)
+      ) this.settleClearedQuestion(request.open_question_update_id, now);
 
       const joined = (this.sqlite.prepare(`
         SELECT COUNT(*) AS count FROM coordination_join_members WHERE request_id = ?
@@ -3752,6 +3835,7 @@ export class CoordinationV3Store {
       this.sqlite.prepare(`
         UPDATE coordination_joins SET state = 'cancelled', updated_at = ?, terminal_at = ? WHERE id = ?
       `).run(now, now, joinId);
+      this.releaseQuestionDependency("join", joinId, now);
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE state IN ('pending', 'retry_pending') AND id IN (
@@ -4288,6 +4372,7 @@ export class CoordinationV3Store {
       `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
       if (!injection) throw new Error("unsettled steering injection not found");
       const activationIds = JSON.parse(injection.activation_ids_json) as string[];
+      this.terminalizeUnansweredQuestionsForActivations(activationIds, input.runId, now, "steering_outcome_unknown");
       if (activationIds.length) {
         const placeholders = activationIds.map(() => "?").join(", ");
         this.sqlite.prepare(`
@@ -4615,6 +4700,7 @@ export class CoordinationV3Store {
         UPDATE scheduler_runs SET status = 'completed', updated_at = ?, terminal_at = ?
         WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
       `, [now, now, runId, fence]);
+      this.settleUnansweredQuestionsForRun(runId, now, "completed");
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'consumed', updated_at = ?, consumed_at = ?
         WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
@@ -4629,6 +4715,7 @@ export class CoordinationV3Store {
         "run_completed_without_request_update",
         ["open", "in_progress"],
         ["open", "in_progress", "waiting_dependency"],
+        false,
       );
     })();
   }
@@ -5669,12 +5756,16 @@ export class CoordinationV3Store {
       SET state = 'cancelled', terminal_outcome = NULL, terminal_at = ?,
         last_delivery_error = ?, updated_at = ?
       WHERE state IN ('pending', 'retry_pending')
-        AND kind = 'coordination_request'
+        AND kind IN ('coordination_request', 'coordination_question')
         AND id IN (
-          SELECT activation_id FROM activation_sources
-          WHERE source_kind = 'request' AND source_id = ?
+          SELECT source.activation_id
+          FROM activation_sources source
+          LEFT JOIN coordination_request_updates request_update
+            ON source.source_kind = 'request_update' AND request_update.id = source.source_id
+          WHERE (source.source_kind = 'request' AND source.source_id = ?)
+            OR (source.source_kind = 'request_update' AND request_update.request_id = ?)
         )
-    `).run(now, `request ${reason} before delivery`, now, requestId);
+    `).run(now, `request ${reason} before delivery`, now, requestId, requestId);
   }
 
   private settleRequestsForFailedActivations(activationIds: string[], now: string): void {
@@ -5718,6 +5809,7 @@ export class CoordinationV3Store {
         now,
       });
     }
+    this.settleQuestionsForFailedActivations(activationIds, now);
   }
 
   private nonterminalInboundRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
@@ -5931,6 +6023,10 @@ export class CoordinationV3Store {
       return {
         requestId: request.id,
         state: request.state,
+        direction: request.recipient_agent_id === join.owner_agent_id ? "inbound" : "outbound_question",
+        ...(request.recipient_agent_id === join.owner_agent_id || !request.open_question_update_id
+          ? {}
+          : { inReplyToUpdateId: request.open_question_update_id }),
         request: JSON.parse(request.payload_json) as unknown,
       };
     });
@@ -5950,7 +6046,7 @@ export class CoordinationV3Store {
       ...(progressRequestId ? { newlyTerminalRequestIds: [progressRequestId] } : {}),
     };
     const isProgress = state === "open" && Boolean(progressRequestId);
-    this.createActivation({
+    const activationId = this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
       scopeKey: this.coordinationScopeKey(join.conversation_id, join.owner_agent_id),
@@ -5978,15 +6074,26 @@ export class CoordinationV3Store {
         })),
         ...(continuations.length ? {
           continuations,
-          continuationInstruction: isProgress
-            ? "Act on the newly returned outcome while other aggregate work continues. Do not terminally update a continuation request while this Join remains open. When no independent work remains, end this Run to return to durable waiting."
-            : "Integrate the joined outcomes, then terminally update every nonterminal continuation request before ending this Run. Sending a message does not fulfill a correlated request.",
+          continuationInstruction: [
+            isProgress
+              ? "Act on the newly returned outcome while other aggregate work continues. Do not terminally update an inbound continuation while this Join remains open."
+              : "Integrate the joined outcomes, then terminally update every nonterminal inbound continuation before ending this Run.",
+            continuations.some((continuation) => continuation.direction === "outbound_question")
+              ? "For every outbound_question still awaiting an answer, reply using its exact inReplyToUpdateId. Never terminally update work assigned to another Agent."
+              : "",
+            isProgress
+              ? "When no independent work remains, end this Run to return to durable waiting."
+              : "Sending a message does not fulfill a correlated request.",
+          ].filter(Boolean).join(" "),
         } : {}),
       },
       sourceKind: "join",
       sourceId: join.id,
       now,
     });
+    this.attachQuestionDependencyToActivation(
+      activationId, "join", join.id, now, state !== "open",
+    );
   }
 
   private triggerOccurrenceResult(occurrenceId: string, replayed: boolean): TriggerOccurrenceResult {
@@ -6346,6 +6453,7 @@ export class CoordinationV3Store {
     reason: string,
     eligibleStates: CoordinationRequestState[],
     continuationEligibleStates: CoordinationRequestState[] = eligibleStates,
+    settleOutboundQuestions = true,
   ): void {
     const placeholders = eligibleStates.map(() => "?").join(", ");
     const rows = this.sqlite.prepare(`
@@ -6404,6 +6512,367 @@ export class CoordinationV3Store {
       payload: { reason, runId },
       now,
     });
+    if (settleOutboundQuestions) {
+      this.settleUnansweredQuestionsForRun(runId, now, "outcome_unknown", reason);
+    }
+  }
+
+  private insertQuestionSuspensions(
+    requestIds: string[],
+    ownerAgentId: string,
+    dependencyKind: "decision" | "join",
+    dependencyId: string,
+    now: string,
+  ): void {
+    const insert = this.sqlite.prepare(`
+      INSERT INTO coordination_question_suspensions (
+        question_update_id, request_id, owner_agent_id, dependency_kind,
+        dependency_id, state, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'open', ?, ?)
+      ON CONFLICT(question_update_id, dependency_kind, dependency_id)
+      DO UPDATE SET state = 'open', updated_at = excluded.updated_at, terminal_at = NULL
+    `);
+    for (const requestId of requestIds) {
+      const request = this.getRequestRow(requestId);
+      if (
+        request.requester_agent_id !== ownerAgentId
+        || request.state !== "awaiting_answer"
+        || !request.open_question_update_id
+      ) throw new Error("only an attached outbound question can be suspended");
+      insert.run(
+        request.open_question_update_id, request.id, ownerAgentId,
+        dependencyKind, dependencyId, now, now,
+      );
+    }
+  }
+
+  private questionSuspended(questionUpdateId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM coordination_question_suspensions suspension
+      WHERE suspension.question_update_id = ? AND suspension.state = 'open'
+        AND (
+          suspension.dependency_kind = 'decision'
+          OR EXISTS (
+            SELECT 1 FROM coordination_joins join_record
+            WHERE join_record.id = suspension.dependency_id
+              AND join_record.state = 'open'
+          )
+        )
+      LIMIT 1
+    `).get(questionUpdateId));
+  }
+
+  private questionRowsAttachedToRun(runId: string): Array<{
+    activation_id: string | null;
+    request_id: string;
+    question_update_id: string;
+    delivered_as_steer: number;
+  }> {
+    const run = this.sqlite.prepare(`
+      SELECT agent_id FROM scheduler_runs WHERE id = ?
+    `).get(runId) as { agent_id: string } | undefined;
+    if (!run) return [];
+    const requestIds = this.requestIdsAttachedToRun(runId, run.agent_id);
+    if (requestIds.length === 0) return [];
+    const placeholders = requestIds.map(() => "?").join(", ");
+    return this.sqlite.prepare(`
+      SELECT request.id AS request_id,
+        request.open_question_update_id AS question_update_id,
+        question_activation.id AS activation_id,
+        CASE WHEN question_activation.id IS NOT NULL AND EXISTS (
+          SELECT 1
+          FROM scheduler_prompt_injections injection,
+            json_each(injection.activation_ids_json) injected
+          WHERE injection.run_id = ?
+            AND injection.kind = 'steer'
+            AND injection.state = 'acknowledged'
+            AND injected.value = question_activation.id
+        ) THEN 1 ELSE 0 END AS delivered_as_steer
+      FROM coordination_requests request
+      LEFT JOIN agent_activations question_activation
+        ON question_activation.id = (
+          SELECT activation.id
+          FROM agent_activations activation
+          JOIN activation_sources source ON source.activation_id = activation.id
+          WHERE source.source_kind = 'request_update'
+            AND source.source_id = request.open_question_update_id
+            AND activation.kind = 'coordination_question'
+            AND activation.id IN (
+              SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?
+            )
+          ORDER BY activation.created_at, activation.id
+          LIMIT 1
+        )
+      WHERE request.id IN (${placeholders})
+        AND request.requester_agent_id = ?
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id IS NOT NULL
+      ORDER BY request.created_at, request.id
+    `).all(runId, runId, ...requestIds, run.agent_id) as Array<{
+      activation_id: string | null;
+      request_id: string;
+      question_update_id: string;
+      delivered_as_steer: number;
+    }>;
+  }
+
+  private settleUnansweredQuestionsForRun(
+    runId: string,
+    now: string,
+    disposition: "completed" | "outcome_unknown",
+    reason = "requester_run_completed_without_answer",
+  ): void {
+    for (const question of this.questionRowsAttachedToRun(runId)) {
+      if (this.questionSuspended(question.question_update_id)) continue;
+      if (
+        disposition === "completed"
+        && question.activation_id
+        && question.delivered_as_steer === 1
+      ) {
+        this.sqlite.prepare(`
+          UPDATE agent_activations
+          SET state = 'retry_pending', dispatch_policy = 'next_run',
+            available_at = ?, updated_at = ?, consumed_at = NULL
+          WHERE id = ? AND state = 'attached'
+        `).run(now, now, question.activation_id);
+        continue;
+      }
+      this.updateRequest({
+        requestId: question.request_id,
+        updateId: `system:unanswered-question:${runId}:${question.request_id}`,
+        kind: "outcome_unknown",
+        actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
+        payload: {
+          reason,
+          runId,
+          questionUpdateId: question.question_update_id,
+        },
+        now,
+      });
+    }
+  }
+
+  private terminalizeUnansweredQuestionsForActivations(
+    activationIds: string[],
+    runId: string,
+    now: string,
+    reason: string,
+  ): void {
+    if (activationIds.length === 0) return;
+    const selected = new Set(activationIds);
+    for (const question of this.questionRowsAttachedToRun(runId)) {
+      if (!question.activation_id || !selected.has(question.activation_id)) continue;
+      if (this.questionSuspended(question.question_update_id)) continue;
+      this.updateRequest({
+        requestId: question.request_id,
+        updateId: `system:unanswered-question:${runId}:${question.request_id}`,
+        kind: "outcome_unknown",
+        actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
+        payload: { reason, runId, questionUpdateId: question.question_update_id },
+        now,
+      });
+    }
+  }
+
+  private settleQuestionsForFailedActivations(activationIds: string[], now: string): void {
+    if (activationIds.length === 0) return;
+    const placeholders = activationIds.map(() => "?").join(", ");
+    const rows = this.sqlite.prepare(`
+      SELECT DISTINCT request.id AS request_id,
+        request.open_question_update_id AS question_update_id,
+        activation.id AS activation_id,
+        activation.last_delivery_error
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id AND source.source_kind = 'request_update'
+      JOIN coordination_request_updates question_update
+        ON question_update.id = source.source_id AND question_update.kind = 'question'
+      JOIN coordination_requests request ON request.id = question_update.request_id
+      WHERE activation.id IN (${placeholders})
+        AND activation.state = 'failed'
+        AND activation.terminal_outcome IS NOT NULL
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id = question_update.id
+      ORDER BY request.created_at, request.id
+    `).all(...activationIds) as Array<{
+      request_id: string;
+      question_update_id: string;
+      activation_id: string;
+      last_delivery_error: string | null;
+    }>;
+    for (const row of rows) {
+      if (this.questionSuspended(row.question_update_id)) continue;
+      this.updateRequest({
+        requestId: row.request_id,
+        updateId: `system:unanswered-question-delivery:${row.activation_id}:${row.request_id}`,
+        kind: "outcome_unknown",
+        actor: { kind: "supervisor", id: "v3-activation-supervisor" },
+        payload: {
+          reason: row.last_delivery_error ?? "question continuation could not execute",
+          activationId: row.activation_id,
+          questionUpdateId: row.question_update_id,
+        },
+        now,
+      });
+    }
+  }
+
+  private cancelUninjectedRunsForClearedQuestion(questionUpdateId: string, now: string): void {
+    const runs = this.sqlite.prepare(`
+      SELECT DISTINCT run.id, run.agent_id, run.fencing_token
+      FROM agent_activations activation
+      JOIN activation_sources source
+        ON source.activation_id = activation.id
+        AND source.source_kind = 'request_update'
+        AND source.source_id = ?
+      JOIN scheduler_run_activations attached ON attached.activation_id = activation.id
+      JOIN scheduler_runs run ON run.id = attached.run_id
+      WHERE activation.kind = 'coordination_question'
+        AND activation.state = 'attached'
+        AND run.status IN ('leased', 'running')
+        AND run.prompt_injection_state = 'not_injected'
+    `).all(questionUpdateId) as Array<{
+      id: string;
+      agent_id: string;
+      fencing_token: number;
+    }>;
+    for (const run of runs) {
+      const replacementFence = this.nextFence(run.agent_id);
+      const cancelled = this.sqlite.prepare(`
+        UPDATE scheduler_runs
+        SET status = 'cancelled', fencing_token = ?,
+          side_effects_fenced_at = COALESCE(side_effects_fenced_at, ?),
+          updated_at = ?, terminal_at = ?
+        WHERE id = ? AND fencing_token = ?
+          AND status IN ('leased', 'running')
+          AND prompt_injection_state = 'not_injected'
+      `).run(replacementFence, now, now, now, run.id, run.fencing_token).changes;
+      if (cancelled !== 1) continue;
+      this.sqlite.prepare(`
+        UPDATE agent_activations
+        SET state = 'retry_pending', available_at = ?, updated_at = ?
+        WHERE state = 'attached'
+          AND id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
+      `).run(now, now, run.id);
+      this.sqlite.prepare(`
+        UPDATE scheduler_prompt_injections
+        SET state = 'cancelled', updated_at = ?, terminal_at = ?
+        WHERE run_id = ? AND state = 'pending'
+      `).run(now, now, run.id);
+    }
+  }
+
+  private settleClearedQuestion(questionUpdateId: string, now: string): void {
+    this.cancelUninjectedRunsForClearedQuestion(questionUpdateId, now);
+    this.sqlite.prepare(`
+      UPDATE agent_activations
+      SET state = 'cancelled', terminal_at = ?, updated_at = ?,
+        last_delivery_error = 'question was settled before delivery'
+      WHERE kind = 'coordination_question' AND state IN ('pending', 'retry_pending')
+        AND id IN (
+          SELECT activation_id FROM activation_sources
+          WHERE source_kind = 'request_update' AND source_id = ?
+        )
+    `).run(now, now, questionUpdateId);
+    this.sqlite.prepare(`
+      UPDATE coordination_question_suspensions
+      SET state = 'resolved', updated_at = ?, terminal_at = ?
+      WHERE question_update_id = ? AND state = 'open'
+    `).run(now, now, questionUpdateId);
+  }
+
+  private questionDependencyContinuations(
+    dependencyKind: "decision" | "join",
+    dependencyId: string,
+  ): Array<{ requestId: string; inReplyToUpdateId: string }> {
+    return this.sqlite.prepare(`
+      SELECT suspension.request_id AS requestId,
+        suspension.question_update_id AS inReplyToUpdateId
+      FROM coordination_question_suspensions suspension
+      JOIN coordination_requests request ON request.id = suspension.request_id
+      WHERE suspension.dependency_kind = ? AND suspension.dependency_id = ?
+        AND suspension.state = 'open'
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id = suspension.question_update_id
+      ORDER BY suspension.created_at, suspension.question_update_id
+    `).all(dependencyKind, dependencyId) as Array<{
+      requestId: string;
+      inReplyToUpdateId: string;
+    }>;
+  }
+
+  private attachQuestionDependencyToActivation(
+    activationId: string,
+    dependencyKind: "decision" | "join",
+    dependencyId: string,
+    now: string,
+    resolve: boolean,
+  ): void {
+    const rows = this.sqlite.prepare(`
+      SELECT suspension.question_update_id
+      FROM coordination_question_suspensions suspension
+      JOIN coordination_requests request ON request.id = suspension.request_id
+      WHERE suspension.dependency_kind = ? AND suspension.dependency_id = ?
+        AND suspension.state = 'open'
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id = suspension.question_update_id
+      ORDER BY suspension.created_at, suspension.question_update_id
+    `).all(dependencyKind, dependencyId) as Array<{ question_update_id: string }>;
+    const attach = this.sqlite.prepare(`
+      INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id)
+      VALUES (?, 'request_update', ?)
+    `);
+    for (const row of rows) attach.run(activationId, row.question_update_id);
+    if (resolve) this.sqlite.prepare(`
+      UPDATE coordination_question_suspensions
+      SET state = 'resolved', updated_at = ?, terminal_at = ?
+      WHERE dependency_kind = ? AND dependency_id = ? AND state = 'open'
+    `).run(now, now, dependencyKind, dependencyId);
+  }
+
+  private releaseQuestionDependency(
+    dependencyKind: "decision" | "join",
+    dependencyId: string,
+    now: string,
+  ): void {
+    const rows = this.sqlite.prepare(`
+      SELECT suspension.question_update_id, suspension.request_id,
+        suspension.owner_agent_id, request.project_id, request.conversation_id
+      FROM coordination_question_suspensions suspension
+      JOIN coordination_requests request ON request.id = suspension.request_id
+      WHERE suspension.dependency_kind = ? AND suspension.dependency_id = ?
+        AND suspension.state = 'open'
+        AND request.state = 'awaiting_answer'
+        AND request.open_question_update_id = suspension.question_update_id
+      ORDER BY suspension.created_at, suspension.question_update_id
+    `).all(dependencyKind, dependencyId) as Array<{
+      question_update_id: string;
+      request_id: string;
+      owner_agent_id: string;
+      project_id: string;
+      conversation_id: string | null;
+    }>;
+    for (const row of rows) if (this.agentSurvives(row.owner_agent_id)) this.createActivation({
+      projectId: row.project_id,
+      agentId: row.owner_agent_id,
+      scopeKey: this.coordinationScopeKey(row.conversation_id, row.owner_agent_id),
+      kind: "coordination_question",
+      priority: PRIORITY.urgent,
+      dedupeKey: `request:${row.request_id}:question:${row.question_update_id}:released:${dependencyKind}:${dependencyId}`,
+      payload: {
+        requestId: row.request_id,
+        inReplyToUpdateId: row.question_update_id,
+        recoveryInstruction: `${dependencyKind} ${dependencyId} ended without answering this question`,
+      },
+      sourceKind: "request_update",
+      sourceId: row.question_update_id,
+      now,
+    });
+    this.sqlite.prepare(`
+      UPDATE coordination_question_suspensions
+      SET state = 'cancelled', updated_at = ?, terminal_at = ?
+      WHERE dependency_kind = ? AND dependency_id = ? AND state = 'open'
+    `).run(now, now, dependencyKind, dependencyId);
   }
 
   private nextFence(agentId: string): number {

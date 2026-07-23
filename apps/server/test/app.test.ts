@@ -1499,6 +1499,103 @@ describe("Trigger operational notification reconciliation", () => {
 });
 
 describe("Agent work inspector", () => {
+  it("recreates a missing continuation Activation for a durably resolved Decision on startup", async () => {
+    const project = store.createProject({ label: "Decision recovery", hostPath: repoDir, defaultEngine: "codex" });
+    const conversation = store.createConversation(project.id, { title: "Recovery room" });
+    const agent = store.createAgent(project.id, {
+      title: "Decision owner",
+      engine: "codex",
+      conversationId: conversation.id,
+    });
+    const workspace = new WorkspaceStore(dataDir);
+    const pending = workspace.createDecision({
+      projectId: project.id,
+      conversationId: conversation.id,
+      agentId: agent.id,
+      runId: "decision-recovery-run",
+      coordinationRunId: "decision-recovery-run",
+      continuationRequestIds: ["durable-question-request"],
+      mode: "approval",
+      question: "Continue?",
+      options: [{ id: "yes", label: "Yes" }],
+      allowOther: false,
+      blocking: true,
+      idempotencyKey: "decision-recovery",
+    });
+    workspace.resolveDecision(pending.id, {
+      optionId: "yes",
+      respondedAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}`,
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json<{ items: Array<{ kind: string; referenceIds: string[] }> }>().items.filter(
+      (item) => item.kind === "activation" &&
+        item.referenceIds.includes(`decision:${pending.id}:response`),
+    )).toHaveLength(1);
+    await app.close();
+  });
+
+  it.each(["agent", "project"] as const)(
+    "ignores a historical resolved continuation Decision after its %s is deleted",
+    async (deletedOwner) => {
+      const project = store.createProject({
+        label: `Deleted Decision ${deletedOwner}`,
+        hostPath: repoDir,
+        defaultEngine: "codex",
+      });
+      const conversation = store.createConversation(project.id, { title: "Historical room" });
+      const agent = store.createAgent(project.id, {
+        title: "Historical owner",
+        engine: "codex",
+        conversationId: conversation.id,
+      });
+      const workspace = new WorkspaceStore(dataDir);
+      const pending = workspace.createDecision({
+        projectId: project.id,
+        conversationId: conversation.id,
+        agentId: agent.id,
+        runId: `deleted-${deletedOwner}-run`,
+        coordinationRunId: `deleted-${deletedOwner}-run`,
+        continuationRequestIds: ["historical-question-request"],
+        mode: "approval",
+        question: "Continue?",
+        options: [{ id: "yes", label: "Yes" }],
+        allowOther: false,
+        blocking: true,
+        idempotencyKey: `deleted-${deletedOwner}-decision`,
+      });
+      workspace.resolveDecision(pending.id, {
+        optionId: "yes",
+        respondedAt: "2026-07-23T12:00:00.000Z",
+      });
+      expect(deletedOwner === "agent"
+        ? store.deleteAgent(agent.id)
+        : store.deleteProject(project.id)).toBe(true);
+
+      const app = createServer({
+        dataDir,
+        store,
+        engines,
+        logger: false,
+        communicationV3: { maxConcurrentRuns: 0, pollMs: 60_000 },
+      });
+      const response = await app.inject({ method: "GET", url: "/api/projects" });
+      expect(response.statusCode, response.body).toBe(200);
+      await app.close();
+    },
+  );
+
   it("returns a scoped read-only trace projection with Decisions", async () => {
     const project = store.createProject({ label: "Inspector", hostPath: repoDir, defaultEngine: "codex" });
     const conversation = store.createConversation(project.id, { title: "Work room" });
@@ -1603,11 +1700,14 @@ describe("Agent work inspector", () => {
     expect(boundedWithFocus.truncated).toBe(true);
     expect(boundedWithFocus.items.some((item) => item.id === "request:inspector-request")).toBe(true);
     expect((await app.inject({ method: "POST", url: `/api/decisions/${decision.id}/respond`, payload: { optionId: "yes" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/api/decisions/${decision.id}/respond`, payload: { optionId: "yes" } })).statusCode).toBe(200);
     const afterResponse = (await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=${conversation.id}&agentId=${agent.id}` })).json<{
       items: Array<{ id: string; kind: string; referenceIds: string[]; relatedItemIds: string[] }>;
       traces: Array<{ itemIds: string[] }>;
     }>();
-    const responseActivation = afterResponse.items.find((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`))!;
+    const responseActivations = afterResponse.items.filter((item) => item.kind === "activation" && item.referenceIds.includes(`decision:${decision.id}:response`));
+    expect(responseActivations).toHaveLength(1);
+    const responseActivation = responseActivations[0]!;
     expect(afterResponse.items.find((item) => item.id === `decision:${decision.id}`)?.relatedItemIds).toContain(responseActivation.id);
     expect(afterResponse.traces.some((trace) => trace.itemIds.includes(`decision:${decision.id}`) && trace.itemIds.includes(responseActivation.id))).toBe(true);
     expect((await app.inject({ method: "GET", url: `/api/projects/${project.id}/agent-work?conversationId=foreign` })).statusCode).toBe(404);
