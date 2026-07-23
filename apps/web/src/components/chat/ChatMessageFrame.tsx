@@ -1,9 +1,12 @@
-import { Avatar, Box, ButtonBase, Stack, Tooltip } from "@mui/material";
+import ReplyIcon from "@mui/icons-material/Reply";
+import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
 import { useState } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
+import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
+import { replyFallbackText } from "./ChatMessages";
 
 export function ChatMessageFrame({
   message,
@@ -48,7 +51,7 @@ export function ChatMessageFrame({
       className="chat-message"
       aria-label={message.ariaLabel ?? `${senderName} message`}
       role={selectable ? "button" : undefined}
-      tabIndex={selectable ? 0 : undefined}
+      tabIndex={selectable ? 0 : -1}
       onClick={selectMessage}
       onKeyDown={(event) => {
         if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
@@ -112,11 +115,15 @@ export function ChatMessageFrame({
                 onClick={(event) => { event.stopPropagation(); message.reply?.onOpen(); }}
                 sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}
               >
-                <Box component="span" sx={{ typography: "caption", display: "block", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{message.reply.text}</Box>
+                <Box component="span" sx={{ typography: "caption", display: "block", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{replyFallbackText(message.reply.text)}</Box>
               </Box>
             ) : null}
             {message.body}
             {message.afterBody}
+            <ChatAttachments
+              attachments={message.attachments ?? []}
+              density={message.attachmentDensity}
+            />
           </Box>
           {message.belowBody}
           <MessageActionsAndTimestamp
@@ -125,7 +132,17 @@ export function ChatMessageFrame({
             showTimestamp={false}
             value={message.createdAt}
             status={message.status}
-            actions={message.actions}
+            actions={<>
+              {message.actions}
+              {message.onReply ? <Tooltip title="Reply"><IconButton
+                size="small"
+                aria-label="Reply to message"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  message.onReply?.();
+                }}
+              ><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
+            </>}
           />
         </Box>
       </Stack>

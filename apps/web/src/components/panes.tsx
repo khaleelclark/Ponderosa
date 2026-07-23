@@ -1,5 +1,6 @@
 export * from "./activity/ActivityPane";
 export * from "./chat/ChatMessages";
+export * from "./chat/ChatMessageFrame";
 export * from "./chat/ChatPane";
 export * from "./chat/Composer";
 export * from "./chat/composerUtils";

@@ -1,4 +1,4 @@
-import type { OperatorProfileDto } from "@ponderosa/core";
+import type { ImageAttachmentDto, OperatorProfileDto } from "@ponderosa/core";
 import type { ReactNode } from "react";
 
 export type ChatAuthor =
@@ -31,6 +31,9 @@ export interface ChatMessagePresentation {
   createdAt: string;
   body: ReactNode;
   reply?: ChatReplyReference;
+  onReply?(): void;
+  attachments?: ImageAttachmentDto[];
+  attachmentDensity?: "comfortable" | "compact";
   afterBody?: ReactNode;
   belowBody?: ReactNode;
   status?: ReactNode;

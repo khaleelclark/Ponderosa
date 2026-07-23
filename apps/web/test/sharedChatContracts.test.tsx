@@ -2,7 +2,6 @@ import type { EngineDto, MessageDto } from "@ponderosa/core";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { ChatAttachments } from "../src/components/chat/ChatAttachments";
 import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
 import { ChatPane } from "../src/components/chat/ChatPane";
 import { ChatSurface } from "../src/components/chat/ChatSurface";
@@ -20,17 +19,20 @@ describe("shared chat presentation contracts", () => {
       id: "message-1",
       author: { kind: "agent", name: "Redwood", onOpen: vi.fn() },
       createdAt: "2026-07-23T10:00:00.000Z",
-      reply: { text: "Original request", onOpen: vi.fn() },
+      reply: { text: "   ", onOpen: vi.fn() },
+      onReply: vi.fn(),
       body: <p>Finished.</p>,
-      afterBody: <ChatAttachments attachments={[
+      attachments: [
         { id: "pdf", agentId: "a", name: "report.pdf", mediaType: "application/pdf", size: 42, url: "/report" },
-      ]} />,
+      ],
       status: <span>Delivered</span>,
       actions: <button type="button">Copy</button>,
     }} />);
 
     expect(html).toContain('aria-label="Redwood message"');
     expect(html).toContain('aria-label="Go to replied-to message"');
+    expect(html).toContain("Original message unavailable");
+    expect(html.match(/aria-label="Reply to message"/gu)).toHaveLength(1);
     expect(html).toContain("report.pdf");
     expect(html).toContain('aria-label="Download report.pdf"');
     expect(html).toContain("Delivered");
@@ -67,7 +69,41 @@ describe("shared chat presentation contracts", () => {
     }} />);
     const transcriptArticle = transcript.root.findByType("article");
     expect(transcriptArticle.props.role).toBeUndefined();
-    expect(transcriptArticle.props.tabIndex).toBeUndefined();
+    expect(transcriptArticle.props.tabIndex).toBe(-1);
+  });
+
+  it("keeps the reply icon inside the shared frame and delegates one callback per click", () => {
+    const onReply = vi.fn();
+    const view = create(<ChatPane
+      messages={[
+        {
+          id: "user-message",
+          agentId: "agent-1",
+          seq: 1,
+          role: "user",
+          text: "Please review this.",
+          createdAt: "2026-07-23T10:00:00.000Z",
+        },
+        {
+          id: "agent-message",
+          agentId: "agent-1",
+          seq: 2,
+          role: "assistant",
+          text: "Reviewed.",
+          createdAt: "2026-07-23T10:01:00.000Z",
+        },
+      ]}
+      onReply={onReply}
+    />);
+    const replyButtons = view.root.findAll((node) =>
+      node.type === "button" && node.props["aria-label"] === "Reply to message");
+    expect(replyButtons).toHaveLength(2);
+
+    const stopPropagation = vi.fn();
+    act(() => replyButtons[1]!.props.onClick({ stopPropagation }));
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(onReply).toHaveBeenCalledOnce();
+    expect(onReply).toHaveBeenCalledWith(expect.objectContaining({ id: "agent-message" }));
   });
 
   it("owns cursor pagination and prepares a stable prepend through one ChatSurface", () => {

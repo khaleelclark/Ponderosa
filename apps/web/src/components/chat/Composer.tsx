@@ -15,6 +15,7 @@ import { findMentionedHandles } from "../../mentions";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ChatComposerContract } from "./composerContracts";
+import { replyFallbackText } from "./ChatMessages";
 import {
   COMPOSER_MAX_FILE_BYTES,
   COMPOSER_MAX_FILES,
@@ -549,7 +550,7 @@ export function Composer({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
           <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
             <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
-            <Typography variant="body2" title={replyTo.text} sx={{ display: "-webkit-box", maxWidth: "100%", maxHeight: "3.6rem", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3, lineHeight: 1.2 }}>
+            <Typography variant="body2" title={replyFallbackText(replyTo.text)} sx={{ display: "-webkit-box", maxWidth: "100%", maxHeight: "3.6rem", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3, lineHeight: 1.2 }}>
               {replyPreviewText(replyTo.text)}
             </Typography>
           </Box>
@@ -857,6 +858,6 @@ export function Composer({
 }
 
 export function replyPreviewText(text: string, maxLength = 240): string {
-  const compact = text.replace(/\s+/g, " ").trim();
+  const compact = replyFallbackText(text).replace(/\s+/g, " ");
   return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }

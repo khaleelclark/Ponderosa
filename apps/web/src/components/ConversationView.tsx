@@ -56,7 +56,6 @@ import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { queryKeys } from "../queryKeys";
-import { ChatAttachments } from "./chat/ChatAttachments";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
@@ -120,6 +119,7 @@ export function ConversationMessage({
   onOpenWorkLog,
   onOpenReview,
   onOpenFileActivity,
+  onReply,
   onEdit,
   onMentionAgent,
   projectId,
@@ -134,6 +134,7 @@ export function ConversationMessage({
   onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
+  onReply?(message: ConversationMessageDto): void;
   onEdit?: (message: ConversationMessageDto) => void;
   onMentionAgent?(agentId: string): void;
   projectId: string;
@@ -160,13 +161,14 @@ export function ConversationMessage({
       : { kind: "agent", name: senderName, onOpen: () => onOpenAgent(message.authorAgentId!) },
     createdAt: message.createdAt,
     reply: message.replyTo ? {
-      text: message.replyTo.text || "Original message unavailable",
+      text: message.replyTo.text,
       onOpen: () => {
         const target = document.getElementById(`master-message-${message.replyTo!.messageId}`);
         target?.scrollIntoView({ behavior: "smooth", block: "center" });
         target?.focus({ preventScroll: true });
       },
     } : undefined,
+    onReply: onReply ? () => onReply(message) : undefined,
     body: <ChatMessageBody
       text={visibleText}
       compactMarkdown
@@ -192,8 +194,8 @@ export function ConversationMessage({
         onOpenFile={message.authorAgentId && onOpenFileActivity ? (file) => onOpenFileActivity(message.authorAgentId!, file) : undefined}
         onViewAll={message.authorAgentId && onOpenReview ? () => onOpenReview(message.authorAgentId!) : undefined}
       /> : null}
-      <ChatAttachments attachments={message.attachments ?? []} />
     </>,
+    attachments: message.attachments,
     status: message.role === "user" && message.deliveryReceipts?.length ? <MessageDeliveryStatus
       projectId={projectId}
       receipts={message.deliveryReceipts}
@@ -1079,6 +1081,10 @@ export function ConversationView({
                 onOpenWorkLog={onOpenWorkLog}
                 onOpenReview={onOpenReview}
                 onOpenFileActivity={onOpenFileActivity}
+                onReply={activeView === "main" ? (selected) => {
+                  clearReply();
+                  setReplyTo(selected);
+                } : undefined}
                 onMentionAgent={(agentId) => setMentionInsertRequest({ id: String(Date.now()), text: `#${agentMentionHandle(agentTitle(agentId))} ` })}
                 onEdit={activeView === "main" && message.role === "user" && !message.authorAgentId && !message.correctedByMessageId && !message.correctionOfMessageId
                   ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); }

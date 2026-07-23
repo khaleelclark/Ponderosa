@@ -89,6 +89,7 @@ describe("composer clipboard attachments", () => {
     expect(preview.length).toBeLessThanOrEqual(240);
     expect(preview.endsWith("…")).toBe(true);
     expect(replyPreviewText("short reply")).toBe("short reply");
+    expect(replyPreviewText("   ")).toBe("Original message unavailable");
   });
 
   it("locks synchronously against duplicate sends", () => {

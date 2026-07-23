@@ -55,7 +55,7 @@ describe("All Chat view contract", () => {
     expect(source).not.toContain("sendConversationMessage");
   });
 
-  it("renders ordinary messages without Reply controls and routes provider commands through the mentioned Agent", async () => {
+  it("renders shared Reply controls and routes provider commands through the selected Agent", async () => {
     const first = item({
       author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
@@ -91,8 +91,7 @@ describe("All Chat view contract", () => {
     expect(messages()[1]!.props["aria-label"]).toContain("Second release note");
     const buttons = (label: string) => view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === label);
     expect(buttons("Copy message")).toHaveLength(2);
-    expect(buttons("Reply to Reviewer")).toHaveLength(0);
-    expect(buttons("Reply to Verifier")).toHaveLength(0);
+    expect(buttons("Reply to message")).toHaveLength(0);
     expect(buttons("Mention Reviewer")).toHaveLength(1);
     expect(buttons("Mention Verifier")).toHaveLength(1);
 

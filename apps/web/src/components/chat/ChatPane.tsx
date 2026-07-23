@@ -5,10 +5,9 @@ import type { MessageDto, OperatorProfileDto } from "@ponderosa/core";
 import { agentMentionHandle } from "../../mentions";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
-import { ChatAttachments } from "./ChatAttachments";
 import { ChatMessageFrame } from "./ChatMessageFrame";
 import { ChatSurface } from "./ChatSurface";
-import { ChatMessageBody, CommunicationDocumentCard, chatMessageLayoutKey, individualChatSenderLabel, linkPreviewScopeForMessage, replyFallbackText } from "./ChatMessages";
+import { ChatMessageBody, CommunicationDocumentCard, chatMessageLayoutKey, individualChatSenderLabel, linkPreviewScopeForMessage } from "./ChatMessages";
 import type { LinkPreviewScope } from "./ChatMessages";
 
 function CompletedWorkDurationStatus({ agentName, label }: { agentName: string; label: string }): JSX.Element {
@@ -30,6 +29,7 @@ export function ChatPane({
   onOpenAgent,
   onOpenWorkLog,
   onOpenBroadcast,
+  onReply,
   onMentionAgent,
   onScrollPositionChange,
   previewScope,
@@ -48,6 +48,7 @@ export function ChatPane({
   onOpenAgent?(agentId: string): void;
   onOpenWorkLog?(agentId: string): void;
   onOpenBroadcast?(message: MessageDto): void;
+  onReply?(message: MessageDto): void;
   onMentionAgent?(): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
@@ -91,13 +92,14 @@ export function ChatPane({
               : { kind: "agent", name: senderLabel },
             createdAt: message.createdAt,
             reply: message.replyTo ? {
-              text: replyFallbackText(message.replyTo.text),
+              text: message.replyTo.text,
               onOpen: () => {
                 const target = document.getElementById(`message-${message.replyTo!.messageId}`);
                 target?.scrollIntoView({ behavior: "smooth", block: "center" });
                 target?.focus({ preventScroll: true });
               },
             } : undefined,
+            onReply: onReply ? () => onReply(message) : undefined,
             body: <ChatMessageBody
               text={message.document
                 ? message.text.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")
@@ -121,8 +123,9 @@ export function ChatPane({
             />,
             afterBody: <>
               {message.document ? <CommunicationDocumentCard document={message.document} /> : null}
-              <ChatAttachments attachments={message.attachments ?? []} density="compact" />
             </>,
+            attachments: message.attachments,
+            attachmentDensity: "compact",
             belowBody: workDurationLabel ? <CompletedWorkDurationStatus agentName={senderLabel} label={workDurationLabel} /> : undefined,
             status: message.role === "user" && message.deliveryReceipts?.length
               ? <MessageDeliveryStatus
