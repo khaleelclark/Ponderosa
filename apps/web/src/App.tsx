@@ -54,7 +54,12 @@ import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
 import { HomeView } from "./components/HomeView";
 import { AllAgentsWorkspace, AllChatsWorkspace, AllTriggersWorkspace, ProviderActivityWorkspace } from "./components/WorkspaceResourceViews";
-import { OperatorProfileWorkspace, WorkspaceSettingsView } from "./components/WorkspaceSettingsView";
+import {
+  GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT,
+  GLOBAL_AGENT_INSTRUCTIONS_LABEL,
+  OperatorProfileWorkspace,
+  WorkspaceSettingsView,
+} from "./components/WorkspaceSettingsView";
 import { ImportAgentDialog } from "./components/ImportAgentDialog";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { parseAgentRunConcurrencyLimit, RuntimeSettings } from "./components/RuntimeSettings";
@@ -1101,7 +1106,7 @@ export default function App({
               {engineAvailability.detail} {engines.some(engineIsAvailable) ? "Ponderosa can continue through an available engine." : "Enable or restore at least one engine before starting new work."}
             </Alert> : null}
             <Typography variant="subtitle2">Master rules</Typography>
-            <TextField label="Rules for every Ponderosa Agent" value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText="Ponderosa stores these rules directly and starts affected Agents with a fresh provider session on their next Run." />
+            <TextField label={GLOBAL_AGENT_INSTRUCTIONS_LABEL} value={globalInstructionsDraft} onChange={(event) => setGlobalInstructionsDraft(event.target.value)} multiline minRows={5} helperText={GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT} />
           </Stack>
         </DialogContent>
         <DialogActions><Button onClick={() => setNotificationSettingsOpen(false)}>Cancel</Button><Button variant="contained" disabled={parseAgentRunConcurrencyLimit(maxConcurrentAgentRunsDraft) === undefined} onClick={() => {

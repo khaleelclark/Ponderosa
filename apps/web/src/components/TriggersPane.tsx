@@ -63,6 +63,24 @@ export function filesystemWindowErrors(quietValue: string, maxValue: string): { 
   return errors;
 }
 
+export function latestOccurrenceByTrigger(occurrences: TriggerOccurrenceDto[]): Map<string, TriggerOccurrenceDto> {
+  const latest = new Map<string, TriggerOccurrenceDto>();
+  for (const occurrence of occurrences) {
+    const current = latest.get(occurrence.triggerId);
+    if (!current || occurrence.occurredAt.localeCompare(current.occurredAt) > 0) latest.set(occurrence.triggerId, occurrence);
+  }
+  return latest;
+}
+
+export function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" | "sourceConfig">): string {
+  if (trigger.sourceKind === "webhook") return "Signed webhook";
+  if (trigger.sourceKind === "filesystem") return "Project folder changes";
+  const schedule = trigger.sourceConfig as Extract<TriggerSourceConfig, { scheduleKind: string }>;
+  if (schedule.scheduleKind === "once") return "One-time schedule";
+  if (schedule.scheduleKind === "cron") return `Cron schedule · ${schedule.timezone}`;
+  return `Interval schedule · every ${Math.max(1, Math.round(schedule.everyMs / 60_000))} min`;
+}
+
 function lines(value: string): string[] {
   return value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean);
 }
@@ -235,6 +253,7 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
     queryKey: ["agent-trigger-occurrences", agent.id],
     queryFn: () => api.listAgentTriggerOccurrences(agent.id, 100),
   });
+  const latestOccurrences = latestOccurrenceByTrigger(allOccurrences.data ?? []);
   const deletedTriggerOccurrences = (allOccurrences.data ?? []).filter((occurrence) => !(triggers.data ?? []).some((trigger) => trigger.id === occurrence.triggerId));
 
   const copy = async (value: string): Promise<void> => {
@@ -257,23 +276,32 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
       {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}
       {triggers.isError ? <Alert severity="error">{triggers.error.message}</Alert> : null}
       {(triggers.data ?? []).length === 0 && !triggers.isLoading ? <Typography color="text.secondary">No Triggers yet.</Typography> : null}
-      {(triggers.data ?? []).map((trigger) => <Card key={trigger.id} variant="outlined">
+      {(triggers.data ?? []).map((trigger) => {
+        const latestOccurrence = latestOccurrences.get(trigger.id);
+        const currentFailure = latestOccurrence?.lastError
+          ?? (latestOccurrence?.state === "dead_lettered" ? "The latest occurrence could not start." : undefined);
+        const lastOccurredAt = latestOccurrence?.occurredAt ?? trigger.lastFiredAt;
+        return <Card key={trigger.id} variant="outlined" aria-label={`${trigger.name} Trigger`}>
         <CardContent>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
             <Typography variant="subtitle1" sx={{ fontWeight: 700, flex: 1 }}>{trigger.name}</Typography>
-            <Chip size="small" label={trigger.sourceKind} />
+            <Chip size="small" label={triggerSourceSummary(trigger)} />
             <Chip size="small" color={trigger.enabled ? "success" : "default"} label={trigger.enabled ? "Enabled" : "Disabled"} />
             {trigger.runBudget && trigger.budgetState ? <Chip size="small" color={trigger.budgetState.held ? "warning" : "default"} label={`${trigger.budgetState.used}/${trigger.runBudget.limit + trigger.budgetState.allowance} automatic Runs · ${trigger.runBudget.period}`} /> : <Chip size="small" label="Unlimited Runs" />}
           </Stack>
           <Typography variant="body2" sx={{ mt: 1, whiteSpace: "pre-wrap" }}>{trigger.instructions}</Typography>
           <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Source configuration: <code>{JSON.stringify(trigger.sourceConfig)}</code></Typography>
-          {trigger.nextFireAt ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>Next: {new Date(trigger.nextFireAt).toLocaleString()}</Typography> : null}
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0.25, sm: 2 }} sx={{ mt: 1 }}>
+            <Typography variant="caption" color="text.secondary">Last occurrence: {lastOccurredAt ? new Date(lastOccurredAt).toLocaleString() : "None yet"}</Typography>
+            {trigger.nextFireAt ? <Typography variant="caption" color="text.secondary">Next scheduled occurrence: {new Date(trigger.nextFireAt).toLocaleString()}</Typography> : null}
+          </Stack>
+          {currentFailure ? <Alert severity="error" sx={{ mt: 1 }}>Current failure: {currentFailure}</Alert> : null}
           {trigger.webhookPath ? <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1, overflowWrap: "anywhere" }}>Webhook: {trigger.webhookPath} · secret {trigger.secretFingerprint}</Typography> : null}
         </CardContent>
         <CardActions sx={{ flexWrap: "wrap" }}>
-          <FormControlLabel control={<Switch checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "On" : "Off"} />
-          <Button size="small" onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide History" : "History"}</Button>
-          <Button size="small" onClick={() => openEditor(trigger)}>Edit</Button>
+          <FormControlLabel control={<Switch inputProps={{ "aria-label": `${trigger.enabled ? "Disable" : "Enable"} ${trigger.name}` }} checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "Enabled" : "Disabled"} />
+          <Button size="small" aria-expanded={expandedId === trigger.id} onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide Full Details" : "Open Full Details"}</Button>
+          <Button size="small" aria-label={`Edit ${trigger.name}`} onClick={() => openEditor(trigger)}>Edit</Button>
           {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => {
             const value = window.prompt("How many additional automatic Runs should this Trigger receive for the current period?", "5");
             if (value === null) return;
@@ -295,7 +323,8 @@ export function TriggersPane({ agent, onOpenAgentWork }: { agent: AgentDto; onOp
             {(occurrences.data ?? []).length === 0 && !occurrences.isLoading ? <Typography variant="body2" color="text.secondary">No occurrences recorded.</Typography> : null}
           </Box>
         </Collapse>
-      </Card>)}
+      </Card>;
+      })}
       {deletedTriggerOccurrences.length ? <Card variant="outlined">
         <CardContent>
           <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Deleted Trigger history</Typography>

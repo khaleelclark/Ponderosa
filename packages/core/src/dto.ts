@@ -1044,10 +1044,16 @@ export interface CreateAgentRequest {
   managementPermissions?: AgentManagementPermissionsDto;
 }
 
-/** PATCH /api/agents/:id body (rename / archive). */
+/** PATCH /api/agents/:id body (persistent Agent settings). */
 export interface UpdateAgentRequest {
   title?: string;
   archived?: boolean;
+  /** Provider used when the next Run starts. Does not reconfigure an active Run. */
+  activeEngine?: EngineId;
+  /** Durable next-Run model. Null clears the Agent override. */
+  model?: string | null;
+  /** Durable next-Run reasoning effort. Null clears the Agent override. */
+  effort?: string | null;
   managementPermissions?: AgentManagementPermissionsDto;
 }
 

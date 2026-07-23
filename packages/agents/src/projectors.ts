@@ -199,7 +199,7 @@ export function projectEvent(
             title: next.pendingRunTitle,
             status: event.status,
             reason: event.reason,
-            engine: next.activeEngine,
+            engine: event.engine ?? next.activeEngine,
             model: event.model ?? null,
             effort: event.effort ?? null,
             communicationEventId: next.pendingCommunicationEventId ?? null,

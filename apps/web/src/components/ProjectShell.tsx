@@ -38,12 +38,6 @@ export interface AgentReturnContext {
   reopenRoster: boolean;
 }
 
-export function agentBackRoute(projectId: string, context?: AgentReturnContext): Route {
-  return context
-    ? { kind: "conversation", projectId, conversationId: context.conversationId }
-    : { kind: "agents", projectId };
-}
-
 export function ProjectShell({
   projectId,
   project,
@@ -167,8 +161,8 @@ export function ProjectShell({
   };
 
   const openAgentWorkLog = (agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "runOutput");
-    navigate({ kind: "agent", projectId, agentId });
+    writeChatState(chatStateKey("view", `agent.${agentId}`), "activity");
+    navigate({ kind: "agent", projectId, agentId, view: "activity" });
   };
 
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
@@ -245,7 +239,10 @@ export function ProjectShell({
         onRefreshCapabilities={refreshCapabilities}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        onOpenAgent={(agentId, view) => view ? navigate({ kind: "agent", projectId, agentId, view }) : openAgentFromConversation(agentId, false)}
+        onOpenProject={() => navigate({ kind: "project", projectId })}
+        onOpenAgent={(agentId, view, technicalFocusId) => view
+          ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
+          : openAgentFromConversation(agentId, false)}
         onOpenWorkLog={openAgentWorkLog}
         onOpenRosterAgent={(agentId) => openAgentFromConversation(agentId, true)}
         onOpenRosterAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
@@ -269,8 +266,13 @@ export function ProjectShell({
         agentId={route.agentId}
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
+        technicalFocusId={route.technicalFocusId}
         initialView={route.view}
         onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
+        onOpenTechnicalDetails={(technicalFocusId) => navigate({
+          kind: "agent", projectId, agentId: route.agentId, view: "technical",
+          ...(technicalFocusId ? { technicalFocusId } : {}),
+        })}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
@@ -278,14 +280,13 @@ export function ProjectShell({
         projectedHealth={healthByAgentId.get(route.agentId)}
         agents={agents}
         conversations={conversations}
-        onBack={() => {
-          const destination = agentBackRoute(projectId, agentReturnContext);
-          if (!agentReturnContext?.reopenRoster) setAgentReturnContext(undefined);
-          navigate(destination);
-        }}
+        onOpenProject={() => navigate({ kind: "project", projectId })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
         onOpenBroadcast={(conversationId, communicationEventId) => navigate({ kind: "conversation", projectId, conversationId, focusMessageId: communicationEventId })}
-        onOpenMaster={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
+        onOpenMaster={(conversationId) => {
+          setAgentReturnContext(undefined);
+          navigate({ kind: "conversation", projectId, conversationId });
+        }}
         onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
         onOpenArtifactInNewTab={(artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId: route.agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
         onOpenReview={(path) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}

@@ -48,10 +48,10 @@ describe("activity summaries", () => {
     const detailSource = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
     expect(detailSource).toContain('height: "100%", maxHeight: "100%", minHeight: 0');
     expect(detailSource).toContain('maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid"');
-    expect(detailSource).toContain('tab === "chat" || tab === "activity" || tab === "runOutput" || tab === "runs" ? "hidden" : "auto"');
+    expect(detailSource).toContain('tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto"');
     expect(detailSource).toContain('gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)"');
     const panesSource = readFileSync(new URL("../src/components/panes.tsx", import.meta.url), "utf8");
-    expect(panesSource).toContain('data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "visible" }}');
+    expect(panesSource).toContain('data-testid="activity-execution" data-current-run="true"');
   });
 
   it("counts content lines without treating unified-diff headers as changes", () => {

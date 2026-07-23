@@ -69,7 +69,6 @@ import type {
   LetCurrentRunFinishResponse,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
-  RetryCoordinationRequestResponse,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
@@ -215,10 +214,11 @@ export const realApi = {
   getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
     return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
   },
-  getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
+  getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; focusId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
       conversationId: filter.conversationId,
       agentId: filter.agentId,
+      focusId: filter.focusId,
       limit: filter.limit === undefined ? undefined : String(filter.limit),
     })}`);
   },
@@ -226,15 +226,6 @@ export const realApi = {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work/items/${encodeURIComponent(kind)}/${encodeURIComponent(recordId)}${toQuery({
       conversationId: filter.conversationId,
     })}`);
-  },
-  retryCoordinationRequest(requestId: string): Promise<RetryCoordinationRequestResponse> {
-    return requestJson<RetryCoordinationRequestResponse>(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
-      method: "POST",
-      body: JSON.stringify({
-        idempotencyKey: `operator-retry:${requestId}`,
-        createJoin: true,
-      }),
-    });
   },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;

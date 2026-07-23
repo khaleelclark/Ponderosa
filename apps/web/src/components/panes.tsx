@@ -495,27 +495,40 @@ export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "
   element.scrollTop = element.scrollHeight;
 }
 
-export function ScrollToLatestButton({ visible, onClick }: { visible: boolean; onClick(): void }): JSX.Element | null {
+export function ScrollToLatestButton({ visible, onClick, label = "Jump to latest message" }: { visible: boolean; onClick(): void; label?: string }): JSX.Element | null {
   if (!visible) return null;
-  return <Tooltip title="Jump to Latest Message">
+  const sharedSx = {
+    position: "absolute",
+    right: { xs: 12, sm: 20 },
+    bottom: 14,
+    zIndex: 2,
+    boxShadow: 3,
+  } as const;
+  if (label === "Jump to latest message") return <Tooltip title="Jump to Latest Message">
     <IconButton
       aria-label="Jump to latest message"
       onClick={onClick}
       sx={{
-        position: "absolute",
-        right: { xs: 12, sm: 20 },
-        bottom: 14,
-        zIndex: 2,
+        ...sharedSx,
         width: 36,
         height: 36,
         color: "primary.light",
         bgcolor: "background.paper",
         border: 1,
         borderColor: "divider",
-        boxShadow: 3,
         "&:hover": { bgcolor: "action.selected" },
       }}
     ><KeyboardArrowDownIcon /></IconButton>
+  </Tooltip>;
+  return <Tooltip title={label}>
+    <Button
+      aria-label={label}
+      size="small"
+      variant="contained"
+      onClick={onClick}
+      startIcon={<KeyboardArrowDownIcon />}
+      sx={sharedSx}
+    >{label}</Button>
   </Tooltip>;
 }
 
@@ -1280,71 +1293,6 @@ export function ResponseFileActivity({
   </Box>;
 }
 
-export function WorkLogPane({ entries, focusId, onOpenFile, onOpenFileInNewTab, onViewAll, projectId }: {
-  entries: RunOutputDto[];
-  focusId?: string;
-  onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
-  onViewAll?(): void;
-  projectId?: string;
-}): JSX.Element {
-  const ordered = [...entries].sort((a, b) => a.seq - b.seq);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const firstLayout = useRef(true);
-  const followLatest = useRef(true);
-  const [showLatest, setShowLatest] = useState(false);
-  const layoutKey = ordered.at(-1)?.id ?? "empty";
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (!element || (!firstLayout.current && !followLatest.current)) return;
-    scrollChatToBottom(element);
-    firstLayout.current = false;
-    setShowLatest(false);
-  }, [layoutKey]);
-  return (
-    <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
-    <Stack
-      ref={scrollRef}
-      spacing={1.25}
-      className="ponderosa-scroll"
-      onScroll={(event) => {
-        followLatest.current = isChatNearBottom(event.currentTarget);
-        setShowLatest(!followLatest.current);
-      }}
-      sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overscrollBehavior: "contain" }}
-      aria-label="Agent work log"
-    >
-      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Work log</Typography>
-        <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
-      </Stack>
-      {ordered.length === 0 ? <Alert severity="info">Ordinary agent output will appear here. Only explicitly sent messages appear in Chat.</Alert> : ordered.map((entry) => (
-        <Paper key={entry.id} id={telemetryElementId("runOutput", entry.id)} tabIndex={focusId === entry.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }}>
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 0.75 }}>
-            <Chip size="small" variant="outlined" label={entry.kind === "reasoning" ? "Reasoning" : entry.completed ? "Response" : "Response · live"} />
-            <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
-              Run {entry.executionId.slice(0, 8)} · {new Date(entry.createdAt).toLocaleString()}
-            </Typography>
-          </Stack>
-          <Typography component="div" variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-            {entry.text}
-          </Typography>
-          {entry.kind === "response" && entry.fileActivity?.length
-            ? <ResponseFileActivity files={entry.fileActivity} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
-            : null}
-        </Paper>
-      ))}
-    </Stack>
-    <ScrollToLatestButton visible={showLatest} onClick={() => {
-      if (!scrollRef.current) return;
-      followLatest.current = true;
-      scrollChatToBottom(scrollRef.current);
-      setShowLatest(false);
-    }} />
-    </Box>
-  );
-}
-
 export function RunsPane({
   runs,
   coordinationV3,
@@ -1403,12 +1351,7 @@ export function RunsPane({
           {coordinationV3.requests.some((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state))
             ? `${coordinationV3.requests.filter((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).length} assignment(s) are still active. `
             : ""}
-          {coordinationV3.requests.filter((request) => request.direction === "outbound" && ["outcome_unknown", "failed", "recipient_unavailable"].includes(request.state)).map((request) => (
-            <RetryRequestButton key={request.id} requestId={request.id} />
-          ))}
-          {coordinationV3.requests.filter((request) => request.direction === "outbound" && !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).map((request) => (
-            <CancelRequestButton key={request.id} requestId={request.id} />
-          ))}
+          Technical evidence is read-only. Current issues and any operator decisions remain available in Chat.
         </Alert>
       ) : null}
       {runs.length === 0 ? (
@@ -1505,50 +1448,6 @@ export function RunsPane({
   );
 }
 
-function RetryRequestButton({ requestId }: { requestId: string }): JSX.Element {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  return <Box sx={{ mt: 0.5 }}>
-    <Button size="small" variant="outlined" disabled={busy} onClick={async () => {
-      setBusy(true); setError(undefined);
-      try {
-        const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ idempotencyKey: `operator-retry:${requestId}`, createJoin: true }),
-        });
-        const body = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(body.error ?? "Retry failed");
-        await queryClient.invalidateQueries();
-      } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
-      finally { setBusy(false); }
-    }}>{busy ? "Retrying…" : "Retry Assignment"}</Button>
-    {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
-  </Box>;
-}
-
-function CancelRequestButton({ requestId }: { requestId: string }): JSX.Element {
-  const queryClient = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  return <Box sx={{ mt: 0.5, ml: 0.5, display: "inline-block" }}>
-    <Button size="small" color="warning" variant="outlined" disabled={busy} onClick={async () => {
-      setBusy(true); setError(undefined);
-      try {
-        const response = await fetch(`/api/requests/${encodeURIComponent(requestId)}/cancel`, {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ idempotencyKey: `operator-cancel:${requestId}` }),
-        });
-        const body = await response.json() as { error?: string };
-        if (!response.ok) throw new Error(body.error ?? "Cancellation failed");
-        await queryClient.invalidateQueries();
-      } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
-      finally { setBusy(false); }
-    }}>{busy ? "Stopping…" : "Stop Assignment"}</Button>
-    {error ? <Typography variant="caption" color="error" sx={{ ml: 1 }}>{error}</Typography> : null}
-  </Box>;
-}
-
 function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
   const [showExact, setShowExact] = useState(false);
   const exact = useQuery({
@@ -1585,26 +1484,170 @@ function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
 }
 
 /** Refresh-safe chronological projection of canonical execution events. */
-export function ActivityPane({ activity, connected, running, activeExecutionId, focusId }: {
+type MergedActivityEntry =
+  | { type: "activity"; id: string; seq: number; createdAt: string; executionId?: string; item: AgentActivityDto }
+  | { type: "work"; id: string; seq: number; createdAt: string; executionId: string; item: RunOutputDto };
+
+export interface MergedActivityRun {
+  key: string;
+  executionId?: string;
+  run?: AgentRunDto;
+  entries: MergedActivityEntry[];
+  firstAt: string;
+  lastAt: string;
+}
+
+export function mergeActivityByRun(activity: AgentActivityDto[], runOutput: RunOutputDto[], runs: AgentRunDto[], activeExecutionId?: string): MergedActivityRun[] {
+  const runById = new Map(runs.map((run) => [run.id, run]));
+  const groups = new Map<string, MergedActivityRun>();
+  const entries: MergedActivityEntry[] = [
+    ...activity.map((item): MergedActivityEntry => ({ type: "activity", id: `activity:${item.id}`, seq: item.seq, createdAt: item.createdAt, ...(item.executionId ? { executionId: item.executionId } : {}), item })),
+    ...runOutput.map((item): MergedActivityEntry => ({ type: "work", id: `work:${item.id}`, seq: item.seq, createdAt: item.createdAt, executionId: item.executionId, item })),
+  ].sort((a, b) => a.seq - b.seq || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  for (const entry of entries) {
+    const key = entry.executionId ?? "unscoped";
+    const current = groups.get(key);
+    if (current) {
+      current.entries.push(entry);
+      current.lastAt = entry.createdAt;
+    } else {
+      groups.set(key, {
+        key,
+        ...(entry.executionId ? { executionId: entry.executionId, run: runById.get(entry.executionId) } : {}),
+        entries: [entry],
+        firstAt: entry.createdAt,
+        lastAt: entry.createdAt,
+      });
+    }
+  }
+  for (const run of runs) {
+    if (!groups.has(run.id)) groups.set(run.id, {
+      key: run.id,
+      executionId: run.id,
+      run,
+      entries: [],
+      firstAt: run.startedAt,
+      lastAt: run.completedAt ?? run.startedAt,
+    });
+  }
+  const currentId = activeExecutionId ?? [...runs].sort((a, b) => b.startedAt.localeCompare(a.startedAt))[0]?.id
+    ?? [...groups.values()].sort((a, b) => b.lastAt.localeCompare(a.lastAt))[0]?.executionId;
+  return [...groups.values()].sort((a, b) => {
+    if (a.executionId === currentId) return -1;
+    if (b.executionId === currentId) return 1;
+    return b.lastAt.localeCompare(a.lastAt) || b.key.localeCompare(a.key);
+  });
+}
+
+export function scrollActivityToCurrent(
+  element: Pick<HTMLElement, "scrollTo">,
+  target?: Pick<HTMLElement, "scrollIntoView">,
+): void {
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  else element.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function ActivityElapsed({ startedAt, completedAt }: { startedAt: string; completedAt?: string }): JSX.Element {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (completedAt) return;
+    const timer = globalThis.setInterval(() => setNow(Date.now()), 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [completedAt]);
+  const milliseconds = Math.max(0, Date.parse(completedAt ?? new Date(now).toISOString()) - Date.parse(startedAt));
+  const seconds = Math.floor(milliseconds / 1_000);
+  const hours = Math.floor(seconds / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const remainder = seconds % 60;
+  return <>{hours ? `${hours}:` : ""}{String(minutes).padStart(hours ? 2 : 1, "0")}:{String(remainder).padStart(2, "0")}</>;
+}
+
+function WorkActivityLine({ entry, focusId, onOpenFile, onOpenFileInNewTab, onViewAll, projectId }: {
+  entry: Extract<MergedActivityEntry, { type: "work" }>;
+  focusId?: string;
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
+  onViewAll?(): void;
+  projectId?: string;
+}): JSX.Element {
+  const item = entry.item;
+  const long = item.text.length > 600 || item.text.split("\n").length > 12;
+  return <Paper
+    component="details"
+    open={!long}
+    key={entry.id}
+    id={telemetryElementId("runOutput", item.id)}
+    tabIndex={focusId === item.id ? -1 : undefined}
+    variant="outlined"
+    data-activity-kind={item.kind}
+    sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}
+  >
+    <Stack component="summary" direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Chip size="small" variant="outlined" color={item.kind === "reasoning" ? "secondary" : "primary"} label={item.kind === "reasoning" ? "Thinking" : item.completed ? "Response" : "Response · live"} />
+      <Typography variant="body2" color="text.secondary" sx={{ flex: 1, overflowWrap: "anywhere" }}>{summarizeActivityText(item.text, 220)}</Typography>
+      <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleTimeString()}</Typography>
+    </Stack>
+    <Typography component="div" variant="body2" sx={{ mt: 0.75, pl: 1.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.text}</Typography>
+    {item.kind === "response" && item.fileActivity?.length
+      ? <ResponseFileActivity files={item.fileActivity} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
+      : null}
+  </Paper>;
+}
+
+function ActivityRunBody({ group, focusId, onOpenFile, onOpenFileInNewTab, onViewAll, projectId }: {
+  group: MergedActivityRun;
+  focusId?: string;
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
+  onViewAll?(): void;
+  projectId?: string;
+}): JSX.Element {
+  return <Stack spacing={0.5} sx={{ p: 0.75 }}>
+    {group.entries.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 0.5 }}>No detailed events were recorded in the loaded window.</Typography> : null}
+    {group.entries.map((entry) => entry.type === "work"
+      ? <WorkActivityLine key={entry.id} entry={entry} focusId={focusId} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
+      : <Paper component="details" key={entry.id} id={telemetryElementId("activity", entry.item.id)} tabIndex={focusId === entry.item.id ? -1 : undefined} variant="outlined" data-activity-kind={entry.item.event.type} sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
+        <Box component="summary"><EventLine item={{ id: entry.item.id, seq: entry.item.seq, ts: entry.item.createdAt, event: entry.item.event }} /></Box>
+        <Typography variant="caption" color="text.secondary" sx={{ pl: 1.25 }}>{new Date(entry.item.createdAt).toLocaleString()}</Typography>
+        {entry.item.outputPreview ? <ExactActivityOutput item={entry.item} /> : null}
+      </Paper>)}
+  </Stack>;
+}
+
+/** Current-first, bounded, refresh-safe timeline combining Work Log and execution activity. */
+export function ActivityPane({ activity, runOutput = [], runs = [], connected, running, activeExecutionId, focusId, onOpenFile, onOpenFileInNewTab, onViewAll, projectId }: {
   activity: AgentActivityDto[];
+  runOutput?: RunOutputDto[];
+  runs?: AgentRunDto[];
   connected: boolean;
   running: boolean;
   activeExecutionId?: string;
   focusId?: string;
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
+  onViewAll?(): void;
+  projectId?: string;
 }): JSX.Element {
-  const groups = groupActivityByExecution(activity);
+  const groups = mergeActivityByRun(activity, runOutput, runs, activeExecutionId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const firstLayout = useRef(true);
-  const followLatest = useRef(true);
-  const [showLatest, setShowLatest] = useState(false);
-  const layoutKey = activity.at(-1)?.id ?? "empty";
+  const followCurrent = useRef(true);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const current = groups[0];
+  const currentEntry = current?.entries.at(-1);
+  const currentTargetId = currentEntry
+    ? telemetryElementId(currentEntry.type === "activity" ? "activity" : "runOutput", currentEntry.item.id)
+    : undefined;
+  const layoutKey = current?.entries.at(-1)?.id ?? current?.key ?? "empty";
   useLayoutEffect(() => {
     const element = scrollRef.current;
-    if (!element || (!firstLayout.current && !followLatest.current)) return;
-    scrollChatToBottom(element);
+    if (!element || (!firstLayout.current && !followCurrent.current)) return;
+    const target = currentTargetId ? document.getElementById(currentTargetId) : undefined;
+    if (target) target.scrollIntoView({ block: "nearest" });
+    else element.scrollTop = 0;
     firstLayout.current = false;
-    setShowLatest(false);
-  }, [layoutKey]);
+    setShowCurrent(false);
+  }, [currentTargetId, layoutKey]);
   return <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
   <Stack
     ref={scrollRef}
@@ -1613,8 +1656,13 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
     data-testid="activity-scroll-region"
     tabIndex={0}
     onScroll={(event) => {
-      followLatest.current = isChatNearBottom(event.currentTarget);
-      setShowLatest(!followLatest.current);
+      const target = currentTargetId ? document.getElementById(currentTargetId) : undefined;
+      const visible = target
+        ? target.offsetTop >= event.currentTarget.scrollTop - 64
+          && target.offsetTop + target.offsetHeight <= event.currentTarget.scrollTop + event.currentTarget.clientHeight + 64
+        : event.currentTarget.scrollTop <= 64;
+      followCurrent.current = visible;
+      setShowCurrent(!visible);
     }}
     sx={{ p: 1.5, pb: 3, minHeight: 0, maxHeight: "100%", height: "100%", alignSelf: "stretch", overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
     aria-label="Agent activity"
@@ -1624,32 +1672,32 @@ export function ActivityPane({ activity, connected, running, activeExecutionId, 
       <Chip size="small" label={connected ? "Live" : "Reconnecting"} color={connected ? "success" : "warning"} variant={connected ? "filled" : "outlined"} />
       {running ? <Chip size="small" color="info" label="Working" /> : null}
     </Stack>
-    {groups.length === 0 ? <Alert severity="info">Commands, tests, file changes, and tool output will appear here.</Alert> : groups.map((group) => {
+    {groups.length === 0 ? <Alert severity="info">Thinking, responses, commands, tests, file changes, browser actions, and tool output will appear here.</Alert> : groups.map((group, index) => {
+      const isCurrent = index === 0;
       const isActive = group.executionId !== undefined && group.executionId === activeExecutionId;
-      return <Paper key={group.key} variant="outlined" data-testid="activity-execution" data-execution-id={group.executionId} sx={{ overflow: "visible" }}>
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.25, py: 0.75, bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
-          <Typography variant="subtitle2">{group.executionId ? `Run ${group.executionId.slice(0, 8)}` : "Unscoped activity"}</Typography>
-          {isActive ? <Chip size="small" color="info" label="Working" /> : null}
-          <Typography variant="caption" color="text.secondary">{group.items.length} event{group.items.length === 1 ? "" : "s"}</Typography>
-          <Typography variant="caption" color="text.secondary">{formatActivitySpan(group.firstAt, group.lastAt)}</Typography>
-          <Box sx={{ flex: 1 }} />
-          <Typography variant="caption" color="text.secondary">{new Date(group.firstAt).toLocaleString()}</Typography>
-        </Stack>
-        <Stack spacing={0.5} sx={{ p: 0.75 }}>
-          {group.items.map((item) => <Paper component="details" key={item.id} id={telemetryElementId("activity", item.id)} tabIndex={focusId === item.id ? -1 : undefined} variant="outlined" sx={{ p: 0.75, "& > summary": { cursor: "pointer" } }}>
-            <Box component="summary"><EventLine item={{ id: item.id, seq: item.seq, ts: item.createdAt, event: item.event }} /></Box>
-            <Typography variant="caption" color="text.secondary" sx={{ pl: 1.25 }}>{new Date(item.createdAt).toLocaleString()}</Typography>
-            {item.outputPreview ? <ExactActivityOutput item={item} /> : null}
-          </Paper>)}
-        </Stack>
+      const header = <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.25, py: 0.75, bgcolor: "action.hover", borderBottom: isCurrent ? 1 : 0, borderColor: "divider" }}>
+        <Typography variant="subtitle2">{group.run?.title ?? (group.executionId ? `Run ${group.executionId.slice(0, 8)}` : "Unscoped activity")}</Typography>
+        {isCurrent ? <Chip size="small" color={isActive ? "info" : "default"} label={isActive ? "Current · working" : "Current"} /> : null}
+        <Typography variant="caption" color="text.secondary">{group.entries.length} event{group.entries.length === 1 ? "" : "s"}</Typography>
+        {group.run ? <Typography variant="caption" color="text.secondary"><ActivityElapsed startedAt={group.run.startedAt} completedAt={group.run.completedAt} /></Typography> : <Typography variant="caption" color="text.secondary">{formatActivitySpan(group.firstAt, group.lastAt)}</Typography>}
+        <Box sx={{ flex: 1 }} />
+        <Typography variant="caption" color="text.secondary">{new Date(group.firstAt).toLocaleString()}</Typography>
+      </Stack>;
+      return isCurrent ? <Paper key={group.key} variant="outlined" data-testid="activity-execution" data-current-run="true" data-execution-id={group.executionId} sx={{ overflow: "visible" }}>
+        {header}
+        <ActivityRunBody group={group} focusId={focusId} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
+      </Paper> : <Paper component="details" open={group.entries.some((entry) => entry.item.id === focusId) || undefined} key={group.key} variant="outlined" data-testid="activity-execution" data-current-run="false" data-execution-id={group.executionId} sx={{ overflow: "visible", "& > summary": { cursor: "pointer", listStylePosition: "inside" } }}>
+        <Box component="summary">{header}</Box>
+        <ActivityRunBody group={group} focusId={focusId} onOpenFile={onOpenFile} onOpenFileInNewTab={onOpenFileInNewTab} onViewAll={onViewAll} projectId={projectId} />
       </Paper>;
     })}
   </Stack>
-  <ScrollToLatestButton visible={showLatest} onClick={() => {
+  <ScrollToLatestButton visible={showCurrent} label="Back to Current Work" onClick={() => {
     if (!scrollRef.current) return;
-    followLatest.current = true;
-    scrollChatToBottom(scrollRef.current);
-    setShowLatest(false);
+    followCurrent.current = true;
+    const target = currentTargetId ? document.getElementById(currentTargetId) : undefined;
+    scrollActivityToCurrent(scrollRef.current, target ?? undefined);
+    setShowCurrent(false);
   }} />
   </Box>;
 }

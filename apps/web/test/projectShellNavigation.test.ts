@@ -1,20 +1,16 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { agentBackRoute } from "../src/components/ProjectShell";
 
 const projectShellSource = readFileSync(new URL("../src/components/ProjectShell.tsx", import.meta.url), "utf8");
+const agentDetailSource = readFileSync(new URL("../src/components/AgentDetail.tsx", import.meta.url), "utf8");
 
-describe("agent detail return navigation", () => {
-  it("returns drawer-opened agent details to their originating Project chat", () => {
-    expect(agentBackRoute("project", { conversationId: "conversation", reopenRoster: true })).toEqual({
-      kind: "conversation",
-      projectId: "project",
-      conversationId: "conversation",
-    });
-  });
-
-  it("returns ordinary project agent details to the project agent list", () => {
-    expect(agentBackRoute("project")).toEqual({ kind: "agents", projectId: "project" });
+describe("agent detail navigation", () => {
+  it("does not expose obsolete back-to-agents UI or callback wiring", () => {
+    expect(agentDetailSource).not.toContain("ArrowBackIcon");
+    expect(agentDetailSource).not.toContain("Back to agents");
+    expect(agentDetailSource).not.toContain("onBack");
+    expect(projectShellSource).not.toContain("agentBackRoute");
+    expect(projectShellSource).not.toContain("onBack=");
   });
 
   it("does not hydrate every Agent's full history from the Project shell", () => {
@@ -27,5 +23,11 @@ describe("agent detail return navigation", () => {
     expect(projectShellSource).toContain("onOpenReviewInNewTab");
     expect(projectShellSource).toContain('openInNewTab?.({ kind: "review", projectId, agentId: route.agentId');
     expect(projectShellSource).toContain('onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}');
+  });
+
+  it("routes legacy Work Log links to the merged Activity view", () => {
+    expect(projectShellSource).toContain('writeChatState(chatStateKey("view", `agent.${agentId}`), "activity")');
+    expect(projectShellSource).toContain('navigate({ kind: "agent", projectId, agentId, view: "activity" })');
+    expect(projectShellSource).not.toContain('writeChatState(chatStateKey("view", `agent.${agentId}`), "runOutput")');
   });
 });
