@@ -2007,7 +2007,7 @@ export class AgentStore {
     if (!master) return [];
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
     const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId, limit);
-    return this.projectedConversationMessageDtos(conversationId, projected);
+    return this.projectedConversationMessageDtos(conversationId, projected, channel !== "collaboration");
   }
 
   /** Full canonical room history for provider context, without UI-only file-activity hydration. */
@@ -2128,7 +2128,13 @@ export class AgentStore {
     if (!master) return { messages: [], hasMore: false };
     const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
     const page = this.readProjectedCommunicationMessagePage(master.projectId, surface, conversationId, input);
-    return { ...page, messages: this.projectedConversationMessageDtos(conversationId, page.messages) };
+    return {
+      ...page,
+      // Team Chat renders communication and operational state, not per-Run file
+      // summaries. Hydrating every author's full file history made this page
+      // scale with organization size rather than its bounded message window.
+      messages: this.projectedConversationMessageDtos(conversationId, page.messages, channel !== "collaboration"),
+    };
   }
 
   getProjectedConversationMessageById(
@@ -2163,21 +2169,45 @@ export class AgentStore {
     includeFileActivity = true,
   ): ConversationMessageDto[] {
     const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
-    const activityByAgentAndStatus = new Map<string, Map<string, ResponseFileActivityDto[]>>();
     const runsByAgent = new Map<string, AgentRunDto[]>();
+    const statusByAgentExecution = new Map<string, ResponseFileActivityDto["status"]>();
+    const executionScopeByAgentAndStatus = new Map<string, {
+      agentId: string;
+      status: ResponseFileActivityDto["status"];
+      executionIds: Set<string>;
+    }>();
+    if (includeFileActivity) for (const message of projected) {
+      if (!message.authorAgentId || !message.executionId || !this.getAgent(message.authorAgentId)) continue;
+      const runs = runsByAgent.get(message.authorAgentId) ?? this.getRuns(message.authorAgentId);
+      runsByAgent.set(message.authorAgentId, runs);
+      const status: ResponseFileActivityDto["status"] = runs.some((run) =>
+        run.id === message.executionId && (run.status === "running" || run.status === "compacting")
+      ) ? "in_progress" : "completed";
+      const agentExecutionKey = `${message.authorAgentId}\0${message.executionId}`;
+      statusByAgentExecution.set(agentExecutionKey, status);
+      const scopeKey = `${message.authorAgentId}:${status}`;
+      const scope = executionScopeByAgentAndStatus.get(scopeKey) ?? {
+        agentId: message.authorAgentId,
+        status,
+        executionIds: new Set<string>(),
+      };
+      scope.executionIds.add(message.executionId);
+      executionScopeByAgentAndStatus.set(scopeKey, scope);
+    }
+    const activityByAgentAndStatus = new Map(
+      [...executionScopeByAgentAndStatus].map(([scopeKey, scope]) => [
+        scopeKey,
+        this.responseFileActivityByExecution(scope.agentId, scope.status, scope.executionIds),
+      ] as const),
+    );
     return projected.map((message) => {
       let fileActivity: ResponseFileActivityDto[] | undefined;
-      if (includeFileActivity && message.authorAgentId && message.executionId && this.getAgent(message.authorAgentId)) {
-        const runs = runsByAgent.get(message.authorAgentId) ?? this.getRuns(message.authorAgentId);
-        runsByAgent.set(message.authorAgentId, runs);
-        const status: ResponseFileActivityDto["status"] = runs.some((run) =>
-          run.id === message.executionId && (run.status === "running" || run.status === "compacting")
-        ) ? "in_progress" : "completed";
-        const cacheKey = `${message.authorAgentId}:${status}`;
-        const byExecution = activityByAgentAndStatus.get(cacheKey)
-          ?? this.responseFileActivityByExecution(message.authorAgentId, status);
-        activityByAgentAndStatus.set(cacheKey, byExecution);
-        fileActivity = byExecution.get(message.executionId);
+      if (includeFileActivity && message.authorAgentId && message.executionId) {
+        const status = statusByAgentExecution.get(`${message.authorAgentId}\0${message.executionId}`);
+        if (status) {
+          const cacheKey = `${message.authorAgentId}:${status}`;
+          fileActivity = activityByAgentAndStatus.get(cacheKey)?.get(message.executionId);
+        }
       }
       return {
         id: message.messageId,

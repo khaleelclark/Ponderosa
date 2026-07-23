@@ -60,11 +60,11 @@ export function useConversation(conversationId: string | undefined, limit = 100)
   });
 }
 
-export function useCollaborationView(conversationId: string | undefined, limit = 100) {
+export function useCollaborationView(conversationId: string | undefined, limit = 100, enabled = true) {
   return useQuery({
     queryKey: ["collaboration-chat", conversationId, limit],
     queryFn: () => api.getCollaborationView(conversationId ?? "", limit),
-    enabled: Boolean(conversationId),
+    enabled: Boolean(conversationId) && enabled,
   });
 }
 

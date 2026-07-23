@@ -3978,6 +3978,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   function withMessagePresentation<T extends { communicationEventId?: string; text: string; deliveryReceipts?: import("@ponderosa/core").MessageDeliveryReceiptDto[]; agentMentions?: import("@ponderosa/core").AgentMentionBindingDto[] }>(projectId: string, messages: T[]): T[] {
     const projectAgents = store.listAgents(projectId);
+    const deliveryReceiptsByEvent = coordinationV3.deliveryReceiptsForCommunications(
+      projectId,
+      messages.flatMap((message) => message.communicationEventId ? [message.communicationEventId] : []),
+    );
     return messages.map((message) => {
       if (!message.communicationEventId) return message;
       const communication = store.getCommunicationEvent(projectId, message.communicationEventId);
@@ -3987,7 +3991,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ? communication.audience.kind === "user_agent" ? [communication.audience.agentId] : communication.audience.agentIds
           : [];
       const agentMentions = resolveAgentMentionBindings(message.text, recipientAgentIds, projectAgents);
-      const deliveryReceipts = coordinationV3.deliveryReceiptsForCommunication(projectId, message.communicationEventId);
+      const deliveryReceipts = deliveryReceiptsByEvent.get(message.communicationEventId) ?? [];
       return {
         ...message,
         ...(deliveryReceipts.length ? { deliveryReceipts } : {}),
@@ -4348,7 +4352,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const agent = store.getAgent(agentId);
     if (closed || !agent) return;
     publishCoordinationV3Changed(agentId, false);
-    appendWorkspace({ type: "message_delivery_changed", projectId: agent.projectId, agentId });
+    appendWorkspace({
+      type: "message_delivery_changed",
+      projectId: agent.projectId,
+      agentId,
+      conversationIds: agent.conversationIds,
+    });
   }
 
   const agentMessages = (agentId: string) => store.getProjectedAgentMessages(agentId);

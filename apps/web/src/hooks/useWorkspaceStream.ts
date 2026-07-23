@@ -148,6 +148,45 @@ export function createAgentListInvalidator(
   };
 }
 
+/** Coalesces live operational changes by conversation. Team Chat can be costly
+ * to project, so unrelated Projects and short event bursts must not multiply
+ * full-page reads across every mounted browser tab. */
+export function createCollaborationChatInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 750,
+): { schedule(conversationIds?: readonly string[]): void; flush(): void; dispose(): void } {
+  const conversationIds = new Set<string>();
+  let invalidateAll = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    if (invalidateAll) void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+    else for (const conversationId of conversationIds) {
+      void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
+    }
+    invalidateAll = false;
+    conversationIds.clear();
+  };
+  return {
+    schedule(ids) {
+      if (ids === undefined) invalidateAll = true;
+      else for (const conversationId of ids) {
+        if (conversationId) conversationIds.add(conversationId);
+      }
+      if (!invalidateAll && conversationIds.size === 0) return;
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      invalidateAll = false;
+      conversationIds.clear();
+    },
+  };
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
@@ -157,9 +196,11 @@ export function useWorkspaceStream(): void {
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
     const agentListInvalidator = createAgentListInvalidator(queryClient);
+    const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
       agentListInvalidator.dispose();
+      collaborationChatInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: ["projects"] });
       void queryClient.invalidateQueries({ queryKey: ["conversations"] });
       void queryClient.invalidateQueries({ queryKey: ["agents"] });
@@ -199,8 +240,15 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "message_delivery_changed") {
         void queryClient.invalidateQueries({ queryKey: ["agent", event.agentId] });
-        void queryClient.invalidateQueries({ queryKey: ["conversation"] });
-        void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+        if (event.conversationIds) {
+          for (const conversationId of event.conversationIds) {
+            void queryClient.invalidateQueries({ queryKey: ["conversation", conversationId] });
+          }
+          collaborationChatInvalidator.schedule(event.conversationIds);
+        } else {
+          void queryClient.invalidateQueries({ queryKey: ["conversation"] });
+          collaborationChatInvalidator.schedule();
+        }
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "coordination_changed") agentWorkInvalidator.schedule(event.projectId);
@@ -218,7 +266,7 @@ export function useWorkspaceStream(): void {
         if (event.category === "lifecycle") {
           void queryClient.invalidateQueries({ queryKey: ["agent-health", event.projectId] });
           agentListInvalidator.schedule(event.projectId);
-          void queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] });
+          collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
         }
         if (event.category === "file" || event.category === "artifact" || event.category === "task") {
@@ -254,6 +302,7 @@ export function useWorkspaceStream(): void {
       subscription.close();
       agentWorkInvalidator.dispose();
       agentListInvalidator.dispose();
+      collaborationChatInvalidator.dispose();
     };
   }, [queryClient]);
 }

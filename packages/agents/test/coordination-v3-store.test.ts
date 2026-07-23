@@ -1855,6 +1855,43 @@ describe("CoordinationV3Store scheduler", () => {
     `).get()).toEqual({ count: 2 });
   });
 
+  it("batches delivery receipts for a message page without crossing communication identity", () => {
+    const eventIds = ["batch-receipt-a", "batch-receipt-b"];
+    for (const [index, eventId] of eventIds.entries()) {
+      const agentId = index === 0 ? recipientA : recipientB;
+      const communication = userDmEvent({ eventId, agentId, conversation: conversationId });
+      store.recordRuntimeCommunication({
+        id: `dispatch:${eventId}:${agentId}`,
+        projectId,
+        sender: communication.sender,
+        intent: communication.intent,
+        audience: communication.audience,
+        payload: {
+          communication,
+          dispatch: { conversationId, text: communication.text },
+        },
+        activation: {
+          agentId,
+          kind: "human_message",
+          priority: 100,
+          dispatchPolicy: "steer_or_run",
+          promptClass: "human",
+          scopeKey: `conversation:${conversationId}`,
+        },
+      });
+    }
+
+    const singular = new Map(eventIds.map((eventId) => [
+      eventId,
+      store.deliveryReceiptsForCommunication(projectId, eventId),
+    ]));
+    const batch = store.deliveryReceiptsForCommunications(projectId, [...eventIds, eventIds[0]!, "missing"]);
+
+    expect(batch.get(eventIds[0]!)).toEqual(singular.get(eventIds[0]!));
+    expect(batch.get(eventIds[1]!)).toEqual(singular.get(eventIds[1]!));
+    expect(batch.get("missing")).toEqual([]);
+  });
+
   it("records an honest unconfirmed receipt, then recovers by fencing only the originating Run", () => {
     const now = "2026-07-15T00:00:00.000Z";
     const eventId = "uncertain-human-steer";

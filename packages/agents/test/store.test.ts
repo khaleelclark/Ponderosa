@@ -762,6 +762,37 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.recoverInterruptedExecutions()).toEqual([]);
   });
 
+  it("keeps bounded Team Chat pages independent of Agent file-history size", () => {
+    const project = store.createProject({ label: "Team performance", hostPath: "/repo" });
+    const room = store.createConversation(project.id, { title: "Room" });
+    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: room.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: room.id });
+    const executionId = "team-message-execution";
+    store.appendEvent(author.id, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId });
+    store.appendEvent(author.id, { type: "file_change", path: "src/large-history.ts", kind: "edit", diff: "+expensive" });
+    const event: CommunicationEvent = {
+      eventId: "team-performance-message", schemaVersion: 2, projectId: project.id, conversationId: room.id,
+      sender: { kind: "agent", agentId: author.id, executionId }, intent: "collaboration",
+      audience: { kind: "agents", agentIds: [recipient.id] }, text: "Operational handoff",
+      createdAt: "2026-07-15T02:19:10.342Z",
+    };
+    store.appendCommunicationEvent(event);
+    store.appendConversationMessage(
+      room.id,
+      { role: "assistant", text: event.text },
+      author.id,
+      "collaboration",
+      undefined,
+      undefined,
+      event.eventId,
+    );
+
+    expect(store.getProjectedConversationMessagePage(room.id, "collaboration", { limit: 100 }).messages)
+      .toEqual([expect.objectContaining({ text: event.text, authorAgentId: author.id, executionId })]);
+    expect(store.getProjectedConversationMessagePage(room.id, "collaboration", { limit: 100 }).messages[0])
+      .not.toHaveProperty("fileActivity");
+  });
+
   it("preserves historical messages after their agent author is deleted", () => {
     const project = store.createProject({ label: "History", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });

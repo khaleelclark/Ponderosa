@@ -302,8 +302,13 @@ export function ConversationView({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const [activeView, setActiveView] = useState<"main" | "collaboration">(() => initialView ??
+    (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
   const detailQuery = useConversation(conversationId);
-  const collaborationQuery = useCollaborationView(conversationId);
+  // Team Chat is a comparatively expensive operational projection. Keep it
+  // dormant while ordinary Chat is visible; React Query fetches the latest page
+  // when the user actually switches views.
+  const collaborationQuery = useCollaborationView(conversationId, 100, activeView === "collaboration");
   const [olderMain, setOlderMain] = useState<{ messages: ConversationMessageDto[]; cursor?: string; hasMore: boolean }>();
   const [olderCollaboration, setOlderCollaboration] = useState<{
     messages: ConversationMessageDto[];
@@ -329,8 +334,6 @@ export function ConversationView({
       void queryClient.invalidateQueries({ queryKey: ["collaboration-chat", conversationId] });
     },
   });
-  const [activeView, setActiveView] = useState<"main" | "collaboration">(() => initialView ??
-    (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
