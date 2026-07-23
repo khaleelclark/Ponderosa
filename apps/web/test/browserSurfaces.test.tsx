@@ -61,10 +61,11 @@ describe("shared browser surfaces", () => {
 
     await act(async () => {
       rejectSession(new ApiRequestError(404, "Browser session not found"));
-      await new Promise((resolve) => setTimeout(resolve, 0));
     });
-    expect(JSON.stringify(view.toJSON())).not.toContain("Loading interactive browser");
-    expect(JSON.stringify(view.toJSON())).toContain("no longer active");
+    await vi.waitFor(() => {
+      expect(JSON.stringify(view.toJSON())).not.toContain("Loading interactive browser");
+      expect(JSON.stringify(view.toJSON())).toContain("no longer active");
+    });
     view.unmount();
     client.clear();
 
