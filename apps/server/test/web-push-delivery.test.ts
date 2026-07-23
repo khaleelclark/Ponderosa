@@ -34,6 +34,11 @@ describe("durable Web Push delivery", () => {
 
     await manager.drain();
     expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.any(String),
+      expect.objectContaining({ timeout: 4_000 }),
+    );
     expect(store.listPushDeliveries()[0]).toMatchObject({ status: "pending", attempts: 1 });
     now += 100;
     await manager.drain();

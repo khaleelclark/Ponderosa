@@ -55,7 +55,7 @@ describe("All Chat view contract", () => {
     expect(source).not.toContain("sendConversationMessage");
   });
 
-  it("renders ordinary messages with Copy and Reply controls and routes provider commands through the selected Agent", async () => {
+  it("renders ordinary messages without Reply controls and routes provider commands through the mentioned Agent", async () => {
     const first = item({
       author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
@@ -91,13 +91,33 @@ describe("All Chat view contract", () => {
     expect(messages()[1]!.props["aria-label"]).toContain("Second release note");
     const buttons = (label: string) => view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === label);
     expect(buttons("Copy message")).toHaveLength(2);
-    expect(buttons("Reply to Reviewer")).toHaveLength(1);
-    expect(buttons("Reply to Verifier")).toHaveLength(1);
+    expect(buttons("Reply to Reviewer")).toHaveLength(0);
+    expect(buttons("Reply to Verifier")).toHaveLength(0);
+    expect(buttons("Mention Reviewer")).toHaveLength(1);
+    expect(buttons("Mention Verifier")).toHaveLength(1);
 
-    act(() => buttons("Reply to Verifier")[0]!.props.onClick());
+    const storage = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+      },
+      sessionStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+      },
+      requestAnimationFrame: (callback: FrameRequestCallback) => { callback(0); return 1; },
+      cancelAnimationFrame: () => undefined,
+      setTimeout,
+      clearTimeout,
+      queueMicrotask,
+    });
+    act(() => buttons("Mention Verifier")[0]!.props.onClick());
     await vi.waitFor(() => expect(api.getEngineCapabilities).toHaveBeenCalledWith("project-1", expect.objectContaining({ agentId: "agent-2", engineId: "codex" })));
 
-    const composer = view.root.find((node) => node.props.guidance === "Recipient is fixed by the selected source. This is a private reply and cannot be broadcast from Messages.");
+    const composer = view.root.find((node) => node.props.placeholder === "Message Verifier");
+    expect(composer.props.replyTo).toBeUndefined();
+    expect(composer.props.guidance).toBeUndefined();
     await act(async () => { await composer.props.onCommand({ name: "status" }); });
     expect(invokeCommand).toHaveBeenCalledWith("agent-2", { name: "status" });
     await act(async () => { await composer.props.onSend("Private follow-up"); });
@@ -105,7 +125,8 @@ describe("All Chat view contract", () => {
       text: "Private follow-up", replyToMessageId: "message-2", activeRunDelivery: "steer",
     }));
 
-    view.unmount();
+    await act(async () => view.unmount());
     client.clear();
+    vi.unstubAllGlobals();
   });
 });

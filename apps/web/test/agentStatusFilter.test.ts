@@ -2,7 +2,13 @@ import { readFileSync } from "node:fs";
 import type { AgentDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import type { AgentStatus } from "../src/agents";
-import { agentStatusFilterOptions, matchesAgentStatusFilters, STATUS_FILTERS } from "../src/components/AgentsTab";
+import {
+  agentHasCollapsedAncestor,
+  agentHierarchyContextIds,
+  agentStatusFilterOptions,
+  matchesAgentStatusFilters,
+  STATUS_FILTERS,
+} from "../src/components/AgentsTab";
 
 const source = readFileSync(new URL("../src/components/AgentsTab.tsx", import.meta.url), "utf8");
 
@@ -47,5 +53,23 @@ describe("agent status filter", () => {
     expect(matchesAgentStatusFilters(agent("one"), "running", ["running", "waiting"])).toBe(true);
     expect(matchesAgentStatusFilters(agent("one"), "blocked", ["running", "waiting"])).toBe(false);
     expect(matchesAgentStatusFilters(agent("one", false), "idle", ["unassigned", "running"])).toBe(true);
+  });
+
+  it("keeps matching descendants' ancestors as context and hides descendants of collapsed rows", () => {
+    const root = agent("root");
+    const child = { ...agent("child"), managerAgentId: root.id };
+    const leaf = { ...agent("leaf"), managerAgentId: child.id };
+    const agents = [root, child, leaf];
+    expect(agentHierarchyContextIds(agents, new Set([leaf.id]))).toEqual(new Set([root.id, child.id, leaf.id]));
+    const byId = new Map(agents.map((item) => [item.id, item]));
+    expect(agentHasCollapsedAncestor(leaf, byId, new Set([root.id]))).toBe(true);
+    expect(agentHasCollapsedAncestor(leaf, byId, new Set())).toBe(false);
+  });
+
+  it("exposes hierarchy, flat, collapse, and orphan affordances", () => {
+    expect(source).toContain('aria-label="Show Agent hierarchy"');
+    expect(source).toContain('aria-label="Show flat Agent list"');
+    expect(source).toContain('"Unlinked Agent"');
+    expect(source).toContain('`${expanded ? "Collapse" : "Expand"} ${agent.title}`');
   });
 });

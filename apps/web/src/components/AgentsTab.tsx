@@ -7,6 +7,10 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
+import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
+import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
+import ViewListOutlinedIcon from "@mui/icons-material/ViewListOutlined";
 import {
   Alert,
   Box,
@@ -91,6 +95,39 @@ export function matchesAgentStatusFilters(
     : status === filter);
 }
 
+export function agentHierarchyContextIds(
+  agents: readonly AgentDto[],
+  matchingAgentIds: ReadonlySet<string>,
+): Set<string> {
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  const result = new Set(matchingAgentIds);
+  for (const id of matchingAgentIds) {
+    let parentId = byId.get(id)?.managerAgentId;
+    const seen = new Set<string>();
+    while (parentId && !seen.has(parentId)) {
+      seen.add(parentId);
+      result.add(parentId);
+      parentId = byId.get(parentId)?.managerAgentId;
+    }
+  }
+  return result;
+}
+
+export function agentHasCollapsedAncestor(
+  agent: AgentDto,
+  agentsById: ReadonlyMap<string, AgentDto>,
+  collapsedAgentIds: ReadonlySet<string>,
+): boolean {
+  let parentId = agent.managerAgentId;
+  const seen = new Set<string>();
+  while (parentId && !seen.has(parentId)) {
+    if (collapsedAgentIds.has(parentId)) return true;
+    seen.add(parentId);
+    parentId = agentsById.get(parentId)?.managerAgentId;
+  }
+  return false;
+}
+
 export function AgentsTab({
   agents,
   projectId,
@@ -141,6 +178,8 @@ export function AgentsTab({
   const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
   const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
+  const [organizationView, setOrganizationView] = useState<"hierarchy" | "flat">("hierarchy");
+  const [collapsedAgentIds, setCollapsedAgentIds] = useState<Set<string>>(() => new Set());
 
   const promoteAgent = useMutation({
     mutationFn: (agentId: string) => api.updateAgentOrganization(agentId, { managerAgentId: null }),
@@ -155,7 +194,7 @@ export function AgentsTab({
 
   const organizationRows = orderedAgentOrganization(agents);
   const orderRank = new Map(displayOrder?.map((id, index) => [id, index]));
-  const filtered = organizationRows.filter(({ agent }) => {
+  const matchingAgentIds = new Set(organizationRows.filter(({ agent }) => {
     const status = statusByAgentId.get(agent.id) ?? "idle";
     if (!matchesAgentStatusFilters(agent, status, statusFilters)) return false;
     if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
@@ -163,7 +202,37 @@ export function AgentsTab({
     }
     if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
     return true;
-  }).sort((left, right) => displayOrder ? (orderRank.get(left.agent.id) ?? Number.MAX_SAFE_INTEGER) - (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER) : 0);
+  }).map(({ agent }) => agent.id));
+  const filtersActive = Boolean(search.trim() || statusFilters.length || masterFilter !== "all");
+  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+  const contextAgentIds = organizationView === "hierarchy"
+    ? agentHierarchyContextIds(agents, matchingAgentIds)
+    : new Set(matchingAgentIds);
+  const childrenByManager = new Map<string, AgentDto[]>();
+  for (const agent of agents) {
+    if (!agent.managerAgentId || !agentsById.has(agent.managerAgentId)) continue;
+    childrenByManager.set(agent.managerAgentId, [...(childrenByManager.get(agent.managerAgentId) ?? []), agent]);
+  }
+  const descendantIds = (agentId: string): string[] => {
+    const result: string[] = [];
+    const seen = new Set<string>([agentId]);
+    const visit = (id: string) => {
+      for (const child of childrenByManager.get(id) ?? []) {
+        if (seen.has(child.id)) continue;
+        seen.add(child.id);
+        result.push(child.id);
+        visit(child.id);
+      }
+    };
+    visit(agentId);
+    return result;
+  };
+  const filtered = (organizationView === "flat"
+    ? organizationRows.filter(({ agent }) => matchingAgentIds.has(agent.id)).map(({ agent }) => ({ agent, depth: 0 }))
+    : organizationRows.filter(({ agent }) => contextAgentIds.has(agent.id) && (filtersActive || !agentHasCollapsedAncestor(agent, agentsById, collapsedAgentIds))))
+    .sort((left, right) => organizationView === "flat" && displayOrder
+      ? (orderRank.get(left.agent.id) ?? Number.MAX_SAFE_INTEGER) - (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER)
+      : 0);
   const statusOptions = agentStatusFilterOptions(agents, statusByAgentId);
   const activeRunTargets = agents.flatMap((agent) => {
     const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
@@ -242,6 +311,10 @@ export function AgentsTab({
       >
         <TextField size="small" label="Search Agents" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: 220, flex: { sm: 1 }, width: { xs: "100%", sm: "auto" } }} />
         {toolbarControls}
+        <Stack direction="row" role="group" aria-label="Agent organization view" sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
+          <Tooltip title="Hierarchy"><IconButton size="small" color={organizationView === "hierarchy" ? "primary" : "default"} aria-pressed={organizationView === "hierarchy"} aria-label="Show Agent hierarchy" onClick={() => setOrganizationView("hierarchy")}><AccountTreeOutlinedIcon fontSize="small" /></IconButton></Tooltip>
+          <Tooltip title="Flat List"><IconButton size="small" color={organizationView === "flat" ? "primary" : "default"} aria-pressed={organizationView === "flat"} aria-label="Show flat Agent list" onClick={() => setOrganizationView("flat")}><ViewListOutlinedIcon fontSize="small" /></IconButton></Tooltip>
+        </Stack>
         <Button
           color="inherit"
           variant={statusFilters.length ? "outlined" : "text"}
@@ -303,15 +376,21 @@ export function AgentsTab({
             {agents.length === 0 ? "No agents yet. Create one to get started." : "No agents match these filters."}
           </Alert>
         ) : (
-          <Stack spacing={1.25}>
+          <Stack spacing={0.5} role="tree" aria-label="Agent organization">
             {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
                 ? agents.find((candidate) => candidate.id === agent.managerAgentId)
                 : undefined;
+              const orphaned = Boolean(agent.managerAgentId && !organizationParent);
+              const descendants = descendantIds(agent.id);
+              const childAgents = childrenByManager.get(agent.id) ?? [];
+              const expanded = !collapsedAgentIds.has(agent.id);
+              const contextOnly = !matchingAgentIds.has(agent.id);
+              const activeDescendants = descendants.filter((id) => ["running", "waiting", "blocked", "stalled", "interrupted", "compacting"].includes(statusByAgentId.get(id) ?? "idle")).length;
               return (
-                <Stack key={agent.id} spacing={0.75} sx={{ ml: { xs: Math.min(depth, 2), sm: depth * 3 }, borderLeft: depth ? 2 : 0, borderColor: "divider", pl: depth ? 1 : 0 }}>
+                <Stack key={agent.id} role="treeitem" aria-level={depth + 1} aria-expanded={childAgents.length ? expanded : undefined} spacing={0.25} sx={{ ml: organizationView === "hierarchy" ? `${Math.min(depth, 8) * 22}px` : 0, borderLeft: organizationView === "hierarchy" && depth ? 1 : 0, borderColor: "divider", pl: organizationView === "hierarchy" && depth ? 0.75 : 0, opacity: contextOnly ? 0.62 : 1 }}>
                   <Paper
                     variant="outlined"
                     draggable={Boolean(onReorder)}
@@ -319,8 +398,19 @@ export function AgentsTab({
                     onDragEnd={() => setDraggedAgentId(undefined)}
                     onDragOver={(event) => { if (draggedAgentId) event.preventDefault(); }}
                     onDrop={(event) => { event.preventDefault(); if (draggedAgentId && draggedAgentId !== agent.id) onReorder?.(draggedAgentId, agent.id); setDraggedAgentId(undefined); }}
-                    sx={{ display: "flex", alignItems: "flex-start", overflow: "hidden" }}
+                    sx={{ display: "flex", alignItems: "center", overflow: "hidden", minHeight: 54 }}
                   >
+                  {organizationView === "hierarchy" ? <IconButton
+                    size="small"
+                    disabled={childAgents.length === 0}
+                    aria-label={childAgents.length ? `${expanded ? "Collapse" : "Expand"} ${agent.title}` : `${agent.title} has no delegated agents`}
+                    onClick={() => setCollapsedAgentIds((current) => {
+                      const next = new Set(current);
+                      if (next.has(agent.id)) next.delete(agent.id); else next.add(agent.id);
+                      return next;
+                    })}
+                    sx={{ ml: 0.5 }}
+                  >{childAgents.length ? expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon /> : <Box sx={{ width: 24 }} />}</IconButton> : null}
                   {selectionMode ? <Checkbox
                     checked={selectedAgentIds.has(agent.id)}
                     onChange={() => toggleSelection(agent.id)}
@@ -331,75 +421,32 @@ export function AgentsTab({
                     onClick={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
                     onContextMenu={(event) => { if (selectionMode) return; event.preventDefault(); setAgentMenu({ anchor: event.currentTarget, agentId: agent.id }); }}
                     aria-label={`Open agent ${agent.title}`}
-                    sx={{ flex: 1, minWidth: 0, p: 1.5, display: "block", textAlign: "left" }}
+                    sx={{ flex: 1, minWidth: 0, px: 1, py: 0.75, display: "block", textAlign: "left" }}
                   >
-                    <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-                      <Typography variant="subtitle1" sx={{ flex: 1, minWidth: 0, fontWeight: 700 }} noWrap>
+                    <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", minWidth: 0 }}>
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography variant="subtitle2" sx={{ minWidth: 0, fontWeight: 700 }} noWrap>
                         {agent.title}
                       </Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap>
+                        {orphaned ? "Unlinked Agent" : organizationParent ? `Delegated under ${organizationParent.title}` : profile.role}
+                        {!expanded && descendants.length ? ` · ${descendants.length} children${activeDescendants ? `, ${activeDescendants} active` : ""}` : ""}
+                      </Typography>
+                      </Box>
                       <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
-                    </Stack>
-                    <Typography variant="body2" color="text.secondary" noWrap>
-                      {profile.role} · {profile.description}
-                    </Typography>
-                    <Stack
-                      direction="row"
-                      spacing={1}
-                      useFlexGap
-                      flexWrap="wrap"
-                      sx={{ mt: 0.75, alignItems: "center" }}
-                    >
-                      <Chip size="small" variant="outlined" label={agent.activeEngine} />
-                      {projectByAgentId?.get(agent.id) ? <Chip size="small" variant="outlined" label={projectByAgentId.get(agent.id)!.label} /> : null}
-                      {organizationParent ? <Chip size="small" color="secondary" variant="outlined" label={`Reports to ${organizationParent.title}`} /> : null}
-                      <Chip
-                        size="small"
-                        variant="outlined"
-                        color={agent.conversationId ? "default" : "warning"}
-                        label={masterName(agent.conversationId)}
-                      />
-                      {agent.conversationIds.length > 1 ? (
-                        <Chip size="small" variant="outlined" label={`+${agent.conversationIds.length - 1} Project chats`} />
-                      ) : null}
-                      <Typography variant="caption" color="text.secondary">
-                        updated {relativeTime(agent.updatedAt)}
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, width: 150 }}>
+                        {projectByAgentId?.get(agent.id)?.label ?? masterName(agent.conversationId)}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" }, width: 100 }}>
+                        {agent.activeEngine}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", lg: "block" }, width: 92, textAlign: "right" }}>
+                        {relativeTime(agent.updatedAt)}
                       </Typography>
                     </Stack>
                   </ButtonBase>
-                  {!selectionMode ? <Tooltip title="Delete Agent">
-                    <IconButton
-                      size="small"
-                      aria-label={`Delete agent ${agent.title}`}
-                      onClick={() => setPendingDelete(agent)}
-                      sx={{ m: 0.75, minWidth: 44, minHeight: 44 }}
-                    >
-                      <DeleteOutlineIcon fontSize="small" />
-                    </IconButton>
-                  </Tooltip> : null}
                   {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
-                  {organizationParent ? (
-                    <Tooltip title="Promote to Top Level">
-                      <IconButton
-                        size="small"
-                        aria-label={`Promote agent ${agent.title} to top level`}
-                        disabled={promoteAgent.isPending}
-                        onClick={() => promoteAgent.mutate(agent.id)}
-                        sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}
-                      >
-                        <ArrowUpwardIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  ) : null}
-                  <Tooltip title={`Create an agent reporting to ${agent.title}`}>
-                    <IconButton
-                      size="small"
-                      aria-label={`Add subagent to ${agent.title}`}
-                      onClick={() => onNewAgent(agent.id)}
-                      sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}
-                    >
-                      <PersonAddAlt1Icon fontSize="small" />
-                    </IconButton>
-                  </Tooltip>
+                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, agentId: agent.id })} sx={{ mr: 0.5, minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton> : null}
                   </Paper>
                 </Stack>
               );
@@ -415,7 +462,12 @@ export function AgentsTab({
         onClose={() => setPendingDelete(undefined)}
         onDeleted={() => setPendingDelete(undefined)}
       /> : null}
-      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}><MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem></Menu> : null}
+      {agentMenu ? <Menu anchorEl={agentMenu.anchor} open onClose={() => setAgentMenu(undefined)}>
+        <MenuItem disabled={!onOpenAgentInNewTab} onClick={() => { onOpenAgentInNewTab?.(agentMenu.agentId); setAgentMenu(undefined); }}>Open in New Ponderosa Tab</MenuItem>
+        <MenuItem onClick={() => { onNewAgent(agentMenu.agentId); setAgentMenu(undefined); }}><PersonAddAlt1Icon fontSize="small" sx={{ mr: 1 }} />Add Delegated Agent</MenuItem>
+        {agentsById.get(agentMenu.agentId)?.managerAgentId ? <MenuItem disabled={promoteAgent.isPending} onClick={() => { promoteAgent.mutate(agentMenu.agentId); setAgentMenu(undefined); }}><ArrowUpwardIcon fontSize="small" sx={{ mr: 1 }} />Move to Top Level</MenuItem> : null}
+        <MenuItem sx={{ color: "error.main" }} onClick={() => { setPendingDelete(agentsById.get(agentMenu.agentId)); setAgentMenu(undefined); }}><DeleteOutlineIcon fontSize="small" sx={{ mr: 1 }} />Delete Agent</MenuItem>
+      </Menu> : null}
       {projectId ? <AgentDeletionDialog
         open={deleteSelectedOpen}
         projectId={projectId}

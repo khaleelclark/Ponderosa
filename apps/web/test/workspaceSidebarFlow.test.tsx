@@ -88,7 +88,7 @@ describe("responsive workspace sidebar flow", () => {
 
     act(() => view.root.findByProps({ "aria-label": "Home" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalled();
-    expect(view.root.findByProps({ "aria-label": "Open Messages" })).toBeTruthy();
+    expect(view.root.findByProps({ "aria-label": "Open All Messages" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search recent");
     expect(JSON.stringify(view.toJSON())).not.toContain("Search Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View Home");

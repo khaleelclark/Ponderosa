@@ -349,10 +349,10 @@ export function CreateAgentDialog({
             </FormControl>
           ) : null}
           <FormControl fullWidth size="small">
-            <InputLabel id="agent-manager-label">Reports to</InputLabel>
+            <InputLabel id="agent-manager-label">Delegated under</InputLabel>
             <Select
               labelId="agent-manager-label"
-              label="Reports to"
+              label="Delegated under"
               value={managerAgentId}
               onChange={(event: SelectChangeEvent) => setManagerAgentId(event.target.value)}
             >
