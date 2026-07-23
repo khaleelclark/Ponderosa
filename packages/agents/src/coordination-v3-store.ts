@@ -4615,6 +4615,62 @@ export class CoordinationV3Store {
         UPDATE scheduler_runs SET status = 'completed', updated_at = ?, terminal_at = ?
         WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
       `, [now, now, runId, fence]);
+      const unansweredQuestions = this.sqlite.prepare(`
+        SELECT DISTINCT activation.id AS activation_id,
+          request.id AS request_id,
+          update_record.id AS question_update_id,
+          EXISTS (
+            SELECT 1
+            FROM scheduler_prompt_injections injection,
+              json_each(injection.activation_ids_json) injected
+            WHERE injection.run_id = attached.run_id
+              AND injection.kind = 'steer'
+              AND injection.state = 'acknowledged'
+              AND injected.value = activation.id
+          ) AS delivered_as_steer
+        FROM scheduler_run_activations attached
+        JOIN agent_activations activation ON activation.id = attached.activation_id
+        JOIN activation_sources source
+          ON source.activation_id = activation.id
+          AND source.source_kind = 'request_update'
+        JOIN coordination_request_updates update_record
+          ON update_record.id = source.source_id
+          AND update_record.kind = 'question'
+        JOIN coordination_requests request ON request.id = update_record.request_id
+        WHERE attached.run_id = ?
+          AND activation.kind = 'coordination_question'
+          AND activation.state = 'attached'
+          AND request.state = 'awaiting_answer'
+          AND request.open_question_update_id = update_record.id
+      `).all(runId) as Array<{
+        activation_id: string;
+        request_id: string;
+        question_update_id: string;
+        delivered_as_steer: number;
+      }>;
+      for (const question of unansweredQuestions) {
+        if (question.delivered_as_steer === 1) {
+          this.sqlite.prepare(`
+            UPDATE agent_activations
+            SET state = 'retry_pending', dispatch_policy = 'next_run',
+              available_at = ?, updated_at = ?, consumed_at = NULL
+            WHERE id = ? AND state = 'attached'
+          `).run(now, now, question.activation_id);
+          continue;
+        }
+        this.updateRequest({
+          requestId: question.request_id,
+          updateId: `system:unanswered-question:${runId}:${question.request_id}`,
+          kind: "outcome_unknown",
+          actor: { kind: "supervisor", id: "v3-runtime-supervisor" },
+          payload: {
+            reason: "requester_run_completed_without_answer",
+            runId,
+            questionUpdateId: question.question_update_id,
+          },
+          now,
+        });
+      }
       this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'consumed', updated_at = ?, consumed_at = ?
         WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)

@@ -681,6 +681,90 @@ describe("CoordinationV3Store transactions", () => {
     `).get()).toEqual({ count: 0 });
   });
 
+  it("retries an unanswered question steer once, then fails closed instead of stranding its Join", () => {
+    const now = "2026-07-15T00:00:00.000Z";
+    store.enqueueMessageActivation({
+      projectId, agentId: requesterId, messageId: "human-unanswered-question",
+      kind: "human", payload: { text: "Delegate" }, now,
+    });
+    const requesterRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(requesterRun);
+    store.coordinate({
+      projectId, requesterAgentId: requesterId, actorScope: `agent:${requesterId}`,
+      idempotencyKey: "unanswered-question-cycle", requests: [{
+        requestId: "unanswered-question-request", recipientAgentId: recipientA, lifetime: indefinite,
+      }], join: { id: "unanswered-question-join", mode: "all" },
+    }, now);
+    const recipientRun = store.leaseNextRun({ workerId: "server", now })!;
+    acknowledgeLease(recipientRun);
+    store.updateRequest({
+      requestId: "unanswered-question-request", updateId: "unanswered-question-1", kind: "question",
+      actor: { kind: "agent", id: recipientA }, payload: { text: "Which contract?" }, now,
+    });
+    store.completeRun(recipientRun.runId, recipientRun.fencingToken, now);
+
+    const steering = store.leaseNextSteering({ workerId: "server", now })!;
+    expect(steering.activations).toEqual([
+      expect.objectContaining({ kind: "coordination_question" }),
+    ]);
+    store.preparePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId,
+      fencingToken: steering.fencingToken, prompt: "question",
+    });
+    store.markPromptSubmitted({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+    store.acknowledgePromptInjection({
+      injectionId: steering.injectionId, runId: steering.runId, fencingToken: steering.fencingToken,
+    });
+
+    store.completeRun(requesterRun.runId, requesterRun.fencingToken, now);
+    expect(store.getRequest("unanswered-question-request")?.state).toBe("awaiting_answer");
+    expect(opened.client.prepare(`
+      SELECT state, dispatch_policy FROM agent_activations WHERE id = ?
+    `).get(steering.activationIds[0]!)).toEqual({
+      state: "retry_pending", dispatch_policy: "next_run",
+    });
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = 'unanswered-question-join'
+    `).get()).toEqual({ state: "open" });
+
+    const dedicatedQuestionRun = store.leaseNextRun({ workerId: "server", now })!;
+    expect(dedicatedQuestionRun.agentId).toBe(requesterId);
+    expect(dedicatedQuestionRun.activationIds).toEqual(steering.activationIds);
+    acknowledgeLease(dedicatedQuestionRun);
+    store.completeRun(dedicatedQuestionRun.runId, dedicatedQuestionRun.fencingToken, now);
+
+    expect(store.getRequest("unanswered-question-request")?.state).toBe("outcome_unknown");
+    expect(opened.client.prepare(`
+      SELECT state FROM coordination_joins WHERE id = 'unanswered-question-join'
+    `).get()).toEqual({ state: "impossible" });
+    expect(opened.client.prepare(`
+      SELECT kind, resulting_state, payload_json
+      FROM coordination_request_updates
+      WHERE request_id = 'unanswered-question-request'
+        AND kind = 'outcome_unknown'
+    `).get()).toEqual({
+      kind: "outcome_unknown",
+      resulting_state: "outcome_unknown",
+      payload_json: JSON.stringify({
+        questionUpdateId: "unanswered-question-1",
+        reason: "requester_run_completed_without_answer",
+        runId: dedicatedQuestionRun.runId,
+      }),
+    });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_activations
+      WHERE kind = 'coordination_question' AND state IN ('pending', 'retry_pending', 'attached')
+    `).get()).toEqual({ count: 0 });
+    expect(opened.client.prepare(`
+      SELECT COUNT(*) AS count
+      FROM agent_activations
+      WHERE agent_id = ? AND kind = 'coordination_join_impossible' AND state = 'pending'
+    `).get(requesterId)).toEqual({ count: 1 });
+  });
+
   it("rolls back the whole coordinate operation if one recipient is invalid", () => {
     expect(() => store.coordinate({
       projectId,
