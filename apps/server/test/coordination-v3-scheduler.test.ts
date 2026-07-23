@@ -384,6 +384,22 @@ describe("Communication V3 central scheduler", () => {
     expect(prompt).toContain("do not terminally update a continuation");
   });
 
+  it("turns a cancelled Request activation into explicit safe-boundary stop control", () => {
+    const prompt = formatActivationPrompt({
+      runId: "run", projectId, agentId: agentA, scopeKey: "conversation:test", fencingToken: 1,
+      leaseOwner: "scheduler", leaseExpiresAt: "2026-07-15T00:01:00.000Z",
+      injectionId: "injection", activationIds: ["cancelled"],
+      activations: [{
+        id: "cancelled", kind: "coordination_cancelled", priority: 100,
+        dispatchPolicy: "steer_or_run", promptClass: "blocker",
+        payload: { requestId: "request", state: "cancelled" },
+      }],
+    });
+    expect(prompt).toContain("cancelled this exact Request");
+    expect(prompt).toContain("current safe operation boundary");
+    expect(prompt).toContain("do not continue or restart the cancelled work");
+  });
+
   it("waits for an in-flight drain before shutdown completes", async () => {
     store.enqueueMessageActivation({
       projectId, agentId: agentA, messageId: "shutdown", kind: "human", payload: { text: "Wake" },

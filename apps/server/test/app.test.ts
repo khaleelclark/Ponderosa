@@ -9034,6 +9034,7 @@ describe("server chunk F", () => {
     const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
     const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: conversation.id });
     const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: conversation.id });
+    const third = store.createAgent(project.id, { title: "Third", engine: "codex", conversationId: conversation.id });
     await app.inject({
       method: "POST", url: `/api/agents/${manager.id}/messages`,
       payload: { text: "Delegate both checks", sourceChannel: "main", sourceConversationId: conversation.id },
@@ -9058,16 +9059,105 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM coordination_join_members WHERE join_id = ?
     `).get(fanoutResult.joinId)).toEqual({ count: 2 });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
 
     const record = await runtime.handleDynamicToolCall!({
       name: "ponderosa_coordinate",
       arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
     });
     expect(record.success, record.text).toBe(true);
-    const recordResult = JSON.parse(record.text) as { requestIds: string[]; joinId?: string };
+    const recordResult = JSON.parse(record.text) as {
+      requestIds: string[];
+      joinId?: string;
+      requestDeliveries: Array<{
+        requestId: string;
+        recipientAgentId: string;
+        requestState: string;
+        deliveryState: string;
+        interruptsActiveRun: boolean;
+      }>;
+      executionDirective: string;
+    };
     expect(recordResult.joinId).toBeUndefined();
+    expect(recordResult.requestDeliveries).toHaveLength(1);
+    expect(recordResult.requestDeliveries[0]).toMatchObject({
+      requestId: recordResult.requestIds[0],
+      recipientAgentId: first.id,
+      requestState: "open",
+      deliveryState: "queued_behind_active_run",
+      interruptsActiveRun: false,
+    });
+    expect(recordResult.executionDirective).toContain("See requestDeliveries");
+    expect(recordResult.executionDirective).toContain("queued_behind_active_run");
     expect(store.sqlite.prepare(`SELECT json_extract(payload_json, '$.completionMode') AS mode
       FROM coordination_requests WHERE id = ?`).get(recordResult.requestIds[0]!)).toEqual({ mode: "record" });
+
+    const existingOnlyJoin = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "join-existing-record",
+        requests: [],
+        join: { mode: "all", requestIds: [recordResult.requestIds[0]] },
+      },
+    });
+    expect(existingOnlyJoin.success, existingOnlyJoin.text).toBe(true);
+    expect(JSON.parse(existingOnlyJoin.text)).toMatchObject({
+      requestIds: [],
+      joinId: expect.any(String),
+      requestDeliveries: [],
+      executionDirective: expect.stringContaining("No new Requests were created"),
+    });
+
+    const mixed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        delegations: [
+          { recipientAgentId: first.id, text: "Busy follow-up" },
+          { recipientAgentId: third.id, text: "Idle follow-up" },
+        ],
+        completionMode: "record",
+      },
+    });
+    expect(mixed.success, mixed.text).toBe(true);
+    const mixedResult = JSON.parse(mixed.text) as {
+      requestDeliveries: Array<{ recipientAgentId: string; deliveryState: string }>;
+    };
+    expect(mixedResult.requestDeliveries).toEqual([
+      expect.objectContaining({ recipientAgentId: first.id, deliveryState: "queued_behind_active_run" }),
+      expect.objectContaining({ recipientAgentId: third.id, deliveryState: "queued_for_next_run" }),
+    ]);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(4));
+
+    persistent.completeSteers = false;
+    const firstRuntime = persistent.openedOptions[1]!;
+    const firstResult = await firstRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "First assignment complete." },
+    });
+    expect(firstResult.success, firstResult.text).toBe(true);
+    persistent.completeTurn(1);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(5));
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(5));
+    const recordRuntime = persistent.openedOptions[4]!;
+    const recordResultUpdate = await recordRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { requestId: recordResult.requestIds[0], text: "Inventory complete." },
+    });
+    expect(recordResultUpdate.success, recordResultUpdate.text).toBe(true);
+    const replayedRecord = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
+    });
+    expect(replayedRecord.success, replayedRecord.text).toBe(true);
+    expect(JSON.parse(replayedRecord.text)).toMatchObject({
+      replayed: true,
+      requestDeliveries: [{
+        requestId: recordResult.requestIds[0],
+        recipientAgentId: first.id,
+        requestState: "completed",
+        deliveryState: "request_terminal",
+        interruptsActiveRun: false,
+      }],
+    });
 
     const malformedAnswer = await runtime.handleDynamicToolCall!({
       name: "ponderosa_update_request", arguments: { kind: "answer", text: "Missing correlation" },

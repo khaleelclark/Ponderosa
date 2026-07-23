@@ -198,6 +198,22 @@ export interface CoordinationRequestV3View {
   payload: unknown;
 }
 
+export interface CoordinationRequestDeliveryView {
+  requestId: string;
+  recipientAgentId: string;
+  requestState: CoordinationRequestState;
+  deliveryState:
+    | "queued_for_next_run"
+    | "queued_behind_active_run"
+    | "attached_to_run"
+    | "delivered_to_run"
+    | "request_terminal"
+    | "delivery_failed"
+    | "delivery_uncertain"
+    | "delivery_cancelled";
+  interruptsActiveRun: false;
+}
+
 export interface SchedulerLease {
   runId: string;
   projectId: string;
@@ -3713,6 +3729,59 @@ export class CoordinationV3Store {
       state: row.state,
       version: row.version,
       payload: JSON.parse(row.payload_json) as unknown,
+    };
+  }
+
+  requestDelivery(requestId: string): CoordinationRequestDeliveryView | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT request.state AS request_state, request.recipient_agent_id,
+        activation.state AS activation_state
+      FROM coordination_requests request
+      LEFT JOIN agent_activations activation
+        ON activation.id = (
+          SELECT source.activation_id
+          FROM activation_sources source
+          JOIN agent_activations candidate ON candidate.id = source.activation_id
+          WHERE source.source_kind = 'request' AND source.source_id = request.id
+            AND candidate.kind = 'coordination_request'
+            AND candidate.agent_id = request.recipient_agent_id
+          LIMIT 1
+        )
+      WHERE request.id = ?
+      LIMIT 1
+    `).get(requestId) as {
+      request_state: CoordinationRequestState;
+      recipient_agent_id: string;
+      activation_state: string | null;
+    } | undefined;
+    if (!row) return undefined;
+    let deliveryState: CoordinationRequestDeliveryView["deliveryState"];
+    if (TERMINAL_REQUEST_STATES.has(row.request_state)) {
+      deliveryState = "request_terminal";
+    } else if (row.activation_state === "attached") {
+      deliveryState = "attached_to_run";
+    } else if (row.activation_state === "consumed") {
+      deliveryState = "delivered_to_run";
+    } else if (row.activation_state === "failed") {
+      deliveryState = "delivery_failed";
+    } else if (row.activation_state === "outcome_unknown") {
+      deliveryState = "delivery_uncertain";
+    } else if (row.activation_state === "cancelled") {
+      deliveryState = "delivery_cancelled";
+    } else {
+      const recipientBusy = Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM scheduler_runs
+        WHERE agent_id = ? AND status IN ('leased', 'running')
+        LIMIT 1
+      `).get(row.recipient_agent_id));
+      deliveryState = recipientBusy ? "queued_behind_active_run" : "queued_for_next_run";
+    }
+    return {
+      requestId,
+      recipientAgentId: row.recipient_agent_id,
+      requestState: row.request_state,
+      deliveryState,
+      interruptsActiveRun: false,
     };
   }
 
