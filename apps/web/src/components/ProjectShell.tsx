@@ -383,10 +383,14 @@ export function ProjectShell({
         onClose={() => setAgentDialog({ open: false })}
         onCreate={(input) => createAgent.mutate(input)}
       />
-      <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={(id, input) => {
-        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input as never);
-        void action.then(() => queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) }));
-      }} onDelete={(id) => { void api.deleteAgentPreset(id).then(() => queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) })); }} />
+      <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
+        const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);
+        await action;
+        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
+      }} onDelete={async (id) => {
+        await api.deleteAgentPreset(id);
+        await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });
+      }} />
     </>
   );
 

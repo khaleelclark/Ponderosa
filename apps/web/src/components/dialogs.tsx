@@ -14,9 +14,16 @@ import {
   TextField,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentPresetDto, EngineDto, ConversationDto, AgentDto } from "@ponderosa/core";
+import type {
+  AgentDto,
+  AgentPresetDto,
+  ConversationDto,
+  CreateAgentPresetRequest,
+  EngineDto,
+} from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, runtimeControlState } from "../conversationEngine";
+import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
 
 const UNSET = "";
 
@@ -28,33 +35,166 @@ export interface CreateConversationInput {
 }
 
 export function PresetManagerDialog({ open, engines, presets, onClose, onSave, onDelete }: {
-  open: boolean; engines: EngineDto[]; presets: AgentPresetDto[]; onClose(): void;
-  onSave(id: string | undefined, input: { name: string; description: string; guidance: string; engine: string; model?: string; effort?: string; enabled: boolean }): void;
-  onDelete(id: string): void;
+  open: boolean;
+  engines: EngineDto[];
+  presets: AgentPresetDto[];
+  onClose(): void;
+  onSave(id: string | undefined, input: CreateAgentPresetRequest): Promise<void>;
+  onDelete(id: string): Promise<void>;
 }): JSX.Element {
   const [editing, setEditing] = useState<AgentPresetDto | undefined>();
-  const [name, setName] = useState(""); const [description, setDescription] = useState(""); const [guidance, setGuidance] = useState("");
-  const [engine, setEngine] = useState(""); const [model, setModel] = useState(""); const [effort, setEffort] = useState(""); const [enabled, setEnabled] = useState(true);
-  const edit = (preset?: AgentPresetDto) => { setEditing(preset); setName(preset?.name ?? ""); setDescription(preset?.description ?? ""); setGuidance(preset?.guidance ?? ""); setEngine(preset?.engine ?? engines[0]?.id ?? ""); setModel(preset?.model ?? ""); setEffort(preset?.effort ?? ""); setEnabled(preset?.enabled ?? true); };
+  const [deleting, setDeleting] = useState<AgentPresetDto | undefined>();
+  const [pendingAction, setPendingAction] = useState<"save" | "delete">();
+  const [actionError, setActionError] = useState<{ action: "save" | "delete"; message: string }>();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [guidance, setGuidance] = useState("");
+  const [engine, setEngine] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [enabled, setEnabled] = useState(true);
+  const edit = (preset?: AgentPresetDto) => {
+    setEditing(preset);
+    setName(preset?.name ?? "");
+    setDescription(preset?.description ?? "");
+    setGuidance(preset?.guidance ?? "");
+    setEngine(preset?.engine ?? engines[0]?.id ?? "");
+    setModel(preset?.model ?? "");
+    setEffort(preset?.effort ?? "");
+    setEnabled(preset?.enabled ?? true);
+    setActionError(undefined);
+  };
   useEffect(() => { if (open && !editing && !engine && engines[0]) setEngine(engines[0].id); }, [editing, engine, engines, open]);
   const selected = engines.find((item) => item.id === engine);
   const runtime = runtimeControlState(selected, { model, effort });
   const models = runtime.models;
   const efforts = runtime.efforts;
-  return <Dialog open={open} onClose={onClose} fullWidth maxWidth="md"><DialogTitle>Agent presets</DialogTitle><DialogContent>
-    <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ pt: 1 }}>
-      <Stack sx={{ minWidth: 260 }}><Button onClick={() => edit()}>New Preset</Button><List>{presets.map((preset) => <ListItem key={preset.id} secondaryAction={<Button color="error" onClick={() => onDelete(preset.id)}>Delete</Button>}><ListItemText primary={preset.name} secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`} onClick={() => edit(preset)} sx={{ cursor: "pointer" }} /></ListItem>)}</List></Stack>
-      <Stack spacing={1.5} sx={{ flex: 1 }}>
-        <TextField required label="Name" value={name} onChange={(e) => setName(e.target.value)} inputProps={{ maxLength: 60 }} />
-        <TextField required label="Description" value={description} onChange={(e) => setDescription(e.target.value)} inputProps={{ maxLength: 240 }} />
-        <TextField required label="Role / system guidance" helperText="At least 10 characters" multiline minRows={5} value={guidance} onChange={(e) => setGuidance(e.target.value)} inputProps={{ maxLength: 8000 }} />
-        <FormControl required><InputLabel>Engine</InputLabel><Select label="Engine" value={engine} onChange={(e) => { setEngine(e.target.value); setModel(""); setEffort(""); }}>{engines.map((item) => <MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}</Select></FormControl>
-        <Stack direction="row" spacing={1}><FormControl fullWidth><InputLabel>Model</InputLabel><Select label="Model" value={model} onChange={(e) => { const next = e.target.value; setModel(next); if (!effortSelectionIsCompatible(selected, next, effort)) setEffort(""); }}><MenuItem value="">Default</MenuItem>{models.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl><FormControl fullWidth><InputLabel>Effort</InputLabel><Select label="Effort" value={effort} onChange={(e) => setEffort(e.target.value)}><MenuItem value="">Default</MenuItem>{efforts.map((x) => <MenuItem key={x.id} value={x.id}>{x.label}</MenuItem>)}</Select></FormControl></Stack>
-        <FormControlLabel control={<Checkbox checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />} label="Enabled" />
-        <Button variant="contained" disabled={!name.trim() || !description.trim() || guidance.trim().length < 10 || !engine} onClick={() => onSave(editing?.id, { name: name.trim(), description: description.trim(), guidance: guidance.trim(), engine, model: modelSelectionIsCompatible(selected, model) ? model || undefined : undefined, effort: effortSelectionIsCompatible(selected, model, effort) ? effort || undefined : undefined, enabled })}>{editing ? "Save Changes" : "Create Preset"}</Button>
-      </Stack>
-    </Stack>
-  </DialogContent><DialogActions><Button onClick={onClose}>Done</Button></DialogActions></Dialog>;
+  const modelValue = models.some((option) => option.id === model) ? model : UNSET;
+  const effortValue = efforts.some((option) => option.id === effort) ? effort : UNSET;
+  const engineValue = selected?.id ?? UNSET;
+  const save = async () => {
+    if (!selected) return;
+    setActionError(undefined);
+    setPendingAction("save");
+    try {
+      await onSave(editing?.id, {
+        name: name.trim(),
+        description: description.trim(),
+        guidance: guidance.trim(),
+        engine: selected.id,
+        model: modelSelectionIsCompatible(selected, modelValue) ? modelValue || undefined : undefined,
+        effort: effortSelectionIsCompatible(selected, modelValue, effortValue) ? effortValue || undefined : undefined,
+        enabled,
+      });
+      if (!editing) edit();
+    } catch (error) {
+      setActionError({ action: "save", message: String(error) });
+    } finally {
+      setPendingAction(undefined);
+    }
+  };
+  const remove = async () => {
+    if (!deleting) return;
+    setActionError(undefined);
+    setPendingAction("delete");
+    try {
+      await onDelete(deleting.id);
+      if (editing?.id === deleting.id) edit();
+      setDeleting(undefined);
+    } catch (error) {
+      setActionError({ action: "delete", message: String(error) });
+    } finally {
+      setPendingAction(undefined);
+    }
+  };
+  const close = () => {
+    if (!pendingAction) onClose();
+  };
+  return <>
+    <Dialog open={open} onClose={close} fullWidth maxWidth="md">
+      <DialogTitle>Agent presets</DialogTitle>
+      <DialogContent>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ pt: 1 }}>
+          <Stack sx={{ minWidth: 260 }}>
+            <Button onClick={() => edit()}>New Preset</Button>
+            <List>
+              {presets.map((preset) => (
+                <ListItem
+                  key={preset.id}
+                  secondaryAction={<Button color="error" onClick={() => { setActionError(undefined); setDeleting(preset); }}>Delete</Button>}
+                >
+                  <ListItemText
+                    primary={preset.name}
+                    secondary={`${preset.enabled ? "Enabled" : "Disabled"} · ${preset.engine}`}
+                    onClick={() => edit(preset)}
+                    sx={{ cursor: "pointer" }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          </Stack>
+          <Stack spacing={1.5} sx={{ flex: 1 }}>
+            <TextField required label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 60 }} />
+            <TextField required label="Description" value={description} onChange={(event) => setDescription(event.target.value)} inputProps={{ maxLength: 240 }} />
+            <TextField required label="Role / system guidance" helperText="At least 10 characters" multiline minRows={5} value={guidance} onChange={(event) => setGuidance(event.target.value)} inputProps={{ maxLength: 8000 }} />
+            <FormControl required>
+              <InputLabel>Engine</InputLabel>
+              <Select label="Engine" value={engineValue} onChange={(event) => { setEngine(event.target.value); setModel(UNSET); setEffort(UNSET); }}>
+                {engines.map((item) => <MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}
+              </Select>
+            </FormControl>
+            <Stack direction="row" spacing={1}>
+              <FormControl fullWidth>
+                <InputLabel>Model</InputLabel>
+                <Select label="Model" value={modelValue} onChange={(event) => {
+                  const next = event.target.value;
+                  setModel(next);
+                  if (!effortSelectionIsCompatible(selected, next, effort)) setEffort(UNSET);
+                }}>
+                  <MenuItem value={UNSET}>Default</MenuItem>
+                  {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select>
+              </FormControl>
+              <FormControl fullWidth>
+                <InputLabel>Effort</InputLabel>
+                <Select label="Effort" value={effortValue} onChange={(event) => setEffort(event.target.value)}>
+                  <MenuItem value={UNSET}>Default</MenuItem>
+                  {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
+                </Select>
+              </FormControl>
+            </Stack>
+            <FormControlLabel control={<Checkbox checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />} label="Enabled" />
+            {actionError?.action === "save" ? <Alert severity="error">{actionError.message}</Alert> : null}
+            <Button
+              variant="contained"
+              disabled={!name.trim() || !description.trim() || guidance.trim().length < 10 || !selected || Boolean(pendingAction)}
+              onClick={() => void save()}
+            >
+              {pendingAction === "save" ? "Saving…" : editing ? "Save Changes" : "Create Preset"}
+            </Button>
+          </Stack>
+        </Stack>
+      </DialogContent>
+      <DialogActions><Button onClick={close} disabled={Boolean(pendingAction)}>Done</Button></DialogActions>
+    </Dialog>
+    <DestructiveConfirmDialog
+      open={Boolean(deleting)}
+      title="Delete preset?"
+      confirmLabel="Delete Preset"
+      pending={pendingAction === "delete"}
+      pendingLabel="Deleting"
+      error={actionError?.action === "delete" ? actionError.message : undefined}
+      onCancel={() => {
+        if (pendingAction !== "delete") {
+          setDeleting(undefined);
+          setActionError(undefined);
+        }
+      }}
+      onConfirm={() => void remove()}
+    >
+      Delete <strong>{deleting?.name}</strong>? Agents already created from this preset keep their saved guidance.
+    </DestructiveConfirmDialog>
+  </>;
 }
 
 /**

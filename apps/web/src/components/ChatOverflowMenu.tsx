@@ -66,7 +66,6 @@ export function ChatOverflowMenu({
         aria-haspopup="menu"
         aria-expanded={anchor ? "true" : undefined}
         onClick={(event) => setAnchor(event.currentTarget)}
-        sx={{ minWidth: 44, minHeight: 44 }}
       >
         <MoreVertIcon />
       </IconButton>
