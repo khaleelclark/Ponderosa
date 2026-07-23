@@ -14,6 +14,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 export function AgentDeletionDialog({
   open,
@@ -51,11 +52,11 @@ export function AgentDeletionDialog({
       });
     },
     onSuccess: async (result) => {
-      result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: ["agent", agentId] }));
+      result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) }));
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agents"] }),
-        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
-        queryClient.invalidateQueries({ queryKey: ["collaboration"] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.all }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
       ]);
       onDeleted(result.deletedAgentIds);
     },

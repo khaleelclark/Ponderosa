@@ -45,6 +45,7 @@ export const queryKeys = {
   },
   allChat: (limit: number) => ["all-chat", limit] as const,
   projectFolders: ["project-folders"] as const,
+  collaborationAll: ["collaboration-chat"] as const,
   collaborationPrefix: (conversationId: string | undefined) =>
     ["collaboration-chat", conversationId] as const,
   collaboration: (conversationId: string | undefined, limit = 100) =>

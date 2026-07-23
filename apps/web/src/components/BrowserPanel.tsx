@@ -3,7 +3,7 @@ import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import LanguageIcon from "@mui/icons-material/Language";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import {
-  Alert, Box, Button, Chip, IconButton, Paper, Stack, TextField, Tooltip, Typography,
+  Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, TextField, Tooltip, Typography,
 } from "@mui/material";
 import type { BrowserSessionDto } from "@ponderosa/core";
 import { useMemo, useState } from "react";
@@ -38,7 +38,24 @@ export function BrowserPanel({
   const [typeText, setTypeText] = useState("");
   const session = browser.session;
 
-  if (!runId || !session || browser.missing || session.status === "closed") {
+  if (!runId) {
+    return standalone
+      ? <Alert severity="info" sx={{ m: 2 }}>This Run’s interactive browser is no longer active.</Alert>
+      : null;
+  }
+  if (browser.missing) {
+    return standalone
+      ? <Alert severity="info" sx={{ m: 2 }}>This Run’s interactive browser is no longer active.</Alert>
+      : null;
+  }
+  if (browser.query.isPending) {
+    return standalone
+      ? <Stack role="status" aria-live="polite" direction="row" spacing={1} sx={{ alignItems: "center", justifyContent: "center", height: "100%", minHeight: 120, p: 2 }}><CircularProgress size={20} /><Typography variant="body2">Loading interactive browser…</Typography></Stack>
+      : <Paper component="section" role="status" aria-live="polite" aria-label="Loading interactive browser" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1, sm: 1.5 }, py: .75 }}><CircularProgress size={18} /><Typography variant="body2">Connecting to interactive browser…</Typography></Stack>
+      </Paper>;
+  }
+  if (!session || session.status === "closed") {
     return standalone
       ? <Alert severity="info" sx={{ m: 2 }}>This Run’s interactive browser is no longer active.</Alert>
       : null;

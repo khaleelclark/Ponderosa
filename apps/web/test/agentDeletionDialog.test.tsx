@@ -4,6 +4,7 @@ import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
 import { AgentDeletionDialog } from "../src/components/AgentDeletionDialog";
+import { queryKeys } from "../src/queryKeys";
 
 vi.mock("@mui/material", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@mui/material")>();
@@ -37,6 +38,9 @@ describe("Agent deletion confirmation", () => {
     });
     const onDeleted = vi.fn();
     const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const collaborationKey = queryKeys.collaboration("team-chat", 100);
+    client.setQueryData(collaborationKey, { messages: [{ id: "deleted-agent-message" }] });
+    expect(client.getQueryState(collaborationKey)?.isInvalidated).toBe(false);
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><AgentDeletionDialog
@@ -59,6 +63,7 @@ describe("Agent deletion confirmation", () => {
       previewHash: preview.previewHash,
     });
     expect(onDeleted).toHaveBeenCalledWith(["manager", "late-child"]);
+    expect(client.getQueryState(collaborationKey)?.isInvalidated).toBe(true);
     view.unmount();
     client.clear();
   });

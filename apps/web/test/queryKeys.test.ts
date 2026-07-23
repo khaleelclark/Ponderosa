@@ -13,6 +13,8 @@ describe("canonical workspace query keys", () => {
     expect(queryKeys.agents.project("alpha")).toEqual(["agents", "alpha"]);
     expect(queryKeys.conversations.project("alpha")).toEqual(["conversations", "alpha"]);
     expect(queryKeys.triggers.agent("agent-one")).toEqual(["triggers", "agent-one"]);
+    expect(queryKeys.collaborationAll).toEqual(["collaboration-chat"]);
+    expect(queryKeys.collaborationPrefix("chat-one")).toEqual(["collaboration-chat", "chat-one"]);
   });
 
   it("builds all repeated Project queries from the same factories", () => {

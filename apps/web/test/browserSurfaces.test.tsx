@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
+import { ApiRequestError } from "../src/api/types";
 
 vi.mock("../src/components/browser/BrowserViewport", () => ({
   BrowserViewport: ({ operatorControl, sendInput }: { operatorControl: boolean; sendInput(value: unknown): void }) =>
@@ -43,6 +44,43 @@ afterEach(() => {
 });
 
 describe("shared browser surfaces", () => {
+  it("shows initial loading distinctly before a terminal missing or closed session", async () => {
+    let rejectSession!: (error: unknown) => void;
+    vi.spyOn(api, "getBrowserSession").mockImplementation(() => new Promise((_resolve, reject) => {
+      rejectSession = reject;
+    }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><BrowserPanel projectId="project-1" agentId="agent-1" runId="run-pending" standalone /></QueryClientProvider>);
+    });
+
+    expect(view.root.findByProps({ role: "status" }).props["aria-live"]).toBe("polite");
+    expect(JSON.stringify(view.toJSON())).toContain("Loading interactive browser");
+    expect(JSON.stringify(view.toJSON())).not.toContain("no longer active");
+
+    await act(async () => {
+      rejectSession(new ApiRequestError(404, "Browser session not found"));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(JSON.stringify(view.toJSON())).not.toContain("Loading interactive browser");
+    expect(JSON.stringify(view.toJSON())).toContain("no longer active");
+    view.unmount();
+    client.clear();
+
+    vi.restoreAllMocks();
+    vi.spyOn(api, "getBrowserSession").mockResolvedValue({ ...runSession, runId: "run-closed", status: "closed" });
+    const closedClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let closedView!: ReturnType<typeof create>;
+    await act(async () => {
+      closedView = create(<QueryClientProvider client={closedClient}><BrowserPanel projectId="project-1" agentId="agent-1" runId="run-closed" standalone /></QueryClientProvider>);
+    });
+    await vi.waitFor(() => expect(JSON.stringify(closedView.toJSON())).toContain("no longer active"));
+    expect(JSON.stringify(closedView.toJSON())).not.toContain("Loading interactive browser");
+    closedView.unmount();
+    closedClient.clear();
+  });
+
   it("renders the compact Run session and routes Open Tab interaction", async () => {
     vi.spyOn(api, "getBrowserSession").mockResolvedValue(runSession);
     const openTab = vi.fn();
