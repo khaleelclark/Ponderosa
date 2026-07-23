@@ -6025,7 +6025,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       1_000,
     );
     const decisionContext = typeof body.context === "string" && body.context.trim()
-      ? truncateUnicodeCodePoints(canonicalizeProviderText(body.context, steeringInjectionIds).trim(), 4_000)
+      ? canonicalizeProviderText(body.context, steeringInjectionIds).trim()
       : undefined;
     const normalizedOptions = options.map((option) => ({
       id: String((option as { id: string }).id).slice(0, 80),
@@ -6807,7 +6807,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? undefined
       : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
     const engineId = request.body?.engine?.trim();
-    if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || unicodeCodePointLength(text) > 4000 || !engineId || !request.body.lifetime) {
+    if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || !engineId || !request.body.lifetime) {
       return reply.code(400).send({ error: "idempotencyKey, title, engine, text, and explicit lifetime are required" });
     }
     const engine = engines.get(engineId);
@@ -7043,7 +7043,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const text = candidate.text === undefined
         ? undefined
         : canonicalizeProviderText(candidate.text, steeringInjectionIds).trim();
-      if (!recipientAgentId || recipientAgentId === author.id || !text || unicodeCodePointLength(text) > 4000 || !candidate.lifetime) {
+      if (!recipientAgentId || recipientAgentId === author.id || !text || !candidate.lifetime) {
         return reply.code(400).send({ error: "each request needs another recipient, text, and explicit lifetime" });
       }
       const recipient = store.getAgent(recipientAgentId);

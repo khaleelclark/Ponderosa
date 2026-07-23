@@ -768,7 +768,6 @@ export class BrowserSessionManager {
       work = (driver) => driver.click(input.selector as string);
       summary = `clicked ${input.selector}`;
     } else if (action === "fill" && typeof input.selector === "string" && input.selector.length > 0 && input.selector.length <= MAX_SELECTOR_TEXT && typeof input.text === "string") {
-      if (input.text.length > 4_000) throw new BrowserSessionError("browser fill text exceeds 4000 characters");
       work = (driver) => driver.fill(input.selector as string, input.text as string);
       summary = `filled ${input.selector}`;
     } else if (action === "key" && typeof input.key === "string" && input.key.length > 0 && input.key.length <= 40) {
