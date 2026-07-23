@@ -7759,7 +7759,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const key = request.body?.idempotencyKey?.trim() || `operator-cancel:${current.id}`;
       if (key.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       const reason = request.body?.reason?.trim();
-      if (reason && reason.length > 4000) return reply.code(400).send({ error: "reason must be 4000 characters or fewer" });
       try {
         const result = coordinationV3.updateRequest({
           requestId: current.id,
@@ -13242,7 +13241,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     }
     const cursor = workspace.cursor();
-    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text: text.slice(0, 4_000) } : {}), respondedAt })!;
+    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
     const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
     if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     publishWorkspaceSince(cursor);

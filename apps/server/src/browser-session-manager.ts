@@ -798,7 +798,7 @@ export class BrowserSessionManager {
       work = (driver) => driver.pointer(input.x, input.y);
       summary = `clicked viewport at ${Math.round(input.x)},${Math.round(input.y)}`;
     } else if (input.kind === "type") {
-      if (!input.text || input.text.length > 4_000) throw new BrowserSessionError("browser type text must contain 1 to 4000 characters");
+      if (!input.text) throw new BrowserSessionError("browser type text must not be empty");
       work = (driver) => driver.type(input.text);
       summary = "typed into the focused page control";
     } else if (input.kind === "key") {
