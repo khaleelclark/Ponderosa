@@ -139,7 +139,7 @@ export function AgentWorkInspector({
       </Stack>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 2, py: 1.25, borderBottom: 1, borderColor: "divider" }}>
         <Chip size="small" color="info" variant="outlined" label={`${stateCounts.active} Active`} />
-        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Review`} />
+        <Chip size="small" color="warning" variant="outlined" label={`${stateCounts.attention} Issues`} />
         <Chip size="small" variant="outlined" label={`${stateCounts.finished} Finished`} />
         {query.isFetching ? <CircularProgress size={18} sx={{ ml: "auto" }} aria-label="Refreshing Agent work" /> : null}
       </Stack>
@@ -165,7 +165,7 @@ export function AgentWorkInspector({
               <AccordionSummary sx={{ minWidth: 0, "& .MuiAccordionSummary-content": { minWidth: 0 } }}>
                 <Box sx={{ width: "100%", minWidth: 0 }}>
                   <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr)", columnGap: 1, rowGap: 0.35, alignItems: "start" }}>
-                    <Chip size="small" sx={{ gridRow: "1 / span 2" }} color={trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"} label={trace.state === "attention" ? "Attention" : trace.state === "active" ? "Active" : "Finished"} />
+                    <Chip size="small" sx={{ gridRow: "1 / span 2" }} color={trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"} label={trace.state === "attention" ? "Issue" : trace.state === "active" ? "Active" : "Finished"} />
                     <Typography variant="subtitle2" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{trace.title}</Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{trace.summary} · {new Date(trace.updatedAt).toLocaleString()}</Typography>
                   </Box>

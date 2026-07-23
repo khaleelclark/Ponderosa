@@ -2103,8 +2103,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     body: string;
     projectId?: string;
     conversationId?: string;
+    conversationIds?: string[];
     agentId?: string;
+    agentIds?: string[];
     action?: WorkspaceNotificationDto["action"];
+    resolution?: WorkspaceNotificationDto["resolution"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
     const notification = workspace.createNotification({ kind: "operational", status: "open", ...input }, input.severity !== "info");
@@ -2162,24 +2165,63 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const related = trace.itemIds.flatMap((id) => items.get(id) ? [items.get(id)!] : []);
         if (related.some((item) => item.kind === "decision" && item.state === "pending")) continue;
         if (related.some((item) => item.kind === "activation" && communicationFailureActivationIds.has(item.recordId))) continue;
-        const failedRequest = related.find((item) => item.kind === "request"
-          && ["outcome_unknown", "failed", "recipient_unavailable"].includes(item.state));
-        const responsibleAgentId = failedRequest?.requesterAgentId ?? failedRequest?.recipientAgentId ?? trace.agentIds[0];
+        const failedRequest = [...related].reverse().find((item) => item.kind === "request"
+          && ["blocked", "failed", "outcome_unknown", "expired", "recipient_unavailable"].includes(item.state));
+        const responsibleAgentId = failedRequest?.recipientAgentId ?? failedRequest?.requesterAgentId ?? trace.agentIds[0];
         const agent = responsibleAgentId ? store.getAgent(responsibleAgentId) : undefined;
-        const conversationId = agent?.conversationIds.length === 1 ? agent.conversationIds[0] : undefined;
-        const key = `coordination-attention:${trace.id}`;
+        const affectedAgents = trace.agentIds.flatMap((agentId) => {
+          const affected = store.getAgent(agentId);
+          return affected && !affected.archived ? [affected] : [];
+        });
+        const conversationIds = [...new Set(affectedAgents.flatMap((affected) => affected.conversationIds))].sort();
+        const requestRecord = failedRequest ? coordinationV3.getRequest(failedRequest.recordId) : undefined;
+        const requestPayload = requestRecord?.payload && typeof requestRecord.payload === "object" && !Array.isArray(requestRecord.payload)
+          ? requestRecord.payload as Record<string, unknown>
+          : undefined;
+        const rawAssignmentValue = [requestPayload?.text, requestPayload?.assignment, requestPayload?.task, requestPayload?.request, requestPayload?.prompt].find((value): value is string => typeof value === "string");
+        const rawAssignment = rawAssignmentValue?.replace(/\s+/gu, " ").trim() ?? "";
+        const assignment = rawAssignment
+          ? `${rawAssignment.slice(0, 220)}${rawAssignment.length > 220 ? "…" : ""}`
+          : "Coordinated assignment";
+        const recipient = failedRequest?.recipientAgentId ? store.getAgent(failedRequest.recipientAgentId) : undefined;
+        const outcome = failedRequest?.state ?? "unresolved";
+        const outcomeExplanation = outcome === "outcome_unknown"
+          ? "Ponderosa could not confirm whether the Agent finished or published a result."
+          : outcome === "recipient_unavailable"
+            ? "The assigned Agent is no longer available to finish this work."
+            : outcome === "blocked"
+              ? "The Agent reported that the assignment is blocked."
+              : outcome === "expired"
+                ? "The assignment reached its deadline without a result."
+                : outcome === "failed"
+                  ? "The Agent reported that the assignment failed."
+                  : "The coordinated workflow could not finish automatically.";
+        const key = `coordination-attention:${trace.id}:${failedRequest?.recordId ?? "trace"}`;
         retained.add(key);
         createOperationalNotification({
           dedupeKey: key,
           category: "coordination",
           severity: "attention",
-          title: agent ? `${agent.title} could not finish coordinated work automatically` : "Coordinated work needs review",
-          body: "A dependency, assignment, or recovery ended without a successful handoff. Review what happened and choose the next step.",
+          title: recipient ? `${recipient.title}'s assignment needs a decision` : "A coordinated assignment needs a decision",
+          body: `${outcomeExplanation} Review the current state before deciding whether to retry it.`,
           projectId: project.id,
-          ...(conversationId ? { conversationId } : {}),
+          ...(conversationIds[0] ? { conversationId: conversationIds[0], conversationIds } : {}),
+          ...(affectedAgents.length ? { agentIds: affectedAgents.map((affected) => affected.id) } : {}),
           ...(agent ? { agentId: agent.id, action: { kind: "open_agent" as const, targetId: agent.id } } : {
             action: { kind: "open_project" as const, targetId: project.id },
           }),
+          ...(failedRequest && recipient ? {
+            resolution: {
+              kind: "coordination_request" as const,
+              traceId: trace.id,
+              requestId: failedRequest.recordId,
+              recipientAgentId: recipient.id,
+              recipientTitle: recipient.title,
+              assignment,
+              outcome,
+              retryAvailable: ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(outcome),
+            },
+          } : {}),
         });
       }
     }
@@ -4315,6 +4357,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return false;
       };
       const completedRecoveryFor = (failure: AgentWorkItemDto): boolean => {
+        if (failure.kind === "request" && failure.relatedItemIds.some((id) => {
+          const related = componentById.get(id);
+          return related?.kind === "request" && ["open", "in_progress", "waiting_dependency", "awaiting_answer", "completed"].includes(related.state) && related.updatedAt >= failure.updatedAt;
+        })) return true;
         const activationIds = new Set<string>();
         const addLaterActivation = (id: string): void => {
           const candidate = componentById.get(id);
@@ -5871,7 +5917,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     workspace.createNotification({
       projectId: decision.projectId,
       conversationId: decision.conversationId,
+      conversationIds: agent.conversationIds,
       agentId: decision.agentId,
+      agentIds: [decision.agentId],
       kind: "decision",
       category: "decision",
       severity: decision.blocking ? "urgent" : "attention",
@@ -6233,7 +6281,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       workspace.createNotification({
         projectId: decision.projectId,
         conversationId: decision.conversationId,
+        conversationIds: owner.conversationIds,
         agentId: decision.agentId,
+        agentIds: [decision.agentId],
         kind: "decision",
         category: "decision",
         severity: "urgent",
@@ -7483,8 +7533,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     async (request, reply) => {
       const original = coordinationV3.getRequest(request.params.id);
       if (!original) return reply.code(404).send({ error: "request not found" });
-      if (!["outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
-        return reply.code(409).send({ error: "only uncertain or failed requests can be retried" });
+      if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
+        return reply.code(409).send({ error: "only blocked, expired, uncertain, or failed requests can be retried" });
+      }
+      const retryStatus = coordinationV3.requestRetryStatus(original.id);
+      if (retryStatus.completedRequestId) {
+        return reply.code(409).send({ error: "this assignment was already recovered by a successful retry" });
+      }
+      if (retryStatus.activeRequestId) {
+        return reply.code(409).send({ error: "a retry of this assignment is already queued or running" });
       }
       const requester = original.requesterAgentId ? store.getAgent(original.requesterAgentId) : undefined;
       const recipient = store.getAgent(original.recipientAgentId);
@@ -7507,6 +7564,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           requests: [{ requestId, recipientAgentId: recipient.id, lifetime: { kind: "indefinite" }, payload }],
           ...(request.body?.createJoin === false ? {} : { join: { id: `${requestId}:join`, mode: "all" as const } }),
         });
+        const notificationCursor = workspace.cursor();
+        for (const notification of workspace.listNotifications()) {
+          if ((notification.status ?? "open") === "open" && notification.resolution?.kind === "coordination_request"
+              && notification.resolution.requestId === original.id) {
+            workspace.setNotificationStatus(notification.id, "resolved");
+          }
+        }
+        publishWorkspaceSince(notificationCursor);
         publishCoordinationV3Changed(requester.id);
         publishCoordinationV3Changed(recipient.id);
         coordinationV3Scheduler.notify();

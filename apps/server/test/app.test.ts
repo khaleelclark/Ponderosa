@@ -1192,16 +1192,20 @@ describe("notification panel actions", () => {
     })).toBe("terminal");
 
     const notifications = (await app.inject({ method: "GET", url: "/api/notifications" })).json<Array<{
-      agentId?: string; category?: string; severity?: string; title: string; body: string;
+      agentId?: string; agentIds?: string[]; conversationIds?: string[]; category?: string; severity?: string; title: string; body: string;
       action?: { kind: string; targetId?: string };
+      resolution?: Record<string, unknown>;
     }>>();
     expect(notifications).toEqual(expect.arrayContaining([expect.objectContaining({
-      agentId: manager.id,
+      agentId: worker.id,
+      agentIds: expect.arrayContaining([manager.id, worker.id]),
+      conversationIds: [conversation.id],
       category: "coordination",
       severity: "attention",
-      title: expect.stringContaining("Manager"),
+      title: "Worker's assignment needs a decision",
       body: expect.not.stringMatching(/[0-9a-f]{8}/i),
-      action: { kind: "open_agent", targetId: manager.id },
+      action: { kind: "open_agent", targetId: worker.id },
+      resolution: expect.objectContaining({ assignment: "Complete the handoff", outcome: "failed", retryAvailable: true }),
     })]));
     await app.close();
   });
@@ -5344,6 +5348,25 @@ describe("server chunk F", () => {
       actor: { kind: "agent", id: recipient.id },
       payload: { text: "Failed before completion" },
     });
+    const currentIssues = (await app.inject({ method: "GET", url: "/api/notifications" }))
+      .json<Array<{ title: string; body: string; conversationIds?: string[]; agentIds?: string[]; resolution?: Record<string, unknown> }>>();
+    expect(currentIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        title: "Recipient's assignment needs a decision",
+        body: expect.stringContaining("assignment failed"),
+        conversationIds: [conversation.id],
+        agentIds: expect.arrayContaining([requester.id, recipient.id]),
+        resolution: expect.objectContaining({
+          kind: "coordination_request",
+          requestId: "healthy-request-original",
+          recipientAgentId: recipient.id,
+          recipientTitle: "Recipient",
+          assignment: "Original work",
+          outcome: "failed",
+          retryAvailable: true,
+        }),
+      }),
+    ]));
     const before = durableMutationState(store, dataDir, project.id);
     const requestCountBefore = (store.sqlite.prepare(
       "SELECT COUNT(*) AS count FROM coordination_requests",
@@ -5365,6 +5388,17 @@ describe("server chunk F", () => {
       replayed: false,
       retryOfRequestId: "healthy-request-original",
     });
+    const afterRetryNotifications = (await app.inject({ method: "GET", url: "/api/notifications" }))
+      .json<Array<{ status?: string; resolution?: { requestId?: string } }>>();
+    expect(afterRetryNotifications.find((item) => item.resolution?.requestId === "healthy-request-original"))
+      .toMatchObject({ status: "resolved" });
+    const duplicateWhileActive = await app.inject({
+      method: "POST",
+      url: "/api/requests/healthy-request-original/retry",
+      payload: { idempotencyKey: "healthy-request-second-retry" },
+    });
+    expect(duplicateWhileActive.statusCode).toBe(409);
+    expect(duplicateWhileActive.json()).toMatchObject({ error: expect.stringContaining("already queued or running") });
     expect(coordination.getRequest("healthy-request-original")?.state).toBe("failed");
     expect(coordination.getRequest(result.requestIds[0]!)?.payload).toMatchObject({
       text: "Original work",
@@ -5381,6 +5415,23 @@ describe("server chunk F", () => {
     expect((store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_joins").get() as { count: number }).count)
       .toBe(joinCountBefore + 1);
     expect(adapter.seeds).toEqual([]);
+    coordination.updateRequest({
+      requestId: result.requestIds[0]!,
+      updateId: "healthy-request-retry-completed",
+      kind: "completed",
+      actor: { kind: "agent", id: recipient.id },
+      payload: { text: "Recovered after auditing current state" },
+    });
+    expect(coordination.requestRetryStatus("healthy-request-original")).toMatchObject({
+      completedRequestId: result.requestIds[0],
+    });
+    const duplicateAfterCompletion = await app.inject({
+      method: "POST",
+      url: "/api/requests/healthy-request-original/retry",
+      payload: { idempotencyKey: "healthy-request-third-retry" },
+    });
+    expect(duplicateAfterCompletion.statusCode).toBe(409);
+    expect(duplicateAfterCompletion.json()).toMatchObject({ error: expect.stringContaining("already recovered") });
     await app.close();
   });
 

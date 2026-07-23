@@ -244,7 +244,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     </DialogTitle>
     <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="all" label={`All (${filterNotifications(notifications, "all").length})`} sx={{ minHeight: 42 }} />
-      <Tab value="urgent" label={`Needs Attention (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
+      <Tab value="urgent" label={`Issues (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
       <Tab value="mentions" label={`Mentions (${filterNotifications(notifications, "mentions").length})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
@@ -270,7 +270,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
                 <ListItemButton selected={!item.readAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: item.readAt ? "transparent" : "primary.main", flex: "0 0 auto" }} />
                   <ListItemText
-                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Needs attention"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
+                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={item.readAt ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{item.title}</Typography>{item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(item.createdAt)}</Typography></Stack>}
                     secondary={<Stack spacing={0.5}>{item.conversationId && conversations.get(item.conversationId) ? <Typography variant="caption" color="text.secondary">{conversations.get(item.conversationId)!.title}</Typography> : null}<Typography variant="body2" color="text.secondary">{item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open" ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap">
                       {item.decision.options.map((option) => <Button key={option.id} size="small" variant="outlined" disabled={respondingDecisionId === item.decision!.id} onClick={(event) => { event.stopPropagation(); void respondDecision(item, option.id); }}>{option.label}</Button>)}
                       {(item.decision.allowOther || item.decision.mode === "text") ? <Button size="small" variant="outlined" disabled={respondingDecisionId === item.decision.id} onClick={(event) => { event.stopPropagation(); const answer = window.prompt(item.decision!.mode === "text" ? "Your answer" : "What should the Agent do instead?"); if (answer?.trim()) void respondDecision(item, undefined, answer.trim()); }}>{item.decision.mode === "text" ? "Answer" : "Something Else"}</Button> : null}
@@ -288,7 +288,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "Nothing needs attention" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "No current issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>

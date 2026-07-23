@@ -106,7 +106,7 @@ export function ProjectOverview({
         <Divider />
         <Stack direction={{ xs: "column", md: "row" }} spacing={2}>
           <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="overline" color="text.secondary">Attention</Typography>
+            <Typography variant="overline" color="text.secondary">Open Issues</Typography>
             {attentionTotal === 0 ? <Typography variant="body2" color="text.secondary">Nothing currently needs attention.</Typography> : <Stack spacing={0.35}>
               {pendingDecisionCount ? <Typography variant="body2">{pendingDecisionCount} pending {pendingDecisionCount === 1 ? "Decision" : "Decisions"}</Typography> : null}
               {attentionWork.length ? <Typography variant="body2">{attentionWork.length} work {attentionWork.length === 1 ? "trace" : "traces"} need attention</Typography> : null}
