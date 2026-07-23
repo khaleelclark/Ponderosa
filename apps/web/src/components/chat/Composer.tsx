@@ -598,7 +598,6 @@ export function Composer({
             setCapabilityMenuAnchor(event.currentTarget);
             void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
           }}
-          sx={{ minWidth: 44, minHeight: 44 }}
         ><AddIcon /></IconButton></span></Tooltip>
         <Popper open={Boolean(capabilityMenuAnchor)} anchorEl={capabilityMenuAnchor} placement="top-start" style={{ zIndex: 1400 }}>
           <ClickAwayListener onClickAway={() => { setCapabilityMenuAnchor(null); setCapabilityFilter(""); }}>
@@ -838,7 +837,7 @@ export function Composer({
         ) : null}
         {canCancel ? (
           <Tooltip title="Cancel Run">
-            <IconButton color="error" onClick={onCancel} aria-label="Cancel run" sx={{ minWidth: 44, minHeight: 44 }}>
+            <IconButton color="error" onClick={onCancel} aria-label="Cancel run">
               <StopCircleIcon />
             </IconButton>
           </Tooltip>
@@ -846,7 +845,7 @@ export function Composer({
         {!showQueue && (!canCancel || allowSendWhileRunning) ? (
           <Tooltip title="Send">
             <span>
-              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"} sx={{ minWidth: 44, minHeight: 44 }}>
+              <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"}>
                 <ArrowUpwardIcon />
               </IconButton>
             </span>

@@ -41,8 +41,8 @@ export function ChatDocumentCard({ document, renderMarkdown }: ChatDocumentContr
             <Typography variant="subtitle2" noWrap>{document.title}</Typography>
             <Typography variant="caption" color="text.secondary">Markdown document · {document.byteLength} bytes</Typography>
           </Box>
-          <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}>Preview</Button>
-          <Button className="chat-text-navigation" size="small" component="a" href={document.downloadUrl} download sx={{ minWidth: 44, minHeight: 44 }}>Download</Button>
+          <Button className="chat-text-navigation" size="small" color="inherit" onClick={() => setOpen(true)}>Preview</Button>
+          <Button className="chat-text-navigation" size="small" component="a" href={document.downloadUrl} download>Download</Button>
         </Stack>
       </Paper>
       <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="xl" aria-labelledby={`document-preview-${document.id}`} PaperProps={{ sx: { width: "min(1440px, calc(100vw - 24px))", height: "min(92vh, 1100px)", m: 1.5 } }}>

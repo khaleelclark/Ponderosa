@@ -289,7 +289,7 @@ export function AgentsTab({
           }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear Visible" : "Select All Visible"}</Button>
           <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete Selected ({selectedAgentIds.size})</Button>
           <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel Selection</Button>
-        </> : <Tooltip title="Agent actions: stop, select, import, or create"><IconButton aria-label="Agent actions" onClick={(event) => setActionsAnchor(event.currentTarget)} sx={{ minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton></Tooltip>}
+        </> : <Tooltip title="Agent actions: stop, select, import, or create"><IconButton aria-label="Agent actions" onClick={(event) => setActionsAnchor(event.currentTarget)}><MoreVertIcon /></IconButton></Tooltip>}
         {actionsAnchor ? <Menu anchorEl={actionsAnchor} open onClose={() => setActionsAnchor(undefined)}>
           <MenuItem disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => { setActionsAnchor(undefined); void stopAll(); }}>Stop All</MenuItem>
           <MenuItem disabled={agents.length === 0 || !selectionAllowed} onClick={() => { setActionsAnchor(undefined); setSelectionMode(true); }}>Select Agents</MenuItem>
@@ -450,8 +450,8 @@ export function AgentsTab({
                       </Typography>
                     </Stack>
                   </ButtonBase>
-                  {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75, minWidth: 44, minHeight: 44 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
-                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5, minWidth: 44, minHeight: 44 }}><MoreVertIcon /></IconButton> : null}
+                  {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
+                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5 }}><MoreVertIcon /></IconButton> : null}
                   </Paper>
                 </Stack>
               );

@@ -25,7 +25,7 @@ export function ChatAttachments({
                   <Typography variant="caption" color="text.secondary">{attachment.mediaType} · {attachment.size} bytes</Typography>
                 </Stack>}
             <Stack direction="row" spacing={0.5} sx={{ mt: 0.25, minHeight: 44, alignItems: "center" }}>
-              {attachment.previewUrl ? <Button size="small" component="a" href={attachment.previewUrl} target="_blank" rel="noreferrer" sx={{ minHeight: 44, minWidth: 44, px: 1 }}>Open</Button> : null}
+              {attachment.previewUrl ? <Button size="small" component="a" href={attachment.previewUrl} target="_blank" rel="noreferrer" sx={{ px: 1 }}>Open</Button> : null}
               <Button
                 size="small"
                 component="a"
@@ -34,7 +34,7 @@ export function ChatAttachments({
                 rel="noreferrer"
                 download
                 aria-label={`Download ${attachment.name}`}
-                sx={{ minHeight: 44, minWidth: 44, px: 1 }}
+                sx={{ px: 1 }}
               >
                 Download
               </Button>

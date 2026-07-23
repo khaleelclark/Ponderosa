@@ -44,6 +44,6 @@ describe("navigation and settings feedback", () => {
     expect(app).toContain("<SwipeableDrawer");
     expect(app).toContain("onClose={() => setMobileNavOpen(false)}");
     expect(app).toContain('aria-label="Close workspace navigation"');
-    expect(app).toContain('right: 8, minWidth: 44, minHeight: 44');
+    expect(app).not.toContain("minWidth: 44");
   });
 });

@@ -500,7 +500,7 @@ export default function App({
       </Box>
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
-          <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
+          <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25 }}><MenuIcon /></IconButton>
           <Box component="img" src={appIconSource} alt="" sx={{ display: "block", width: { xs: 26, sm: 28 }, height: { xs: 26, sm: 28 }, mr: { xs: 0.75, sm: 1 }, borderRadius: 1, objectFit: "contain", flexShrink: 0 }} />
           <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
             <Typography variant="h6" component="h1" sx={{ fontWeight: 800, minWidth: 0 }} noWrap>Ponderosa</Typography>
@@ -517,10 +517,10 @@ export default function App({
               sx={{ maxWidth: { sm: 132, md: "none" }, display: { xs: "none", sm: "inline-flex" }, cursor: "pointer" }}
             />
           </Tooltip>
-          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)} sx={{ minWidth: 44, minHeight: 44 }}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt && (item.status ?? "open") === "open").length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
+          <Tooltip title="Notifications"><IconButton aria-label="Open notifications" onClick={() => setNotificationPanelOpen(true)}><Badge color="primary" badgeContent={(notificationsQuery.data ?? []).filter((item) => !item.readAt && (item.status ?? "open") === "open").length}><NotificationsOutlinedIcon /></Badge></IconButton></Tooltip>
           <Tooltip title="New Project"><IconButton aria-label="New project" onClick={() => openProjectCreator()} sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}><AddIcon /></IconButton></Tooltip>
           <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={openOperatorProfile} sx={{ ml: .5, p: 0, width: 44, height: 44 }}><OperatorAvatar profile={preferences.profile} size={32} /></IconButton></Tooltip>
-          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5, minWidth: 44, minHeight: 44 }}><SettingsIcon /></IconButton></Tooltip>
+          <Tooltip title="Settings"><IconButton aria-label="Open settings" onClick={openSettings} sx={{ ml: 0.5 }}><SettingsIcon /></IconButton></Tooltip>
         </Toolbar>
       </AppBar>
 
@@ -695,7 +695,7 @@ export default function App({
       >
         <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
         <Tooltip title="Close Navigation">
-          <IconButton aria-label="Close workspace navigation" onClick={() => setMobileNavOpen(false)} sx={{ position: "absolute", zIndex: 4, top: "max(8px, env(safe-area-inset-top))", right: 8, minWidth: 44, minHeight: 44, bgcolor: "background.paper", boxShadow: 1 }}><CloseIcon /></IconButton>
+          <IconButton aria-label="Close workspace navigation" onClick={() => setMobileNavOpen(false)} sx={{ position: "absolute", zIndex: 4, top: "max(8px, env(safe-area-inset-top))", right: 8, bgcolor: "background.paper", boxShadow: 1 }}><CloseIcon /></IconButton>
         </Tooltip>
         <WorkspaceSidebar
           drawer

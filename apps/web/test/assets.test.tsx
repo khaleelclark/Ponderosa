@@ -7,6 +7,7 @@ import { artifactDisplayLabel } from "../src/components/panes";
 import { AttachmentPreview } from "../src/components/filePreview/AttachmentPreview";
 import { ChatAttachments } from "../src/components/chat/ChatAttachments";
 import { Composer } from "../src/components/chat/Composer";
+import { createPonderosaTheme } from "../src/theme";
 
 import { readFileSync } from "node:fs";
 const api = readFileSync(new URL("../src/api/real.ts", import.meta.url), "utf8");
@@ -28,7 +29,9 @@ describe("general asset UI contract", () => {
     expect(input.props.accept).toContain("application/zip");
     expect(input.props.accept).not.toContain("image/gif");
     const add = view.root.findByProps({ "aria-label": "Add attachment or capability" });
-    expect(add.props.sx).toMatchObject({ minWidth: 44, minHeight: 44 });
+    expect(add.props.sx).toBeUndefined();
+    expect(createPonderosaTheme("light").components?.MuiIconButton?.styleOverrides?.root)
+      .toMatchObject({ minWidth: 44, minHeight: 44 });
   });
 
   it("renders safe previews separately from general download metadata", () => {
