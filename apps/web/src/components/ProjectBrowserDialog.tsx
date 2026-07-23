@@ -81,7 +81,14 @@ export function ProjectBrowserDialog({
     browser.sendInput({ kind: "type", text: typeText });
     setTypeText("");
   };
-  const noSession = (!session || browser.missing || session.status === "closed") && !browser.open.isPending;
+  const noSession = (!session || browser.missing || session.status === "closed")
+    && !browser.open.isPending
+    && !browser.queryError;
+  const queryErrorMessage = browser.queryError instanceof Error
+    ? browser.queryError.message
+    : browser.queryError
+      ? String(browser.queryError)
+      : undefined;
 
   const content = <FeatureErrorBoundary feature="Interactive browser">
     <DialogTitle id="project-browser-title">
@@ -97,7 +104,7 @@ export function ProjectBrowserDialog({
     <DialogContent dividers sx={{ p: { xs: 1, sm: 2 }, display: "grid", gridTemplateRows: { xs: "auto auto auto", sm: "auto minmax(0, 1fr) auto" }, alignContent: { xs: "start", sm: "stretch" }, gap: 1, minHeight: 0 }}>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr) auto auto", sm: "minmax(0, 1fr) auto auto auto" }, gap: 1 }}>
         <TextField size="small" fullWidth label="Address" value={address} onChange={(event) => setAddress(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") submitAddress(); }} sx={{ gridColumn: { xs: "1 / -1", sm: "auto" } }} />
-        <Button variant="contained" disabled={!address.trim() || browser.open.isPending || browser.navigate.isPending || session?.controlOwner === "agent"} onClick={submitAddress}>Go</Button>
+        <Button variant="contained" disabled={!address.trim() || browser.open.isPending || browser.navigate.isPending || Boolean(browser.queryError) || session?.controlOwner === "agent"} onClick={submitAddress}>Go</Button>
         <Tooltip title="Restart Browser Process"><span><IconButton aria-label="Reconnect Interactive Browser" disabled={!session || browser.reconnect.isPending} onClick={() => browser.reconnect.mutate()}><RefreshIcon /></IconButton></span></Tooltip>
         <Button color="inherit" disabled={!session || session.status === "closed" || browser.close.isPending} onClick={() => browser.close.mutate()}>Close Browser</Button>
       </Box>
@@ -109,7 +116,16 @@ export function ProjectBrowserDialog({
         sendInput={browser.sendInput}
         refreshFrame={browser.refreshFrame}
         accent="success.main"
-        empty={noSession ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Interactive Browser is open.</Typography><Button variant="contained" onClick={() => browser.open.mutate(address.trim() || undefined)}>Open Browser</Button></Stack> : undefined}
+        empty={queryErrorMessage
+          ? <Alert
+              severity="error"
+              action={<Button color="inherit" size="small" onClick={() => void browser.query.refetch()}>Retry</Button>}
+            >
+              Interactive browser could not be loaded. {queryErrorMessage}
+            </Alert>
+          : noSession
+            ? <Stack spacing={1} alignItems="center"><Typography color="grey.300">No Interactive Browser is open.</Typography><Button variant="contained" onClick={() => browser.open.mutate(address.trim() || undefined)}>Open Browser</Button></Stack>
+            : undefined}
       />
       <Stack spacing={1}>
         {session?.status === "ready" ? operator ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>

@@ -55,6 +55,15 @@ export function BrowserPanel({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: { xs: 1, sm: 1.5 }, py: .75 }}><CircularProgress size={18} /><Typography variant="body2">Connecting to interactive browser…</Typography></Stack>
       </Paper>;
   }
+  if (browser.queryError) {
+    const message = browser.queryError instanceof Error ? browser.queryError.message : String(browser.queryError);
+    const retry = <Button color="inherit" size="small" onClick={() => void browser.query.refetch()}>Retry</Button>;
+    return standalone
+      ? <Alert severity="error" action={retry} sx={{ m: 2 }}>Interactive browser could not be loaded. {message}</Alert>
+      : <Paper component="section" aria-label="Interactive browser unavailable" square variant="outlined" sx={{ borderInline: 0, borderTop: 0 }}>
+        <Alert severity="error" action={retry} square>Interactive browser could not be loaded. {message}</Alert>
+      </Paper>;
+  }
   if (!session || session.status === "closed") {
     return standalone
       ? <Alert severity="info" sx={{ m: 2 }}>This Run’s interactive browser is no longer active.</Alert>

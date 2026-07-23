@@ -1,13 +1,22 @@
 import type { BrowserSessionDto, ProjectBrowserSessionDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../src/api";
 import { ApiRequestError } from "../src/api/types";
 
 vi.mock("../src/components/browser/BrowserViewport", () => ({
-  BrowserViewport: ({ operatorControl, sendInput }: { operatorControl: boolean; sendInput(value: unknown): void }) =>
-    <button aria-label="Mock browser viewport" aria-disabled={!operatorControl} onClick={() => sendInput({ kind: "click", x: 640, y: 360 })}>viewport</button>,
+  BrowserViewport: ({
+    empty, operatorControl, sendInput, session,
+  }: {
+    empty?: ReactNode;
+    operatorControl: boolean;
+    sendInput(value: unknown): void;
+    session?: BrowserSessionDto | ProjectBrowserSessionDto;
+  }) => session
+    ? <button aria-label="Mock browser viewport" aria-disabled={!operatorControl} onClick={() => sendInput({ kind: "click", x: 640, y: 360 })}>viewport</button>
+    : <>{empty}</>,
 }));
 
 import { BrowserPanel } from "../src/components/BrowserPanel";
@@ -80,6 +89,62 @@ describe("shared browser surfaces", () => {
     expect(JSON.stringify(closedView.toJSON())).not.toContain("Loading interactive browser");
     closedView.unmount();
     closedClient.clear();
+  });
+
+  it.each([
+    ["HTTP failure", new ApiRequestError(500, "Browser service unavailable")],
+    ["network failure", new Error("Network connection failed")],
+  ])("keeps a failed Run browser query recoverable after an %s", async (_label, queryError) => {
+    const getSession = vi.spyOn(api, "getBrowserSession").mockRejectedValue(queryError);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><BrowserPanel projectId="project-1" agentId="agent-1" runId="run-error" standalone /></QueryClientProvider>);
+    });
+
+    await vi.waitFor(() => {
+      const output = JSON.stringify(view.toJSON());
+      expect(output).toContain("Interactive browser could not be loaded");
+      expect(output).not.toContain("no longer active");
+    });
+    await act(async () => view.root.findByProps({ children: "Retry" }).props.onClick());
+    await vi.waitFor(() => expect(getSession).toHaveBeenCalledTimes(2));
+    view.unmount();
+    client.clear();
+  });
+
+  it.each([
+    ["HTTP failure", new ApiRequestError(500, "Project browser service unavailable")],
+    ["network failure", new Error("Project browser network failed")],
+  ])("keeps a failed Project browser query recoverable after an %s", async (_label, queryError) => {
+    const getBrowser = vi.spyOn(api, "getProjectBrowser").mockRejectedValue(queryError);
+    vi.spyOn(api, "listAgents").mockResolvedValue([]);
+    vi.spyOn(api, "getAgentHealth").mockResolvedValue({
+      projectId: "project-1",
+      generatedAt: now,
+      agents: [],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    let view!: ReturnType<typeof create>;
+    await act(async () => {
+      view = create(<QueryClientProvider client={client}><ProjectBrowserDialog
+        projectId="project-1"
+        open
+        embedded
+        onClose={vi.fn()}
+      /></QueryClientProvider>);
+    });
+
+    await vi.waitFor(() => {
+      const output = JSON.stringify(view.toJSON());
+      expect(output).toContain("Interactive browser could not be loaded");
+      expect(output).not.toContain("No Interactive Browser is open");
+      expect(output).not.toContain("Open Browser");
+    });
+    await act(async () => view.root.findByProps({ children: "Retry" }).props.onClick());
+    await vi.waitFor(() => expect(getBrowser).toHaveBeenCalledTimes(2));
+    view.unmount();
+    client.clear();
   });
 
   it("renders the compact Run session and routes Open Tab interaction", async () => {

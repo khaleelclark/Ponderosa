@@ -29,6 +29,7 @@ export function useBrowserController<Session extends BrowserSession>({
   });
   sessionRef.current = query.data;
   const missing = query.error instanceof ApiRequestError && query.error.status === 404;
+  const queryError = missing ? undefined : query.error;
   const update = useCallback((next: Session) => {
     sessionRef.current = next;
     queryClient.setQueryData(adapter.queryKey, next);
@@ -89,6 +90,7 @@ export function useBrowserController<Session extends BrowserSession>({
     query,
     session: query.data,
     missing,
+    queryError,
     open,
     navigate,
     reconnect,

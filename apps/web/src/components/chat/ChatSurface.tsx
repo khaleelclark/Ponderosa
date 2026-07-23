@@ -1,5 +1,5 @@
 import { Alert, Box, Stack } from "@mui/material";
-import type { ReactNode } from "react";
+import { Children, type ReactNode } from "react";
 import { ScrollToLatestButton } from "./scroll";
 import { ChatPagination } from "./ChatPagination";
 import type { ChatFollowLatest, ChatHistoryPage } from "./contracts";
@@ -27,6 +27,7 @@ export function ChatSurface({
   beforeMessages?: ReactNode;
 }): JSX.Element {
   const scroll = useChatScroll(layoutKey, follow);
+  const isEmpty = Children.count(children) === 0;
   const contentWidth = layout === "workspace" ? 1280 : 1120;
   const padding = layout === "agent"
     ? { xs: 1, sm: 2, md: 3, lg: 4 }
@@ -63,7 +64,7 @@ export function ChatSurface({
           },
         } : undefined} />
         {children}
-        {!children && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
+        {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
       </Stack>
       <ScrollToLatestButton visible={scroll.showScrollToLatest} onClick={scroll.scrollToLatest} />
     </Box>

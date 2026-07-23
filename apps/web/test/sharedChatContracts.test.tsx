@@ -1,9 +1,10 @@
-import type { EngineDto } from "@ponderosa/core";
+import type { EngineDto, MessageDto } from "@ponderosa/core";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { ChatAttachments } from "../src/components/chat/ChatAttachments";
 import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
+import { ChatPane } from "../src/components/chat/ChatPane";
 import { ChatSurface } from "../src/components/chat/ChatSurface";
 import { useRuntimeControls } from "../src/hooks/useRuntimeControls";
 
@@ -82,6 +83,22 @@ describe("shared chat presentation contracts", () => {
     act(() => buttons(view.root, "Load Older History")[0]!.props.onClick());
     expect(loadEarlier).toHaveBeenCalledTimes(1);
     expect(view.root.findByProps({ "aria-label": "Conversation" })).toBeTruthy();
+  });
+
+  it("shows Agent Chat guidance when there are no renderable chat messages", () => {
+    const empty = renderToStaticMarkup(<ChatPane messages={[]} />);
+    const filtered = renderToStaticMarkup(<ChatPane messages={[{
+      id: "system-1",
+      agentId: "agent-1",
+      seq: 1,
+      role: "system",
+      text: "Internal state transition",
+      createdAt: "2026-07-23T10:00:00.000Z",
+    } as unknown as MessageDto]} />);
+
+    expect(empty).toContain("Send a message to this agent to start the conversation.");
+    expect(filtered).toContain("Send a message to this agent to start the conversation.");
+    expect(filtered).not.toContain("Internal state transition");
   });
 });
 
