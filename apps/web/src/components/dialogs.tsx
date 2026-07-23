@@ -499,7 +499,6 @@ export function CreateAgentDialog({
             onChange={(event) => setInitialMessage(event.target.value)}
             multiline
             minRows={3}
-            inputProps={{ maxLength: 4000 }}
           />
           {error ? <Alert severity="error">{error}</Alert> : null}
         </Stack>

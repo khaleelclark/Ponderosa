@@ -31,7 +31,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
     properties: {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
       recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Common delegation recipient stable Agent ID." },
-      text: { type: "string", minLength: 1, maxLength: 4000, description: "Common self-contained assignment, question, or consultation." },
+      text: { type: "string", minLength: 1, description: "Common self-contained assignment, question, or consultation." },
       delegations: {
         type: "array", minItems: 1, maxItems: 100,
         description: "Common parallel fan-out. Every item becomes one Request in the same aggregate all-results Join.",
@@ -39,7 +39,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           type: "object", additionalProperties: false, required: ["recipientAgentId", "text"],
           properties: {
             recipientAgentId: { type: "string", minLength: 1, maxLength: 200 },
-            text: { type: "string", minLength: 1, maxLength: 4000 },
+            text: { type: "string", minLength: 1 },
           },
         },
       },
@@ -62,7 +62,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
           properties: {
             requestId: { type: "string", minLength: 1, maxLength: 200 },
             recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Stable recipient agent ID." },
-            text: { type: "string", minLength: 1, maxLength: 4000, description: "Complete bounded, self-contained request. Include exact constraints, values, artifact paths, and requested output; the recipient cannot see your hidden prompt. Do not split it into objective/context fields." },
+            text: { type: "string", minLength: 1, description: "Complete bounded, self-contained request. Include exact constraints, values, artifact paths, and requested output; the recipient cannot see your hidden prompt. Do not split it into objective/context fields." },
             lifetime: REQUEST_LIFETIME_SCHEMA,
           },
         },
@@ -277,7 +277,7 @@ export const PONDEROSA_CREATE_MANAGED_AGENT_TOOL: RuntimeDynamicToolSpec = {
       engine: { type: "string", enum: ["codex", "claude"] },
       model: { type: "string", maxLength: 200 },
       effort: { type: "string", maxLength: 40 },
-      text: { type: "string", minLength: 1, maxLength: 4000, description: "Self-contained assignment and acceptance criteria." },
+      text: { type: "string", minLength: 1, description: "Self-contained assignment and acceptance criteria." },
       lifetime: REQUEST_LIFETIME_SCHEMA,
       awaitResult: { type: "boolean", description: "Defaults true; creates a durable all-results Join owned by the manager." },
     },
@@ -296,7 +296,7 @@ export const PONDEROSA_DECISION_TOOL: RuntimeDynamicToolSpec = {
       idempotencyKey: { type: "string", minLength: 1, maxLength: 200 },
       mode: { type: "string", enum: ["approval", "choice", "text"] },
       question: { type: "string", minLength: 1, maxLength: 1000 },
-      context: { type: "string", maxLength: 4000 },
+      context: { type: "string" },
       options: { type: "array", minItems: 1, maxItems: 8, items: { type: "object", additionalProperties: false, required: ["id", "label"], properties: { id: { type: "string", minLength: 1, maxLength: 80 }, label: { type: "string", minLength: 1, maxLength: 120 }, description: { type: "string", maxLength: 400 } } } },
       allowOther: { type: "boolean", description: "Defaults true and cannot be disabled for approval or choice." },
       blocking: { type: "boolean", description: "Defaults true." },
@@ -325,7 +325,7 @@ export const PONDEROSA_MANAGE_TOOL: RuntimeDynamicToolSpec = {
           engine: { type: "string" },
           model: { type: "string" },
           effort: { type: "string" },
-          instructions: { type: "string", maxLength: 4000 },
+          instructions: { type: "string" },
         },
       } },
     },
@@ -365,7 +365,7 @@ export const PONDEROSA_BROWSER_TOOLS: RuntimeDynamicToolSpec[] = [
       properties: {
         action: { type: "string", enum: ["click", "fill", "key"] },
         selector: { type: "string", minLength: 1, maxLength: 500 },
-        text: { type: "string", maxLength: 4000 },
+        text: { type: "string" },
         key: { type: "string", minLength: 1, maxLength: 40 },
       },
     },
