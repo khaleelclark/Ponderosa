@@ -8,6 +8,13 @@ const wiki = readFileSync(new URL("../src/components/WikiView.tsx", import.meta.
 const globalSearch = readFileSync(new URL("../src/components/GlobalChatSearch.tsx", import.meta.url), "utf8");
 
 describe("navigation and settings feedback", () => {
+  it("offers keyboard users a skip link that targets the main workspace", () => {
+    expect(app).toContain('component="a"');
+    expect(app).toContain('href="#main-content"');
+    expect(app).toContain("Skip to content");
+    expect(app).toContain('component="main" id="main-content"');
+  });
+
   it("keeps keyboard helpers out of local Project-chat search and mobile navigation", () => {
     const projectSearch = sidebar.slice(sidebar.indexOf('placeholder="Search Chats"'), sidebar.indexOf("New Chat"));
     expect(projectSearch).not.toContain("component=\"kbd\"");

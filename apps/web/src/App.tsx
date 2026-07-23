@@ -477,6 +477,27 @@ export default function App({
         bgcolor: "background.default",
       }}
     >
+      <Box
+        component="a"
+        href="#main-content"
+        sx={{
+          position: "fixed",
+          top: 8,
+          left: 8,
+          zIndex: (theme) => theme.zIndex.tooltip + 1,
+          px: 2,
+          py: 1,
+          borderRadius: 1,
+          bgcolor: "background.paper",
+          color: "text.primary",
+          boxShadow: 3,
+          transform: "translateY(calc(-100% - 16px))",
+          transition: "transform 120ms ease",
+          "&:focus": { transform: "translateY(0)" },
+        }}
+      >
+        Skip to content
+      </Box>
       <AppBar position="static" color="inherit" elevation={0} sx={{ display: { xs: "block", md: "none" }, borderBottom: 1, borderColor: "divider" }}>
         <Toolbar sx={{ minHeight: { xs: 52, sm: 56 }, px: { xs: 1.5, sm: 3 }, pt: "env(safe-area-inset-top)" }}>
           <IconButton aria-label="Open workspace navigation" onClick={() => setMobileNavOpen(true)} sx={{ display: { xs: "inline-flex", md: "none" }, mr: 0.25, minWidth: 44, minHeight: 44 }}><MenuIcon /></IconButton>
