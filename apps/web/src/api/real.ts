@@ -43,13 +43,11 @@ import type {
   CreateCollaborationMessageResponse,
   CreateConversationMessageRequest,
   CreateConversationRequest,
-  CreateDirectReplyRequest,
   CreateMultiAgentDirectMessageRequest,
   CreateProjectRequest,
   CreateTriggerRequest,
   CreateTriggerResponse,
   DecisionDto,
-  DirectReplyResponse,
   DraftAttachmentDto,
   EditQueuedMessageRequest,
   EditQueuedMessageResponse,
@@ -328,12 +326,6 @@ export const realApi = {
   async deleteWebPushSubscription(deviceId: string): Promise<void> {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
   },
-  sendDirectReply(conversationId: string, request: CreateDirectReplyRequest): Promise<DirectReplyResponse> {
-    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-replies`, {
-      method: "POST",
-      body: JSON.stringify(request),
-    });
-  },
   sendMultiAgentDirectMessage(conversationId: string, request: CreateMultiAgentDirectMessageRequest): Promise<MultiAgentDirectMessageResponse> {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/direct-messages`, {
       method: "POST",
@@ -419,7 +411,6 @@ export const realApi = {
       initialMessage: options.initialMessage,
       draftAttachmentIds: options.draftAttachmentIds,
       draftOwnerId: options.draftOwnerId,
-      replyToMessageId: options.replyToMessageId,
       presetId: options.presetId,
       managerAgentId: options.managerAgentId,
     });

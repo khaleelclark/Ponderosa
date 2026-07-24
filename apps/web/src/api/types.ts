@@ -15,7 +15,6 @@ export interface CreateAgentOptions {
   initialMessage?: string;
   draftAttachmentIds?: string[];
   draftOwnerId?: string;
-  replyToMessageId?: string;
   presetId?: string;
   managerAgentId?: string;
 }

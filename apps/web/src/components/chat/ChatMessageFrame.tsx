@@ -1,4 +1,3 @@
-import ReplyIcon from "@mui/icons-material/Reply";
 import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
 import { useState } from "react";
 import type { ChatMessagePresentation } from "./contracts";
@@ -6,7 +5,6 @@ import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
 import { ChatAttachments } from "./ChatAttachments";
 import { ChatOperatorLabel } from "./ChatOperatorLabel";
-import { replyFallbackText } from "./ChatMessages";
 
 export function ChatMessageFrame({
   message,

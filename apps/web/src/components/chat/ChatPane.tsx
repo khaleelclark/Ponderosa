@@ -28,7 +28,6 @@ export function ChatPane({
   agentIdForHandle,
   onOpenAgent,
   onOpenBroadcast,
-  onReply,
   onMentionAgent,
   onScrollPositionChange,
   previewScope,
@@ -46,7 +45,6 @@ export function ChatPane({
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
   onOpenBroadcast?(message: MessageDto): void;
-  onReply?(message: MessageDto): void;
   onMentionAgent?(): void;
   onScrollPositionChange?(element: HTMLElement, nearBottom: boolean): void;
   previewScope?: LinkPreviewScope;
@@ -89,14 +87,6 @@ export function ChatPane({
               ? { kind: "operator", profile: operatorProfile }
               : { kind: "agent", name: senderLabel },
             createdAt: message.createdAt,
-            reply: message.replyTo ? {
-              text: message.replyTo.text,
-              onOpen: () => {
-                const target = document.getElementById(`message-${message.replyTo!.messageId}`);
-                target?.scrollIntoView({ behavior: "smooth", block: "center" });
-                target?.focus({ preventScroll: true });
-              },
-            } : undefined,
             body: <ChatMessageBody
               text={message.document
                 ? message.text.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")
