@@ -23,7 +23,7 @@ export const ponderosaLayoutTokens = {
 export const ponderosaColorTokens = {
   light: {
     background: "#F8F6EF",
-    sidebar: "#F1EEE5",
+    sidebar: "#ECEEEC",
     surface: "#FFFFFF",
     surfaceSecondary: "#F0F1EC",
     elevated: "#FFFFFF",
