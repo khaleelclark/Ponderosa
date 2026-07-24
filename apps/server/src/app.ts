@@ -1118,6 +1118,8 @@ function communicationV3Prompt(): string[] {
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
+    "A new Request is ordinary next-Run work and never interrupts an active recipient. Never create another Request just to tell a busy Agent to stop.",
+    "To end work you requested, cancel the exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}). To enforceably stop an active descendant Run, use ponderosa_manage stop_agent.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
     "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
@@ -2177,6 +2179,42 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const cursor = workspace.cursor();
     workspace.setNotificationStatus(current.id, "resolved");
     publishWorkspaceSince(cursor);
+  };
+  const projectWorkspaceNotificationKey = (projectId: string): string =>
+    `project:${projectId}:workspace-unavailable`;
+  const projectWorkspaceIssue = async (project: { hostPath: string }): Promise<string | undefined> => {
+    try {
+      const metadata = await fs.stat(project.hostPath);
+      return metadata.isDirectory()
+        ? undefined
+        : `The Project working folder ${project.hostPath} is not a directory.`;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return `The Project working folder ${project.hostPath} is unavailable. ${detail}`;
+    }
+  };
+  const reconcileProjectWorkspace = async (
+    project: { id: string; hostPath: string },
+    agent: { id: string; conversationId?: string },
+  ): Promise<string | undefined> => {
+    const issue = await projectWorkspaceIssue(project);
+    const notificationKey = projectWorkspaceNotificationKey(project.id);
+    if (!issue) {
+      resolveOperationalNotification(notificationKey);
+      return undefined;
+    }
+    createOperationalNotification({
+      dedupeKey: notificationKey,
+      category: "system",
+      severity: "urgent",
+      title: "Project folder is unavailable",
+      body: `${issue} Restore the folder before retrying this message. Ponderosa did not start the provider and will not retry automatically.`,
+      projectId: project.id,
+      ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
+      agentId: agent.id,
+      action: { kind: "open_project", targetId: project.id },
+    });
+    return issue;
   };
   const reconcileCommunicationFailureNotifications = (): void => {
     for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
@@ -6025,7 +6063,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       1_000,
     );
     const decisionContext = typeof body.context === "string" && body.context.trim()
-      ? truncateUnicodeCodePoints(canonicalizeProviderText(body.context, steeringInjectionIds).trim(), 4_000)
+      ? canonicalizeProviderText(body.context, steeringInjectionIds).trim()
       : undefined;
     const normalizedOptions = options.map((option) => ({
       id: String((option as { id: string }).id).slice(0, 80),
@@ -6807,7 +6845,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? undefined
       : canonicalizeProviderText(request.body.text, steeringInjectionIds).trim();
     const engineId = request.body?.engine?.trim();
-    if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || unicodeCodePointLength(text) > 4000 || !engineId || !request.body.lifetime) {
+    if (!idempotencyKey || idempotencyKey.length > 200 || !title || unicodeCodePointLength(title) < 2 || unicodeCodePointLength(title) > 60 || !text || !engineId || !request.body.lifetime) {
       return reply.code(400).send({ error: "idempotencyKey, title, engine, text, and explicit lifetime are required" });
     }
     const engine = engines.get(engineId);
@@ -7043,7 +7081,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const text = candidate.text === undefined
         ? undefined
         : canonicalizeProviderText(candidate.text, steeringInjectionIds).trim();
-      if (!recipientAgentId || recipientAgentId === author.id || !text || unicodeCodePointLength(text) > 4000 || !candidate.lifetime) {
+      if (!recipientAgentId || recipientAgentId === author.id || !text || !candidate.lifetime) {
         return reply.code(400).send({ error: "each request needs another recipient, text, and explicit lifetime" });
       }
       const recipient = store.getAgent(recipientAgentId);
@@ -7144,16 +7182,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishCoordinationV3Changed(author.id);
     for (const item of normalized) publishCoordinationV3Changed(item.recipientAgentId);
     coordinationV3Scheduler?.notify();
+    const requestDeliveries = result.requestIds.flatMap((requestId) => {
+      const delivery = coordinationV3.requestDelivery(requestId);
+      return delivery ? [delivery] : [];
+    });
+    const queueDirective = normalized.length === 0
+      ? "No new Requests were created; this operation only grouped existing Requests."
+      : "See requestDeliveries for each new Request's current delivery state. Ordinary Requests never interrupt active work; queued_behind_active_run means the recipient has not received that Request yet.";
     return {
       ...result,
+      requestDeliveries,
       ...(result.joinId ? {
         executionDirective: join?.wakePolicy === "each_result"
-          ? "End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied."
-          : "End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.",
+          ? `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied.`
+          : `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.`,
       } : completionMode === "record" ? {
-        executionDirective: "The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.",
+        executionDirective: `${queueDirective} The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.`,
       } : completionMode === "callback" ? {
-        executionDirective: "The Request is tracked without a Join; its terminal result will wake you as an individual callback.",
+        executionDirective: `${queueDirective} The Request is tracked without a Join; its terminal result will wake you as an individual callback.`,
       } : {}),
     };
   });
@@ -7759,7 +7805,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const key = request.body?.idempotencyKey?.trim() || `operator-cancel:${current.id}`;
       if (key.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       const reason = request.body?.reason?.trim();
-      if (reason && reason.length > 4000) return reply.code(400).send({ error: "reason must be 4000 characters or fewer" });
       try {
         const result = coordinationV3.updateRequest({
           requestId: current.id,
@@ -11400,6 +11445,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt)) {
         return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
+      if (internalV3Dispatch) {
+        const workspaceIssue = await reconcileProjectWorkspace(project, agent);
+        if (workspaceIssue) {
+          return reply.code(422).send({
+            code: "project_workspace_unavailable",
+            error: workspaceIssue,
+          });
+        }
+      }
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
@@ -12417,6 +12471,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         let providerWorkObserved = false;
         let schedulerCancelled = false;
         let usedFreshFallback = false;
+        let projectWorkspaceUnavailable = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -12819,8 +12874,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
           if (schedulerCancelled) return;
           const message = err instanceof Error ? err.message : String(err);
-          persistRuntimeEvent(agent.id, activeRun, { type: "error", message });
-          runError = message;
+          const workspaceIssue = await reconcileProjectWorkspace(project, agent);
+          projectWorkspaceUnavailable = Boolean(workspaceIssue);
+          runError = workspaceIssue ?? message;
+          persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
         } finally {
           const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
           schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
@@ -12929,7 +12986,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sameRunResumable: false,
                 failureKind,
                 confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
-                retryable: failureKind !== "authentication",
+                retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
                 error: `[${failureKind}] ${runError}`,
                 failureDetail: {
                   phase: v3PromptInjected ? "provider_execution" : "prompt_submission",
@@ -13242,7 +13299,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     }
     const cursor = workspace.cursor();
-    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text: text.slice(0, 4_000) } : {}), respondedAt })!;
+    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
     const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
     if (notification) workspace.setNotificationStatus(notification.id, "resolved");
     publishWorkspaceSince(cursor);

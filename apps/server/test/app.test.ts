@@ -4866,6 +4866,58 @@ async function cancelAndWait(app: ReturnType<typeof createServer>, agentId: stri
 }
 
 describe("server chunk F", () => {
+  it("terminalizes a missing Project workspace once without starting the provider", async () => {
+    const app = createServer({
+      dataDir, store, engines, logger: false,
+      communicationV3: { pollMs: 5 },
+    });
+    await app.ready();
+    const missingWorkspace = path.join(dataDir, "removed-project-workspace");
+    mkdirSync(missingWorkspace, { recursive: true });
+    const project = store.createProject({ label: "Removed workspace", hostPath: missingWorkspace });
+    const agent = store.createAgent(project.id, { title: "Cannot start", engine: "codex" });
+    rmSync(missingWorkspace, { recursive: true, force: true });
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      payload: { text: "Continue the work" },
+    });
+    expect(sent.statusCode, sent.body).toBe(202);
+
+    const coordination = new CoordinationV3Store(store.sqlite);
+    await vi.waitFor(() => expect(coordination.terminalActivations(project.id)).toContainEqual(
+      expect.objectContaining({
+        agentId: agent.id,
+        outcome: "permanent_failure",
+        deliveryFailures: 1,
+        lastDeliveryError: expect.stringContaining("project_workspace_unavailable"),
+      }),
+    ));
+    expect(adapter.seeds).toHaveLength(0);
+    expect(adapter.continues).toHaveLength(0);
+    expect(coordination.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0,
+      failedRuns: 1,
+    });
+    await sleep(25);
+    expect(coordination.schedulerMetrics()).toMatchObject({
+      pendingActivations: 0,
+      failedRuns: 1,
+    });
+    expect((await app.inject({ method: "GET", url: "/api/notifications" }))
+      .json<Array<{ dedupeKey?: string; title?: string; body?: string; status?: string }>>())
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          dedupeKey: `project:${project.id}:workspace-unavailable`,
+          title: "Project folder is unavailable",
+          body: expect.stringContaining(missingWorkspace),
+          status: "open",
+        }),
+      ]));
+    await app.close();
+  });
+
   it("repairs unavailable pending recipients before the startup scheduler can claim them", async () => {
     const project = store.createProject({ label: "Startup repair", hostPath: repoDir });
     const agent = store.createAgent(project.id, { title: "Deleted", engine: "codex" });
@@ -8621,6 +8673,108 @@ describe("server chunk F", () => {
     await app.close();
   });
 
+  it("preserves long text across capability, Decision, cancellation, and browser paths", async () => {
+    const persistent = new SteerableMockAdapter();
+    engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
+    const browserDriver: BrowserDriver = {
+      pageInfo: async () => ({ url: "about:blank", title: "Blank" }),
+      navigate: async (url) => ({ url, title: "Page" }),
+      inspect: async () => JSON.stringify({ url: "about:blank", controls: [] }),
+      click: async () => ({ url: "about:blank", title: "Blank" }),
+      fill: vi.fn(async () => ({ url: "about:blank", title: "Blank" })),
+      key: async () => ({ url: "about:blank", title: "Blank" }),
+      pointer: async () => ({ url: "about:blank", title: "Blank" }),
+      type: async () => ({ url: "about:blank", title: "Blank" }),
+      scroll: async () => ({ url: "about:blank", title: "Blank" }),
+      capture: async () => Buffer.from("89504e470d0a1a0a", "hex"),
+      close: vi.fn(async () => undefined),
+    };
+    const app = createServer({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      browserDriverFactory: async () => browserDriver,
+      communicationV3: { pollMs: 5, maxConcurrentRuns: 1, leaseMs: 1_000 },
+    });
+    const project = store.createProject({ label: "Long capability text", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Long text team" });
+    const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex", conversationId: conversation.id });
+    const longText = `${"Long payload ".repeat(449)}Long payload`;
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${manager.id}/messages`,
+      payload: { text: "Exercise long-text capabilities", sourceChannel: "main", sourceConversationId: conversation.id },
+    })).statusCode).toBe(202);
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(1));
+    const runtime = persistent.openedOptions[0]!;
+
+    const coordinated = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: recipient.id, text: longText, completionMode: "record" },
+    });
+    expect(coordinated.success, coordinated.text).toBe(true);
+    const coordinationRequestId = JSON.parse(coordinated.text).requestIds[0] as string;
+    expect(new CoordinationV3Store(store.sqlite).getRequest(coordinationRequestId)?.payload)
+      .toMatchObject({ text: longText });
+
+    const managed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_create_managed_agent",
+      arguments: {
+        idempotencyKey: "long-managed-agent",
+        title: "Long worker",
+        engine: "codex",
+        text: longText,
+        lifetime: { kind: "indefinite" },
+        awaitResult: false,
+      },
+    });
+    expect(managed.success, managed.text).toBe(true);
+    const managedRequestId = JSON.parse(managed.text).requestId as string;
+    expect(new CoordinationV3Store(store.sqlite).getRequest(managedRequestId)?.payload)
+      .toMatchObject({ text: longText });
+
+    const asked = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_decision",
+      arguments: { question: "Provide the complete response", context: longText, blocking: false },
+    });
+    expect(asked.success, asked.text).toBe(true);
+    const decision = JSON.parse(asked.text) as { id: string; context: string };
+    expect(decision.context).toBe(longText);
+
+    const opened = await runtime.handleDynamicToolCall!({ name: "ponderosa_browser_open", arguments: {} });
+    expect(opened.success, opened.text).toBe(true);
+    const filled = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_browser_act",
+      arguments: { action: "fill", selector: "#long-text", text: longText },
+    });
+    expect(filled.success, filled.text).toBe(true);
+    expect(browserDriver.fill).toHaveBeenCalledWith("#long-text", longText);
+
+    const responded = await app.inject({
+      method: "POST",
+      url: `/api/decisions/${decision.id}/respond`,
+      payload: { text: longText },
+    });
+    expect(responded.statusCode, responded.body).toBe(200);
+    expect(responded.json()).toMatchObject({ response: { text: longText } });
+
+    const cancelled = await app.inject({
+      method: "POST",
+      url: `/api/requests/${coordinationRequestId}/cancel`,
+      payload: { idempotencyKey: "long-cancel-reason", reason: longText },
+    });
+    expect(cancelled.statusCode, cancelled.body).toBe(200);
+    const cancellation = store.sqlite.prepare(`
+      SELECT payload_json FROM coordination_request_updates
+      WHERE request_id = ? AND kind = 'cancelled'
+    `).get(coordinationRequestId) as { payload_json: string };
+    expect(JSON.parse(cancellation.payload_json)).toEqual({ reason: longText });
+    await app.close();
+  });
+
   it("preserves an inherited user reply route across a callback continuation", async () => {
     const persistent = new SteerableMockAdapter();
     engines = [{ adapter: persistent, authStatus: async () => ({ authenticated: true }) }];
@@ -9034,6 +9188,7 @@ describe("server chunk F", () => {
     const manager = store.createAgent(project.id, { title: "Manager", engine: "codex", conversationId: conversation.id });
     const first = store.createAgent(project.id, { title: "First", engine: "codex", conversationId: conversation.id });
     const second = store.createAgent(project.id, { title: "Second", engine: "codex", conversationId: conversation.id });
+    const third = store.createAgent(project.id, { title: "Third", engine: "codex", conversationId: conversation.id });
     await app.inject({
       method: "POST", url: `/api/agents/${manager.id}/messages`,
       payload: { text: "Delegate both checks", sourceChannel: "main", sourceConversationId: conversation.id },
@@ -9058,16 +9213,105 @@ describe("server chunk F", () => {
     expect(store.sqlite.prepare(`
       SELECT COUNT(*) AS count FROM coordination_join_members WHERE join_id = ?
     `).get(fanoutResult.joinId)).toEqual({ count: 2 });
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
 
     const record = await runtime.handleDynamicToolCall!({
       name: "ponderosa_coordinate",
       arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
     });
     expect(record.success, record.text).toBe(true);
-    const recordResult = JSON.parse(record.text) as { requestIds: string[]; joinId?: string };
+    const recordResult = JSON.parse(record.text) as {
+      requestIds: string[];
+      joinId?: string;
+      requestDeliveries: Array<{
+        requestId: string;
+        recipientAgentId: string;
+        requestState: string;
+        deliveryState: string;
+        interruptsActiveRun: boolean;
+      }>;
+      executionDirective: string;
+    };
     expect(recordResult.joinId).toBeUndefined();
+    expect(recordResult.requestDeliveries).toHaveLength(1);
+    expect(recordResult.requestDeliveries[0]).toMatchObject({
+      requestId: recordResult.requestIds[0],
+      recipientAgentId: first.id,
+      requestState: "open",
+      deliveryState: "queued_behind_active_run",
+      interruptsActiveRun: false,
+    });
+    expect(recordResult.executionDirective).toContain("See requestDeliveries");
+    expect(recordResult.executionDirective).toContain("queued_behind_active_run");
     expect(store.sqlite.prepare(`SELECT json_extract(payload_json, '$.completionMode') AS mode
       FROM coordination_requests WHERE id = ?`).get(recordResult.requestIds[0]!)).toEqual({ mode: "record" });
+
+    const existingOnlyJoin = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        idempotencyKey: "join-existing-record",
+        requests: [],
+        join: { mode: "all", requestIds: [recordResult.requestIds[0]] },
+      },
+    });
+    expect(existingOnlyJoin.success, existingOnlyJoin.text).toBe(true);
+    expect(JSON.parse(existingOnlyJoin.text)).toMatchObject({
+      requestIds: [],
+      joinId: expect.any(String),
+      requestDeliveries: [],
+      executionDirective: expect.stringContaining("No new Requests were created"),
+    });
+
+    const mixed = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: {
+        delegations: [
+          { recipientAgentId: first.id, text: "Busy follow-up" },
+          { recipientAgentId: third.id, text: "Idle follow-up" },
+        ],
+        completionMode: "record",
+      },
+    });
+    expect(mixed.success, mixed.text).toBe(true);
+    const mixedResult = JSON.parse(mixed.text) as {
+      requestDeliveries: Array<{ recipientAgentId: string; deliveryState: string }>;
+    };
+    expect(mixedResult.requestDeliveries).toEqual([
+      expect.objectContaining({ recipientAgentId: first.id, deliveryState: "queued_behind_active_run" }),
+      expect.objectContaining({ recipientAgentId: third.id, deliveryState: "queued_for_next_run" }),
+    ]);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(4));
+
+    persistent.completeSteers = false;
+    const firstRuntime = persistent.openedOptions[1]!;
+    const firstResult = await firstRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request", arguments: { text: "First assignment complete." },
+    });
+    expect(firstResult.success, firstResult.text).toBe(true);
+    persistent.completeTurn(1);
+    await vi.waitFor(() => expect(persistent.starts).toHaveLength(5));
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(5));
+    const recordRuntime = persistent.openedOptions[4]!;
+    const recordResultUpdate = await recordRuntime.handleDynamicToolCall!({
+      name: "ponderosa_update_request",
+      arguments: { requestId: recordResult.requestIds[0], text: "Inventory complete." },
+    });
+    expect(recordResultUpdate.success, recordResultUpdate.text).toBe(true);
+    const replayedRecord = await runtime.handleDynamicToolCall!({
+      name: "ponderosa_coordinate",
+      arguments: { recipientAgentId: first.id, text: "Inventory only", completionMode: "record" },
+    });
+    expect(replayedRecord.success, replayedRecord.text).toBe(true);
+    expect(JSON.parse(replayedRecord.text)).toMatchObject({
+      replayed: true,
+      requestDeliveries: [{
+        requestId: recordResult.requestIds[0],
+        recipientAgentId: first.id,
+        requestState: "completed",
+        deliveryState: "request_terminal",
+        interruptsActiveRun: false,
+      }],
+    });
 
     const malformedAnswer = await runtime.handleDynamicToolCall!({
       name: "ponderosa_update_request", arguments: { kind: "answer", text: "Missing correlation" },

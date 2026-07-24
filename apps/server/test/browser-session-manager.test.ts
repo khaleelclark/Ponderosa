@@ -53,7 +53,9 @@ describe("run-scoped browser sessions", () => {
     const dataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-browser-"));
     roots.push(dataDir);
     const events: AgentEvent[] = [];
-    const manager = new BrowserSessionManager(dataDir, async () => fakeDriver(), (_scope, event) => events.push(event));
+    const driver = fakeDriver();
+    driver.type = vi.fn(async () => ({ url: "about:blank", title: "Blank" }));
+    const manager = new BrowserSessionManager(dataDir, async () => driver, (_scope, event) => events.push(event));
     const scope: BrowserScope = { projectId: "project", agentId: "agent", runId: "run", conversationId: "chat" };
 
     const opened = await manager.open(scope, "https://example.com/start");
@@ -65,6 +67,9 @@ describe("run-scoped browser sessions", () => {
     await expect(manager.act(scope, { action: "click", selector: "#go" })).rejects.toThrow(/operator/);
     await expect(manager.operatorInput(scope, { kind: "click", x: 20, y: 30, expectedControlEpoch: 1 })).rejects.toThrow(/another tab/);
     await manager.operatorInput(scope, { kind: "click", x: 20, y: 30, expectedControlEpoch: 2 });
+    const longText = "x".repeat(5_000);
+    await manager.operatorInput(scope, { kind: "type", text: longText, expectedControlEpoch: 2 });
+    expect(driver.type).toHaveBeenCalledWith(longText);
 
     await manager.setControl(scope, "agent", 2);
     const screenshot = await manager.captureArtifact(scope);
