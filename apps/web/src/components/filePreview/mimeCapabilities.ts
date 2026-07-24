@@ -27,7 +27,7 @@ const EXTENSION_MEDIA_TYPES: Record<string, string> = {
   txt: "text/plain",
 };
 
-export function normalizedMediaType(mediaType?: string, path?: string): string {
+function normalizedMediaType(mediaType?: string, path?: string): string {
   const explicit = mediaType?.split(";", 1)[0]?.trim().toLocaleLowerCase();
   if (explicit && explicit !== "application/octet-stream") return explicit;
   const name = path?.split(/[\\/]/u).at(-1) ?? "";
@@ -72,8 +72,4 @@ export function previewCapability({
     return { kind: "text", label: "Text", inline: true };
   }
   return { kind: "unsupported", label: normalized === "application/octet-stream" ? "File" : normalized, inline: false };
-}
-
-export function isTextPreviewCapability(mediaType?: string, path?: string): boolean {
-  return ["text", "markdown", "diff"].includes(previewCapability({ mediaType, path }).kind);
 }

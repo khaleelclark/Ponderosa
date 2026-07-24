@@ -5,9 +5,9 @@ export interface BrowserScrollInput {
 }
 
 const MAX_BROWSER_SCROLL_DELTA = 4_000;
-export const BROWSER_FRAME_ACTIVE_INTERVAL_MS = 75;
-export const BROWSER_FRAME_IDLE_INTERVAL_MS = 750;
-export const BROWSER_FRAME_ACTIVE_WINDOW_MS = 3_000;
+const BROWSER_FRAME_ACTIVE_INTERVAL_MS = 75;
+const BROWSER_FRAME_IDLE_INTERVAL_MS = 750;
+const BROWSER_FRAME_ACTIVE_WINDOW_MS = 3_000;
 
 function clampScrollDelta(value: number): number {
   return Math.max(-MAX_BROWSER_SCROLL_DELTA, Math.min(MAX_BROWSER_SCROLL_DELTA, value));
@@ -33,7 +33,7 @@ export function browserTouchScrollDelta(previous: number, current: number): numb
   return clampScrollDelta((previous - current) * 2);
 }
 
-export function browserFrameRefreshDelay(now: number, activeUntil: number): number {
+function browserFrameRefreshDelay(now: number, activeUntil: number): number {
   return now < activeUntil ? BROWSER_FRAME_ACTIVE_INTERVAL_MS : BROWSER_FRAME_IDLE_INTERVAL_MS;
 }
 

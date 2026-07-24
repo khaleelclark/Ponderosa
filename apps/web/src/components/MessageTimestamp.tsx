@@ -2,13 +2,13 @@ import { Box, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import type { PointerEvent, ReactNode } from "react";
 
-export interface FormattedTimestamp {
+interface FormattedTimestamp {
   dateTime: string;
   label: string;
   title: string;
 }
 
-export interface TimestampFormatOptions {
+interface TimestampFormatOptions {
   locale?: string;
   timeZone?: string;
 }
@@ -17,7 +17,7 @@ export interface TimestampFormatOptions {
  * Keep chat time labels absolute: relative labels become inaccurate while an
  * open conversation is idle and obscure the calendar date at day boundaries.
  */
-export function formatMessageTimestamp(
+function formatMessageTimestamp(
   value: string,
   options: TimestampFormatOptions = {},
 ): FormattedTimestamp | undefined {

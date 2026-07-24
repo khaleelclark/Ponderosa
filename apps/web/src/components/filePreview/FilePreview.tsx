@@ -9,7 +9,7 @@ import remarkGfm from "remark-gfm";
 import { previewCapability } from "./mimeCapabilities";
 import { FeatureErrorBoundary } from "../FeatureErrorBoundary";
 
-export function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
+function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
   if (line.startsWith("+") && !line.startsWith("+++")) return "addition";
   if (line.startsWith("-") && !line.startsWith("---")) return "deletion";
   return "neutral";

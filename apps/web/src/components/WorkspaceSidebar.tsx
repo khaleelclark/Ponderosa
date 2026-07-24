@@ -60,11 +60,7 @@ import {
   workspaceCounts,
   type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
-import {
-  clampWorkspaceSidebarWidth,
-  WORKSPACE_SIDEBAR_MAX_WIDTH,
-  WORKSPACE_SIDEBAR_MIN_WIDTH,
-} from "../workspaceSidebarState";
+import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { ponderosaLayoutTokens } from "../theme";
 import {
   ResourceContextMenu,
@@ -72,17 +68,8 @@ import {
 } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
 
-export const SIDEBAR_MIN_WIDTH = WORKSPACE_SIDEBAR_MIN_WIDTH;
-export const SIDEBAR_MAX_WIDTH = WORKSPACE_SIDEBAR_MAX_WIDTH;
-export const SIDEBAR_RAIL_WIDTH = ponderosaLayoutTokens.sidebarRailWidth;
-export const SIDEBAR_PANEL_WIDTH = ponderosaLayoutTokens.sidebarPanelWidth;
-
-export function clampSidebarWidth(width: number): number {
-  return Math.max(
-    SIDEBAR_MIN_WIDTH,
-    Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)),
-  );
-}
+const SIDEBAR_RAIL_WIDTH = ponderosaLayoutTokens.sidebarRailWidth;
+const SIDEBAR_PANEL_WIDTH = ponderosaLayoutTokens.sidebarPanelWidth;
 
 function projectSnapshots(
   projects: ProjectDto[],

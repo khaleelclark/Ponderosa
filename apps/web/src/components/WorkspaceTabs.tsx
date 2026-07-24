@@ -43,7 +43,7 @@ function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.El
   return <FolderOutlinedIcon fontSize="small" />;
 }
 
-export function newTabShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘T" | "Ctrl T" {
+function newTabShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘T" | "Ctrl T" {
   return /Mac|iPhone|iPad/iu.test(platform) ? "⌘T" : "Ctrl T";
 }
 

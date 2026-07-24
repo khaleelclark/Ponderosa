@@ -50,18 +50,12 @@ import { uniqueBy } from "../collections";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import { ProjectOverview, projectHealthDetail, projectHealthPresentation } from "./ProjectOverview";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
-import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
-export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
-export function isTextArtifactPreview(mediaType: string | undefined): boolean {
-  return isTextPreviewCapability(mediaType);
-}
+type ProjectFileCategory = "all" | "code" | "documents" | "data" | "images" | "archives" | "other";
 
-export type ProjectFileCategory = "all" | "code" | "documents" | "data" | "images" | "archives" | "other";
-
-export const PROJECT_FILE_CATEGORIES: Array<{ value: ProjectFileCategory; label: string }> = [
+const PROJECT_FILE_CATEGORIES: Array<{ value: ProjectFileCategory; label: string }> = [
   { value: "all", label: "All" },
   { value: "code", label: "Code" },
   { value: "documents", label: "Documents" },
@@ -86,7 +80,7 @@ function extensionForArtifact(artifact: ArtifactDto): string {
   return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1).toLocaleLowerCase() : "";
 }
 
-export function projectFileCategory(artifact: ArtifactDto): Exclude<ProjectFileCategory, "all"> {
+function projectFileCategory(artifact: ArtifactDto): Exclude<ProjectFileCategory, "all"> {
   const extension = extensionForArtifact(artifact);
   for (const [category, extensions] of Object.entries(FILE_CATEGORY_EXTENSIONS) as Array<[Exclude<ProjectFileCategory, "all" | "other">, ReadonlySet<string>]>) {
     if (extensions.has(extension)) return category;
@@ -94,7 +88,7 @@ export function projectFileCategory(artifact: ArtifactDto): Exclude<ProjectFileC
   return "other";
 }
 
-export function matchesProjectFileCategories(
+function matchesProjectFileCategories(
   artifact: ArtifactDto,
   selected: readonly Exclude<ProjectFileCategory, "all">[],
 ): boolean {
@@ -110,7 +104,7 @@ const projectOutputKinds = new Set<ArtifactDto["kind"]>([
   "generated_file",
 ]);
 
-export function projectArtifactGroup(kind: ArtifactDto["kind"]): "Modified & Created Files" | "Results" | undefined {
+function projectArtifactGroup(kind: ArtifactDto["kind"]): "Modified & Created Files" | "Results" | undefined {
   if (["diff", "document", "screenshot", "generated_file"].includes(kind)) return "Modified & Created Files";
   if (["test_report", "pr_summary"].includes(kind)) return "Results";
   return undefined;

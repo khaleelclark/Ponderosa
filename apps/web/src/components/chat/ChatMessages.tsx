@@ -21,7 +21,7 @@ function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
 
-export function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
+function linkPresentation(href: string): { url: URL; hostname: string; destination: string; loopback: boolean } | undefined {
   let url: URL;
   try { url = new URL(href); } catch { return undefined; }
   if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
@@ -36,7 +36,7 @@ function projectFileHref(projectId: string | undefined, href: string | undefined
   return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/${mode}?path=${encodeURIComponent(href)}`;
 }
 
-export function projectFileViewerHref(projectId: string | undefined, href: string | undefined): string | undefined {
+function projectFileViewerHref(projectId: string | undefined, href: string | undefined): string | undefined {
   if (!projectId || !href) return undefined;
   if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;
   return `/projects/${encodeURIComponent(projectId)}/files/view?path=${encodeURIComponent(href)}`;
@@ -110,7 +110,7 @@ export function chatMessageLayoutKey(messages: ReadonlyArray<{
     : "0";
 }
 
-export function isLongChatMessage(text: string): boolean {
+function isLongChatMessage(text: string): boolean {
   // Display-only progressive disclosure. Provider input and artifact limits
   // remain governed by the canonical constants imported above.
   return unicodeCodePointLength(text) > 6_400 || text.split("\n").length > 72;
@@ -123,7 +123,7 @@ export function individualChatSenderLabel(
   return role === "user" ? "You" : agentName.trim() || "Agent";
 }
 
-export function codeBlockText(children: ReactNode): string {
+function codeBlockText(children: ReactNode): string {
   if (typeof children === "string" || typeof children === "number") {
     return String(children);
   }
@@ -252,7 +252,7 @@ function remarkMessageTags() {
   };
 }
 
-export function ChatMarkdown({
+function ChatMarkdown({
   children,
   agentIdForHandle,
   agentMentionForHandle,

@@ -38,7 +38,7 @@ function deliveryLabel(
   }
 }
 
-export function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">): string {
+function compactDeliveryLabel(receipt: Pick<MessageDeliveryReceiptDto, "state">): string {
   switch (receipt.state) {
     case "queued": return "Queued";
     case "steering": return "Steering";

@@ -3,7 +3,7 @@ import { useQueries } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
-export function projectConversationQueries(projects: readonly ProjectDto[]) {
+function projectConversationQueries(projects: readonly ProjectDto[]) {
   return projects.map((project) => ({
     queryKey: queryKeys.conversations.project(project.id),
     queryFn: () => api.listConversations(project.id),
@@ -11,7 +11,7 @@ export function projectConversationQueries(projects: readonly ProjectDto[]) {
   }));
 }
 
-export function projectAgentQueries(projects: readonly ProjectDto[]) {
+function projectAgentQueries(projects: readonly ProjectDto[]) {
   return projects.map((project) => ({
     queryKey: queryKeys.agents.project(project.id),
     queryFn: () => api.listAgents(project.id),
@@ -19,7 +19,7 @@ export function projectAgentQueries(projects: readonly ProjectDto[]) {
   }));
 }
 
-export function projectAgentHealthQueries(projects: readonly ProjectDto[]) {
+function projectAgentHealthQueries(projects: readonly ProjectDto[]) {
   return projects.map((project) => ({
     queryKey: queryKeys.agents.health(project.id),
     queryFn: () => api.getAgentHealth(project.id),

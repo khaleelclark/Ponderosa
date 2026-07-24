@@ -28,7 +28,7 @@ export interface ChatOverflowAction {
   destructive?: boolean;
 }
 
-export const CHAT_EXPORT_ACTION_LABELS = ["Copy", "Download", "Chat Transcript"] as const;
+const CHAT_EXPORT_ACTION_LABELS = ["Copy", "Download", "Chat Transcript"] as const;
 
 export function ChatOverflowMenu({
   label = "Chat Actions",

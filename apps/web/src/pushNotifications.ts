@@ -16,13 +16,13 @@ export type WebPushState =
   | { kind: "subscription_failed"; message: string }
   | { kind: "active"; message: string };
 
-export interface WebPushPrerequisites {
+interface WebPushPrerequisites {
   supported: boolean;
   secure: boolean;
   permission: NotificationPermission | "unsupported";
 }
 
-export function classifyWebPushState(
+function classifyWebPushState(
   prerequisites: WebPushPrerequisites,
   host?: WebPushStatusDto,
   deviceActive = false,

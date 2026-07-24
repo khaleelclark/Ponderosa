@@ -10,7 +10,7 @@ const GENERATED_AVATAR_GLYPHS: Record<string, string> = {
   owl: "🦉",
 };
 
-export function operatorAvatarUrl(avatarId: string | undefined): string | undefined {
+function operatorAvatarUrl(avatarId: string | undefined): string | undefined {
   return avatarId?.startsWith("uploaded:")
     ? `/api/workspace/profile-images/${encodeURIComponent(avatarId)}`
     : undefined;

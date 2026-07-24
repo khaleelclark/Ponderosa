@@ -36,21 +36,21 @@ function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
 }
 
-export function isoToDatetimeLocal(value: string): string {
+function isoToDatetimeLocal(value: string): string {
   const date = new Date(value);
   const offset = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offset).toISOString().slice(0, 23);
 }
 
-export function changedSourceConfig(original: TriggerSourceConfig, next: TriggerSourceConfig): TriggerSourceConfig | undefined {
+function changedSourceConfig(original: TriggerSourceConfig, next: TriggerSourceConfig): TriggerSourceConfig | undefined {
   return JSON.stringify(original) === JSON.stringify(next) ? undefined : next;
 }
 
-export function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): TriggerSourceConfig {
+function intervalSourceConfig(everyMs: number, original?: { startsAt: string }): TriggerSourceConfig {
   return { scheduleKind: "interval", everyMs, startsAt: original?.startsAt ?? new Date().toISOString() };
 }
 
-export function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {
+function filesystemWindowErrors(quietValue: string, maxValue: string): { quiet?: string; max?: string } {
   const quiet = Number(quietValue);
   const max = Number(maxValue);
   const errors: { quiet?: string; max?: string } = {};
@@ -65,7 +65,7 @@ export function filesystemWindowErrors(quietValue: string, maxValue: string): { 
   return errors;
 }
 
-export function latestOccurrenceByTrigger(occurrences: TriggerOccurrenceDto[]): Map<string, TriggerOccurrenceDto> {
+function latestOccurrenceByTrigger(occurrences: TriggerOccurrenceDto[]): Map<string, TriggerOccurrenceDto> {
   const latest = new Map<string, TriggerOccurrenceDto>();
   for (const occurrence of occurrences) {
     const current = latest.get(occurrence.triggerId);
@@ -74,7 +74,7 @@ export function latestOccurrenceByTrigger(occurrences: TriggerOccurrenceDto[]): 
   return latest;
 }
 
-export function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" | "sourceConfig">): string {
+function triggerSourceSummary(trigger: Pick<TriggerDefinitionDto, "sourceKind" | "sourceConfig">): string {
   if (trigger.sourceKind === "webhook") return "Signed webhook";
   if (trigger.sourceKind === "filesystem") return "Project folder changes";
   const schedule = trigger.sourceConfig as Extract<TriggerSourceConfig, { scheduleKind: string }>;

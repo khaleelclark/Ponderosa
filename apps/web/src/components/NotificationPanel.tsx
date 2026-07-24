@@ -33,7 +33,7 @@ import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
 import { DecisionActions } from "./decisions/DecisionActions";
 
-export interface NotificationGroup {
+interface NotificationGroup {
   key: string;
   projectId?: string;
   items: WorkspaceNotificationDto[];
@@ -47,14 +47,14 @@ function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): Wo
   return [...notifications].sort(compareNotificationsNewestFirst);
 }
 
-export function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
+function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
   const visible = notifications.filter(visibleNotification);
   if (filter === "mentions") return visible.filter((item) => !item.readAt && item.kind === "mentions");
   if (filter === "urgent") return visible.filter(isOpenAttention);
   return visible;
 }
 
-export function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
+function groupNotificationsByProject(notifications: WorkspaceNotificationDto[]): NotificationGroup[] {
   const groups = new Map<string, NotificationGroup>();
   for (const item of notificationsNewestFirst(notifications)) {
     const key = item.projectId ?? "workspace";
@@ -72,7 +72,7 @@ export function groupNotificationsByProject(notifications: WorkspaceNotification
   return [...groups.values()].sort((a, b) => compareNotificationsNewestFirst(a.items[0]!, b.items[0]!));
 }
 
-export function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
+function notificationWorkRoute(item: WorkspaceNotificationDto): Route | undefined {
   if (!item.projectId) return undefined;
   const focusId = notificationTechnicalFocusId(item);
   if (item.action?.kind === "open_agent" && item.action.targetId) {

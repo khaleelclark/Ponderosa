@@ -8,9 +8,9 @@ export function mobileOperationalStatus(state: string): string {
   return `• ${state.replaceAll("_", " ")}`;
 }
 
-export type MobileComposerScrollAction = "hide" | "show" | "none";
+type MobileComposerScrollAction = "hide" | "show" | "none";
 
-export function mobileComposerScrollAction({
+function mobileComposerScrollAction({
   mobileViewport,
   hidden,
   initialized,

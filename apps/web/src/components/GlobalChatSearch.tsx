@@ -41,7 +41,7 @@ export function isGlobalSearchShortcut(event: Pick<KeyboardEvent, "key" | "metaK
   return (event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLocaleLowerCase() === "k";
 }
 
-export function globalSearchKeyboardAction(
+function globalSearchKeyboardAction(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey">,
   activeIndex: number,
   resultCount: number,
@@ -55,7 +55,7 @@ export function globalSearchKeyboardAction(
   return undefined;
 }
 
-export function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRangeDto[]): Array<{ text: string; highlighted: boolean }> {
+function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRangeDto[]): Array<{ text: string; highlighted: boolean }> {
   const ordered = [...ranges]
     .filter((range) => range.length > 0 && range.start >= 0 && range.start < snippet.length)
     .sort((a, b) => a.start - b.start);
@@ -114,7 +114,7 @@ function SearchResultRow({
   </ListItemButton>;
 }
 
-export function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
+function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
   result: GlobalChatSearchResultDto;
   onSelect(openInNewTab?: boolean): void;
   active?: boolean;

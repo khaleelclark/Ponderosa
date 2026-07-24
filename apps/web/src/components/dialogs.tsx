@@ -286,11 +286,11 @@ export interface CreateAgentInput {
   initialMessage?: string;
 }
 
-export function activeManagerOptions(agents: AgentDto[]): AgentDto[] {
+function activeManagerOptions(agents: AgentDto[]): AgentDto[] {
   return agents.filter((agent) => !agent.archived);
 }
 
-export function createAgentInputFromForm(input: {
+function createAgentInputFromForm(input: {
   title: string;
   engine: string;
   model: string;

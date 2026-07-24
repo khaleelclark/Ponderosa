@@ -37,7 +37,7 @@ import TagIcon from "@mui/icons-material/Tag";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 
-export function allChatSourceRoute(item: AllChatItemDto): Route {
+function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
     return {
       kind: "agent",
@@ -57,7 +57,7 @@ export function allChatSourceRoute(item: AllChatItemDto): Route {
   };
 }
 
-export function mergeAllChatItems(
+function mergeAllChatItems(
   ...groups: AllChatItemDto[][]
 ): AllChatItemDto[] {
   return uniqueBy(
@@ -73,7 +73,7 @@ function sourceLabel(item: AllChatItemDto): string {
   return `${item.project.label} · ${item.source.title}`;
 }
 
-export function allChatSourceAccessibleName(item: AllChatItemDto): string {
+function allChatSourceAccessibleName(item: AllChatItemDto): string {
   const normalized = item.text.replace(/\s+/gu, " ").trim();
   const excerpt =
     normalized.length > 80
