@@ -266,7 +266,7 @@ export function AgentsTab({
     setStoppingAll(false);
   };
   return (
-    <Box data-testid="agent-roster" sx={{ minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
+    <Box data-testid="agent-roster" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
       <Stack
         direction="row"
         useFlexGap
