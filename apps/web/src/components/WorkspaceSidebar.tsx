@@ -33,7 +33,6 @@ import {
   TextField,
   Tooltip,
   Typography,
-  useTheme,
 } from "@mui/material";
 import type { AgentDto, AgentHealthDto, ConversationDto, EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -365,8 +364,6 @@ export function WorkspaceSidebar({
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
 }): JSX.Element {
-  const theme = useTheme();
-  const appIconSource = theme.palette.mode === "light" ? "/icons/app-icon-inverted.png" : "/icons/app-icon.png";
   const queryClient = useQueryClient();
   const routedProjectId = routeProjectId(route);
   const selectedProjectId = routedProjectId && projects.some((project) => project.id === routedProjectId) ? routedProjectId : undefined;
@@ -470,8 +467,6 @@ export function WorkspaceSidebar({
       width: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
       minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
       minHeight: 0,
-      borderRight: 1,
-      borderColor: "var(--ponderosa-rail-border)",
       bgcolor: railSurface,
       display: "grid",
       gridTemplateRows: "auto minmax(0, 1fr) auto",
@@ -480,7 +475,7 @@ export function WorkspaceSidebar({
     }}
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
-      <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 42, height: 42, mb: 3.25, p: 0.25, borderRadius: 1, objectFit: "cover" }} /></Tooltip>
+      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 42, height: 42, mb: 3.25, p: 0.25, borderRadius: 1, objectFit: "cover" }} /></Tooltip>
       <RailButton label="Home" selected={showingHome} onClick={showHome}><HomeOutlinedIcon /></RailButton>
       <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: .5 }} />
       <RailButton label="Projects" selected={showingProjects || showingProjectNavigation} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
