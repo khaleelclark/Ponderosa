@@ -98,6 +98,10 @@ function AllChatInfoPill({ message }: { message: string }): JSX.Element {
         borderRadius: 999,
         color: "info.main",
         bgcolor: "action.hover",
+        boxShadow: theme =>
+          theme.palette.mode === "dark"
+            ? "0 10px 30px rgba(3,8,6,.18)"
+            : "0 10px 30px rgba(33,45,38,.09)",
       }}
     >
       <InfoOutlinedIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
@@ -575,9 +579,13 @@ export function AllChatView({
       >
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
           {!selected ? (
-            <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
+            </Box>
           ) : !selected.directMessageAgent ? (
-            <AllChatInfoPill message="This message does not identify an active Agent you can message." />
+            <Box sx={{ display: "flex", justifyContent: "center" }}>
+              <AllChatInfoPill message="This message does not identify an active Agent you can message." />
+            </Box>
           ) : (
             <Stack spacing={1}>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
