@@ -33,7 +33,7 @@ describe("Conversation #tags", () => {
         id: "tagged",
         conversationId: "room",
         role: "user",
-        text: "#Cabrillo hello #user #broadcast #unknown `#Olympic` [#Denali](https://example.com)",
+        text: "#Cabrillo hello #user #broadcast #unknown See PR #301 `#Olympic` [#Denali](https://example.com)",
         createdAt: "2026-07-12T00:00:00.000Z",
       }}
       conversation="main"
@@ -48,6 +48,9 @@ describe("Conversation #tags", () => {
     expect(html).toContain('data-message-tag="broadcast"');
     expect(html).not.toContain('data-message-tag="unknown"');
     expect(html).toContain("#unknown");
+    expect(html).not.toContain('data-message-tag="301"');
+    expect(html).not.toContain('aria-label="Open agent 301"');
+    expect(html).toContain("See PR #301");
     expect(html).not.toContain('aria-label="Open agent user"');
     expect(html).toContain("<code>#Olympic</code>");
     expect(html).toContain('href="https://example.com"');
