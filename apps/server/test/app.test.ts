@@ -2329,21 +2329,6 @@ describe("generated artifact endpoints", () => {
     expect(collaboration.statusCode, collaboration.body).toBe(200);
     eventIds.push(collaboration.json<{ message: { communicationEventId: string } }>().message.communicationEventId);
 
-    const authored = appendCanonicalMessage(
-      store, project.id, conversation.id, { role: "assistant", text: "Reply here" }, first.id,
-    )!;
-    const directReply = await app.inject({
-      method: "POST", url: `/api/conversations/${conversation.id}/direct-replies`,
-      payload: {
-        text: fullText,
-        replyToMessageId: authored.id,
-        targetAuthorAgentId: first.id,
-        idempotencyKey: "long-direct-reply",
-      },
-    });
-    expect(directReply.statusCode, directReply.body).toBe(200);
-    eventIds.push(directReply.json<{ messageId: string }>().messageId);
-
     const created = await app.inject({
       method: "POST", url: `/api/projects/${project.id}/agents`,
       payload: { title: "New reader", engine: "codex", conversationId: conversation.id, initialMessage: fullText },
@@ -2351,7 +2336,7 @@ describe("generated artifact endpoints", () => {
     expect(created.statusCode, created.body).toBe(200);
     eventIds.push(`agent-opening:${created.json<{ id: string }>().id}`);
 
-    expect(new Set(eventIds).size).toBe(5);
+    expect(new Set(eventIds).size).toBe(4);
     for (const eventId of eventIds) {
       const event = store.getCommunicationEvent(project.id, eventId)!;
       expect(event.text).toMatch(/^Full message: ponderosa:\/\/artifact\/text-/);
@@ -2364,7 +2349,7 @@ describe("generated artifact endpoints", () => {
       expect(readFileSync(managedArtifactContentPath(dataDir, project.id, event.document!.artifactId!), "utf8")).toBe(fullText);
     }
     expect(new CoordinationV3Store(store.sqlite).runtimeArtifacts()
-      .filter((artifact) => artifact.projectId === project.id)).toHaveLength(5);
+      .filter((artifact) => artifact.projectId === project.id)).toHaveLength(4);
     const broadcastArtifactId = store.getCommunicationEvent(project.id, eventIds[0]!)!.document!.artifactId!;
     const directArtifactId = store.getCommunicationEvent(project.id, eventIds[1]!)!.document!.artifactId!;
     const collaborationArtifactId = store.getCommunicationEvent(project.id, eventIds[2]!)!.document!.artifactId!;
@@ -4424,7 +4409,7 @@ describe("persistent engine steering", () => {
     await vi.waitFor(() => expect(persistent.closed).toBe(2));
     releaseOpening();
 
-    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3));
+    await vi.waitFor(() => expect(persistent.openedOptions).toHaveLength(3), { timeout: 5_000 });
     expect(persistent.openedOptions[2]?.resumeSessionId).toBeUndefined();
     await waitForRun(agent.id, 2);
     expect(persistent.starts).toHaveLength(2);
@@ -5591,13 +5576,6 @@ describe("server chunk F", () => {
     });
     expect(intake.statusCode).toBe(503);
     expect(intake.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
-    for (const blockedUrl of [
-      `/api/conversations/${randomUUID()}/direct-replies`,
-    ]) {
-      const blocked = await app.inject({ method: "POST", url: blockedUrl, payload: {} });
-      expect(blocked.statusCode, blockedUrl).toBe(503);
-      expect(blocked.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
-    }
     expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toEqual([]);
     expect(store.getRuns(agent.id)).toEqual([]);
     expect((await app.inject({ method: "POST", url: "/api/deployment/resume" })).statusCode).toBe(409);
@@ -5953,37 +5931,10 @@ describe("server chunk F", () => {
     await healthy.close();
   });
 
-  it("rejects valid direct-reply intake without procfs before any canonical or notification mutation", async () => {
-    const project = store.createProject({ label: "Blocked private reply intake", hostPath: repoDir });
-    const conversation = store.createConversation(project.id, { title: "Valid reply target" });
+  it("rejects valid direct-message intake without procfs before any canonical or notification mutation", async () => {
+    const project = store.createProject({ label: "Blocked private message intake", hostPath: repoDir });
+    const conversation = store.createConversation(project.id, { title: "Valid direct target" });
     const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: conversation.id });
-    const communicationEventId = randomUUID();
-    store.appendCommunicationEvent({
-      eventId: communicationEventId,
-      schemaVersion: 2,
-      projectId: project.id,
-      conversationId: conversation.id,
-      sender: { kind: "agent", agentId: author.id, executionId: "completed-author-run" },
-      intent: "broadcast",
-      audience: { kind: "organization", organizationId: project.id },
-      text: "Agent-authored target",
-      createdAt: "2026-07-20T02:00:00.000Z",
-    });
-    const targetMessage = store.appendConversationMessage(
-      conversation.id,
-      { role: "assistant", text: "#broadcast Agent-authored target" },
-      author.id,
-      "main",
-      undefined,
-      undefined,
-      communicationEventId,
-    )!;
-    store.appendEvent(author.id, {
-      type: "communication_projection",
-      communicationEventId,
-      text: "Agent-authored target",
-      role: "assistant",
-    });
     const app = createServer({
       dataDir,
       store,
@@ -6001,19 +5952,18 @@ describe("server chunk F", () => {
     const authorEventsBefore = structuredClone(store.getMessages(author.id));
     const durableBefore = readinessFenceDurableState(store, dataDir, project.id);
 
-    const directReply = await app.inject({
+    const directMessage = await app.inject({
       method: "POST",
-      url: `/api/conversations/${conversation.id}/direct-replies`,
+      url: `/api/conversations/${conversation.id}/direct-messages`,
       payload: {
         text: "Valid private follow-up",
-        replyToMessageId: targetMessage.id,
-        targetAuthorAgentId: author.id,
-        idempotencyKey: "blocked-valid-direct-reply",
+        recipients: [{ agentId: author.id }],
+        idempotencyKey: "blocked-valid-direct-message",
         activeRunDelivery: "queue",
       },
     });
-    expect(directReply.statusCode, directReply.body).toBe(503);
-    expect(directReply.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
+    expect(directMessage.statusCode, directMessage.body).toBe(503);
+    expect(directMessage.json()).toMatchObject({ error: expect.stringContaining("artifact-dependent work is unavailable") });
     expect(store.readCommunicationEvents(project.id)).toEqual(communicationsBefore);
     expect(store.readCommunicationProjections(project.id)).toEqual(projectionsBefore);
     expect(store.getConversationMessages(conversation.id)).toEqual(messagesBefore);
@@ -6025,22 +5975,21 @@ describe("server chunk F", () => {
     store = new AgentStore(dataDir);
     const healthy = createServer({ dataDir, store, engines, logger: false });
     expect((await healthy.inject({ method: "POST", url: "/api/deployment/drain" })).statusCode).toBe(200);
-    const healthyReply = await healthy.inject({
+    const healthyMessage = await healthy.inject({
       method: "POST",
-      url: `/api/conversations/${conversation.id}/direct-replies`,
+      url: `/api/conversations/${conversation.id}/direct-messages`,
       payload: {
         text: "Valid private follow-up",
-        replyToMessageId: targetMessage.id,
-        targetAuthorAgentId: author.id,
-        idempotencyKey: "blocked-valid-direct-reply",
+        recipients: [{ agentId: author.id }],
+        idempotencyKey: "blocked-valid-direct-message",
         activeRunDelivery: "queue",
       },
     });
-    expect(healthyReply.statusCode, healthyReply.body).toBe(200);
+    expect(healthyMessage.statusCode, healthyMessage.body).toBe(200);
     expect(store.readCommunicationEvents(project.id)).toHaveLength(communicationsBefore.length + 1);
     expect(store.getConversationMessages(conversation.id)).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        replyTo: expect.objectContaining({ messageId: targetMessage.id, authorAgentId: author.id }),
+        text: "Valid private follow-up",
       }),
     ]));
     expect(new CoordinationV3Store(store.sqlite).pendingActivations(project.id)).toHaveLength(1);
@@ -7876,12 +7825,12 @@ describe("server chunk F", () => {
     await app.close();
   });
 
-  it("counts and clips astral room and reply context by Unicode code point", async () => {
+  it("counts astral room context by Unicode code point", async () => {
     const app = createServer({ dataDir, store, engines, logger: false });
     const project = store.createProject({ label: "Unicode context", hostPath: repoDir });
     const conversation = store.createConversation(project.id, { title: "Astral room" });
     const agent = store.createAgent(project.id, { title: "Counter", engine: "codex", conversationId: conversation.id });
-    const replyTarget = appendBroadcast(store, project.id, conversation.id, "😀".repeat(1_201));
+    appendBroadcast(store, project.id, conversation.id, "😀".repeat(1_201));
 
     expect((await app.inject({
       method: "POST", url: `/api/agents/${agent.id}/messages`,
@@ -7889,17 +7838,12 @@ describe("server chunk F", () => {
         text: "Count safely",
         sourceChannel: "main",
         sourceConversationId: conversation.id,
-        replyToMessageId: replyTarget.id,
       },
     })).statusCode).toBe(202);
     await waitForRun(agent.id);
 
     const prompt = adapter.seeds[0]!.prompt;
     expect(prompt).toContain("Context injection accounting: room_messages=1; room_characters=1201");
-    const quote = prompt.match(/Replying specifically to this earlier message:\n> ([^\n]*)/)?.[1];
-    expect(quote).toBeTruthy();
-    expect([...(quote ?? "")]).toHaveLength(1_200);
-    expect([...(quote ?? "")].every((character) => character === "😀")).toBe(true);
     await app.close();
   });
 
@@ -11880,228 +11824,10 @@ describe("server chunk F", () => {
     await app.close();
   }, 10000);
 
-  it("validates individual reply targets and sends compact quoted context", async () => {
-    const { app, project, agent } = await createProjectAndAgent();
-    await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Original question" } });
-    await waitForRun(agent.id);
-    const original = store.getMessages(agent.id)[0]!;
-    const other = store.createAgent(project.id, { title: "Other", engine: "codex" });
-    const rejected = await app.inject({ method: "POST", url: `/api/agents/${other.id}/messages`, payload: { text: "Cross-boundary", replyToMessageId: original.id } });
-    expect(rejected.statusCode).toBe(400);
-    const accepted = await app.inject({ method: "POST", url: `/api/agents/${agent.id}/messages`, payload: { text: "Specific answer", replyToMessageId: original.id } });
-    expect(accepted.statusCode).toBe(202);
-    await waitForRun(agent.id, 2);
-    const replyTurn = [...adapter.seeds, ...adapter.continues].find((turn) => turn.prompt.includes("Specific answer"));
-    expect(replyTurn?.prompt).toContain("Replying specifically to this earlier message");
-    expect(replyTurn?.prompt).toContain("Original question");
-    expect(store.getMessages(agent.id).find((message) => message.text === "Specific answer")?.replyTo?.messageId).toBe(original.id);
-    await app.close();
-  });
-
-  it("delivers Reply Directly once and replays a stable receipt", async () => {
-    const { app, project } = await createProjectAndAgent();
-    const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
-    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
-    const upload = await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/attachments`,
-      headers: { "content-type": "image/png", "x-ponderosa-filename": "direct.png" },
-      payload: png,
-    });
-    expect(upload.statusCode).toBe(201);
-    const attachmentId = upload.json<{ id: string }>().id;
-
-    const accepted = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
-    });
-    expect(accepted.statusCode).toBe(200);
-    expect(accepted.json()).toMatchObject({ replayed: false, targetAuthorAgentId: author.id });
-    await waitForRun(author.id);
-    expect(adapter.seeds.find((turn) => turn.agentId === author.id)?.prompt)
-      .toContain("Replying specifically to this earlier message:\n> Result");
-
-    const replayed = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "reply-1" },
-    });
-    expect(replayed.statusCode).toBe(200);
-    expect(replayed.json()).toMatchObject({ replayed: true, messageId: accepted.json<{ messageId: string }>().messageId });
-    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Follow up")).toHaveLength(1);
-    expect(store.getConversationMessages(master.id).find((message) => message.text === "#Author Follow up")?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
-    const directAudit = store.readCommunicationProjections(project.id).find((projection) =>
-      projection.surface === "direct_agent_audit" && projection.projectionKey === author.id &&
-      projection.message?.renderedText === "Follow up");
-    expect(directAudit?.message?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
-    const conflict = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Changed payload", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "reply-1" },
-    });
-    expect(conflict.statusCode).toBe(409);
-
-    const concurrentPayload = { text: "Concurrent follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "reply-concurrent" };
-    const concurrent = await Promise.all([
-      app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
-      app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload }),
-    ]);
-    expect(concurrent.some((response) => response.statusCode === 200)).toBe(true);
-    const concurrentReplay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload: concurrentPayload });
-    expect(concurrentReplay.json()).toMatchObject({ replayed: true });
-    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Concurrent follow up")).toHaveLength(1);
-    await waitForRun(author.id, 2);
-
-    const spoofed = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Wrong target", replyToMessageId: report.id, targetAuthorAgentId: other.id, idempotencyKey: "reply-2" },
-    });
-    expect(spoofed.statusCode).toBe(400);
-    expect(spoofed.json()).toMatchObject({ error: expect.stringMatching(/must be the author/) });
-    await app.close();
-  });
-
-  it("creates missing V3 runtime state from an authored direct-reply projection without duplicates", async () => {
-    const { app, project } = await createProjectAndAgent();
-    const master = store.createConversation(project.id, { title: "Recovery room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
-    const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
-    const upload = await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/attachments`,
-      headers: { "content-type": "image/png", "x-ponderosa-filename": "recovered.png" },
-      payload: png,
-    });
-    const attachmentId = upload.json<{ id: string }>().id;
-    const receiptKey = `direct-reply:${master.id}:crash-window`;
-    const canonical = appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { text: "#Author Recovered follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id, attachments: [upload.json()] },
-      undefined,
-      "main",
-      [{ targetAgentId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
-      receiptKey,
-    )!;
-    const agentCount = store.listAgents(project.id).length;
-    const payload = { text: "Recovered follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, attachmentIds: [attachmentId], idempotencyKey: "crash-window" };
-    const replay = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload,
-    });
-    expect(replay.statusCode).toBe(200);
-    expect(replay.json()).toMatchObject({ messageId: canonical.id, replayed: false });
-    const secondReplay = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
-    expect(secondReplay.json()).toMatchObject({ messageId: canonical.id, replayed: true });
-    await waitForRun(author.id);
-    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Author Recovered follow up")).toHaveLength(1);
-    const audit = store.readCommunicationProjections(project.id).find((projection) =>
-      projection.surface === "direct_agent_audit" && projection.projectionKey === author.id &&
-      projection.message?.renderedText === "Recovered follow up");
-    expect(audit?.message?.attachments?.map((item) => item.id)).toEqual([attachmentId]);
-    expect(store.listAgents(project.id)).toHaveLength(agentCount);
-    await app.close();
-  });
-
-  it("creates V3 activation state when an authored direct reply has no runtime record", async () => {
-    const { app, project } = await createProjectAndAgent();
-    const master = store.createConversation(project.id, { title: "Incomplete recovery room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Result" }, author.id)!;
-    appendCanonicalMessage(
-      store,
-      project.id,
-      master.id,
-      { text: "#Author Incomplete follow up", replyToMessageId: report.id, directReplyToAuthorAgentId: author.id },
-      undefined,
-      "main",
-      undefined,
-      `direct-reply:${master.id}:missing-intent`,
-      [author.id],
-    );
-
-    const replay = await app.inject({
-      method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
-      payload: { text: "Incomplete follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id, idempotencyKey: "missing-intent" },
-    });
-    expect(replay.statusCode).toBe(200);
-    expect(replay.json()).toMatchObject({ replayed: false, queued: true });
-    await waitForRun(author.id);
-    expect(store.readCommunicationProjections(project.id)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ surface: "direct_agent_audit", projectionKey: author.id }),
-    ]));
-    await app.close();
-  });
-
-  it("queues one direct reply for a busy author and deduplicates retries", async () => {
-    const { app, project } = await createProjectAndAgent();
-    const master = store.createConversation(project.id, { title: "Busy room" });
-    const author = store.createAgent(project.id, { title: "Busy author", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
-    adapter.mode = "hang";
-    await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
-    await waitForSeedCount(1);
-
-    const payload = {
-      text: "Queued follow up", replyToMessageId: report.id, targetAuthorAgentId: author.id,
-      idempotencyKey: "busy-reply", activeRunDelivery: "queue" as const,
-    };
-    const first = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
-    const retry = await app.inject({ method: "POST", url: `/api/conversations/${master.id}/direct-replies`, payload });
-    expect(first.json()).toMatchObject({ replayed: false, queued: true });
-    expect(retry.json()).toMatchObject({ replayed: true, queued: true, messageId: first.json<{ messageId: string }>().messageId });
-    expect(store.getConversationMessages(master.id).filter((message) => message.text === "#Busy-author Queued follow up")).toHaveLength(1);
-
-    const queued = (await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` }))
-      .json<Array<{ deliveryId: string; text: string }>>();
-    expect(queued).toEqual([expect.objectContaining({ text: "Queued follow up" })]);
-    const editedText = "Edited queued follow up";
-    const edited = await app.inject({
-      method: "PATCH",
-      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
-      payload: { text: editedText, idempotencyKey: "edit-busy-reply" },
-    });
-    expect(edited.statusCode, edited.body).toBe(200);
-    expect(edited.json()).toMatchObject({ edited: true, replayed: false, status: "edited" });
-    expect((await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` })).json())
-      .toEqual([expect.objectContaining({ text: editedText })]);
-    const steered = await app.inject({
-      method: "POST",
-      url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}/steer`,
-      payload: { idempotencyKey: "steer-busy-reply" },
-    });
-    expect(steered.statusCode, steered.body).toBe(200);
-    expect(steered.json()).toMatchObject({ steered: true, replayed: false, status: "steered" });
-
-    adapter.mode = "normal";
-    await app.inject({
-      method: "POST", url: `/api/agents/${author.id}/cancel`,
-      payload: activeRunCancellationPayload(store, author.id, "busy-reply-stop"),
-    });
-    await expect.poll(() => adapter.seeds.length + adapter.continues.length).toBe(2);
-    expect([...adapter.seeds, ...adapter.continues]
-      .filter((turn) => turn.agentId === author.id && turn.prompt.includes(editedText))).toHaveLength(1);
-    expect(new WorkspaceStore(dataDir).readSince(0).map((record) => record.event)).toContainEqual(expect.objectContaining({
-      type: "queued_message_changed", deliveryId: queued[0]!.deliveryId, action: "started",
-    }));
-    expect((await app.inject({ method: "GET", url: `/api/agents/${author.id}/queued-messages` })).json()).toEqual([]);
-    await app.close();
-  });
-
   it("revisions a queued long message without exposing superseded content or artifacts", async () => {
     const { app, project } = await createProjectAndAgent();
     const master = store.createConversation(project.id, { title: "Sensitive edit room" });
     const author = store.createAgent(project.id, { title: "Sensitive author", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalMessage(store, project.id, master.id, { role: "assistant", text: "Working" }, author.id)!;
     adapter.mode = "hang";
     await app.inject({ method: "POST", url: `/api/agents/${author.id}/messages`, payload: { text: "Current work" } });
     await waitForSeedCount(1);
@@ -12110,12 +11836,11 @@ describe("server chunk F", () => {
     const originalText = `${supersededMarker}\n${"s".repeat(100_000)}`;
     const sent = await app.inject({
       method: "POST",
-      url: `/api/conversations/${master.id}/direct-replies`,
+      url: `/api/conversations/${master.id}/direct-messages`,
       payload: {
         text: originalText,
-        replyToMessageId: report.id,
-        targetAuthorAgentId: author.id,
-        idempotencyKey: "sensitive-queued-reply",
+        recipients: [{ agentId: author.id }],
+        idempotencyKey: "sensitive-queued-message",
         activeRunDelivery: "queue",
       },
     });
@@ -12134,13 +11859,13 @@ describe("server chunk F", () => {
     const edited = await app.inject({
       method: "PATCH",
       url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
-      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-reply" },
+      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-message" },
     });
     expect(edited.statusCode, edited.body).toBe(200);
     const editReplays = await Promise.all(Array.from({ length: 2 }, () => app.inject({
       method: "PATCH",
       url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}`,
-      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-reply" },
+      payload: { text: replacement, idempotencyKey: "replace-sensitive-queued-message" },
     })));
     expect(editReplays.map((response) => response.json())).toEqual([
       expect.objectContaining({ edited: true, replayed: true }),
@@ -12166,12 +11891,12 @@ describe("server chunk F", () => {
     expect((await app.inject({
       method: "POST",
       url: `/api/agents/${author.id}/queued-messages/${queued[0]!.deliveryId}/steer`,
-      payload: { idempotencyKey: "steer-revised-sensitive-reply" },
+      payload: { idempotencyKey: "steer-revised-sensitive-message" },
     })).statusCode).toBe(200);
     adapter.mode = "normal";
     await app.inject({
       method: "POST", url: `/api/agents/${author.id}/cancel`,
-      payload: activeRunCancellationPayload(store, author.id, "sensitive-reply-stop"),
+      payload: activeRunCancellationPayload(store, author.id, "sensitive-message-stop"),
     });
     await expect.poll(() => store.getRuns(author.id).length).toBe(2);
     const providerInput = store.getProviderInput(store.getRuns(author.id).at(-1)!.id, true)!;

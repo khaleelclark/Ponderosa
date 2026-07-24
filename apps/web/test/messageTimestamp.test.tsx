@@ -67,12 +67,12 @@ describe("message timestamps", () => {
     const markup = renderToStaticMarkup(
       <MessageActionsAndTimestamp
         value="2026-07-11T14:05:06.789Z"
-        actions={<div><button>Reply</button><button>Reply Directly</button></div>}
+        actions={<div><button>Copy</button><button>Mention</button></div>}
       />,
     );
 
-    expect(markup.indexOf("Reply")).toBeLessThan(markup.indexOf("Reply Directly"));
-    expect(markup.indexOf("Reply Directly")).toBeLessThan(markup.indexOf("<time"));
+    expect(markup.indexOf("Copy")).toBeLessThan(markup.indexOf("Mention"));
+    expect(markup.indexOf("Mention")).toBeLessThan(markup.indexOf("<time"));
   });
 
   it("keeps delivery status right of actions and the timestamp beneath it", () => {

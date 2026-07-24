@@ -1,6 +1,6 @@
 /** Canonical communication contracts shared by persistence, routing, and UI. */
 
-import type { ImageAttachmentDto, MessageReferenceDto } from "./dto.js";
+import type { ImageAttachmentDto } from "./dto.js";
 
 export type CommunicationIntent = "broadcast" | "direct_to_user" | "collaboration" | "user_dm";
 
@@ -327,8 +327,6 @@ export interface CommunicationProjection {
     sequence?: number;
     authorAgentId?: string;
     attachmentIds?: string[];
-    /** Immutable presentation snapshots owned by the canonical projection. */
-    replyTo?: MessageReferenceDto;
     attachments?: ImageAttachmentDto[];
   };
 }
@@ -346,7 +344,6 @@ export interface ProjectedCommunicationMessage {
   sequence?: number;
   authorAgentId?: string;
   attachmentIds?: string[];
-  replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationRecord[];

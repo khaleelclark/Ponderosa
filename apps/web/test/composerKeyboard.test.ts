@@ -72,11 +72,11 @@ describe("composer submission availability", () => {
     mentionedBusyHandles: [] as string[],
   };
 
-  it("allows an existing-agent reply when spawning is unavailable", () => {
+  it("allows an existing-agent message when spawning is unavailable", () => {
     expect(canSubmitComposerText({ ...base, text: "#Acadia hello", mentionedHandles: ["Acadia"] })).toBe(true);
   });
 
-  it("allows a reply to a busy agent so the server can queue it", () => {
+  it("allows a message to a busy agent so the server can queue it", () => {
     expect(
       canSubmitComposerText({
         ...base,

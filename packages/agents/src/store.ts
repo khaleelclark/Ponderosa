@@ -389,7 +389,6 @@ interface MessageDispatchRecord {
   deliveryIntents?: ConversationDeliveryIntent[];
   messageReceiptKey?: string;
   orderKey: string;
-  replyTo?: import("@ponderosa/core").MessageReferenceDto;
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
@@ -502,7 +501,6 @@ function communicationMessageProjection(agentId: string, stored: StoredLogEvent)
   if (event.type === "user_message") return {
     messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
     ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
-    ...(event.replyTo ? { replyTo: event.replyTo } : {}),
     ...(event.attachments?.length ? { attachments: event.attachments } : {}),
   };
   if (event.type === "communication_projection") return {
@@ -1045,7 +1043,6 @@ export class AgentStore {
           ...(!existing.message.attachmentIds?.length && projection.message.attachmentIds?.length
             ? { attachmentIds: projection.message.attachmentIds }
             : {}),
-          ...(!existing.message.replyTo && projection.message.replyTo ? { replyTo: projection.message.replyTo } : {}),
           ...(!existing.message.attachments?.length && projection.message.attachments?.length
             ? { attachments: projection.message.attachments }
             : {}),
@@ -1130,7 +1127,6 @@ export class AgentStore {
           ...(event.correctionOfEventId ? { correctionOfEventId: event.correctionOfEventId } : {}),
           ...(latestRevision ? { editedAt: latestRevision.createdAt, editRevision: targetRevisions.length } : {}),
           ...(message.attachmentIds?.length ? { attachmentIds: message.attachmentIds } : {}),
-          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(!latestRevision && event.document ? { document: communicationDocumentReference(projectId, event.document) } : {}),
           ...(event.citations?.length ? { citations: event.citations } : {}),
@@ -1240,7 +1236,6 @@ export class AgentStore {
           orderKey: dispatch.orderKey,
           ...(dispatch.authorAgentId ? { authorAgentId: dispatch.authorAgentId } : {}),
           ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
-          ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
           ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
         },
       };
@@ -1858,7 +1853,7 @@ export class AgentStore {
 
   appendConversationMessage(
     conversationId: string,
-    input: CreateConversationMessageRequest & { directReplyToAuthorAgentId?: string },
+    input: CreateConversationMessageRequest,
     authorAgentId?: string,
     channel: ConversationChannel = "main",
     deliveryIntents?: ConversationDeliveryIntent[],
@@ -1878,18 +1873,6 @@ export class AgentStore {
       throw new Error("communication scope cannot project to requested surface");
     }
     const now = new Date().toISOString();
-    const replyTo = input.replyToMessageId
-      ? this.conversationReference(conversationId, channel, input.replyToMessageId)
-      : undefined;
-    if (input.directReplyToAuthorAgentId) {
-      if (channel !== "main" || !replyTo || replyTo.authorAgentId !== input.directReplyToAuthorAgentId) {
-        throw new Error("direct reply target must be the author of the referenced main-chat message");
-      }
-      const target = this.getAgent(input.directReplyToAuthorAgentId);
-      if (!target || target.archived || !target.conversationIds.includes(conversationId)) {
-        throw new Error("direct reply target is not an active agent in this conversation");
-      }
-    }
     const dispatch: MessageDispatchRecord = {
       schemaVersion: 1,
       eventId: communicationEventId,
@@ -1901,7 +1884,6 @@ export class AgentStore {
       renderedText: input.text,
       createdAt: now,
       ...(authorAgentId ? { authorAgentId } : {}),
-      ...(replyTo ? { replyTo } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(deliveryIntents?.length ? { deliveryIntents } : {}),
       ...(messageReceiptKey ? { messageReceiptKey } : {}),
@@ -1923,7 +1905,6 @@ export class AgentStore {
         orderKey: dispatch.orderKey,
         ...(authorAgentId ? { authorAgentId } : {}),
         ...(dispatch.attachments?.length ? { attachmentIds: dispatch.attachments.map((item) => item.id) } : {}),
-        ...(dispatch.replyTo ? { replyTo: dispatch.replyTo } : {}),
         ...(dispatch.attachments?.length ? { attachments: dispatch.attachments } : {}),
       },
     });
@@ -1943,7 +1924,6 @@ export class AgentStore {
       text: dispatch.renderedText,
       createdAt: dispatch.createdAt,
       authorAgentId: authorAgentId ?? undefined,
-      replyTo: dispatch.replyTo,
       attachments: dispatch.attachments,
     };
   }
@@ -1971,7 +1951,6 @@ export class AgentStore {
         text: dispatch.renderedText,
         createdAt: dispatch.createdAt,
         authorAgentId: dispatch.authorAgentId,
-        replyTo: dispatch.replyTo,
         attachments: dispatch.attachments,
       },
       intent,
@@ -2218,7 +2197,6 @@ export class AgentStore {
         createdAt: message.createdAt,
         canonicalOrderKey: message.orderKey ?? message.createdAt,
         ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
-        ...(message.replyTo ? { replyTo: message.replyTo } : {}),
         ...(message.attachments?.length ? { attachments: message.attachments } : {}),
         ...(message.document ? { document: message.document } : {}),
         ...(message.citations?.length ? { citations: message.citations } : {}),
@@ -2229,17 +2207,6 @@ export class AgentStore {
         ...(message.editedAt ? { editedAt: message.editedAt, editRevision: message.editRevision } : {}),
       };
     });
-  }
-
-  private conversationReference(conversationId: string, channel: ConversationChannel, messageId: string) {
-    const target = this.getConversationMessages(conversationId, channel).find((message) => message.id === messageId);
-    if (!target) throw new Error("reply target was not found in this conversation");
-    return {
-      messageId: target.id,
-      text: target.text,
-      role: target.role,
-      authorAgentId: target.authorAgentId,
-    };
   }
 
   // ─── Agents ───────────────────────────────────────────────────────────────
@@ -2998,7 +2965,6 @@ export class AgentStore {
           text: r.text,
           createdAt: r.createdAt,
           ...(authorAgentId ? { authorAgentId } : {}),
-          replyTo: r.replyToJson ? JSON.parse(r.replyToJson) : undefined,
           attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
         } satisfies MessageDto;
       });
@@ -3494,7 +3460,6 @@ export class AgentStore {
           createdAt: message.createdAt,
           ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
           ...(message.executionId ? { executionId: message.executionId } : {}),
-          ...(message.replyTo ? { replyTo: message.replyTo } : {}),
           ...(message.attachments?.length ? { attachments: message.attachments } : {}),
           ...(message.document ? { document: message.document } : {}),
           ...(message.citations?.length ? { citations: message.citations } : {}),

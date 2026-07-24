@@ -4,7 +4,7 @@ import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import type { AllChatItemDto } from "@ponderosa/core";
 import { api } from "../src/api";
-import { AllChatView, allChatReplyUnavailableMessage, allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
+import { AllChatView, allChatSourceRoute, mergeAllChatItems } from "../src/components/AllChatView";
 
 const item = (overrides: Partial<AllChatItemDto> = {}): AllChatItemDto => ({
   communicationEventId: "event-1",
@@ -36,26 +36,16 @@ describe("All Chat view contract", () => {
     expect(mergeAllChatItems([newer, item()], [revised])).toEqual([revised, newer]);
   });
 
-  it("explains that the user cannot reply privately to their own message", () => {
-    expect(allChatReplyUnavailableMessage(item())).toBe("You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.");
-    expect(allChatReplyUnavailableMessage(item({
-      author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
-      directMessageAgent: { id: "agent-1", title: "Reviewer" },
-    }))).toBeUndefined();
-  });
-
-  it("contains only a selected-source direct-message mutation, never a broadcast composer", () => {
+  it("contains only source navigation and never a broadcast composer", () => {
     const source = readFileSync(new URL("../src/components/AllChatView.tsx", import.meta.url), "utf8");
-    expect(source).toContain("selected.directMessageAgent.id");
     expect(source).not.toContain(">Open Source</Button>");
     expect(source).toContain('onNavigate({ kind: "project", projectId: item.project.id })');
     expect(source).toContain("{item.project.label}</ButtonBase>");
-    expect(source).toContain("replyToMessageId: selected.messageId");
     expect(source).not.toContain("shareWithOrganization");
     expect(source).not.toContain("sendConversationMessage");
   });
 
-  it("renders shared Reply controls and routes provider commands through the selected Agent", async () => {
+  it("renders messages with source navigation and shared message actions", async () => {
     const first = item({
       author: { kind: "agent", agentId: "agent-1", label: "Reviewer" },
       directMessageAgent: { id: "agent-1", title: "Reviewer" },
@@ -73,12 +63,6 @@ describe("All Chat view contract", () => {
       items: [first, second],
       history: { limit: 50, hasMore: false },
     });
-    vi.spyOn(api, "getAgent").mockResolvedValue({
-      agent: { id: "agent-2", projectId: "project-1", title: "Verifier", activeEngine: "codex", model: "gpt-test", conversationIds: ["conversation-1"], state: {}, createdAt: second.createdAt, updatedAt: second.createdAt, archived: false },
-    } as never);
-    vi.spyOn(api, "getEngineCapabilities").mockResolvedValue([{ engineId: "codex", commands: [{ name: "status", description: "Show status", source: "built-in", acceptsArguments: false, insertText: "/status", status: "available", invocation: "runtime" }], composerCapabilities: [] }] as never);
-    const invokeCommand = vi.spyOn(api, "invokeProviderCommand").mockResolvedValue({ invoked: true, name: "status", message: "Session healthy" });
-    const sendMessage = vi.spyOn(api, "sendMessage").mockResolvedValue({ queued: false, runId: "run-2", mode: "steer" });
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     let view!: ReturnType<typeof create>;
     await act(async () => {
@@ -91,48 +75,8 @@ describe("All Chat view contract", () => {
     expect(messages()[1]!.props["aria-label"]).toContain("Second release note");
     const buttons = (label: string) => view.root.findAll((node) => node.type === "button" && node.props["aria-label"] === label);
     expect(buttons("Copy message")).toHaveLength(2);
-    expect(buttons("Reply to message")).toHaveLength(0);
-    expect(buttons("Mention Reviewer")).toHaveLength(1);
-    expect(buttons("Mention Verifier")).toHaveLength(1);
-
-    const storage = new Map<string, string>();
-    vi.stubGlobal("window", {
-      localStorage: {
-        getItem: (key: string) => storage.get(key) ?? null,
-        setItem: (key: string, value: string) => storage.set(key, value),
-      },
-      sessionStorage: {
-        getItem: (key: string) => storage.get(key) ?? null,
-        setItem: (key: string, value: string) => storage.set(key, value),
-      },
-      requestAnimationFrame: (callback: FrameRequestCallback) => { callback(0); return 1; },
-      cancelAnimationFrame: () => undefined,
-      setTimeout,
-      clearTimeout,
-      queueMicrotask,
-    });
-    const verifierRow = messages()[1]!;
-    expect(verifierRow.props.role).toBe("button");
-    expect(verifierRow.props.tabIndex).toBe(0);
-    const currentTarget = {};
-    act(() => verifierRow.props.onKeyDown({
-      key: "Enter", target: currentTarget, currentTarget, preventDefault: vi.fn(),
-    }));
-    await vi.waitFor(() => expect(api.getEngineCapabilities).toHaveBeenCalledWith("project-1", expect.objectContaining({ agentId: "agent-2", engineId: "codex" })));
-
-    const composer = view.root.find((node) => node.props.placeholder === "Message Verifier");
-    expect(composer.props.replyTo).toBeUndefined();
-    expect(composer.props.guidance).toBeUndefined();
-    expect(composer.props.insertTextRequest).toBeUndefined();
-    await act(async () => { await composer.props.onCommand({ name: "status" }); });
-    expect(invokeCommand).toHaveBeenCalledWith("agent-2", { name: "status" });
-    await act(async () => { await composer.props.onSend("Private follow-up"); });
-    expect(sendMessage).toHaveBeenCalledWith("agent-2", expect.objectContaining({
-      text: "Private follow-up", replyToMessageId: "message-2", activeRunDelivery: "steer",
-    }));
 
     await act(async () => view.unmount());
     client.clear();
-    vi.unstubAllGlobals();
   });
 });

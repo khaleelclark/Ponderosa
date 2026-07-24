@@ -112,7 +112,6 @@ export function projectEvent(
           role: "user",
           text: event.text,
           createdAt: ts,
-          replyToJson: event.replyTo ? JSON.stringify(event.replyTo) : null,
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
@@ -141,7 +140,6 @@ export function projectEvent(
           role: event.role ?? "assistant",
           text: event.text,
           createdAt: ts,
-          replyToJson: null,
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });

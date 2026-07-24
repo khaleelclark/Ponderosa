@@ -83,7 +83,6 @@ describe("user message labels on chat surfaces", () => {
     expect(bubble).toBeLessThan(content);
     expect(content).toBeLessThan(attachment);
     expect(attachment).toBeGreaterThan(content);
-    expect(html).not.toContain('aria-label="Reply to message"');
   });
 
   it("does not label agent messages and filters unsupported system messages from ChatPane", () => {
@@ -139,21 +138,16 @@ describe("user message labels on chat surfaces", () => {
     expect(manager.indexOf("data-user-message-name")).toBeLessThan(manager.indexOf("data-user-message-avatar"));
     expect(manager.indexOf("data-user-message-avatar")).toBeLessThan(manager.indexOf('data-message-bubble="true"'));
     expect(manager.indexOf("Manager request")).toBeLessThan(manager.indexOf('aria-label="Download diagram.png"'));
-    expect(manager).not.toContain('aria-label="Reply to message"');
     expect(agent).toContain('data-message-tag="everyone"');
     expect(agent).toContain("#everyone</span> result");
     expect(agent).toContain('aria-label="Open agent Pinnacles from profile image"');
     expect(agent).toContain('aria-label="Open agent Pinnacles from name"');
     expect(agent).toContain('aria-label="Mention Pinnacles"');
-    expect(agent).not.toContain('aria-label="Reply to message"');
-    expect(agent).not.toContain("Reply directly to Pinnacles");
   });
 
   it("keeps Team Chat read-only while preserving timestamps", () => {
     const html = renderMaster(masterMessage({ role: "assistant", authorAgentId: "agent-1", text: "Collaboration update" }), "collaboration");
 
-    expect(html).not.toContain('aria-label="Reply to message"');
-    expect(html).not.toContain("Reply directly to Pinnacles");
     expect(html).toContain("<time");
   });
 
