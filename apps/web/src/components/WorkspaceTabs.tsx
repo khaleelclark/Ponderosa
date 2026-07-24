@@ -99,7 +99,7 @@ export function WorkspaceTabs({
 
   return <Stack component="nav" aria-label="Open workspace tabs" direction="row" sx={{
     minWidth: 0, height: { xs: 52, md: 52 }, px: { xs: 0.5, sm: 1 }, py: 0.5,
-    bgcolor: "var(--ponderosa-rail)", color: "var(--ponderosa-rail-foreground)", alignItems: "center", overflow: "hidden",
+    bgcolor: "var(--ponderosa-topbar)", color: "var(--ponderosa-rail-foreground)", alignItems: "center", overflow: "hidden",
     borderBottom: 1, borderColor: "var(--ponderosa-rail-border)",
     "& .MuiButtonBase-root.Mui-focusVisible": { outlineColor: "var(--ponderosa-rail-foreground-active)" },
   }}>
