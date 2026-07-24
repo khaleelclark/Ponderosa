@@ -49,6 +49,7 @@ import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
 export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import { WorkspaceTabBar } from "./WorkspaceFrame";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
   return isTextPreviewCapability(mediaType);
@@ -162,6 +163,7 @@ export function ProjectArtifactsView({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
+  const [tab, setTab] = useState<"overview" | "files">("overview");
   const [fileCategories, setFileCategories] = useState<Array<Exclude<ProjectFileCategory, "all">>>([]);
   const [previewArtifact, setPreviewArtifact] = useState<ArtifactDto>();
   const [olderArtifacts, setOlderArtifacts] = useState<{ items: ArtifactDto[]; cursor?: string; hasMore: boolean }>();
@@ -226,6 +228,8 @@ export function ProjectArtifactsView({
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
+      <WorkspaceTabBar value={tab} onChange={setTab} label="Project" items={[{ value: "overview", label: "Overview" }, { value: "files", label: "Files & Results", icon: <Inventory2OutlinedIcon /> }]} />
+      {tab === "overview" ? <>
       <ProjectOverview
         project={project}
         agents={agents}
@@ -257,6 +261,8 @@ export function ProjectArtifactsView({
           }
         }}
       />
+      </> : null}
+      {tab === "files" ? <>
       <Box>
         <Typography id="project-files-and-results" variant="h5" component="h2" fontWeight={800} sx={{ scrollMarginTop: 16 }}>Files &amp; Results</Typography>
         <Typography variant="body2" color="text.secondary">Modified and created files, documents, images, downloads, and results across this Project.</Typography>
@@ -367,6 +373,7 @@ export function ProjectArtifactsView({
           </List>
         </Box>)}
       </Box>
+      </> : null}
     </Stack>
     <ResourceContextMenu
       state={artifactMenu}

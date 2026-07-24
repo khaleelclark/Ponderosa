@@ -167,6 +167,8 @@ export function createPonderosaTheme(mode: ColorMode) {
             "--ponderosa-elevated": colors.elevated,
             "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
           },
+          "a": { textDecoration: "none" },
+          "a:hover, a:focus-visible": { textDecoration: "none" },
           "::selection": {
             backgroundColor: dark
               ? "rgba(124,191,138,.28)"

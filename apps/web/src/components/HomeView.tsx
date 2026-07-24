@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -17,6 +18,7 @@ import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
 import { reorderStableIds, sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import { WorkspaceTabBar } from "./WorkspaceFrame";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
 
@@ -41,6 +43,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 }): JSX.Element {
   const [draggedResourceId, setDraggedResourceId] = useState<string>();
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
+  const [tab, setTab] = useState<"overview" | "work">("overview");
   const conversationQueries = useProjectConversations(projects);
   const agentQueries = useProjectAgents(projects);
   const healthQueries = useProjectAgentHealth(projects);
@@ -71,8 +74,9 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 2, sm: 3, lg: 4 } }}>
     <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
       <Box><Typography variant="h4" component="h1" fontWeight={850}>Home</Typography><Typography color="text.secondary">A calm overview of your organization and its recent work.</Typography></Box>
+      <WorkspaceTabBar value={tab} onChange={setTab} label="Home" items={[{ value: "overview", label: "Overview", icon: <HomeOutlinedIcon /> }, { value: "work", label: "Recent work", icon: <ChatBubbleOutlineIcon /> }]} />
 
-      <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
+      {tab === "overview" ? <><Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
         <Stat label="Active Agents" value={activeAgents} />
         <Stat label="Open Issues" value={needsAttention} onClick={onOpenInbox} />
         <Stat label="Unread Messages" value={unread} onClick={() => onNavigate({ kind: "allChat" })} />
@@ -89,9 +93,9 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
         </Box>
       </Paper>
 
-      {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}
+      {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
 
-      {starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
+      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
 
       <Box component="section">
         <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "allChats" })}>View All Chats</Button></Stack>
@@ -99,7 +103,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
           {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
           {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}
         </Box>
-      </Box>
+      </Box></> : null}
     </Stack>
     <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
