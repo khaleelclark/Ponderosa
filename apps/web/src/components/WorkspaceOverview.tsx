@@ -3,19 +3,19 @@ import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import MoreHorizIcon from "@mui/icons-material/MoreHoriz";
-import SearchIcon from "@mui/icons-material/Search";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Box,
   Button,
   Chip,
+  FormControl,
   IconButton,
-  InputAdornment,
+  InputLabel,
   MenuItem,
+  Select,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -26,7 +26,7 @@ import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { ResourceRow } from "./CollectionPrimitives";
+import { CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -138,40 +138,30 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     onPreferences(patch);
   };
   const toggleStar = (projectId: string) => onPreferences(toggleWorkspaceResourceStar(preferences, "project", projectId));
-  return <Box sx={{ width: "100%", minWidth: 0, minHeight: 0, overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
-    <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" }, mb: 2 }}>
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="h5" component="h2" fontWeight={800}>All Projects</Typography>
-        <Typography variant="body2" color="text.secondary">Every project stays identifiable by its host folder and recent Project chat.</Typography>
-      </Box>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: { xs: "100%", sm: "auto" } }}>
-        <TextField
-          size="small"
-          label="Filter projects"
-          value={filter}
-          onChange={(event) => setFilter(event.target.value)}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
-          sx={{ minWidth: { sm: 220 } }}
-        />
-        <TextField
-          select
-          size="small"
+  return <CollectionWorkspace
+    icon={<FolderOutlinedIcon />}
+    title="All Projects"
+    detail={filteredSnapshots.length === projects.length ? `${projects.length} ${projects.length === 1 ? "Project" : "Projects"} across Ponderosa` : `${filteredSnapshots.length} of ${projects.length} Projects`}
+    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
+    toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects">
+      <FormControl size="small" sx={{ minWidth: 170 }}>
+        <InputLabel id="project-sort">Sort</InputLabel>
+        <Select
+          labelId="project-sort"
           label="Sort"
           value={preferences.projectSort}
           onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"] })}
-          sx={{ minWidth: 132 }}
         >
           <MenuItem value="last_used">Last Used</MenuItem>
           <MenuItem value="alphabetical">Alphabetical</MenuItem>
           <MenuItem value="custom">Custom</MenuItem>
-        </TextField>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>
-      </Stack>
-    </Stack>
-    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>
+        </Select>
+      </FormControl>
+    </CollectionToolbar>}
+    listLabel="All Projects"
+  >
     <Box id="project-order-status" role="status" aria-live="polite" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{orderAnnouncement}</Box>
-    <Box component="section" aria-label="All projects" sx={{ display: "grid", gap: 1, width: "100%" }}>
-      {filteredSnapshots.map((snapshot) => {
+    {filteredSnapshots.map((snapshot) => {
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
         const projectIndex = projects.findIndex((project) => project.id === snapshot.project.id);
@@ -197,8 +187,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
           }}
           highlighted={dropTarget?.projectId === snapshot.project.id}
-          trailing={<>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={0} sx={{ alignSelf: "stretch", justifyContent: "center", flexShrink: 0 }}>
+          controls={<>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={0} sx={{ alignSelf: "stretch", justifyContent: "center" }}>
             <Tooltip title={previousProject ? `Move before ${previousProject.label}` : "Already first"}>
               <span>
                 <IconButton
@@ -248,19 +238,22 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
               sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
             ><DragIndicatorIcon fontSize="small" /></IconButton>
           </Tooltip>
+          </>}
+          starAction={
           <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
               {starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}
             </IconButton>
           </Tooltip>
+          }
+          overflowAction={
           <Tooltip title={`Project settings for ${snapshot.project.label}`}>
-            <IconButton aria-label={`Project settings for ${snapshot.project.label}`} onClick={() => onManageProject(snapshot.project)} sx={{ borderRadius: 0 }}><MoreHorizIcon /></IconButton>
+            <IconButton aria-label={`Project settings for ${snapshot.project.label}`} onClick={() => onManageProject(snapshot.project)}><MoreVertIcon /></IconButton>
           </Tooltip>
-          </>}
+          }
         />;
       })}
-      {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
-    </Box>
+    {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
     <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
-  </Box>;
+  </CollectionWorkspace>;
 }

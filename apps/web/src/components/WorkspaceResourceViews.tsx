@@ -1,12 +1,12 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import SortOutlinedIcon from "@mui/icons-material/SortOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Alert, Box, Button, FormControl, IconButton, InputLabel, LinearProgress,
-  Menu, MenuItem, Select, Stack, Tooltip, Typography,
+  MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
@@ -26,7 +26,7 @@ import type { Route } from "../routing";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
-import { CollectionHeader, CollectionToolbar, ResourceRow } from "./CollectionPrimitives";
+import { CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 function ResourceToolbar({ search, onSearch, sort, onSort, projectId, projects, onProject }: {
@@ -49,8 +49,15 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
   const filtered = rows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
-  return <Box sx={{ minHeight: 0, overflow: "auto" }}><CollectionHeader icon={<ChatBubbleOutlineIcon />} title="Chats" detail={`${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`} actions={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>} /><ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />
-    <Stack spacing={1} sx={{ px: { xs: 2, md: 3 }, pb: 3 }}>{ordered.map(({ project, conversation }) => {
+  return <CollectionWorkspace
+    icon={<ChatBubbleOutlineIcon />}
+    title="All Chats"
+    detail={`${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
+    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
+    toolbar={<ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    listLabel="All Chats"
+  >
+    {ordered.map(({ project, conversation }) => {
       const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
       const key = resourcePreferenceKey("conversation", conversation.id);
       return <ResourceRow
@@ -59,7 +66,8 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         description={project.label}
         icon={<ChatBubbleOutlineIcon />}
         meta={<Typography variant="caption" color="text.secondary">{new Date(conversation.updatedAt).toLocaleString()}</Typography>}
-        trailing={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
         onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
         draggable
@@ -70,9 +78,10 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
           setDragged(undefined);
         }}
       />;
-    })}{!queries.some((query) => query.isLoading) && ordered.length === 0 ? <Alert severity="info">No Chats match these filters.</Alert> : null}</Stack>
+    })}
+    {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <Alert severity="info">No Chats match these filters.</Alert> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
-  </Box>;
+  </CollectionWorkspace>;
 }
 
 export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
@@ -84,7 +93,6 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const conversationQueries = useProjectConversations(projects);
   const healthQueries = useProjectAgentHealth(projects);
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
-  const [sortAnchor, setSortAnchor] = useState<HTMLElement>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "agent");
   const rows = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
@@ -97,16 +105,14 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
   const starredIds = starredWorkspaceResources(preferences);
-  return <Box className="ponderosa-scroll" sx={{ height: "100%", minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
-    {projects.length ? <AgentsTab toolbarControls={<>
+  return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
+    <AgentsTab collection={{
+      title: "All Agents",
+      detail: `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
+    }} toolbarControls={<>
       <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
-      <Button color="inherit" startIcon={<SortOutlinedIcon />} onClick={(event) => setSortAnchor(event.currentTarget)} sx={{ minHeight: 40, whiteSpace: "nowrap" }}>Sort</Button>
-      {sortAnchor ? <Menu anchorEl={sortAnchor} open onClose={() => setSortAnchor(undefined)}>
-        <MenuItem selected={sort === "last_used"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "last_used")); setSortAnchor(undefined); }}>Recent Activity</MenuItem>
-        <MenuItem selected={sort === "alphabetical"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "alphabetical")); setSortAnchor(undefined); }}>Alphabetical</MenuItem>
-        <MenuItem selected={sort === "custom"} onClick={() => { onPreferences(workspaceResourceSortPatch("agent", "custom")); setSortAnchor(undefined); }}>Custom Order</MenuItem>
-      </Menu> : null}
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} /> : <Alert severity="info" sx={{ m: 2 }}>Create a Project before creating Agents.</Alert>}
+      <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
+    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} />
   </Box>;
 }
 
@@ -122,8 +128,15 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   const rows = (triggers.data ?? []).flatMap((trigger) => { const destination = destinations.get(trigger.agentId); return destination ? [{ trigger, ...destination }] : []; });
   const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
-  return <Box sx={{ minHeight: 0, overflow: "auto" }}><CollectionHeader icon={<BoltOutlinedIcon />} title="Triggers" detail={`${rows.length} configured automation${rows.length === 1 ? "" : "s"}`} actions={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>} /><ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />
-    <Stack spacing={1} sx={{ px: { xs: 2, md: 3 }, pb: 3 }}>{ordered.map(({ project, agent, trigger }) => {
+  return <CollectionWorkspace
+    icon={<BoltOutlinedIcon />}
+    title="All Triggers"
+    detail={`${rows.length} configured automation${rows.length === 1 ? "" : "s"}`}
+    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
+    toolbar={<ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    listLabel="All Triggers"
+  >
+    {ordered.map(({ project, agent, trigger }) => {
       const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };
       const key = resourcePreferenceKey("trigger", trigger.id);
       return <ResourceRow
@@ -132,7 +145,8 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
         description={`${project.label} · ${agent.title} · ${trigger.sourceKind}`}
         icon={<BoltOutlinedIcon color={trigger.enabled ? "primary" : "disabled"} />}
         meta={<Typography variant="caption" color={trigger.enabled ? "success.main" : "text.disabled"}>{trigger.enabled ? "Enabled" : "Disabled"}</Typography>}
-        trailing={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
         onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
         draggable
@@ -143,9 +157,10 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
           setDragged(undefined);
         }}
       />;
-    })}{!triggers.isLoading && ordered.length === 0 ? <Alert severity="info">No Triggers match these filters.</Alert> : null}</Stack>
+    })}
+    {!triggers.isLoading && ordered.length === 0 ? <Alert severity="info">No Triggers match these filters.</Alert> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
-  </Box>;
+  </CollectionWorkspace>;
 }
 
 export function ProviderActivityWorkspace({ projects, projectId }: { projects: ProjectDto[]; projectId?: string }): JSX.Element {

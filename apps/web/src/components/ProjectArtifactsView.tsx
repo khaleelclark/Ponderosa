@@ -1,5 +1,8 @@
+import AddIcon from "@mui/icons-material/Add";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import {
@@ -44,12 +47,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { uniqueBy } from "../collections";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
-import { ProjectOverview } from "./ProjectOverview";
+import { ProjectOverview, projectHealthDetail, projectHealthPresentation } from "./ProjectOverview";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
 export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
+import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
   return isTextPreviewCapability(mediaType);
@@ -225,19 +228,44 @@ export function ProjectArtifactsView({
     records: filtered.filter(({ artifact }) => projectArtifactGroup(artifact.kind) === label),
   })).filter((group) => group.records.length > 0);
   const loading = projectArtifacts.isLoading;
+  const projectHealth = projectHealthPresentation(health, agents, engines);
+  const projectHealthTooltip = projectHealthDetail(health, agents, engines);
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}>
-    <WorkspaceHeader title={project.label} context={<Typography color="text.secondary" noWrap>{project.hostPath}</Typography>} />
+    <TabbedWorkspaceFrame<"overview" | "files">
+      title={project.label}
+      context={<Typography variant="body2" color="text.secondary" noWrap>{project.hostPath}</Typography>}
+      status={<Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow>
+        <Button
+          size="small"
+          color="inherit"
+          aria-label={`${projectHealth.label}. ${projectHealthTooltip} Open AI provider details.`}
+          onClick={onOpenEngineStatus}
+          startIcon={<Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} />}
+        >{projectHealth.label}</Button>
+      </Tooltip>}
+      actions={<>
+        <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={onCreateConversation}>New Chat</Button>
+        <Button size="small" variant="outlined" startIcon={<GroupsOutlinedIcon />} onClick={onOpenProjectAgents}>Project Agents</Button>
+        <Tooltip title="Project Settings"><IconButton aria-label={`Project settings for ${project.label}`} onClick={onManageProject}><MoreVertIcon /></IconButton></Tooltip>
+      </>}
+      tabs={{
+        value: tab,
+        onChange: setTab,
+        label: "Project",
+        items: [
+          { value: "overview", label: "Overview" },
+          { value: "files", label: "Files & Results", icon: <Inventory2OutlinedIcon /> },
+        ],
+      }}
+    />
     <Box sx={{ p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
-      <WorkspaceTabBar value={tab} onChange={setTab} label="Project" items={[{ value: "overview", label: "Overview" }, { value: "files", label: "Files & Results", icon: <Inventory2OutlinedIcon /> }]} />
       {tab === "overview" ? <>
       <ProjectOverview
         project={project}
         agents={agents}
-        health={health}
         healthByAgentId={healthByAgentId}
-        engines={engines}
         importantArtifacts={(projectArtifacts.data?.items ?? []).filter((artifact) => artifact.pinned || artifact.visibility === "published")}
         conversations={conversations}
         notifications={notifications}
@@ -248,9 +276,6 @@ export function ProjectArtifactsView({
         onOpenConversationInNewTab={onOpenConversationInNewTab}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
-        onOpenProjectAgents={onOpenProjectAgents}
-        onManageProject={onManageProject}
-        onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={onOpenBrowser}
         onOpenAgentWork={onOpenAgentWork}
         onOpenProjectFiles={() => document.getElementById("project-files-and-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}

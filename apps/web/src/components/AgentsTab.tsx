@@ -10,6 +10,7 @@ import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
+import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import ViewListOutlinedIcon from "@mui/icons-material/ViewListOutlined";
 import {
   Alert,
@@ -39,7 +40,7 @@ import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { ResourceRow } from "./CollectionPrimitives";
+import { CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
   agentStatusColor,
@@ -130,6 +131,50 @@ export function agentHasCollapsedAncestor(
   return false;
 }
 
+function AgentRosterShell({
+  collection,
+  scopeLabel,
+  headerActions,
+  toolbar,
+  children,
+}: {
+  collection?: { title: string; detail: string };
+  scopeLabel?: string;
+  headerActions: ReactNode;
+  toolbar: ReactNode;
+  children: ReactNode;
+}): JSX.Element {
+  if (collection) {
+    return <CollectionWorkspace
+      icon={<SmartToyOutlinedIcon />}
+      title={collection.title}
+      detail={collection.detail}
+      primaryAction={headerActions}
+      toolbar={toolbar}
+      listLabel={collection.title}
+    >
+      {children}
+    </CollectionWorkspace>;
+  }
+  return <Box data-testid="agent-roster" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
+    <Stack
+      direction="row"
+      useFlexGap
+      flexWrap="wrap"
+      spacing={1}
+      sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}
+    >
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="h6" component="h1">Agents</Typography>
+        {scopeLabel ? <Typography variant="caption" color="text.secondary">{scopeLabel} organization</Typography> : null}
+      </Box>
+      {headerActions}
+    </Stack>
+    {toolbar}
+    {children}
+  </Box>;
+}
+
 export function AgentsTab({
   agents,
   projectId,
@@ -148,6 +193,7 @@ export function AgentsTab({
   onReorder,
   toolbarControls,
   scopeLabel,
+  collection,
 }: {
   agents: AgentDto[];
   projectId?: string;
@@ -166,6 +212,10 @@ export function AgentsTab({
   onReorder?(sourceAgentId: string, targetAgentId: string): void;
   toolbarControls?: ReactNode;
   scopeLabel?: string;
+  collection?: {
+    title: string;
+    detail: string;
+  };
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
@@ -265,18 +315,11 @@ export function AgentsTab({
     setStoppingAll(false);
   };
   return (
-    <Box data-testid="agent-roster" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
-      <Stack
-        direction="row"
-        useFlexGap
-        flexWrap="wrap"
-        spacing={1}
-        sx={{ alignItems: "center", px: { xs: 1.5, md: 2 }, py: 1.25, borderBottom: 1, borderColor: "divider" }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="h6" component="h1">Agents</Typography>
-          {scopeLabel ? <Typography variant="caption" color="text.secondary">{scopeLabel} organization</Typography> : null}
-        </Box>
+    <AgentRosterShell
+      collection={collection}
+      scopeLabel={scopeLabel}
+      headerActions={<Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+        {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()}>New Agent</Button> : null}
         {selectionMode ? <>
           <Button color="inherit" size="small" onClick={() => {
             const visibleIds = filtered.map(({ agent }) => agent.id);
@@ -296,25 +339,8 @@ export function AgentsTab({
           <MenuItem disabled={!projectId} onClick={() => { setActionsAnchor(undefined); setImportOpen(true); }}><FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Import Agent or Organization</MenuItem>
           <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
         </Menu> : null}
-      </Stack>
-      {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
-
-      {projectId ? <ImportAgentDialog
-        open={importOpen}
-        projectId={projectId}
-        engines={engines}
-        conversations={conversations}
-        initialConversationId={conversations[0]?.id}
-        onClose={() => setImportOpen(false)}
-        onImported={onOpenAgent}
-      /> : null}
-
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        spacing={1}
-        sx={{ alignItems: { sm: "center" }, px: { xs: 1.5, md: 2 }, py: 1 }}
-      >
-        <TextField size="small" label="Search Agents" value={search} onChange={(event) => setSearch(event.target.value)} sx={{ minWidth: 220, flex: { sm: 1 }, width: { xs: "100%", sm: "auto" } }} />
+      </Stack>}
+      toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Agents">
         {toolbarControls}
         <Stack direction="row" role="group" aria-label="Agent organization view" sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
           <Tooltip title="Hierarchy"><IconButton size="small" color={organizationView === "hierarchy" ? "primary" : "default"} aria-pressed={organizationView === "hierarchy"} aria-label="Show Agent hierarchy" onClick={() => setOrganizationView("hierarchy")}><AccountTreeOutlinedIcon fontSize="small" /></IconButton></Tooltip>
@@ -356,9 +382,21 @@ export function AgentsTab({
             ))}
           </Select>
         </FormControl>
-      </Stack>
+      </CollectionToolbar>}
+    >
+      {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
 
-      <Box sx={{ minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", p: { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
+      {projectId ? <ImportAgentDialog
+        open={importOpen}
+        projectId={projectId}
+        engines={engines}
+        conversations={conversations}
+        initialConversationId={conversations[0]?.id}
+        onClose={() => setImportOpen(false)}
+        onImported={onOpenAgent}
+      /> : null}
+
+      <Box sx={{ minHeight: 0, minWidth: 0, overflowY: collection ? "visible" : "auto", overflowX: "hidden", p: collection ? 0 : { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
         {filtered.length === 0 ? (
           <Alert
             severity="info"
@@ -399,6 +437,7 @@ export function AgentsTab({
                   <ResourceRow
                     label={agent.title}
                     description={<>{orphaned ? "Unlinked Agent" : organizationParent ? `Delegated under ${organizationParent.title}` : profile.role}{!expanded && descendants.length ? ` · ${descendants.length} children${activeDescendants ? `, ${activeDescendants} active` : ""}` : ""}</>}
+                    icon={<SmartToyOutlinedIcon />}
                     leading={<>
                       {organizationView === "hierarchy" ? <IconButton
                         size="small"
@@ -424,10 +463,8 @@ export function AgentsTab({
                       <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" }, width: 100 }}>{agent.activeEngine}</Typography>
                       <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", lg: "block" }, width: 92, textAlign: "right" }}>{relativeTime(agent.updatedAt)}</Typography>
                     </Stack>}
-                    trailing={<>
-                      {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
-                      {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5 }}><MoreVertIcon /></IconButton> : null}
-                    </>}
+                    starAction={!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
+                    overflowAction={!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })}><MoreVertIcon /></IconButton> : null}
                     onOpen={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
                     onContextMenu={selectionMode ? undefined : (anchor) => setAgentMenu({ anchor, resource: agent.id })}
                     draggable={Boolean(onReorder)}
@@ -485,6 +522,6 @@ export function AgentsTab({
         onClose={() => setDeleteSelectedOpen(false)}
         onDeleted={leaveSelectionMode}
       /> : null}
-    </Box>
+    </AgentRosterShell>
   );
 }

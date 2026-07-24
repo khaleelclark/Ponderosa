@@ -78,7 +78,7 @@ import { queryKeys } from "../queryKeys";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../time";
-import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
+import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
 type AgentTab = AgentDetailView;
 
@@ -977,8 +977,8 @@ export function AgentDetail({
   };
 
   return (
-    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
-      <WorkspaceHeader
+    <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+      <TabbedWorkspaceFrame
         title={detail.agent.title}
         context={<>
           <AgentHeaderRelationships
@@ -1071,13 +1071,12 @@ export function AgentDetail({
             ]}
           />
         </Stack>}
-      />
-
-      <WorkspaceTabBar
-        label="Agent details"
-        value={tab === "technical" ? false : tab}
-        onChange={(value) => { setTab(value); onViewChange?.(value); }}
-        items={AGENT_DETAIL_TABS}
+        tabs={{
+          label: "Agent details",
+          value: tab === "technical" ? false : tab,
+          onChange: (value) => { setTab(value); onViewChange?.(value); },
+          items: AGENT_DETAIL_TABS,
+        }}
       />
 
       <Box role="tabpanel" aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
