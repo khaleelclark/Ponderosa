@@ -17,7 +17,6 @@ import { queryKeys } from "../../queryKeys";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ChatComposerContract } from "./composerContracts";
-import { replyFallbackText } from "./ChatMessages";
 import {
   COMPOSER_MAX_FILE_BYTES,
   COMPOSER_MAX_FILES,
@@ -53,12 +52,8 @@ export interface ComposerProps extends ChatComposerContract {
   queuedMentionHandles?: string[];
   agentResponding?: boolean;
   onCancel?(): void;
-  replyTo?: { text: string };
-  onCancelReply?(): void;
-  replyLabel?: string;
   draftStorageKey?: string;
   conversationDraftId?: string;
-  focusReply?: boolean;
   insertTextRequest?: { id: string; text: string };
 }
 
@@ -83,14 +78,10 @@ export function Composer({
   queuedMentionHandles,
   agentResponding = false,
   onCancel,
-  replyTo,
-  onCancelReply,
-  replyLabel,
   draftStorageKey,
   conversationDraftId,
   controls,
   guidance,
-  focusReply = false,
   insertTextRequest,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
@@ -159,17 +150,6 @@ export function Composer({
   const draftUploadsReady = !conversationDraftId || files.every((file) => draftAttachmentIds.current.has(file));
   const canSend = draftUploadsReady && (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
   const canCancel = running && Boolean(onCancel);
-
-  useEffect(() => {
-    if (!focusReply) return;
-    const frame = window.requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      const end = inputRef.current?.value.length ?? 0;
-      inputRef.current?.setSelectionRange(end, end);
-      setCaret(end);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [focusReply]);
 
   useEffect(() => {
     if (!insertTextRequest || appliedInsertRequest.current === insertTextRequest.id) return;
@@ -548,17 +528,6 @@ export function Composer({
           {typeof guidance === "string" ? <Typography variant="body2" sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}>{guidance}</Typography> : guidance}
         </Box>
       ) : null}
-      {replyTo ? (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1, px: 0.5, minWidth: 0, width: "100%", overflow: "hidden" }}>
-          <Box sx={{ minWidth: 0, flex: "1 1 auto", overflow: "hidden", borderLeft: 3, borderColor: "primary.main", pl: 1 }}>
-            <Typography variant="caption" color="text.secondary">{replyLabel ?? "Replying to"}</Typography>
-            <Typography variant="body2" title={replyFallbackText(replyTo.text)} sx={{ display: "-webkit-box", maxWidth: "100%", maxHeight: "3.6rem", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3, lineHeight: 1.2 }}>
-              {replyPreviewText(replyTo.text)}
-            </Typography>
-          </Box>
-          <IconButton aria-label="Cancel reply" size="small" onClick={onCancelReply} sx={{ flex: "0 0 auto" }}><CloseIcon fontSize="small" /></IconButton>
-        </Stack>
-      ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
         {files.map((file, index) => {
           const upload = draftUploadStates.get(file);
@@ -582,7 +551,7 @@ export function Composer({
       ) : null}
       {(attachments.error ?? sendError) ? <Alert severity="error" sx={{ mb: 1 }}>Message not sent. {attachments.error ?? sendError}</Alert> : null}
       {draftConflict ? <Alert severity="warning" sx={{ mb: 1 }} action={<Button size="small" onClick={() => { update(draftConflict.displaced.text); setDraftConflict(undefined); inputRef.current?.focus(); }}>Restore</Button>}>
-        This chat changed in another tab. Your displaced draft is preserved: “{replyPreviewText(draftConflict.displaced.text)}”
+        This chat changed in another tab. Your displaced draft is preserved: “{compactPreviewText(draftConflict.displaced.text)}”
       </Alert> : null}
       <Stack direction="row" spacing={{ xs: 0.25, sm: 0.5 }} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
         <input ref={fileInput} hidden type="file" accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf" multiple onChange={(event) => {
@@ -759,7 +728,7 @@ export function Composer({
                 ? `${mentionedBusyHandles.map((handle) => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
                 : mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone")
                   ? "Notifying every active agent in this conversation"
-                  : `Replying to ${mentionedHandles.map((handle) => `#${handle}`).join(", ")}`}
+                  : `Messaging ${mentionedHandles.map((handle) => `#${handle}`).join(", ")}`}
             </Typography>
           ) : null}
           <Popper open={menuOpen} anchorEl={anchorRef.current} placement="top-start" style={{ zIndex: 1400 }}>
@@ -858,7 +827,7 @@ export function Composer({
   );
 }
 
-export function replyPreviewText(text: string, maxLength = 240): string {
-  const compact = replyFallbackText(text).replace(/\s+/g, " ");
+function compactPreviewText(text: string, maxLength = 240): string {
+  const compact = text.trim().replace(/\s+/g, " ") || "Draft unavailable";
   return compact.length <= maxLength ? compact : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }

@@ -1,17 +1,13 @@
 import {
-  Alert, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography, useMediaQuery, useTheme,
+  Alert, Box, Button, ButtonBase, CircularProgress, IconButton, Stack, Tooltip, Typography,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import TagIcon from "@mui/icons-material/Tag";
-import type { AllChatItemDto, EngineCommand, WorkspaceNotificationDto } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { AllChatItemDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { useMemo, useState } from "react";
 import { api } from "../api";
 import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
 import type { Route } from "../routing";
 import { ChatMessageBody } from "./chat/ChatMessages";
-import { Composer } from "./chat/Composer";
-import { useMobileComposerAutoHide } from "../mobileChat";
 import { copyText } from "../clipboard";
 import { agentMentionHandle } from "../mentions";
 import { AttentionSurface } from "./AttentionSurface";
@@ -19,8 +15,6 @@ import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
-import { createClientId } from "../clientId";
-import { queryKeys } from "../queryKeys";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -51,106 +45,19 @@ export function allChatSourceAccessibleName(item: AllChatItemDto): string {
   return `Select message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
-export function allChatReplyUnavailableMessage(item: AllChatItemDto): string | undefined {
-  if (item.author.kind === "user") return "You cannot message yourself. Select an Agent-authored message to reply privately to that Agent.";
-  if (!item.directMessageAgent) return "This message does not identify one active Agent you can reply to. Messages can send only a private reply to the selected Agent.";
-  return undefined;
-}
-
 export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(route: Route): void; notifications?: WorkspaceNotificationDto[] }): JSX.Element {
-  const queryClient = useQueryClient();
   const query = useAllChat();
   const workspacePreferences = useWorkspacePreferences();
   const [older, setOlder] = useState<{ items: AllChatItemDto[]; cursor?: string; hasMore: boolean }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [selectedId, setSelectedId] = useState<string>();
-  const [notice, setNotice] = useState<string>();
-  const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
-  const theme = useTheme();
-  const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
-  const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const items = useMemo(
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
   const layoutKey = items.map((item) => item.communicationEventId).join(":");
-  const selected = items.find((item) => item.communicationEventId === selectedId);
-  const selectedAgentId = selected?.directMessageAgent?.id;
-  const selectedAgent = useQuery({
-    queryKey: queryKeys.agents.detail(selectedAgentId),
-    queryFn: () => api.getAgent(selectedAgentId!, 100),
-    enabled: Boolean(selectedAgentId),
-  });
-  const invokeCommand = async (command: EngineCommand, argumentsText?: string) => {
-    if (!selectedAgentId) throw new Error("Select an Agent-authored message first.");
-    const result = await api.invokeProviderCommand(selectedAgentId, {
-      name: command.name,
-      ...(argumentsText ? { argumentsText } : {}),
-    });
-    setNotice(result.message ?? `/${command.name} completed for ${selected?.directMessageAgent?.title ?? "the selected Agent"}.`);
-  };
-  const refreshSelectedCapabilities = async () => {
-    if (!selected?.project.id || !selectedAgentId) return;
-    const discovered = await api.getEngineCapabilities(selected.project.id, {
-      engineId: selectedEngineId,
-      model: selectedModel,
-      agentId: selectedAgentId,
-      refresh: true,
-    });
-    queryClient.setQueryData(
-      queryKeys.engines.capabilitySelection(selected.project.id, selectedAgentId, selectedEngineId, selectedModel),
-      discovered,
-    );
-  };
-  const selectedEngineId = selectedAgent.data?.agent.activeEngine;
-  const selectedModel = selectedAgent.data?.agent.model;
-  const selectedCapabilities = useQuery({
-    queryKey: queryKeys.engines.capabilitySelection(selected?.project.id, selectedAgentId, selectedEngineId, selectedModel),
-    queryFn: () => api.getEngineCapabilities(selected!.project.id, {
-      engineId: selectedEngineId,
-      model: selectedModel,
-      agentId: selectedAgentId,
-    }),
-    enabled: Boolean(selected?.project.id && selectedAgentId && selectedEngineId),
-    staleTime: 10_000,
-  });
-  const selectedEngineCapabilities = selectedCapabilities.data?.find((item) => item.engineId === selectedEngineId);
-  const selectedCommands: EngineCommand[] = selectedEngineCapabilities?.commands ?? [];
-  const replyUnavailable = selected ? allChatReplyUnavailableMessage(selected) : undefined;
-  const selectItem = (item: AllChatItemDto) => {
-    setSelectedId(item.communicationEventId);
-    setMentionInsertRequest(undefined);
-    setNotice(undefined);
-    send.reset();
-  };
-  const mentionItem = (item: AllChatItemDto) => {
-    selectItem(item);
-    if (!item.directMessageAgent) return;
-    setMentionInsertRequest({ id: `${item.communicationEventId}:${Date.now()}`, text: `#${agentMentionHandle(item.directMessageAgent.title)}` });
-  };
   const history = older ?? {
     items: [], cursor: query.data?.history.cursor, hasMore: query.data?.history.hasMore ?? false,
   };
-  const send = useMutation({
-    mutationFn: async ({ body, files, draftAttachmentIds, draftOwnerId }: { body: string; files: File[]; draftAttachmentIds: string[]; draftOwnerId?: string }) => {
-      if (!selected?.directMessageAgent) throw new Error("Select a message tied to one exact Agent");
-      if (!body.trim() && files.length === 0) throw new Error("Message text or an attachment is required");
-      return api.sendMessage(selected.directMessageAgent.id, {
-        text: body.trim(),
-        ...(draftAttachmentIds.length ? { draftAttachmentIds, draftId: `agent:${selected.directMessageAgent.id}`, draftOwnerId } : {}),
-        replyToMessageId: selected.messageId,
-        idempotencyKey: createClientId(),
-        activeRunDelivery: "steer",
-      });
-    },
-    onSuccess: (_response, _variables) => {
-      setNotice(`Direct message sent to ${selected?.directMessageAgent?.title ?? "Agent"}.`);
-      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
-      if (selected?.directMessageAgent) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(selected.directMessageAgent.id) });
-      }
-    },
-  });
   const loadOlder = async () => {
     if (loadingOlder || !history.hasMore || !history.cursor) return;
     setLoadingOlder(true);
@@ -193,7 +100,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
       layout="workspace"
       layoutKey={layoutKey}
       label="All messages"
-      follow={{ kind: "latest", onPositionChange: (element, atLatest) => mobileComposer.observeScroll(element, atLatest) }}
+      follow={{ kind: "latest" }}
       history={{ kind: "cursor", hasEarlier: history.hasMore, loading: loadingOlder, label: "Load Older Messages", onLoadEarlier: () => void loadOlder() }}
       beforeMessages={<>
         {query.isLoading ? <Stack sx={{ alignItems: "center", py: 6 }}><CircularProgress size={28} /></Stack> : null}
@@ -216,7 +123,6 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                   },
               createdAt: item.createdAt,
               ariaLabel: allChatSourceAccessibleName(item),
-              onSelect: () => selectItem(item),
               body: <ChatMessageBody
                     text={item.text}
                     collapseLongMessage
@@ -233,7 +139,6 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
                 </Stack>,
               actions: <>
                   <Tooltip title="Copy"><IconButton size="small" aria-label="Copy message" onClick={() => void copyText(item.text)}><ContentCopyOutlinedIcon fontSize="inherit" /></IconButton></Tooltip>
-                  {item.directMessageAgent ? <Tooltip title={`Mention ${item.directMessageAgent.title}`}><IconButton size="small" aria-label={`Mention ${item.directMessageAgent.title}`} onClick={() => mentionItem(item)}><TagIcon fontSize="inherit" /></IconButton></Tooltip> : null}
                 </>,
             }}
           />;
@@ -242,40 +147,5 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
       </Stack>
     </ChatSurface>
 
-    <Box
-      className="mobile-chat-chrome mobile-chat-composer"
-      data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
-      onTransitionEnd={(event) => {
-        if (
-          event.currentTarget !== event.target
-          || event.propertyName !== "max-height"
-        ) return;
-        mobileComposer.finishTransition();
-      }}
-      sx={{ borderTop: 1, borderColor: "divider", bgcolor: "background.paper", p: { xs: 1, md: 2 } }}
-    >
-      <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
-        {!selected ? <Alert severity="info">Select a source message to inspect its fixed direct-message target.</Alert>
-          : !selected.directMessageAgent ? <Alert severity="info">{replyUnavailable ?? "This message has no Agent recipient."}</Alert>
-            : <Stack spacing={1}>
-              {notice ? <Alert severity="success">{notice}</Alert> : null}
-              {send.isError ? <Alert severity="error">{send.error instanceof Error ? send.error.message : "Direct message could not be sent."}</Alert> : null}
-              <Composer
-                commands={selectedCommands}
-                capabilities={selectedEngineCapabilities?.composerCapabilities ?? []}
-                onCapabilitiesOpen={refreshSelectedCapabilities}
-                onCommand={invokeCommand}
-                disabled={send.isPending}
-                running={false}
-                attachmentsEnabled
-                placeholder={`Message ${selected.directMessageAgent.title}`}
-                insertTextRequest={mentionInsertRequest}
-                draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
-                conversationDraftId={`agent:${selected.directMessageAgent.id}`}
-                onSend={(body, files, draftAttachmentIds = [], draftOwnerId) => send.mutateAsync({ body, files, draftAttachmentIds, draftOwnerId })}
-              />
-            </Stack>}
-      </Box>
-    </Box>
   </Box>;
 }

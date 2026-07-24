@@ -110,10 +110,6 @@ export function chatMessageLayoutKey(messages: ReadonlyArray<{
     : "0";
 }
 
-export function replyFallbackText(text: string): string {
-  return text.trim() || "Original message unavailable";
-}
-
 export function isLongChatMessage(text: string): boolean {
   // Display-only progressive disclosure. Provider input and artifact limits
   // remain governed by the canonical constants imported above.

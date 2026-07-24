@@ -6,11 +6,6 @@ type ChatAuthor =
   | { kind: "agent"; name: string; onOpen?(): void }
   | { kind: "notice"; name?: string };
 
-interface ChatReplyReference {
-  text: string;
-  onOpen(): void;
-}
-
 export interface ChatHistoryPage {
   kind: "cursor";
   hasEarlier: boolean;
@@ -30,7 +25,6 @@ export interface ChatMessagePresentation {
   author: ChatAuthor;
   createdAt: string;
   body: ReactNode;
-  reply?: ChatReplyReference;
   attachments?: ImageAttachmentDto[];
   attachmentDensity?: "comfortable" | "compact";
   afterBody?: ReactNode;

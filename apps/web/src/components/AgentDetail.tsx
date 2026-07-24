@@ -280,13 +280,11 @@ export function AgentDetail({
   const agentQuery = useAgent(agentId, 100);
   const notificationsQuery = useNotifications();
   const [olderMessages, setOlderMessages] = useState<{ messages: MessageDto[]; cursor?: string; hasMore: boolean }>();
-  const [replyTo, setReplyTo] = useState<MessageDto>();
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId);
   const sendMessage = useSendMessage(agentId);
-  useEffect(() => setReplyTo(undefined), [agentId]);
   const queuedMessagesQuery = useQuery({
     queryKey: queryKeys.queuedMessages.agent(agentId),
     queryFn: () => api.listQueuedAgentMessages(agentId),
@@ -821,11 +819,9 @@ export function AgentDetail({
               model,
               effort: effortSelectionIsCompatible(engine, model, effort) ? effort : "",
               activeRunDelivery,
-              ...(replyTo ? { replyToMessageId: replyTo.id } : {}),
             },
             {
               onSuccess: (response) => {
-                setReplyTo(undefined);
                 setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
                 void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agent(agentId) });
                 void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(detail.agent.projectId) });
@@ -979,7 +975,7 @@ export function AgentDetail({
   </Stack>;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} onReply={setReplyTo} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: createClientId(), text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: createClientId(), text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
     triggers: <TriggersPane agent={detail.agent} initialCreateOpen={createTrigger} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,
@@ -1177,8 +1173,6 @@ export function AgentDetail({
           }).then((result) => setQueuedMessageNotice(result.message ?? `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`))}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
-          replyTo={replyTo}
-          onCancelReply={() => setReplyTo(undefined)}
           onCancel={() => stopActiveRun()}
         />
       </Box> : null}
