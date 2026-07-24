@@ -60,7 +60,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         description={project.label}
         icon={<ChatBubbleOutlineIcon />}
         meta={<Typography variant="caption" color="text.secondary">{new Date(conversation.updatedAt).toLocaleString()}</Typography>}
-        trailing={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "#BFA34A" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        trailing={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
         onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
         draggable
@@ -134,7 +134,7 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
         description={`${project.label} · ${agent.title} · ${trigger.sourceKind}`}
         icon={<BoltOutlinedIcon color={trigger.enabled ? "primary" : "disabled"} />}
         meta={<Typography variant="caption" color={trigger.enabled ? "success.main" : "text.disabled"}>{trigger.enabled ? "Enabled" : "Disabled"}</Typography>}
-        trailing={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "#BFA34A" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
+        trailing={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
         onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
         draggable

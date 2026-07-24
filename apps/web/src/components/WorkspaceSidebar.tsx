@@ -200,6 +200,8 @@ function SidebarSortControl({ sort, onSort }: { sort: WorkspacePreferencesDto["p
 }
 
 const sidebarSurface = "var(--ponderosa-sidebar)";
+const railSurface = "var(--ponderosa-rail)";
+const starColor = "var(--ponderosa-star)";
 
 function SidebarSectionHeading({ children }: { children: ReactNode }): JSX.Element {
   return <Typography
@@ -304,9 +306,9 @@ function RailButton({ label, selected = false, badge, badgeColor = "primary", ch
         width: 48,
         height: 48,
         borderRadius: 1,
-        color: selected ? "primary.light" : "text.secondary",
-        bgcolor: selected ? "action.selected" : "transparent",
-        "&:hover": { bgcolor: selected ? "action.focus" : "action.hover", color: "text.primary" },
+        color: selected ? "var(--ponderosa-rail-foreground-active)" : "var(--ponderosa-rail-foreground)",
+        bgcolor: selected ? "rgba(124, 191, 138, .14)" : "transparent",
+        "&:hover": { bgcolor: selected ? "rgba(124, 191, 138, .20)" : "rgba(178, 187, 180, .10)", color: "#E6E7DF" },
       }}
     ><Badge color={badgeColor} badgeContent={badge} max={99}>{children}</Badge></IconButton>
   </Tooltip>;
@@ -469,8 +471,8 @@ export function WorkspaceSidebar({
       minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
       minHeight: 0,
       borderRight: 1,
-      borderColor: "divider",
-      bgcolor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5",
+      borderColor: "var(--ponderosa-rail-border)",
+      bgcolor: railSurface,
       display: "grid",
       gridTemplateRows: "auto minmax(0, 1fr) auto",
       justifyItems: "center",
@@ -480,7 +482,7 @@ export function WorkspaceSidebar({
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
       <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 42, height: 42, mb: 3.25, p: 0.25, borderRadius: 1, objectFit: "cover" }} /></Tooltip>
       <RailButton label="Home" selected={showingHome} onClick={showHome}><HomeOutlinedIcon /></RailButton>
-      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "divider", my: .5 }} />
+      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: .5 }} />
       <RailButton label="Projects" selected={showingProjects || showingProjectNavigation} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Chats" selected={showingChats} onClick={showChats}><ChatBubbleOutlineIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><SmartToyOutlinedIcon /></RailButton>
@@ -488,7 +490,7 @@ export function WorkspaceSidebar({
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
-      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "divider", mb: .25 }} />
+      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", mb: .25 }} />
       <RailButton label="Wiki" selected={showingWiki} onClick={showWiki}><MenuBookOutlinedIcon /></RailButton>
       <RailButton label="Settings" selected={showingSettings} onClick={() => revealSection("settings")}><SettingsOutlinedIcon /></RailButton>
     </Stack>
@@ -520,7 +522,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(item.id);
     return <Stack key={item.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "home", id: item.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "home") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "home") onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, homeResources.map((resource) => resource.id), draggedResource.id, item.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, item.route); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton onClick={() => onNavigate(item.route)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon><ListItemText primary={item.title} secondary={item.detail} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`} onClick={() => { const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string]; toggleStar(kind, id); }}>{starred ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`} onClick={() => { const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string]; toggleStar(kind, id); }}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const homePanel = <SharedSidebarPanel
@@ -536,7 +538,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id));
     return <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "project", projectId: snapshot.project.id }); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} secondary={snapshot.project.hostPath} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /><Typography variant="caption" color="text.secondary" sx={{ ml: 1, minWidth: 24, textAlign: "right", flexShrink: 0 }}>{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${snapshot.project.label}` : `Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar("project", snapshot.project.id)}>{starred ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${snapshot.project.label}` : `Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar("project", snapshot.project.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const starredProjects = projectList.filter((snapshot) => starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)));
@@ -555,7 +557,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id));
     return <Stack key={conversation.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "chat", id: conversation.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "chat") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, allChatRows.map((row) => row.conversation.id), draggedResource.id, conversation.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "conversation", projectId: chatProject.id, conversationId: conversation.id }, conversation); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton onClick={() => openChat(chatProject, conversation)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon><ListItemText primary={conversation.title} secondary={projectDisambiguator(chatProject, projects)} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${conversation.title}` : `Star ${conversation.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${conversation.title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starred ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${conversation.title}` : `Star ${conversation.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${conversation.title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const globalChatsPanel = <SharedSidebarPanel
@@ -580,7 +582,7 @@ export function WorkspaceSidebar({
         <ListItemText primary={agent.title} secondary={`${projectDisambiguator(agentProject, projects)} · ${agent.activeEngine}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
         <Box title={agentStatusLabel(status)} aria-label={agentStatusLabel(status)} sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: agentStatusColor(status) === "default" ? "text.disabled" : `${agentStatusColor(status)}.main`, flex: "0 0 auto" }} />
       </ListItemButton>
-      <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${agent.title}`} onClick={() => toggleStar("agent", agent.id)}>{starred ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${agent.title}`} onClick={() => toggleStar("agent", agent.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const agentsPanel = <SharedSidebarPanel
@@ -615,7 +617,7 @@ export function WorkspaceSidebar({
         <ListItemText primary={trigger.name} secondary={`${destination.project.label} · ${destination.agent.title}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
         <Box title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled", flex: "0 0 auto" }} />
       </ListItemButton>
-      <Tooltip title={`${starred ? "Unstar" : "Star"} ${trigger.name}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${trigger.name}`} onClick={() => toggleStar("trigger", trigger.id)}>{starred ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={`${starred ? "Unstar" : "Star"} ${trigger.name}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${trigger.name}`} onClick={() => toggleStar("trigger", trigger.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const triggersPanel = <SharedSidebarPanel
@@ -676,7 +678,7 @@ export function WorkspaceSidebar({
             if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, activeConversations.map((item) => item.id), draggedResource.id, conversation.id) });
             setDraggedResource(undefined);
           }}
-          onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "conversation", projectId: project.project.id, conversationId: conversation.id }, conversation); }} sx={{ alignItems: "center" }}><ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project.project, conversation)} sx={{ borderRadius: 1, px: 1, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center" }}><ChatBubbleOutlineIcon sx={{ fontSize: 16 }} /></Box></ListItemIcon><ListItemText primary={title} secondary={`${unread.get(conversation.id) ? `${unread.get(conversation.id)} unread · ` : ""}${relativeChatTime(conversation.updatedAt)}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />{unread.get(conversation.id) ? <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.light" }} /> : null}</ListItemButton><Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`}><IconButton size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? <StarRoundedIcon sx={{ color: "#BFA34A" }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>;
+          onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "conversation", projectId: project.project.id, conversationId: conversation.id }, conversation); }} sx={{ alignItems: "center" }}><ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project.project, conversation)} sx={{ borderRadius: 1, px: 1, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center" }}><ChatBubbleOutlineIcon sx={{ fontSize: 16 }} /></Box></ListItemIcon><ListItemText primary={title} secondary={`${unread.get(conversation.id) ? `${unread.get(conversation.id)} unread · ` : ""}${relativeChatTime(conversation.updatedAt)}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />{unread.get(conversation.id) ? <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.light" }} /> : null}</ListItemButton><Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`}><IconButton size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>;
       })}</List></Box> : null)}
       {filteredConversations.length === 0 ? filter.trim() ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No Chats match “{filter.trim()}”.</Typography> : <Stack spacing={.75} sx={{ p: 2, textAlign: "center", alignItems: "center" }}><Typography variant="subtitle2" fontWeight={750}>No Chats Yet</Typography><Typography variant="body2" color="text.secondary">Chats are shared spaces where you and your Agents prompt, plan, and coordinate work. Create one to get started.</Typography></Stack> : null}
     </Box>
