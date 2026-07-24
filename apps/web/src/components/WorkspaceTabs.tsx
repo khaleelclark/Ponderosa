@@ -126,6 +126,7 @@ export function WorkspaceTabs({
                 : tabRoute.kind === "allAgents" ? "All Agents"
                   : tabRoute.kind === "allChats" ? "All Chats"
                   : tabRoute.kind === "allTriggers" ? "All Triggers"
+                  : tabRoute.kind === "projects" ? "All Projects"
                     : tabRoute.kind === "settings" ? "Settings"
                       : tabRoute.kind === "profile" ? "Operator Profile"
                         : tabRoute.kind === "usage" ? "Provider Activity"
