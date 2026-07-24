@@ -580,52 +580,54 @@ export function AllChatView({
         }}
         sx={{ minWidth: 0 }}
       >
-        <Box sx={{ width: "100%", mx: "auto" }}>
-          {!selected ? (
-            <Box sx={{ display: "flex", justifyContent: "center" }}>
-              <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
-            </Box>
-          ) : !selected.directMessageAgent ? (
-            <Box sx={{ display: "flex", justifyContent: "center" }}>
-              <AllChatInfoPill message="This message does not identify an active Agent you can message." />
-            </Box>
-          ) : (
-            <Stack spacing={1}>
-              {notice ? <Alert severity="success">{notice}</Alert> : null}
-              {send.isError ? (
-                <Alert severity="error">
-                  {send.error instanceof Error
-                    ? send.error.message
-                    : "Direct message could not be sent."}
-                </Alert>
-              ) : null}
-              <Composer
-                commands={selectedCommands}
-                capabilities={
-                  selectedEngineCapabilities?.composerCapabilities ?? []
-                }
-                onCapabilitiesOpen={refreshSelectedCapabilities}
-                onCommand={invokeCommand}
-                disabled={send.isPending}
-                running={false}
-                attachmentsEnabled
-                guidance="Message this Agent directly. Use @ to reference a project file."
-                placeholder={`Message ${selected.directMessageAgent.title}`}
-                insertTextRequest={mentionInsertRequest}
-                draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
-                conversationDraftId={`agent:${selected.directMessageAgent.id}`}
-                onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
-                  send.mutateAsync({
-                    body,
-                    files,
-                    draftAttachmentIds,
-                    draftOwnerId,
-                  })
-                }
-              />
-            </Stack>
-          )}
-        </Box>
+        {!selected ? (
+          <Box sx={{ display: "flex", justifyContent: "center" }}>
+            <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
+          </Box>
+        ) : !selected.directMessageAgent ? (
+          <Box sx={{ display: "flex", justifyContent: "center" }}>
+            <AllChatInfoPill message="This message does not identify an active Agent you can message." />
+          </Box>
+        ) : (
+          <>
+            {notice ? (
+              <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
+                {notice}
+              </Alert>
+            ) : null}
+            {send.isError ? (
+              <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+                {send.error instanceof Error
+                  ? send.error.message
+                  : "Direct message could not be sent."}
+              </Alert>
+            ) : null}
+            <Composer
+              commands={selectedCommands}
+              capabilities={
+                selectedEngineCapabilities?.composerCapabilities ?? []
+              }
+              onCapabilitiesOpen={refreshSelectedCapabilities}
+              onCommand={invokeCommand}
+              disabled={send.isPending}
+              running={false}
+              attachmentsEnabled
+              guidance="Message this Agent directly. Use @ to reference a project file."
+              placeholder={`Message ${selected.directMessageAgent.title}`}
+              insertTextRequest={mentionInsertRequest}
+              draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
+              conversationDraftId={`agent:${selected.directMessageAgent.id}`}
+              onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
+                send.mutateAsync({
+                  body,
+                  files,
+                  draftAttachmentIds,
+                  draftOwnerId,
+                })
+              }
+            />
+          </>
+        )}
       </Box>
     </Box>
   );
