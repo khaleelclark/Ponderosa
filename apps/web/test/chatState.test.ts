@@ -25,8 +25,8 @@ describe("persistent chat state", () => {
 
   it("round-trips drafts and removes empty values", () => {
     installStorage();
-    writeChatState("draft", "keep my reply");
-    expect(readChatState("draft")).toBe("keep my reply");
+    writeChatState("draft", "keep my draft");
+    expect(readChatState("draft")).toBe("keep my draft");
     writeChatState("draft", "");
     expect(readChatState("draft")).toBeUndefined();
   });

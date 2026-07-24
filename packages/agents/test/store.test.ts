@@ -693,7 +693,7 @@ describe("AgentStore — canonical communication events", () => {
     });
   });
 
-  it("rebuilds authoritative reply and attachment snapshots from the dispatch ledger", () => {
+  it("rebuilds authoritative attachment snapshots from the dispatch ledger", () => {
     const project = store.createProject({ label: "Snapshots", hostPath: "/repo" });
     const room = store.createConversation(project.id, { title: "Room" });
     const firstEvent: CommunicationEvent = {
@@ -702,11 +702,11 @@ describe("AgentStore — canonical communication events", () => {
       audience: { kind: "organization", organizationId: project.id }, text: "First", createdAt: "2026-07-12T00:00:00.000Z",
     };
     store.appendCommunicationEvent(firstEvent);
-    const first = store.appendConversationMessage(room.id, { text: "First" }, undefined, "main", undefined, undefined, firstEvent.eventId)!;
-    const secondEvent = { ...firstEvent, eventId: "snapshot-second", text: "Reply", createdAt: "2026-07-12T00:01:00.000Z" };
+    store.appendConversationMessage(room.id, { text: "First" }, undefined, "main", undefined, undefined, firstEvent.eventId);
+    const secondEvent = { ...firstEvent, eventId: "snapshot-second", text: "Second", createdAt: "2026-07-12T00:01:00.000Z" };
     store.appendCommunicationEvent(secondEvent);
     store.appendConversationMessage(room.id, {
-      text: "Reply", replyToMessageId: first.id,
+      text: "Second",
       attachments: [{ id: "asset-1", agentId: "manager", name: "diagram.png", mediaType: "image/png", size: 42, url: "/api/assets/asset-1" }],
     }, undefined, "main", undefined, undefined, secondEvent.eventId);
     const expected = store.getConversationMessages(room.id);
@@ -1653,63 +1653,6 @@ describe("AgentStore — rebuild is byte-identical (the property)", () => {
       messages: [{ text: "Spin up one agent for API work and one for UI work." }],
       agents: [{ id: agent.id, conversationId: conversation.id }],
     });
-  });
-
-  it("persists reply references canonically for agent and conversation messages", () => {
-    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const master = store.createConversation(project.id, { title: "Room" });
-    const first = appendCanonicalConversationMessage(master.id, { text: "Original context" })!;
-    appendCanonicalConversationMessage(master.id, { text: "Answer", replyToMessageId: first.id });
-    const agent = store.createAgent(project.id, { title: "Agent", engine: "codex" });
-    store.appendEvent(agent.id, { type: "user_message", text: "Agent original" });
-    const originalMessageId = store.getMessages(agent.id)[0]!.id;
-    store.appendEvent(agent.id, {
-      type: "user_message",
-      text: "Agent answer",
-      replyTo: { messageId: originalMessageId, text: "Agent original", role: "user" },
-    });
-
-    store.rebuildProjections();
-    expect(store.getConversationMessages(master.id)[1]?.replyTo).toMatchObject({ messageId: first.id, text: "Original context" });
-    expect(store.getMessages(agent.id)[1]?.replyTo).toMatchObject({ text: "Agent original" });
-    expect(() => appendCanonicalConversationMessage(master.id, { text: "bad", replyToMessageId: "elsewhere" })).toThrow(/not found/);
-  });
-
-  it("records direct replies only for the referenced active agent author", () => {
-    const project = store.createProject({ label: "Demo", hostPath: "/repo" });
-    const master = store.createConversation(project.id, { title: "Room" });
-    const author = store.createAgent(project.id, { title: "Author", engine: "codex", conversationId: master.id });
-    const other = store.createAgent(project.id, { title: "Other", engine: "codex", conversationId: master.id });
-    const report = appendCanonicalConversationMessage(master.id, { role: "assistant", text: "Done" }, author.id)!;
-    const managerMessage = appendCanonicalConversationMessage(master.id, { text: "Manager note" })!;
-
-    const direct = appendCanonicalConversationMessage(master.id, {
-      text: "Please revise",
-      replyToMessageId: report.id,
-      directReplyToAuthorAgentId: author.id,
-    }, undefined, "main", [{ targetAgentId: author.id, relayDepth: 0, mentionTrail: [], kind: "direct" }], "direct-receipt")!;
-    expect(direct.replyTo?.authorAgentId).toBe(author.id);
-    expect(store.getConversationMessageByReceiptKey(master.id, "direct-receipt")?.id).toBe(direct.id);
-    expect(store.getConversationDeliveryIntents(master.id)).toMatchObject([{ message: { id: direct.id }, intent: { kind: "direct", targetAgentId: author.id }, messageReceiptKey: "direct-receipt" }]);
-    expect(readFileSync(messageDispatchesPath(dir, project.id), "utf8"))
-      .toContain(`"messageReceiptKey":"direct-receipt"`);
-    expect(() => appendCanonicalConversationMessage(master.id, {
-      text: "Spoofed",
-      replyToMessageId: report.id,
-      directReplyToAuthorAgentId: other.id,
-    })).toThrow(/must be the author/);
-    expect(() => appendCanonicalConversationMessage(master.id, {
-      text: "No agent author",
-      replyToMessageId: managerMessage.id,
-      directReplyToAuthorAgentId: author.id,
-    })).toThrow(/must be the author/);
-
-    store.updateAgent(author.id, { archived: true });
-    expect(() => appendCanonicalConversationMessage(master.id, {
-      text: "Archived",
-      replyToMessageId: report.id,
-      directReplyToAuthorAgentId: author.id,
-    })).toThrow(/not an active agent/);
   });
 
   it("reconstructs delivery intents from durable dispatch snapshots without rescanning room timelines", () => {

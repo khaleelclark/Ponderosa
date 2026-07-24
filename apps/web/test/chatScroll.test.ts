@@ -7,7 +7,6 @@ import {
   chatMessageLayoutKey,
   isLongChatMessage,
   isChatNearBottom,
-  replyFallbackText,
   revealChatScrollbar,
   ScrollToLatestButton,
   scrollChatToBottom,
@@ -95,13 +94,6 @@ describe("long message presentation", () => {
     expect(isLongChatMessage(Array.from({ length: 72 }, (_, index) => `line ${index}`).join("\n"))).toBe(false);
     expect(isLongChatMessage(Array.from({ length: 73 }, (_, index) => `line ${index}`).join("\n"))).toBe(true);
     expect(renderToStaticMarkup(createElement(ChatMessageBody, { text: "x".repeat(6_401) }))).toContain("Show Full Message");
-  });
-});
-
-describe("replyFallbackText", () => {
-  it("keeps quoted context and degrades gracefully when unavailable", () => {
-    expect(replyFallbackText("  original context  ")).toBe("original context");
-    expect(replyFallbackText("   ")).toBe("Original message unavailable");
   });
 });
 

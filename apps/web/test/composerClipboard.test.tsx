@@ -7,7 +7,6 @@ import {
   Composer,
   composerSubmissionText,
   filesFromClipboard,
-  replyPreviewText,
   selectComposerFiles,
   shouldExtractLongPaste,
 } from "../src/components/panes";
@@ -82,14 +81,6 @@ describe("composer clipboard attachments", () => {
     trigger.props.onClick({ currentTarget: null });
     expect(refresh).toHaveBeenCalledTimes(1);
     view.unmount();
-  });
-
-  it("bounds long reply previews so the cancel action remains reachable", () => {
-    const preview = replyPreviewText(`  ${"long reply segment ".repeat(80)}  `);
-    expect(preview.length).toBeLessThanOrEqual(240);
-    expect(preview.endsWith("…")).toBe(true);
-    expect(replyPreviewText("short reply")).toBe("short reply");
-    expect(replyPreviewText("   ")).toBe("Original message unavailable");
   });
 
   it("locks synchronously against duplicate sends", () => {

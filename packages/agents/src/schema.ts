@@ -151,7 +151,6 @@ export const messages = sqliteTable("messages", {
   role: text("role").notNull(), // "user" | "assistant"
   text: text("text").notNull(),
   createdAt: text("created_at").notNull(),
-  replyToJson: text("reply_to_json"),
   attachmentsJson: text("attachments_json"),
 });
 

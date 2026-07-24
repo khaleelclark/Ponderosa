@@ -47,9 +47,7 @@ import type {
   CreateCollaborationMessageRequest,
   AssetDto,
   ImageAttachmentDto,
-  CreateDirectReplyRequest,
   CreateMultiAgentDirectMessageRequest,
-  DirectReplyResponse,
   MultiAgentDirectMessageResponse,
   LetCurrentRunFinishRequest,
   LetCurrentRunFinishResponse,
@@ -71,7 +69,6 @@ import type {
   SendAgentMessageRequest,
   AgentDto,
   MessageDto,
-  MessageReferenceDto,
   RuntimeProcessHandle,
   RuntimeSession,
   ProviderRootExitDetail,
@@ -880,8 +877,6 @@ interface PendingTurn {
   sourceChannel?: "main";
   sourceConversationId?: string;
   sourceAuthorAgentId?: string;
-  replyTo?: MessageReferenceDto;
-  replyToMessageId?: string;
   attachmentIds?: string[];
 }
 
@@ -1363,11 +1358,8 @@ function conversationPrompt(
         : message.role === "user"
           ? "Manager"
           : "Team";
-      const quoted = message.replyTo
-        ? ` (replying to: ${truncateUnicodeCodePoints(message.replyTo.text.replace(/\s+/g, " "), 500)})`
-        : "";
       const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
-      return `${speaker}${quoted}: ${message.text}${document} [message id: ${message.id}]`;
+      return `${speaker}: ${message.text}${document} [message id: ${message.id}]`;
     })
     .join("\n");
 
@@ -1419,12 +1411,6 @@ function continuationPrompt(currentRequest: string, context: InboundMessageConte
     "[CURRENT REQUEST | ACTION REQUIRED]",
     currentRequest,
   ].join("\n");
-}
-
-function replyContext(reference: MessageReferenceDto | undefined): string {
-  if (!reference) return "";
-  const quote = truncateUnicodeCodePoints(reference.text.replace(/\s+/g, " ").trim(), 1200);
-  return `\nReplying specifically to this earlier message:\n> ${quote}\n`;
 }
 
 function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
@@ -2090,7 +2076,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
       /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
-      /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|direct-replies|collaboration\/messages)$/u.test(pathname) ||
+      /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/messages\/[^/]+\/corrections$/u.test(pathname) ||
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
       /^\/api\/projects\/[^/]+\/agents$/u.test(pathname) ||
@@ -2972,7 +2958,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // Agent chat without allowing clients to forge canonical communication IDs.
   const v3DispatchKey = randomUUID();
   const subscribers = new Map<string, Set<Subscriber>>();
-  const directReplyClaims = new Set<string>();
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId).map((agent) => agent.id)));
@@ -4804,7 +4789,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ...(sourceConversationId ? { sourceConversationId } : {}),
           ...(sourceChannel ? { sourceChannel } : {}),
           ...(dispatch?.shareWithOrganization === true ? { shareWithOrganization: true } : {}),
-          ...(typeof dispatch?.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
           ...(attachmentIds.length ? { attachmentIds } : {}),
           v3SchedulerRunId: lease.runId,
           v3FencingToken: lease.fencingToken,
@@ -5340,10 +5324,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               {
                 role,
                 text: conversationText,
-                ...(typeof dispatch?.replyToMessageId === "string" ? { replyToMessageId: dispatch.replyToMessageId } : {}),
-                ...(typeof dispatch?.targetAuthorAgentId === "string"
-                  ? { directReplyToAuthorAgentId: dispatch.targetAuthorAgentId }
-                  : {}),
                 ...(roomAttachments?.length ? { attachments: roomAttachments } : {}),
               },
               canonical.sender.kind === "agent" ? canonical.sender.agentId : undefined,
@@ -5362,7 +5342,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 messageId: roomMessage.id, role: roomMessage.role, renderedText: roomMessage.text,
                 createdAt: roomMessage.createdAt, attachments: roomAttachments,
                 ...(roomMessage.authorAgentId ? { authorAgentId: roomMessage.authorAgentId } : {}),
-                ...(roomMessage.replyTo ? { replyTo: roomMessage.replyTo } : {}),
               },
             });
             if (!enriched.replayed) {
@@ -8971,7 +8950,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{
     Params: { id: string };
-    Body: { role?: "user" | "assistant" | "system"; text: string; replyToMessageId?: string; directReplyToAuthorAgentId?: string; attachments?: AssetDto[]; idempotencyKey?: string };
+    Body: { role?: "user" | "assistant" | "system"; text: string; attachments?: AssetDto[]; idempotencyKey?: string };
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
@@ -8979,7 +8958,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!rawText && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
       return reply.code(400).send({ error: "broadcast text or an attachment is required" });
     }
-    if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "use the idempotent direct-replies endpoint" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const master = store.getConversation(request.params.id);
@@ -9055,17 +9033,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
     if (replayedMessage) return replayedMessage;
-    let message;
-    try {
-      message = store.appendConversationMessage(request.params.id, {
-        role: request.body.role,
-        text: renderScopedMessage("broadcast", prepared.publishedText),
-        replyToMessageId: request.body.replyToMessageId,
-        attachments: validatedAssets,
-      }, undefined, "main", undefined, undefined, communication?.eventId);
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "reply target was not found in this conversation" });
-    }
+    const message = store.appendConversationMessage(request.params.id, {
+      role: request.body.role,
+      text: renderScopedMessage("broadcast", prepared.publishedText),
+      attachments: validatedAssets,
+    }, undefined, "main", undefined, undefined, communication?.eventId);
     await Promise.all(validatedAssets.map((asset) => {
       const owner = store.getAgent(asset.agentId)!;
       return assets.associate(owner.projectId, owner.id, [asset.id]);
@@ -9080,7 +9052,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     async (request, reply) => {
       const rawText = request.body?.text ?? "";
       const recipients = request.body?.recipients ?? [];
-      const replyToMessageId = request.body?.replyToMessageId?.trim() || undefined;
       const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
@@ -9159,7 +9130,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
               } : {}),
               activeRunDelivery,
-              replyToMessageId: replyToMessageId ?? null,
               recipients: recipients.map((recipient, index) => ({
                 agentId: recipient.agentId,
                 attachments: (attachmentsByAgent[index] ?? []).map((item) => ({
@@ -9201,7 +9171,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           try {
             message = store.appendConversationMessage(
               master.id,
-              { text: prepared.publishedText, replyToMessageId, attachments: attachmentsByAgent[0] },
+              { text: prepared.publishedText, attachments: attachmentsByAgent[0] },
               undefined,
               "main",
               intents,
@@ -9237,171 +9207,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
     },
   );
-  app.post<{ Params: { id: string }; Body: CreateDirectReplyRequest }>(
-    "/api/conversations/:id/direct-replies",
-    async (request, reply) => {
-      const rawText = request.body?.text ?? "";
-      const replyToMessageId = request.body?.replyToMessageId?.trim() ?? "";
-      const targetAuthorAgentId = request.body?.targetAuthorAgentId?.trim() ?? "";
-      const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-      let attachmentIds = request.body?.attachmentIds ?? [];
-      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
-      if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
-      if (!rawText.trim() && attachmentIds.length === 0) return reply.code(400).send({ error: "text or an attachment is required" });
-      if (!replyToMessageId || !targetAuthorAgentId) return reply.code(400).send({ error: "reply target and author are required" });
-      if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-      if (!Array.isArray(attachmentIds) || attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(attachmentIds).size !== attachmentIds.length) {
-        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments are allowed` });
-      }
-      const master = store.getConversation(request.params.id);
-      if (!master || master.archived) return reply.code(404).send({ error: "conversation not found" });
-      if (deletingProjectIds.has(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-      const target = store.getAgent(targetAuthorAgentId);
-      if (!target || target.archived || !target.conversationIds.includes(master.id)) return reply.code(404).send({ error: "direct reply target not found" });
-      const stagedDraftIds = request.body?.draftAttachmentIds ?? [];
-      const stagedDraftOwner = normalizedDraftOwner(request.body?.draftOwnerId);
-      const stagedDraftSurface = request.body?.draftId;
-      if (!Array.isArray(stagedDraftIds) || stagedDraftIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(stagedDraftIds).size !== stagedDraftIds.length) {
-        return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
-      }
-      if (stagedDraftIds.length && (!stagedDraftOwner || !stagedDraftSurface || !validDraftId(stagedDraftSurface))) {
-        return reply.code(400).send({ error: "draft surface and owner are required" });
-      }
-      const promotedDraftAssets: AssetDto[] = [];
-      try {
-        for (const draftAttachmentId of stagedDraftIds) {
-          const attachment = await readDraftAttachment(stagedDraftSurface!, stagedDraftOwner!, draftAttachmentId);
-          if (!attachment) throw new AssetError(404, "draft attachment is missing or belongs to another draft");
-          promotedDraftAssets.push(await assets.stage({
-            projectId: target.projectId,
-            agentId: target.id,
-            body: await fs.readFile(draftAttachmentFiles(stagedDraftSurface!, stagedDraftOwner!, attachment.id).body),
-            name: attachment.name,
-            declaredType: attachment.mediaType,
-          }));
-        }
-      } catch (error) {
-        await Promise.allSettled(promotedDraftAssets.map((attachment) => assets.remove(target.projectId, target.id, attachment.id)));
-        if (error instanceof AssetError) return reply.code(error.statusCode).send({ error: error.message });
-        throw error;
-      }
-      attachmentIds = [...attachmentIds, ...promotedDraftAssets.map((item) => item.id)];
-      const attached = await Promise.all(attachmentIds.map((id) => assetMetadata(target.id, id)));
-      if (attached.some((item) => !item || item.agentId !== target.id)) return reply.code(404).send({ error: "direct reply attachment not found" });
-      const attachments = attached as ImageAttachmentDto[];
-      const receiptKey = `direct-reply:${master.id}:${idempotencyKey}`;
-      const eventId = `direct-reply-${createHash("sha256").update(receiptKey).digest("hex")}`;
-      const existingRuntime = coordinationV3.runtimeCommunication(eventId);
-      const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-      let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
-      try {
-        prepared = await prepareUserCommunicationText({
-          projectId: master.projectId, communicationId: eventId, text: rawText, createdAt,
-        });
-      } catch (error) {
-        const status = error instanceof AssetError ? error.statusCode : 409;
-        return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
-      }
-      const communication: CommunicationEvent = {
-        eventId, schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
-        sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-        audience: { kind: "user_agent", userId: "local-operator", agentId: target.id },
-        text: prepared.publishedText,
-        ...(prepared.document ? { document: prepared.document } : {}),
-        createdAt, idempotencyKey: receiptKey,
-      };
-      let intake;
-      try {
-        intake = coordinationV3.recordRuntimeCommunication({
-          id: eventId,
-          projectId: master.projectId,
-          sender: communication.sender,
-          intent: communication.intent,
-          audience: communication.audience,
-          payload: {
-            communication,
-            dispatch: {
-              conversationId: master.id,
-              text: prepared.publishedText,
-              ...(prepared.artifact ? {
-                artifactId: prepared.artifact.id,
-                resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
-              } : {}),
-              activeRunDelivery,
-              replyToMessageId,
-              targetAuthorAgentId,
-              attachments: attachments.map((item) => ({
-                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
-              })),
-            },
-          },
-          ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
-          activation: {
-            agentId: target.id,
-            kind: "human_message",
-            priority: 100,
-            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
-            promptClass: "human",
-          },
-          now: createdAt,
-        });
-        if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-          kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
-        });
-      } catch (error) {
-        const status = error instanceof AssetError ? error.statusCode : 409;
-        return reply.code(status).send({ error: error instanceof Error ? error.message : "direct reply conflict" });
-      }
-      const canonicalCommunication = recordCommunication(communication);
-      if (intake.replayed) await reconcileRuntimeCommunicationProjections({
-        projectId: communication.projectId,
-        communicationEventId: communication.eventId,
-      });
-      if (prepared.artifact) projectCommunicationArtifact(
-        master.projectId,
-        "local-operator",
-        prepared.artifact,
-        communicationArtifactAccess(canonicalCommunication),
-      );
-      store.appendCommunicationProjection(master.projectId, {
-        eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
-      });
-      const renderedText = `#${agentMentionHandle(target.title)} ${prepared.publishedText}`.trimEnd();
-      let message = store.getConversationMessageByReceiptKey(master.id, receiptKey);
-      if (!message) {
-        try {
-          message = store.appendConversationMessage(
-            master.id,
-            { text: renderedText, replyToMessageId, directReplyToAuthorAgentId: target.id, attachments },
-            undefined,
-            "main",
-            [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
-            receiptKey,
-            eventId,
-          );
-        } catch (error) {
-          return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid direct reply" });
-        }
-      }
-      if (!message) return reply.code(503).send({ error: "direct reply projection could not be recorded; retry is safe" });
-      if (!intake.replayed) {
-        await assets.associate(master.projectId, target.id, attachmentIds);
-        projectCommunicationToAgentAudit(target.id, communication, prepared.publishedText, attachments);
-      }
-      publishCoordinationV3Changed(target.id);
-      coordinationV3Scheduler.notify();
-      return {
-        messageId: message.id,
-        targetAuthorAgentId: target.id,
-        replayed: intake.replayed,
-        queued: true,
-        deliveryId: intake.activationId,
-        state: "queued",
-      } satisfies DirectReplyResponse;
-    },
-  );
-
-
   app.get<{ Params: { id: string } }>("/api/conversations/:id/queued-messages", async (request, reply) => {
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
@@ -9809,7 +9614,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!message) {
       message = store.appendConversationMessage(
         conversation.id,
-        { text, replyToMessageId: request.params.messageId },
+        { text },
         undefined,
         "main",
         [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
@@ -9844,7 +9649,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{
     Params: { id: string };
-    Body: CreateCollaborationMessageRequest & { directReplyToAuthorAgentId?: string };
+    Body: CreateCollaborationMessageRequest;
   }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
     const conversation = store.getConversation(request.params.id);
     if (conversation && deletingProjectIds.has(conversation.projectId)) {
@@ -9858,7 +9663,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    if (request.body.directReplyToAuthorAgentId) return reply.code(400).send({ error: "Reply Directly is available only in main chat" });
     const detail = collaborationViewDetail(request.params.id);
     if (!detail) return reply.code(404).send({ error: "conversation not found" });
 
@@ -9916,17 +9720,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const canonicalAttachments = routing.intents
       .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
       .find((items) => items.length > 0) ?? [];
-    if (request.body.replyToMessageId) {
-      const replyTarget = detail.messages.find((message) => message.id === request.body.replyToMessageId);
-      const replyEvent = replyTarget?.communicationEventId
-        ? store.getCommunicationEvent(master.projectId, replyTarget.communicationEventId)
-        : undefined;
-      if (!replyTarget || routing.intents.some((intent) =>
-        intent.targetAgentId !== replyTarget.authorAgentId &&
-        !canonicalAudienceIncludes(replyEvent, master.projectId, intent.targetAgentId))) {
-        return reply.code(400).send({ error: "reply target is not visible to every collaboration recipient" });
-      }
-    }
     const eventId = idempotencyKey
         ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
         : randomUUID();
@@ -9973,7 +9766,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               artifactId: prepared.artifact.id,
               resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
             } : {}),
-            replyToMessageId: request.body.replyToMessageId ?? null,
             recipients: routing.intents.map((intent) => ({
               agentId: intent.targetAgentId,
               attachments: (attachmentsByAgent.get(intent.targetAgentId) ?? []).map((item) => ({
@@ -10020,9 +9812,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       };
     }
     let message;
-    try { message = store.appendConversationMessage(
+    message = store.appendConversationMessage(
       request.params.id,
-      { role: "user", text: publishedRenderedText, replyToMessageId: request.body.replyToMessageId, attachments: canonicalAttachments },
+      { role: "user", text: publishedRenderedText, attachments: canonicalAttachments },
       // The canonical chat snapshot uses one copy; per-recipient copies stay in
       // dispatch/audit data and are never rendered as duplicates.
       undefined,
@@ -10030,7 +9822,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       routing.intents,
       undefined,
       communication?.eventId,
-    ); } catch { return reply.code(400).send({ error: "reply target was not found in this conversation" }); }
+    );
     const notifiedAgentIds: string[] = [];
     for (const intent of routing.intents) {
       store.appendCommunicationProjection(master.projectId, {
@@ -10085,7 +9877,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; replyToMessageId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
+    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
@@ -10120,9 +9912,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const conversation = store.getConversation(request.body.conversationId);
         if (!conversation || conversation.projectId !== request.params.id) {
           return reply.code(400).send({ error: "conversation does not belong to project" });
-        }
-        if (request.body.replyToMessageId && !store.getConversationMessages(request.body.conversationId, "main").some((message) => message.id === request.body.replyToMessageId)) {
-          return reply.code(400).send({ error: "reply target was not found in this conversation" });
         }
       }
       const conversationDefaults = request.body.conversationId ? store.getConversation(request.body.conversationId) : undefined;
@@ -10235,7 +10024,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ...(openingPrepared!.document ? { document: openingPrepared!.document } : {}),
           createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
-          ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
         } : sharedOpening ? {
           eventId, schemaVersion: 2, projectId: agent.projectId, conversationId: agent.conversationId!,
           sender: { kind: "user", userId: "local-operator" }, intent: "broadcast",
@@ -10244,7 +10032,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           ...(openingPrepared!.document ? { document: openingPrepared!.document } : {}),
           createdAt,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
-          ...(request.body.replyToMessageId ? { causationId: request.body.replyToMessageId } : {}),
         } : {
           eventId, schemaVersion: 2, projectId: agent.projectId,
           ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
@@ -10275,7 +10062,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 artifactId: openingPrepared!.artifact.id,
                 resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
               } : {}),
-              replyToMessageId: request.body.replyToMessageId ?? null,
               attachments: openingAttachments.map((item) => ({
                 id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
               })),
@@ -10321,7 +10107,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               text: managed
                 ? `#${agentMentionHandle(agent.title)} ${openingPrepared!.publishedText}`
                 : openingPrepared!.publishedText,
-              replyToMessageId: request.body.replyToMessageId,
               attachments: openingAttachments,
             },
             undefined,
@@ -11382,7 +11167,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       shareWithOrganization?: boolean;
       activeRunDelivery?: "steer" | "queue";
       sourceConversationId?: string;
-      replyToMessageId?: string;
       attachmentIds?: string[];
       draftAttachmentIds?: string[];
       draftId?: string;
@@ -11408,7 +11192,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!project) return reply.code(404).send({ error: "project not found" });
       const allowedMessageFields = new Set([
         "text", "idempotencyKey", "model", "effort", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
-        "shareWithOrganization", "activeRunDelivery", "sourceConversationId", "replyToMessageId",
+              "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
         "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
         "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
       ]);
@@ -11565,15 +11349,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(400).send({ error: "shared turns must originate from a Conversation" });
       }
       const directMessageConversationId = sourceConversationId ?? agent.conversationId;
-      const directReplyTarget = request.body.replyToMessageId
-        ? store.getProjectedAgentMessageById(agent.id, request.body.replyToMessageId)
-        : undefined;
-      const sourceMasterReply = request.body.replyToMessageId && directMessageConversationId
-        ? store.getProjectedConversationMessageById(directMessageConversationId, "main", request.body.replyToMessageId)
-        : undefined;
-      if (request.body.replyToMessageId && !directReplyTarget && !sourceMasterReply) {
-        return reply.code(400).send({ error: "reply target was not found in this conversation" });
-      }
       const proposedCommunicationEventId = internalV3Dispatch
         ? undefined
         : userMessageIdempotencyKey
@@ -11642,7 +11417,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sourceChannel: request.body.sourceChannel ?? null,
                 shareWithOrganization,
                 activeRunDelivery,
-                replyToMessageId: request.body.replyToMessageId ?? null,
                 attachments: messageAttachments.map((item) => ({
                   id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
                 })),
@@ -11717,7 +11491,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             role: "user",
             text: sharedCommunication ? publishedText : `#${agentMentionHandle(agent.title)} ${publishedText}`,
             attachments: messageAttachments,
-            replyToMessageId: sourceMasterReply?.id,
           }, undefined, "main", undefined, undefined, communicationEventId);
           if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [agent.id], messageAttachments);
         }
@@ -11753,13 +11526,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         agentMentionDepth: mentionDepth ?? 0,
         agentMentionTrail: mentionTrail,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
-        replyToMessageId: request.body.replyToMessageId,
-        replyTo: request.body.replyToMessageId
-          ? (() => {
-              const replyTarget = directReplyTarget ?? sourceMasterReply;
-              return replyTarget ? { messageId: replyTarget.id, text: replyTarget.text, role: replyTarget.role } : undefined;
-            })()
-          : undefined,
       };
       const auditText = publishedText;
       if (!internalV3Dispatch) {
@@ -11770,8 +11536,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           await assets.associate(agent.projectId, agent.id, attachmentIds);
           if (!sharedCommunication) {
             const stored = store.appendEvent(agent.id, {
-              type: "user_message", text: auditText, communicationEventId,
-              replyTo: pendingTurn.replyTo, attachments: messageAttachments,
+              type: "user_message", text: auditText, communicationEventId, attachments: messageAttachments,
             });
             publish(agent.id, stored);
           }
@@ -12151,8 +11916,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const continuationHandoffPrompt = continuationHandoff
         ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
         : "";
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
-      const freshPromptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${freshOlderContextReference ? `\n\n${freshOlderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${freshBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(freshBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${freshGuidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${replyContext(pendingTurn.replyTo)}${attachmentContext}${coalescedActivationContext}`;
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${attachmentContext}${coalescedActivationContext}`;
+      const freshPromptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${freshOlderContextReference ? `\n\n${freshOlderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${freshBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(freshBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${freshGuidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
       // session and therefore must restore the envelope even if the first

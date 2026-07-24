@@ -528,8 +528,6 @@ export interface ConversationMessageDto {
   authorAgentId?: string;
   /** Stable recipients bound to the #handles captured in the authored text. */
   agentMentions?: AgentMentionBindingDto[];
-  /** Immutable quoted context captured when this reply was sent. */
-  replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
@@ -639,13 +637,6 @@ export interface LinkPreviewDto {
   expiresAt: string;
 }
 
-export interface MessageReferenceDto {
-  messageId: string;
-  text: string;
-  role: "user" | "assistant" | "system";
-  authorAgentId?: string;
-}
-
 /** The two communication projections available for one project conversation. */
 export type ConversationChannel = "main" | "collaboration";
 
@@ -750,7 +741,6 @@ export interface ConversationDetailDto {
 export interface CreateConversationMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
-  replyToMessageId?: string;
   attachments?: ImageAttachmentDto[];
   /** Stable across transport retries; absent is accepted for legacy clients. */
   idempotencyKey?: string;
@@ -761,7 +751,6 @@ export interface CreateCollaborationMessageRequest {
   text: string;
   /** Stable IDs resolved by the client; display handles are never routing input. */
   recipientAgentIds: string[];
-  replyToMessageId?: string;
   /** Target-owned asset copies for safe delivery to each addressed runtime. */
   recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
   /** Stable across transport retries so a collaboration message is appended once. */
@@ -775,34 +764,9 @@ export interface CreateCollaborationMessageResponse {
   notifiedAgentIds: string[];
 }
 
-/** POST /api/conversations/:id/direct-replies body. */
-export interface CreateDirectReplyRequest {
-  text: string;
-  replyToMessageId: string;
-  targetAuthorAgentId: string;
-  attachmentIds?: string[];
-  /** Browser-private staged files promoted server-side without another upload. */
-  draftAttachmentIds?: string[];
-  draftId?: string;
-  draftOwnerId?: string;
-  /** Stable across retries; the server applies both durable effects once. */
-  idempotencyKey: string;
-  activeRunDelivery?: "steer" | "queue";
-}
-
-export interface DirectReplyResponse {
-  messageId: string;
-  targetAuthorAgentId: string;
-  replayed: boolean;
-  queued: boolean;
-  deliveryId?: string;
-  state?: "queued" | "steered" | "started";
-}
-
 export interface CreateMultiAgentDirectMessageRequest {
   text: string;
   recipients: Array<{ agentId: string; attachmentIds?: string[] }>;
-  replyToMessageId?: string;
   /** Stable across retries; one user action creates one message and N deliveries. */
   idempotencyKey: string;
   activeRunDelivery?: "steer" | "queue";
@@ -1040,8 +1004,6 @@ export interface CreateAgentRequest {
   draftAttachmentIds?: string[];
   /** Browser-private draft owner used to resolve staged first-turn attachments. */
   draftOwnerId?: string;
-  /** Project-chat message referenced by the optional first turn. */
-  replyToMessageId?: string;
   presetId?: string;
   /** Optional existing agent this new agent reports to. User-authorized creation only. */
   managerAgentId?: string;
@@ -1237,7 +1199,6 @@ export interface MessageDto {
   agentMentions?: AgentMentionBindingDto[];
   /** Originating provider execution for agent-authored communication. */
   executionId?: string;
-  replyTo?: MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
   document?: CommunicationDocumentReference;
   citations?: VerifiedCitationDto[];
@@ -1681,7 +1642,6 @@ export interface SendMessageRequest {
   sourceChannel?: "main";
   /** A plain Conversation request is shared context while still starting this agent. */
   shareWithOrganization?: boolean;
-  replyToMessageId?: string;
   /** Membership used for this main-chat turn; omitted by direct/legacy callers. */
   sourceConversationId?: string;
   /**

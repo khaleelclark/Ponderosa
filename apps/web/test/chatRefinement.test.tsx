@@ -6,7 +6,6 @@ import { readFileSync } from "node:fs";
 import { ConversationMessage, conversationComposerRuntime } from "../src/components/ConversationView";
 import { ChatMarkdown } from "../src/components/chat/ChatMessages";
 import { Composer } from "../src/components/chat/Composer";
-import { replyPreviewText } from "../src/components/panes";
 
 const baseMessage: ConversationMessageDto = {
   id: "message-1",
@@ -39,7 +38,7 @@ describe("chat interaction refinement", () => {
     expect(conversationComposerRuntime({ id: "runtime-a", authenticated: false, available: false }, []).capabilities).toEqual([]);
 
     const source = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
-    expect(source).toContain("capabilities={directReplyAgent ? directReplyEngineCapabilities?.composerCapabilities ?? [] : composerRuntime.capabilities}");
+    expect(source).toContain("capabilities={composerRuntime.capabilities}");
     expect(source).toContain("onCommand={activeEngine ?");
     expect(source).toContain("api.invokeProjectProviderCommand(conversation.projectId");
     expect(source).not.toContain('capabilities={activeView === "main"');
@@ -74,8 +73,7 @@ describe("chat interaction refinement", () => {
     expect(agentDetail).not.toMatch(/name:\s*["'](?:cancel|fresh|status)["']/);
   });
 
-  it("keeps direct-reply context bounded and exposes review/count metadata", () => {
-    expect(replyPreviewText("long text ".repeat(100)).length).toBeLessThanOrEqual(240);
+  it("exposes review/count metadata on agent-authored Project messages", () => {
     const html = renderToStaticMarkup(
       <ConversationMessage
         message={baseMessage}
@@ -97,10 +95,10 @@ describe("chat interaction refinement", () => {
     expect(html).toContain("Open agent Agent One from name");
   });
 
-  it("focuses direct replies and supports hover/focus/touch action disclosure", () => {
+  it("supports hover/focus/touch action disclosure", () => {
     const actions = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
     const composer = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}>
-      <Composer disabled={false} running={false} focusReply onSend={() => undefined} />
+      <Composer disabled={false} running={false} onSend={() => undefined} />
     </QueryClientProvider>);
     expect(composer).toContain('aria-label="Message"');
     expect(actions).toContain(".chat-message:hover");

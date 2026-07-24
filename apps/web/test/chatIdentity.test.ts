@@ -45,7 +45,6 @@ describe("individual chat sender identity", () => {
   it("uses an accessible fallback without disturbing attachment or timestamp actions", () => {
     const assistant = {
       ...message("2", "assistant", "See the attachment."),
-      replyTo: { messageId: "1", text: "Original request" },
       attachments: [{ id: "attachment-1", name: "result.png", url: "/result.png", mimeType: "image/png", size: 123 }],
     } satisfies MessageDto;
     const html = renderToStaticMarkup(createElement(ChatPane, {
@@ -55,9 +54,7 @@ describe("individual chat sender identity", () => {
 
     expect(html).toContain('aria-label="Agent message"');
     expect(html).toContain(">Agent</div>");
-    expect(html).toContain('aria-label="Go to replied-to message"');
     expect(html).toContain('aria-label="Download result.png"');
-    expect(html).not.toContain('aria-label="Reply to message"');
     expect(html).toContain("<time");
   });
 

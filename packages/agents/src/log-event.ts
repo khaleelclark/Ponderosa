@@ -15,7 +15,6 @@ export interface UserMessageEvent {
   type: "user_message";
   communicationEventId?: string;
   text: string;
-  replyTo?: import("@ponderosa/core").MessageReferenceDto;
   attachments?: ImageAttachmentDto[];
 }
 
