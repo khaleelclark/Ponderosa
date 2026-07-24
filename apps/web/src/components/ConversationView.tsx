@@ -6,8 +6,6 @@ import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
-import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Box,
@@ -15,7 +13,6 @@ import {
   ButtonBase,
   Chip,
   CircularProgress,
-  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -61,7 +58,7 @@ import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
-import { WorkspaceTabBar } from "./WorkspaceFrame";
+import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   return uniqueBy(groups.flat(), (message) => message.id, (a, b) =>
@@ -295,11 +292,9 @@ export function ConversationView({
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
-  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
   const mobileComposer = useMobileComposerAutoHide(mobileRoster);
 
   useEffect(() => {
-    setMobileHeaderCollapsed(false);
     mobileComposer.reset();
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
@@ -805,27 +800,10 @@ export function ConversationView({
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ px: { xs: 1, sm: 1.5, md: 2 }, pt: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
-        <Stack
-          direction="row"
-          spacing={0.5}
-          useFlexGap
-          sx={{ alignItems: "center", minWidth: 0 }}
-        >
-          <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180} sx={{ minWidth: 0, flex: 1 }}>
-          <Box sx={{ minWidth: 0 }}>
-            <Typography variant="h6" fontWeight={800} noWrap>
-              {conversation.title}
-            </Typography>
-            <ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />
-          </Box>
-          </Collapse>
-          <Tooltip title={mobileHeaderCollapsed ? "Expand Chat Header" : "Minimize Chat Header"}><IconButton
-            size="small"
-            aria-label={mobileHeaderCollapsed ? "Expand chat header" : "Minimize chat header"}
-            onClick={() => setMobileHeaderCollapsed((current) => !current)}
-            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
-          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
+      <WorkspaceHeader
+        title={conversation.title}
+        context={<ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />}
+        actions={<>
           <ChatOverflowMenu
             label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
             transcriptMarkdown={transcriptMarkdown}
@@ -857,16 +835,14 @@ export function ConversationView({
               },
             ]}
           />
-        </Stack>
-        <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
-        <WorkspaceTabBar
-          label="Chat views"
-          value={agentWorkOpen ? "work" : activeView}
-          onChange={(next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); }}
-          items={[{ value: "main", label: "Chat" }, { value: "collaboration", label: "Team Chat" }, { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> }, { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> }]}
-        />
-        </Collapse>
-      </Box>
+        </>}
+      />
+      <WorkspaceTabBar
+        label="Chat views"
+        value={agentWorkOpen ? "work" : activeView}
+        onChange={(next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); }}
+        items={[{ value: "main", label: "Chat" }, { value: "collaboration", label: "Team Chat" }, { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> }, { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> }]}
+      />
 
       <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
         {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : activeView === "agents" ? (
