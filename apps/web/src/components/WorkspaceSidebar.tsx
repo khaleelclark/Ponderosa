@@ -248,23 +248,13 @@ function SharedSidebarPanel({
           {newLabel}
         </Button>
         <Button
-          variant="text"
           fullWidth
           startIcon={viewAllIcon}
           onClick={onViewAll}
-          sx={theme => ({
-            mt: 0.5,
+          sx={{
             justifyContent: "flex-start",
-            bgcolor: theme.palette.mode === "dark" ? "#C9CECA" : "primary.main",
-            color:
-              theme.palette.mode === "dark"
-                ? "#173127"
-                : "primary.contrastText",
-            "&:hover": {
-              bgcolor:
-                theme.palette.mode === "dark" ? "#E0E3E0" : "primary.dark",
-            },
-          })}
+            color: "text.secondary",
+          }}
         >
           {viewAllLabel}
         </Button>
