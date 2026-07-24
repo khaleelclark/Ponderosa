@@ -49,7 +49,7 @@ import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import { isTextPreviewCapability } from "./filePreview/mimeCapabilities";
 export { createdFileUnifiedDiff, recordedArtifactDiff } from "./filePreview/artifactDiff";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { WorkspaceTabBar } from "./WorkspaceFrame";
+import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
 
 export function isTextArtifactPreview(mediaType: string | undefined): boolean {
   return isTextPreviewCapability(mediaType);
@@ -226,7 +226,9 @@ export function ProjectArtifactsView({
   })).filter((group) => group.records.length > 0);
   const loading = projectArtifacts.isLoading;
 
-  return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto", p: { xs: 1.5, sm: 3 } }}>
+  return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}>
+    <WorkspaceHeader title={project.label} context={<Typography color="text.secondary" noWrap>{project.hostPath}</Typography>} />
+    <Box sx={{ p: { xs: 1.5, sm: 3 } }}>
     <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
       <WorkspaceTabBar value={tab} onChange={setTab} label="Project" items={[{ value: "overview", label: "Overview" }, { value: "files", label: "Files & Results", icon: <Inventory2OutlinedIcon /> }]} />
       {tab === "overview" ? <>
@@ -380,6 +382,7 @@ export function ProjectArtifactsView({
       onClose={() => setArtifactMenu(undefined)}
       onOpenInNewTab={onOpenArtifactInNewTab ? (resource) => onOpenArtifactInNewTab(resource.agentId, resource.artifactId) : undefined}
     />
+    </Box>
     <Dialog open={Boolean(previewArtifact)} onClose={() => setPreviewArtifact(undefined)} fullWidth maxWidth="lg">
       <DialogTitle>{previewArtifact ? artifactDisplayLabel(previewArtifact) : "File Preview"}</DialogTitle>
       <DialogContent sx={{ minWidth: 0, p: { xs: 1, sm: 2 }, bgcolor: "background.default", overflow: "auto" }}>

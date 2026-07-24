@@ -231,10 +231,24 @@ function SharedSidebarPanel({
       >
         <Button
           fullWidth
+          color="inherit"
+          startIcon={newIcon ?? <AddIcon />}
+          onClick={onNew}
+          disabled={newDisabled}
+          sx={{
+            justifyContent: "flex-start",
+            color: "text.secondary",
+          }}
+        >
+          {newLabel}
+        </Button>
+        <Button
+          fullWidth
           variant="contained"
           startIcon={viewAllIcon}
           onClick={onViewAll}
           sx={theme => ({
+            mt: 0.5,
             justifyContent: "flex-start",
             bgcolor: theme.palette.mode === "dark" ? "#C9CECA" : "primary.main",
             color: theme.palette.mode === "dark" ? "#173127" : "primary.contrastText",
@@ -242,20 +256,6 @@ function SharedSidebarPanel({
           })}
         >
           {viewAllLabel}
-        </Button>
-        <Button
-          fullWidth
-          color="inherit"
-          startIcon={newIcon ?? <AddIcon />}
-          onClick={onNew}
-          disabled={newDisabled}
-          sx={{
-            mt: 0.5,
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {newLabel}
         </Button>
       </Box>
     </Box>

@@ -6,7 +6,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { NewWorkspaceKind } from "../routing";
-import { WorkspaceTabBar } from "./WorkspaceFrame";
+import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
 
 const choices: Array<{ kind: NewWorkspaceKind; label: string; description: string; icon: JSX.Element }> = [
   { kind: "project", label: "Project", description: "A workspace, its runtime defaults, and its working folder.", icon: <FolderOutlinedIcon /> },
@@ -30,12 +30,10 @@ export function NewWorkspace({
   const choice = choices.find((item) => item.kind === kind)!;
   const select = (next: NewWorkspaceKind) => { setKind(next); onKindChange(next); };
 
-  return <Box sx={{ minHeight: 0, overflow: "auto", p: { xs: 2, md: 4 } }}>
+  return <Box sx={{ minHeight: 0, overflow: "auto" }}>
+    <WorkspaceHeader title="Create new" context={<Typography color="text.secondary">Choose the kind of workspace item you want to add.</Typography>} />
+    <Box sx={{ p: { xs: 2, md: 4 } }}>
     <Stack spacing={3} sx={{ maxWidth: 880, mx: "auto" }}>
-      <Box>
-        <Typography variant="h4" fontWeight={800}>Create new</Typography>
-        <Typography color="text.secondary">Choose the kind of workspace item you want to add. Its full configuration opens in the same flow.</Typography>
-      </Box>
       <WorkspaceTabBar value={kind} onChange={select} label="Create new" items={choices} />
       <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
         <Stack spacing={2} alignItems="flex-start">
@@ -49,5 +47,6 @@ export function NewWorkspace({
         </Stack>
       </Paper>
     </Stack>
+    </Box>
   </Box>;
 }
