@@ -1,1 +1,0 @@
-Write exactly PONDEROSA_BETA_VERIFIED followed by a newline to verification-output.txt.
