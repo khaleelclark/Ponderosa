@@ -1,6 +1,7 @@
 import { isAgentDetailView, type Route } from "./routing";
+import { createClientId } from "./clientId";
 
-export type WorkspaceTabRoute = Route;
+type WorkspaceTabRoute = Route;
 
 export interface WorkspaceTabState {
   /** Tab-instance identity. It is intentionally independent from the route. */
@@ -47,7 +48,7 @@ interface PersistedWorkspaceTabs {
 
 export const WORKSPACE_TABS_STORAGE_KEY = "ponderosa.workspaceTabs.v2";
 
-export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
+function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
   if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allTriggers" || candidate.kind === "profile") return true;
@@ -78,7 +79,7 @@ export function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute 
 }
 
 /** Stable resource identity, used only when a deleted resource must be removed. */
-export function workspaceTabKey(route: Route): string {
+function workspaceTabKey(route: Route): string {
   switch (route.kind) {
     case "home": return "home";
     case "projects": return "projects";
@@ -102,9 +103,7 @@ export function workspaceTabKey(route: Route): string {
 }
 
 function generatedTabKey(): string {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? `tab:${crypto.randomUUID()}`
-    : `tab:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  return createClientId("tab:", () => `${Date.now()}:${Math.random().toString(36).slice(2)}`);
 }
 
 export function createWorkspaceTab(route: Route, now = Date.now(), key = generatedTabKey()): WorkspaceTabState {
@@ -182,12 +181,6 @@ export function reorderWorkspaceTabs(
   return next;
 }
 
-export function mostRecentWorkspaceTab(current: WorkspaceTabState[], excludingKey?: string): WorkspaceTabState | undefined {
-  return current
-    .filter((tab) => tab.key !== excludingKey)
-    .reduce<WorkspaceTabState | undefined>((latest, tab) => !latest || tab.lastActivatedAt > latest.lastActivatedAt ? tab : latest, undefined);
-}
-
 export function removeWorkspaceRoute(current: WorkspaceTabState[], route: Route): WorkspaceTabState[] {
   const resourceKey = workspaceTabKey(route);
   const retained = current.filter((tab) => workspaceTabKey(tab.route) !== resourceKey);
@@ -228,8 +221,4 @@ export function restoreWorkspaceTabSession(value: string | null): WorkspaceTabSe
   } catch {
     return { tabs: [] };
   }
-}
-
-export function restoreWorkspaceTabs(value: string | null): WorkspaceTabState[] {
-  return restoreWorkspaceTabSession(value).tabs;
 }

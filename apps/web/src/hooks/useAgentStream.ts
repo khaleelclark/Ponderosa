@@ -4,6 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
+import { queryKeys } from "../queryKeys";
 
 export interface ExecutionItem {
   id: string;
@@ -79,7 +80,7 @@ function projectedWorkItemId(agentId: string, workItemId: string): string {
   return `${agentId}:work-item:${workItemId}`;
 }
 
-export function mergeLiveResponseFileActivity(
+function mergeLiveResponseFileActivity(
   current: ResponseFileActivityDto[] | undefined,
   event: Extract<AgentEvent, { type: "file_change" }>,
   seq: number,
@@ -357,9 +358,9 @@ export function useAgentStream(agentId: string | undefined): StreamState {
     setState({ ...initialStreamState, lastSeq: cursor.lastSeq });
 
     const invalidateAgent = () => {
-      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
-      void queryClient.invalidateQueries({ queryKey: ["agents"] });
-      void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });
     };
 
     const subscription = api.subscribeAgent(agentId, lastSeqRef.current, {
@@ -406,17 +407,17 @@ export function useAgentStream(agentId: string | undefined): StreamState {
             : current.timeline,
         }));
 
-        queryClient.setQueriesData<AgentDetailDto>({ queryKey: ["agent", agentId] }, (detail) =>
+        queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
           detail ? updateAgentDetail(agentId, envelope, detail) : detail,
         );
 
         if (envelope.event.type === "turn_done") {
-          void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
-          void queryClient.invalidateQueries({ queryKey: ["agents"] });
-          void queryClient.invalidateQueries({ queryKey: ["token-usage"] });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
         }
         if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
-          void queryClient.invalidateQueries({ queryKey: ["agent-health"] });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });
         }
       },
     });

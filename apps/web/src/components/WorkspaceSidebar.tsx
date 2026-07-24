@@ -47,7 +47,7 @@ import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from
 import { queryKeys } from "../queryKeys";
 import { routeProjectId, type Route } from "../routing";
 import {
-  resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
+  reorderStableIds, resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
   toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
@@ -66,23 +66,6 @@ export const SIDEBAR_PANEL_WIDTH = ponderosaLayoutTokens.sidebarPanelWidth;
 
 export function clampSidebarWidth(width: number): number {
   return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
-}
-
-export function operatorInitials(displayName: string): string {
-  const words = displayName.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return "U";
-  const initials = words.length === 1
-    ? words[0]!.slice(0, 2)
-    : `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`;
-  return initials.toLocaleUpperCase();
-}
-
-export function globalSearchShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘K" | "Ctrl K" {
-  return /Mac|iPhone|iPad/iu.test(platform) ? "⌘K" : "Ctrl K";
-}
-
-export function globalSearchShortcutAccessibleLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "Command K" | "Control K" {
-  return /Mac|iPhone|iPad/iu.test(platform) ? "Command K" : "Control K";
 }
 
 function actionableProjectHealth(
@@ -168,29 +151,6 @@ function relativeChatTime(updatedAt: string): string {
   if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
   if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
   return new Date(updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-export function orderByStableIds<T>(items: T[], order: readonly string[] | undefined, id: (item: T) => string): T[] {
-  if (!order?.length) return items;
-  const rank = new Map(order.map((value, index) => [value, index] as const));
-  return [...items].sort((a, b) => {
-    const left = rank.get(id(a));
-    const right = rank.get(id(b));
-    if (left === undefined && right === undefined) return 0;
-    if (left === undefined) return 1;
-    if (right === undefined) return -1;
-    return left - right;
-  });
-}
-
-export function reorderStableIds(current: readonly string[] | undefined, visibleIds: readonly string[], sourceId: string, targetId: string): string[] {
-  const ordered = [...new Set([...(current ?? []).filter((id) => visibleIds.includes(id)), ...visibleIds])];
-  const source = ordered.indexOf(sourceId);
-  const target = ordered.indexOf(targetId);
-  if (source < 0 || target < 0 || source === target) return ordered;
-  ordered.splice(source, 1);
-  ordered.splice(target, 0, sourceId);
-  return ordered;
 }
 
 function SidebarSortControl({ sort, onSort }: { sort: WorkspacePreferencesDto["projectSort"]; onSort(sort: WorkspacePreferencesDto["projectSort"]): void }): JSX.Element {

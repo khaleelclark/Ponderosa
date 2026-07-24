@@ -1,6 +1,6 @@
 import type { ArtifactKind } from "@ponderosa/core";
 
-export type PreviewCapability = "image" | "markdown" | "text" | "pdf" | "diff" | "unsupported";
+type PreviewCapability = "image" | "markdown" | "text" | "pdf" | "diff" | "unsupported";
 
 export interface MimeCapability {
   kind: PreviewCapability;

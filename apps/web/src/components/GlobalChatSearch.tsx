@@ -23,6 +23,7 @@ import type { GlobalChatSearchResultDto, RecentGlobalChatDto, SearchHighlightRan
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 
 export type GlobalSearchSelection =
@@ -79,12 +80,22 @@ function SearchSnippet({ snippet, ranges }: { snippet: string; ranges: SearchHig
   </Typography>;
 }
 
-export function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
-  result: GlobalChatSearchResultDto;
-  onSelect(openInNewTab?: boolean): void;
-  active?: boolean;
+function SearchResultRow({
+  id,
+  active,
+  onActive,
+  onSelect,
+  ariaLabel,
+  primary,
+  secondary,
+}: {
   id?: string;
+  active: boolean;
   onActive?(): void;
+  onSelect(openInNewTab?: boolean): void;
+  ariaLabel: string;
+  primary: React.ReactNode;
+  secondary: React.ReactNode;
 }): JSX.Element {
   return <ListItemButton
     id={id}
@@ -96,21 +107,36 @@ export function GlobalSearchResultItem({ result, onSelect, active = false, id, o
     onMouseDown={(event) => event.preventDefault()}
     onClick={(event) => onSelect(event.metaKey || event.ctrlKey)}
     alignItems="flex-start"
-    aria-label={`Open ${result.chat.title} at message by ${result.author.label}`}
+    aria-label={ariaLabel}
     sx={{ borderRadius: 1.5, mb: .5 }}
   >
-    <ListItemText
-      primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+    <ListItemText primary={primary} secondary={secondary} />
+  </ListItemButton>;
+}
+
+export function GlobalSearchResultItem({ result, onSelect, active = false, id, onActive }: {
+  result: GlobalChatSearchResultDto;
+  onSelect(openInNewTab?: boolean): void;
+  active?: boolean;
+  id?: string;
+  onActive?(): void;
+}): JSX.Element {
+  return <SearchResultRow
+    id={id}
+    active={active}
+    onActive={onActive}
+    onSelect={onSelect}
+    ariaLabel={`Open ${result.chat.title} at message by ${result.author.label}`}
+    primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
         {result.unread ? <Box component="span" aria-label="Unread" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.main", flexShrink: 0 }} /> : null}
         <Typography variant="caption" color="text.secondary" noWrap sx={{ ml: "auto !important", flexShrink: 0 }}>{new Date(result.timestamp).toLocaleString()}</Typography>
       </Stack>}
-      secondary={<Stack spacing={.25} component="span">
+    secondary={<Stack spacing={.25} component="span">
         <Typography component="span" variant="caption" color="text.secondary">{result.project.label} · {result.chat.kind === "agent" ? "Agent" : "Project chat"} · {result.author.label}</Typography>
         <SearchSnippet snippet={result.snippet} ranges={result.highlights} />
       </Stack>}
-    />
-  </ListItemButton>;
+  />;
 }
 
 function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
@@ -120,30 +146,21 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   id?: string;
   onActive?(): void;
 }): JSX.Element {
-  return <ListItemButton
+  return <SearchResultRow
     id={id}
-    role="option"
-    selected={active}
-    aria-selected={active}
-    tabIndex={-1}
-    onMouseMove={onActive}
-    onMouseDown={(event) => event.preventDefault()}
-    onClick={(event) => onSelect(event.metaKey || event.ctrlKey)}
-    alignItems="flex-start"
-    aria-label={`Open recent chat ${recent.chat.title}`}
-    sx={{ borderRadius: 1.5, mb: .5 }}
-  >
-    <ListItemText
-      primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+    active={active}
+    onActive={onActive}
+    onSelect={onSelect}
+    ariaLabel={`Open recent chat ${recent.chat.title}`}
+    primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Typography fontWeight={700} noWrap>{recent.chat.title}</Typography>
         {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800 }}>{recent.unreadCount} unread</Typography> : null}
       </Stack>}
-      secondary={<Stack component="span" spacing={.25}>
+    secondary={<Stack component="span" spacing={.25}>
         <Typography component="span" variant="caption" color="text.secondary">{recent.project.label} · {recent.chat.kind === "agent" ? "Agent" : "Project chat"}</Typography>
         {recent.snippet ? <Typography component="span" variant="body2" color="text.secondary" noWrap>{recent.snippet}</Typography> : null}
       </Stack>}
-    />
-  </ListItemButton>;
+  />;
 }
 
 export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
@@ -166,7 +183,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     if (open) setDebouncedQuery(query.trim());
   }, [open]);
   const search = useQuery({
-    queryKey: ["global-search", debouncedQuery],
+    queryKey: queryKeys.globalSearch.results(debouncedQuery),
     queryFn: () => api.searchGlobalChats(debouncedQuery),
     enabled: open,
     staleTime: 5_000,

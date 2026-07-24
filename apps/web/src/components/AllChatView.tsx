@@ -18,6 +18,9 @@ import { AttentionSurface } from "./AttentionSurface";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ChatSurface } from "./chat/ChatSurface";
+import { uniqueBy } from "../collections";
+import { createClientId } from "../clientId";
+import { queryKeys } from "../queryKeys";
 
 export function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -34,10 +37,8 @@ export function allChatSourceRoute(item: AllChatItemDto): Route {
 }
 
 export function mergeAllChatItems(...groups: AllChatItemDto[][]): AllChatItemDto[] {
-  const byId = new Map<string, AllChatItemDto>();
-  for (const item of groups.flat()) byId.set(item.communicationEventId, item);
-  return [...byId.values()].sort((a, b) =>
-    a.createdAt.localeCompare(b.createdAt) || a.communicationEventId.localeCompare(b.communicationEventId));
+  return uniqueBy(groups.flat(), (item) => item.communicationEventId,
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.communicationEventId.localeCompare(b.communicationEventId));
 }
 
 function sourceLabel(item: AllChatItemDto): string {
@@ -76,7 +77,7 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
   const selected = items.find((item) => item.communicationEventId === selectedId);
   const selectedAgentId = selected?.directMessageAgent?.id;
   const selectedAgent = useQuery({
-    queryKey: ["agent", selectedAgentId, 100],
+    queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, 100),
     enabled: Boolean(selectedAgentId),
   });
@@ -97,14 +98,14 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
       refresh: true,
     });
     queryClient.setQueryData(
-      ["engine-capabilities", selected.project.id, selectedAgentId, selectedEngineId, selectedModel],
+      queryKeys.engines.capabilitySelection(selected.project.id, selectedAgentId, selectedEngineId, selectedModel),
       discovered,
     );
   };
   const selectedEngineId = selectedAgent.data?.agent.activeEngine;
   const selectedModel = selectedAgent.data?.agent.model;
   const selectedCapabilities = useQuery({
-    queryKey: ["engine-capabilities", selected?.project.id, selectedAgentId, selectedEngineId, selectedModel],
+    queryKey: queryKeys.engines.capabilitySelection(selected?.project.id, selectedAgentId, selectedEngineId, selectedModel),
     queryFn: () => api.getEngineCapabilities(selected!.project.id, {
       engineId: selectedEngineId,
       model: selectedModel,
@@ -138,15 +139,15 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
         text: body.trim(),
         ...(draftAttachmentIds.length ? { draftAttachmentIds, draftId: `agent:${selected.directMessageAgent.id}`, draftOwnerId } : {}),
         replyToMessageId: selected.messageId,
-        idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        idempotencyKey: createClientId(),
         activeRunDelivery: "steer",
       });
     },
     onSuccess: (_response, _variables) => {
       setNotice(`Direct message sent to ${selected?.directMessageAgent?.title ?? "Agent"}.`);
-      void queryClient.invalidateQueries({ queryKey: ["all-chat"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (selected?.directMessageAgent) {
-        void queryClient.invalidateQueries({ queryKey: ["agent", selected.directMessageAgent.id] });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(selected.directMessageAgent.id) });
       }
     },
   });

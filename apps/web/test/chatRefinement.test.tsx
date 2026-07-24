@@ -119,6 +119,7 @@ describe("chat interaction refinement", () => {
 
   it("uses one bounded document column and removes the nested Markdown preview scroller", () => {
     const conversation = readFileSync(new URL("../src/components/ConversationView.tsx", import.meta.url), "utf8");
+    const chatSurface = readFileSync(new URL("../src/components/chat/ChatSurface.tsx", import.meta.url), "utf8");
     const documentCard = readFileSync(new URL("../src/components/chat/ChatDocumentCard.tsx", import.meta.url), "utf8");
     const html = renderToStaticMarkup(
       <ConversationMessage
@@ -131,8 +132,9 @@ describe("chat interaction refinement", () => {
       />,
     );
 
-    expect(conversation).toContain("data-chat-column");
-    expect(conversation).toContain('width: "min(1180px, 100%)"');
+    expect(conversation).toContain('layout="project"');
+    expect(chatSurface).toContain("data-chat-column");
+    expect(chatSurface).toContain("layout === \"project\" ? 1180");
     expect(html).toContain("width:min(1120px, 100%)");
     expect(documentCard).not.toContain('maxHeight: "60vh", overflow: "auto"');
     expect(documentCard).toContain('className="ponderosa-scroll"');

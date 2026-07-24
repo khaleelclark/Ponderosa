@@ -19,11 +19,10 @@ import {
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
-  resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
+  reorderStableIds, resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
   toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import type { Route } from "../routing";
-import { reorderStableIds } from "./WorkspaceSidebar";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
@@ -66,7 +65,6 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         draggable
         onDragStart={() => setDragged(conversation.id)}
         onDragEnd={() => setDragged(undefined)}
-        onDragOver={() => undefined}
         onDrop={() => {
           if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, rows.map((row) => row.conversation.id), dragged, conversation.id) });
           setDragged(undefined);
@@ -140,7 +138,6 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
         draggable
         onDragStart={() => setDragged(trigger.id)}
         onDragEnd={() => setDragged(undefined)}
-        onDragOver={() => undefined}
         onDrop={() => {
           if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, rows.map((row) => row.trigger.id), dragged, trigger.id) });
           setDragged(undefined);

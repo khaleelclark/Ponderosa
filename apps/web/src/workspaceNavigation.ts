@@ -14,12 +14,6 @@ export interface WorkspaceProjectSnapshot {
   health: AgentHealthDto[];
 }
 
-export interface WorkspaceChatRow {
-  conversation: ConversationDto;
-  project: ProjectDto;
-  unread: number;
-}
-
 export interface WorkspaceAgentRow {
   agent: AgentDto;
   project: ProjectDto;
@@ -43,21 +37,6 @@ export function hasUnreadConversationNotifications(
 ): boolean {
   return Boolean(conversationId && notifications.some((notification) =>
     notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open"));
-}
-
-export function workspaceChats(
-  snapshots: WorkspaceProjectSnapshot[],
-  notifications: WorkspaceNotificationDto[],
-  limit?: number,
-): WorkspaceChatRow[] {
-  const unread = unreadByConversation(notifications);
-  const rows = snapshots.flatMap(({ project, conversations }) => conversations
-    .filter((conversation) => !conversation.archived)
-    .map((conversation) => ({ conversation, project, unread: unread.get(conversation.id) ?? 0 })));
-  rows.sort((a, b) => b.conversation.updatedAt.localeCompare(a.conversation.updatedAt)
-    || a.project.label.localeCompare(b.project.label)
-    || a.conversation.id.localeCompare(b.conversation.id));
-  return limit === undefined ? rows : rows.slice(0, limit);
 }
 
 export function workspaceAgents(snapshots: WorkspaceProjectSnapshot[]): WorkspaceAgentRow[] {
@@ -93,8 +72,4 @@ export function currentProjectSnapshot(
 export function projectDisambiguator(project: ProjectDto, projects: ProjectDto[]): string {
   const duplicateLabel = projects.some((candidate) => candidate.id !== project.id && candidate.label.localeCompare(project.label, undefined, { sensitivity: "base" }) === 0);
   return duplicateLabel ? `${project.label} · ${project.hostPath}` : project.label;
-}
-
-export function projectContextLabel(project: ProjectDto, title: string, projects: ProjectDto[] = [project]): string {
-  return `${title} · ${projectDisambiguator(project, projects)}`;
 }

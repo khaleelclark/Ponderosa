@@ -1,7 +1,7 @@
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import { Button, IconButton, Tooltip } from "@mui/material";
 
-export const CHAT_BOTTOM_THRESHOLD = 48;
+const CHAT_BOTTOM_THRESHOLD = 48;
 
 export function isChatNearBottom(
   element: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,

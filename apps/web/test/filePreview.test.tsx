@@ -2,7 +2,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { create } from "react-test-renderer";
 import { describe, expect, it } from "vitest";
 import { FilePreview } from "../src/components/filePreview/FilePreview";
-import { AttachmentPreview } from "../src/components/filePreview/AttachmentPreview";
 import { normalizedMediaType, previewCapability } from "../src/components/filePreview/mimeCapabilities";
 
 describe("MIME-aware file previews", () => {
@@ -55,28 +54,4 @@ describe("MIME-aware file previews", () => {
     expect(unsupported).toContain("cannot be displayed safely");
   });
 
-  it("shares MIME-aware open/download actions across chat attachments", () => {
-    const image = renderToStaticMarkup(<AttachmentPreview attachment={{
-      id: "asset-1",
-      name: "screen.png",
-      mediaType: "image/png",
-      size: 2048,
-      url: "/asset",
-      previewUrl: "/asset/preview",
-      downloadUrl: "/asset/download",
-    }} />);
-    expect(image).toContain('data-preview-capability="image"');
-    expect(image).toContain('alt="screen.png"');
-    expect(image).toContain('aria-label="Open screen.png"');
-    expect(image).toContain('aria-label="Download screen.png"');
-
-    const html = renderToStaticMarkup(<AttachmentPreview attachment={{
-      id: "asset-2",
-      name: "page.html",
-      mediaType: "text/html",
-      url: "/page",
-    }} />);
-    expect(html).toContain('data-preview-capability="unsupported"');
-    expect(html).not.toContain("<iframe");
-  });
 });

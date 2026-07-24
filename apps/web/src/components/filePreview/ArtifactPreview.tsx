@@ -16,7 +16,7 @@ function artifactLabel(artifact: Pick<ArtifactDto, "kind" | "path" | "summary">)
   return summary || artifact.path.split(/[\\/]/u).at(-1) || "Result";
 }
 
-export function ArtifactProvenance({
+function ArtifactProvenance({
   artifact,
   agentTitle,
   onOpenRun,

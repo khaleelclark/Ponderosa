@@ -113,7 +113,7 @@ export interface RuntimeSelection {
   effort: string;
 }
 
-export interface RuntimeOption {
+interface RuntimeOption {
   id: string;
   label: string;
   disabled?: boolean;

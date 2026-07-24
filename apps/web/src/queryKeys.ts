@@ -18,6 +18,12 @@ export const queryKeys = {
   engines: {
     all: ["engines"] as const,
     capabilities: (projectId: string) => ["engine-capabilities", projectId] as const,
+    capabilitySelection: (
+      projectId: string | undefined,
+      agentId: string | undefined,
+      engineId: string | undefined,
+      model: string | undefined,
+    ) => ["engine-capabilities", projectId, agentId, engineId, model] as const,
   },
   conversations: {
     all: ["conversations"] as const,
@@ -40,9 +46,40 @@ export const queryKeys = {
   triggers: {
     all: ["triggers"] as const,
     agent: (agentId: string) => ["triggers", agentId] as const,
+    occurrencesAll: ["trigger-occurrences"] as const,
     occurrence: (triggerId: string | undefined) => ["trigger-occurrences", triggerId] as const,
     agentOccurrences: (agentId: string) => ["agent-trigger-occurrences", agentId] as const,
   },
+  queuedMessages: {
+    conversation: (conversationId: string) => ["queued-messages", conversationId] as const,
+    agentsAll: ["queued-agent-messages"] as const,
+    agent: (agentId: string) => ["queued-agent-messages", agentId] as const,
+  },
+  conversationDraft: {
+    prefix: (conversationId: string) => ["conversation-draft", conversationId] as const,
+    detail: (conversationId: string | undefined, draftOwnerId: string | undefined) =>
+      ["conversation-draft", conversationId, draftOwnerId] as const,
+  },
+  workspaceStatus: {
+    all: ["workspace-status"] as const,
+    project: (projectId: string) => ["workspace-status", projectId] as const,
+  },
+  workspaceFile: {
+    all: ["workspace-file"] as const,
+    project: (projectId: string) => ["workspace-file", projectId] as const,
+  },
+  agentWork: {
+    all: ["agent-work"] as const,
+    project: (projectId: string) => ["agent-work", projectId] as const,
+  },
+  tokenUsage: {
+    all: ["token-usage"] as const,
+  },
+  globalSearch: {
+    all: ["global-search"] as const,
+    results: (query: string) => ["global-search", query] as const,
+  },
+  allChatAll: ["all-chat"] as const,
   allChat: (limit: number) => ["all-chat", limit] as const,
   projectFolders: ["project-folders"] as const,
   collaborationAll: ["collaboration-chat"] as const,

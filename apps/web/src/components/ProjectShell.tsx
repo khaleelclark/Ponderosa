@@ -6,7 +6,6 @@ import type { AgentHealthDto, EngineDto, ConversationDto, ProjectDto, ProjectEng
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { chatStateKey, writeChatState } from "../chatState";
 import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
@@ -159,11 +158,6 @@ export function ProjectShell({
     navigate({ kind: "review", projectId, agentId });
   };
 
-  const openAgentWorkLog = (agentId: string) => {
-    writeChatState(chatStateKey("view", `agent.${agentId}`), "activity");
-    navigate({ kind: "agent", projectId, agentId, view: "activity" });
-  };
-
   const openAgentFileActivity = (agentId: string, file: ResponseFileActivityDto) => {
     if (file.artifactId) {
       navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: file.artifactId } });
@@ -242,7 +236,6 @@ export function ProjectShell({
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
           : navigate({ kind: "agent", projectId, agentId })}
-        onOpenWorkLog={openAgentWorkLog}
         onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}

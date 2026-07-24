@@ -4,13 +4,6 @@ import type {
 } from "@ponderosa/core";
 import type { ReactNode } from "react";
 
-export interface ChatComposerSubmission {
-  text: string;
-  files: File[];
-  stagedAttachmentIds: string[];
-  draftOwnerId?: string;
-}
-
 export interface ChatComposerContract {
   disabled: boolean;
   running: boolean;

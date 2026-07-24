@@ -1,7 +1,7 @@
 import type { SseEventEnvelope, AgentDetailDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
 import { reconcileAgentCursor, runningAfterAgentEvent, updateAgentDetail } from "../src/hooks/useAgentStream";
-import { finalizedWorkDurationMs, formatExecutionElapsed, formatFinalizedWorkDuration } from "../src/components/AgentDetail";
+import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../src/time";
 
 describe("updateAgentDetail", () => {
   it("detects gaps and duplicates with a constant-memory ordered cursor", () => {
@@ -13,13 +13,7 @@ describe("updateAgentDetail", () => {
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T00:02:03.000Z"))).toBe("2:03");
     expect(formatExecutionElapsed("2026-07-12T00:00:00.000Z", Date.parse("2026-07-12T01:02:03.000Z"))).toBe("1:02:03");
   });
-  it("sums only authoritative finalized Run intervals as natural worked time", () => {
-    expect(finalizedWorkDurationMs([
-      { startedAt: "2026-07-12T00:00:00.000Z", completedAt: "2026-07-12T00:20:10.000Z" },
-      { startedAt: "2026-07-12T01:00:00.000Z", completedAt: "2026-07-12T01:03:05.000Z" },
-      { startedAt: "2026-07-12T02:00:00.000Z" },
-      { startedAt: "invalid", completedAt: "2026-07-12T03:00:00.000Z" },
-    ])).toBe(23 * 60_000 + 15_000);
+  it("formats natural worked time", () => {
     expect(formatFinalizedWorkDuration(23 * 60_000 + 15_000)).toBe("23m 15s");
     expect(formatFinalizedWorkDuration(3_723_000)).toBe("1h 2m 3s");
   });

@@ -1,5 +1,6 @@
 import type { WebPushStatusDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { api } from "./api";
+import { createClientId } from "./clientId";
 
 const DEVICE_KEY = "ponderosa.push.device.v1";
 const STATUS_SIGNAL_KEY = "ponderosa.push.status-changed.v1";
@@ -51,17 +52,17 @@ function prerequisites(): WebPushPrerequisites {
   };
 }
 
-export function webPushDeviceId(): string {
+function webPushDeviceId(): string {
   try {
     const existing = window.localStorage.getItem(DEVICE_KEY);
     if (existing) return existing;
-    const created = globalThis.crypto?.randomUUID?.() ?? `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const created = createClientId("", () => `device-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     window.localStorage.setItem(DEVICE_KEY, created);
     return created;
   } catch {
     // A stable ID for this loaded tab still lets registration work when browser
     // storage is unavailable. Endpoint deduplication prevents duplicates later.
-    fallbackDeviceId ??= `ephemeral-${globalThis.crypto?.randomUUID?.() ?? Date.now()}`;
+    fallbackDeviceId ??= createClientId("ephemeral-", () => String(Date.now()));
     return fallbackDeviceId;
   }
 }

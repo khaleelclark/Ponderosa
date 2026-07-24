@@ -9,7 +9,7 @@ import {
   normalizeBrowserWheelDelta,
 } from "../../browserInteraction";
 
-export const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
+const BROWSER_VIEWPORT = { width: 1280, height: 720 } as const;
 
 export function BrowserViewport<Session extends BrowserSession>({
   adapter,

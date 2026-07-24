@@ -21,6 +21,7 @@ import type { AgentPortablePackageDto, ConversationDto, EngineDto } from "@ponde
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 const MAX_IMPORT_FILE_BYTES = 96 * 1024 * 1024;
 
@@ -85,7 +86,7 @@ export function ImportAgentDialog({
       setEngineMapping({});
       setAcknowledgeElevatedPermissions(false);
       setError(undefined);
-      void queryClient.invalidateQueries({ queryKey: ["agents", projectId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
       onClose();
       onImported(result.rootAgentId);
     },

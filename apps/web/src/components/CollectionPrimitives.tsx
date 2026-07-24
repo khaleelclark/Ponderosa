@@ -1,6 +1,5 @@
 import SearchIcon from "@mui/icons-material/Search";
 import {
-  Alert,
   Box,
   InputAdornment,
   Paper,
@@ -63,18 +62,6 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
   </Stack>;
 }
 
-export function CollectionState({ loading, error, empty, children }: {
-  loading?: boolean;
-  error?: string;
-  empty?: string;
-  children?: ReactNode;
-}): JSX.Element {
-  if (loading) return <Typography role="status" color="text.secondary" sx={{ p: 2 }}>Loading…</Typography>;
-  if (error) return <Alert severity="error" sx={{ m: 2 }}>{error}</Alert>;
-  if (empty) return <Alert severity="info" sx={{ m: 2 }}>{empty}</Alert>;
-  return <>{children}</>;
-}
-
 export interface ResourceRowProps {
   label: string;
   description?: ReactNode;
@@ -86,7 +73,6 @@ export interface ResourceRowProps {
   draggable?: boolean;
   onDragStart?(): void;
   onDragEnd?(): void;
-  onDragOver?(): void;
   onDrop?(): void;
 }
 
@@ -101,7 +87,6 @@ export function ResourceRow({
   draggable,
   onDragStart,
   onDragEnd,
-  onDragOver,
   onDrop,
 }: ResourceRowProps): JSX.Element {
   return <Paper
@@ -110,9 +95,8 @@ export function ResourceRow({
     onDragStart={onDragStart}
     onDragEnd={onDragEnd}
     onDragOver={(event) => {
-      if (!onDragOver) return;
+      if (!onDrop) return;
       event.preventDefault();
-      onDragOver();
     }}
     onDrop={(event) => {
       if (!onDrop) return;

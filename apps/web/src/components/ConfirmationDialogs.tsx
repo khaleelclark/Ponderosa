@@ -11,7 +11,7 @@ import {
 import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 
-export interface FormDialogShellProps {
+interface FormDialogShellProps {
   open: boolean;
   title: ReactNode;
   children: ReactNode;
@@ -27,7 +27,7 @@ export interface FormDialogShellProps {
   onConfirm(): void;
 }
 
-export function FormDialogShell({
+function FormDialogShell({
   open,
   title,
   children,

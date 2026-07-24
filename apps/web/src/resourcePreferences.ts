@@ -45,6 +45,21 @@ export function workspaceResourceSortPatch(kind: WorkspaceResourceSortKind, sort
   return { triggerSort: sort };
 }
 
+export function reorderStableIds(
+  current: readonly string[] | undefined,
+  visibleIds: readonly string[],
+  sourceId: string,
+  targetId: string,
+): string[] {
+  const ordered = [...new Set([...(current ?? []).filter((id) => visibleIds.includes(id)), ...visibleIds])];
+  const source = ordered.indexOf(sourceId);
+  const target = ordered.indexOf(targetId);
+  if (source < 0 || target < 0 || source === target) return ordered;
+  ordered.splice(source, 1);
+  ordered.splice(target, 0, sourceId);
+  return ordered;
+}
+
 export function sortWorkspaceResources<T>(
   items: T[],
   sort: ProjectSort,

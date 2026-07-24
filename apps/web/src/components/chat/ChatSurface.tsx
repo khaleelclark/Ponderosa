@@ -28,15 +28,18 @@ export function ChatSurface({
 }): JSX.Element {
   const scroll = useChatScroll(layoutKey, follow);
   const isEmpty = Children.count(children) === 0;
-  const contentWidth = layout === "workspace" ? 1280 : 1120;
+  const contentWidth = layout === "workspace" ? 1280 : layout === "project" ? 1180 : 1120;
   const padding = layout === "agent"
     ? { xs: 1, sm: 2, md: 3, lg: 4 }
-    : { xs: 1.5, md: 2.5 };
+    : layout === "project"
+      ? { xs: 1, sm: 2, md: 3, lg: 4 }
+      : { xs: 1.5, md: 2.5 };
 
   return (
     <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack
         component="section"
+        data-chat-column={layout === "project" ? true : undefined}
         aria-label={label}
         className="chat-scroll-region ponderosa-scroll"
         ref={scroll.scrollRef}

@@ -51,8 +51,10 @@ import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, C
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
-import { useAgent, useNotifications } from "../hooks/queries";
+import { uniqueBy } from "../collections";
+import { useAgent, useNotifications, useProjects, useWorkspacePreferences } from "../hooks/queries";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { useAgentStream } from "../hooks/useAgentStream";
 import { agentIdForMentionHandle, agentMentionHandle } from "../mentions";
@@ -81,6 +83,7 @@ import { notificationTechnicalFocusId } from "../technicalFocus";
 import { queryKeys } from "../queryKeys";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { ConfirmDialog } from "./ConfirmationDialogs";
+import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../time";
 
 type AgentTab = AgentDetailView;
 
@@ -103,27 +106,27 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
   const next = { ...current };
   const history = preserveHistory ? current[page.stream]?.history : page.history;
   if (page.stream === "runOutput") next.runOutput = {
-    items: [...new Map([...page.items, ...(current.runOutput?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.runOutput?.items ?? [])], (item) => item.id),
     history,
   };
   else if (page.stream === "activity") next.activity = {
-    items: [...new Map([...page.items, ...(current.activity?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.activity?.items ?? [])], (item) => item.id),
     history,
   };
   else if (page.stream === "changedFiles") next.changedFiles = {
-    items: [...new Map([...page.items, ...(current.changedFiles?.items ?? [])].map((item) => [item.path, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.changedFiles?.items ?? [])], (item) => item.path),
     history,
   };
   else if (page.stream === "runs") next.runs = {
-    items: [...new Map([...page.items, ...(current.runs?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.runs?.items ?? [])], (item) => item.id),
     history,
   };
   else if (page.stream === "workItems") next.workItems = {
-    items: [...new Map([...page.items, ...(current.workItems?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.workItems?.items ?? [])], (item) => item.id),
     history,
   };
   else next.artifacts = {
-    items: [...new Map([...page.items, ...(current.artifacts?.items ?? [])].map((item) => [item.id, item] as const)).values()],
+    items: uniqueBy([...page.items, ...(current.artifacts?.items ?? [])], (item) => item.id),
     history,
   };
   return next;
@@ -132,35 +135,6 @@ function mergeTelemetryPage(current: TelemetryPageState, page: AgentTelemetryPag
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
   tab === "activity" ? ["runOutput", "activity", "runs"]
     : tab === "artifacts" ? ["artifacts"] : [];
-
-export function formatExecutionElapsed(startedAt: string, now = Date.now()): string {
-  const elapsedSeconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
-  const hours = Math.floor(elapsedSeconds / 3600);
-  const minutes = Math.floor((elapsedSeconds % 3600) / 60);
-  const seconds = elapsedSeconds % 60;
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
-    : `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-export function finalizedWorkDurationMs(runs: ReadonlyArray<Pick<AgentDetailDto["runs"][number], "startedAt" | "completedAt">>): number {
-  return runs.reduce((total, run) => {
-    if (!run.completedAt) return total;
-    const startedAt = Date.parse(run.startedAt);
-    const completedAt = Date.parse(run.completedAt);
-    return Number.isFinite(startedAt) && Number.isFinite(completedAt) && completedAt >= startedAt
-      ? total + completedAt - startedAt
-      : total;
-  }, 0);
-}
-
-export function formatFinalizedWorkDuration(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1_000));
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  return [hours ? `${hours}h` : "", minutes ? `${minutes}m` : "", `${seconds}s`].filter(Boolean).join(" ");
-}
 
 export function directAgentDeliveryNotice(
   response: SendMessageResponse,
@@ -314,7 +288,7 @@ export function AgentDetail({
   const sendMessage = useSendMessage(agentId);
   useEffect(() => setReplyTo(undefined), [agentId]);
   const queuedMessagesQuery = useQuery({
-    queryKey: ["queued-agent-messages", agentId],
+    queryKey: queryKeys.queuedMessages.agent(agentId),
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
   const [tab, setTab] = useState<AgentTab>(() => {
@@ -349,22 +323,22 @@ export function AgentDetail({
   const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) => api.cancelQueuedAgentMessage(agentId, deliveryId, {
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
     }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agent(agentId) }),
   });
   const editQueuedMessage = useMutation({
     mutationFn: ({ deliveryId, text }: { deliveryId: string; text: string }) => api.editQueuedAgentMessage(agentId, deliveryId, {
       text,
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
     }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agent(agentId) }),
   });
   const steerQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) => api.steerQueuedAgentMessage(agentId, deliveryId, {
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
     }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agent(agentId) }),
   });
 
   useEffect(() => {
@@ -393,11 +367,11 @@ export function AgentDetail({
   const detail = useMemo(() => {
     if (!agentQuery.data) return undefined;
     const mergeBy = <T,>(current: T[], older: T[] | undefined, id: (item: T) => string, compare: (a: T, b: T) => number): T[] =>
-      [...new Map([...(older ?? []), ...current].map((item) => [id(item), item] as const)).values()].sort(compare);
+      uniqueBy([...(older ?? []), ...current], id, compare);
     return {
       ...agentQuery.data,
-      messages: [...new Map([...(olderMessages?.messages ?? []), ...agentQuery.data.messages].map((message) => [message.id, message] as const)).values()]
-        .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+      messages: uniqueBy([...(olderMessages?.messages ?? []), ...agentQuery.data.messages], (message) => message.id,
+        (a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
       runOutput: mergeBy(agentQuery.data.runOutput, olderTelemetry.runOutput?.items, (item) => item.id, (a, b) => a.seq - b.seq),
       activity: mergeBy(agentQuery.data.activity, olderTelemetry.activity?.items, (item) => item.id, (a, b) => a.seq - b.seq),
       changedFiles: mergeBy(agentQuery.data.changedFiles, olderTelemetry.changedFiles?.items, (item) => item.path, (a, b) => a.lastSeq - b.lastSeq),
@@ -430,8 +404,8 @@ export function AgentDetail({
         focusedMessage.current = `loading:${focusMessageId}`;
         void api.getAgent(agentId, 100, undefined, focusMessageId).then((page) => {
           setOlderMessages((current) => ({
-            messages: [...new Map([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])].map((message) => [message.id, message] as const)).values()]
-              .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+            messages: uniqueBy([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])],
+              (message) => message.id, (a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
             cursor: page.history?.cursor,
             hasMore: page.history?.hasMore ?? false,
           }));
@@ -490,8 +464,8 @@ export function AgentDetail({
     target.focus({ preventScroll: true });
     focusedTelemetryRef.current = focusKey;
   }, [agentId, detail?.activity, detail?.artifacts, detail?.changedFiles, detail?.runOutput, detail?.runs, detail?.workItems, focusTelemetry, tab]);
-  const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
-  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
+  const preferencesQuery = useWorkspacePreferences();
+  const projectsQuery = useProjects();
   const engine =
     engines.find((candidate) => candidate.id === detail?.agent.activeEngine) ?? engines[0];
   const project = projectsQuery.data?.find((candidate) => candidate.id === detail?.agent.projectId);
@@ -571,20 +545,20 @@ export function AgentDetail({
       api.cancelRun(agentId, { idempotencyKey, targetRunId }),
     onSettled: () => {
       stopRequestId.current = undefined;
-      void queryClient.invalidateQueries({ queryKey: ["agent", agentId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
     },
   });
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: (updated) => {
-      queryClient.setQueryData<EngineDto[]>(["engines"], (current) =>
+      queryClient.setQueryData<EngineDto[]>(queryKeys.engines.all, (current) =>
         current?.map((candidate) => candidate.id === updated.id ? updated : candidate));
-      void queryClient.invalidateQueries({ queryKey: ["engines"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
     },
   });
   const stopActiveRun = () => {
     if (!runtimeActivity?.executionId) return Promise.reject(new Error("The active Run changed before it could be stopped."));
-    const idempotencyKey = stopRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+    const idempotencyKey = stopRequestId.current ?? createClientId();
     stopRequestId.current = idempotencyKey;
     return cancelRun.mutateAsync({ idempotencyKey, targetRunId: runtimeActivity.executionId });
   };
@@ -715,8 +689,8 @@ export function AgentDetail({
     try {
       const page = await api.getAgent(agentId, 100, cursor);
       setOlderMessages((current) => ({
-        messages: [...new Map([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])].map((message) => [message.id, message] as const)).values()]
-          .sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
+        messages: uniqueBy([...page.messages, ...(current?.messages ?? []), ...(agentQuery.data?.messages ?? [])],
+          (message) => message.id, (a, b) => a.seq - b.seq || a.id.localeCompare(b.id)),
         cursor: page.history?.cursor,
         hasMore: page.history?.hasMore ?? false,
       }));
@@ -841,7 +815,7 @@ export function AgentDetail({
           return await sendMessage.mutateAsync(
             {
               text,
-              idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+              idempotencyKey: createClientId(),
               attachmentIds: attachments.map((item) => item.id),
               ...(draftAttachmentIds.length ? { draftAttachmentIds, draftId: `agent:${agentId}`, draftOwnerId } : {}),
               model,
@@ -853,7 +827,7 @@ export function AgentDetail({
               onSuccess: (response) => {
                 setReplyTo(undefined);
                 setQueuedMessageNotice(directAgentDeliveryNotice(response, activeRunDelivery));
-                void queryClient.invalidateQueries({ queryKey: ["queued-agent-messages", agentId] });
+                void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.agent(agentId) });
                 void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(detail.agent.projectId) });
               },
             },
@@ -1005,7 +979,7 @@ export function AgentDetail({
   </Stack>;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenWorkLog={() => { setTab("activity"); onViewChange?.("activity"); }} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} onReply={setReplyTo} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} onReply={setReplyTo} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: createClientId(), text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
     triggers: <TriggersPane agent={detail.agent} initialCreateOpen={createTrigger} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,

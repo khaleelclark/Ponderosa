@@ -687,5 +687,3 @@ export const realApi = {
     return { close: () => source.close() };
   },
 };
-
-export type PonderosaApi = typeof realApi;

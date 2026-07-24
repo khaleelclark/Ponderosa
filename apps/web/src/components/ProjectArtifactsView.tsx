@@ -33,6 +33,7 @@ import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@pondero
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import { uniqueBy } from "../collections";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
@@ -153,10 +154,10 @@ export function ProjectArtifactsView({
   });
   const records = useMemo(() => {
     const agentById = new Map(agents.map((agent) => [agent.id, agent] as const));
-    const canonical = [...new Map([
+    const canonical = uniqueBy([
       ...(olderArtifacts?.items ?? []),
       ...(projectArtifacts.data?.items ?? []),
-    ].map((artifact) => [artifact.id, artifact] as const)).values()]
+    ], (artifact) => artifact.id)
       .filter((artifact) => projectOutputKinds.has(artifact.kind));
     return canonical.map((artifact) => ({
         agent: agentById.get(artifact.originAgentId ?? artifact.agentId),
@@ -264,7 +265,7 @@ export function ProjectArtifactsView({
           setLoadingOlder(true);
           void api.listProjectArtifacts(projectId, 100, cursor).then((page) => {
             setOlderArtifacts((current) => ({
-              items: [...new Map([...page.items, ...(current?.items ?? [])].map((artifact) => [artifact.id, artifact] as const)).values()],
+              items: uniqueBy([...page.items, ...(current?.items ?? [])], (artifact) => artifact.id),
               cursor: page.history.cursor,
               hasMore: page.history.hasMore,
             }));

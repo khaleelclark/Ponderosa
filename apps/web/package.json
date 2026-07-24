@@ -18,7 +18,6 @@
     "@mui/material": "^6.3.0",
     "@ponderosa/core": "workspace:*",
     "@tanstack/react-query": "^5.101.2",
-    "frimousse": "^0.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",

@@ -8,6 +8,7 @@ import type { ProjectBrowserSessionDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import { BrowserViewport } from "./browser/BrowserViewport";
 import { projectBrowserAdapter } from "./browser/browserAdapters";
 import { useBrowserController } from "./browser/useBrowserController";
@@ -36,14 +37,14 @@ export function ProjectBrowserDialog({
     },
   });
   const agentsQuery = useQuery({
-    queryKey: ["agents", projectId],
+    queryKey: queryKeys.agents.project(projectId),
     queryFn: () => api.listAgents(projectId!),
     enabled: Boolean(projectId && open),
     refetchOnMount: "always",
     refetchInterval: 4_000,
   });
   const healthQuery = useQuery({
-    queryKey: ["agent-health", projectId],
+    queryKey: queryKeys.agents.health(projectId),
     queryFn: () => api.getAgentHealth(projectId!),
     enabled: Boolean(projectId && open),
     refetchInterval: 4_000,

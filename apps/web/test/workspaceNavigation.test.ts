@@ -2,7 +2,7 @@ import type { AgentDto, AgentHealthDto, ConversationDto, ProjectDto, WorkspaceNo
 import { describe, expect, it } from "vitest";
 import { clampSidebarWidth, SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, SIDEBAR_RAIL_WIDTH } from "../src/components/WorkspaceSidebar";
 import { restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "../src/workspaceSidebarState";
-import { hasUnreadConversationNotifications, projectContextLabel, workspaceAgents, workspaceChats, workspaceCounts, type WorkspaceProjectSnapshot } from "../src/workspaceNavigation";
+import { hasUnreadConversationNotifications, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../src/workspaceNavigation";
 
 const project = (id: string, label: string): ProjectDto => ({
   id, label, hostPath: `/repos/${id}`, createdAt: "2026-07-01T00:00:00.000Z", defaultEngine: "codex",
@@ -29,20 +29,11 @@ describe("multi-project workspace navigation model", () => {
     { id: "n2", projectId: alpha.id, conversationId: "planning", kind: "mentions", title: "Read", body: "Body", createdAt: "2026-07-15T10:01:00.000Z", readAt: "2026-07-15T11:00:00.000Z" },
   ];
 
-  it("orders recent chats across projects and preserves project context for duplicate names", () => {
-    const rows = workspaceChats(snapshots, notifications);
-    expect(rows.map((row) => [row.conversation.id, row.project.id, row.unread])).toEqual([
-      ["release", "beta", 1], ["planning", "alpha", 0],
-    ]);
-    expect(projectContextLabel(rows[0]!.project, rows[0]!.conversation.title, [alpha, beta])).toBe("Planning · Website · /repos/beta");
-  });
-
-  it("puts running agents first while keeping every duplicate title project-qualified", () => {
+  it("puts running agents first", () => {
     const rows = workspaceAgents(snapshots);
     expect(rows.map((row) => [row.agent.id, row.project.id, row.status])).toEqual([
       ["two", "beta", "running"], ["one", "alpha", "idle"],
     ]);
-    expect(rows.every((row) => projectContextLabel(row.project, row.agent.title, [alpha, beta]).includes(row.project.hostPath))).toBe(true);
     expect(workspaceCounts(snapshots, notifications)).toEqual({ running: 1, unread: 1 });
   });
 

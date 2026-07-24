@@ -28,22 +28,6 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
   getFrame(): Promise<{ blob: Blob; revision: number }>;
 }
 
-export function runBrowserAdapter(projectId: string, agentId: string, runId: string): BrowserEndpointAdapter<BrowserSessionDto> {
-  return {
-    queryKey: ["browser-session", projectId, agentId, runId],
-    get: () => api.getBrowserSession(projectId, agentId, runId),
-    open: () => api.openBrowserSession(projectId, agentId, runId),
-    reconnect: () => api.reconnectBrowserSession(projectId, agentId, runId),
-    close: () => api.closeBrowserSession(projectId, agentId, runId),
-    setControl: ({ owner }, expectedControlEpoch) => api.setBrowserControl(projectId, agentId, runId, { owner, expectedControlEpoch }),
-    sendInput: (input, expectedControlEpoch) => api.sendBrowserInput(projectId, agentId, runId, {
-      ...input,
-      expectedControlEpoch,
-    } as BrowserOperatorInputRequest),
-    getFrame: () => api.getBrowserFrame(projectId, agentId, runId),
-  };
-}
-
 export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
   return {
     queryKey: ["project-browser", projectId],

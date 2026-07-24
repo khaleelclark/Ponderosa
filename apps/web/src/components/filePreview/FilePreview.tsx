@@ -35,7 +35,7 @@ export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
   </Box>;
 }
 
-export function MarkdownPreview({ content }: { content: string }): JSX.Element {
+function MarkdownPreview({ content }: { content: string }): JSX.Element {
   return <Box sx={{ overflowWrap: "anywhere", "& pre": { overflowX: "auto" }, "& code": { fontSize: ".86rem" }, "& p": { lineHeight: 1.65 } }}>
     <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
   </Box>;

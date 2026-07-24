@@ -2,16 +2,11 @@
 // user-facing status vocabulary so the Agents tab, sidebar, and detail view
 // stay consistent. The underlying data model remains AgentDto/AgentDetailDto.
 
-import type { AgentLifecycleStatus, AgentRunDto, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
+import type { AgentLifecycleStatus, AgentDetailDto, AgentDto, AgentHealthDto } from "@ponderosa/core";
 
 export interface AgentOrganizationRow {
   agent: AgentDto;
   depth: number;
-}
-
-/** Keep deep hierarchy cues inside a fixed-width roster instead of widening it. */
-export function agentRosterIndent(depth: number): number {
-  return Math.min(Math.max(depth, 0), 3) * 2;
 }
 
 /** Stable parent-first roster order. Missing/cyclic parentage fails closed to top level. */
@@ -152,21 +147,6 @@ export function agentStatusColor(
     default:
       return "default";
   }
-}
-
-/** Short current-run or waiting-approval line for an agent row. */
-export function agentActivity(detail: AgentDetailDto | undefined): string | undefined {
-  if (!detail) {
-    return undefined;
-  }
-  const activeRun = [...detail.runs]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-    .find((run: AgentRunDto) => run.status === "running");
-  if (activeRun) {
-    return activeRun.title;
-  }
-  const waitingItem = detail.workItems.find((item) => item.status === "waiting_approval");
-  return waitingItem?.title;
 }
 
 export function relativeTime(iso: string | undefined): string {

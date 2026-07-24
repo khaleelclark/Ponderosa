@@ -23,6 +23,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
+import { queryKeys } from "../queryKeys";
 import { useQueries, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "../api";
@@ -42,7 +43,7 @@ function compareNotificationsNewestFirst(a: WorkspaceNotificationDto, b: Workspa
   return b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
 }
 
-export function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): WorkspaceNotificationDto[] {
+function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): WorkspaceNotificationDto[] {
   return [...notifications].sort(compareNotificationsNewestFirst);
 }
 
@@ -112,7 +113,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: ["conversations", projectId],
+      queryKey: queryKeys.conversations.project(projectId),
       queryFn: () => api.listConversations(projectId),
       staleTime: 10_000,
       enabled: open,
@@ -125,12 +126,12 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
 
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) => current.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate));
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) => current.map((candidate) => candidate.id === item.id ? { ...candidate, readAt } : candidate));
     void api.markNotificationRead(item.id).then(() => {
-      return queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     }).catch((reason) => {
       setError(reason instanceof Error ? reason.message : "Notification could not be marked read.");
-      void queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     });
   };
   const navigateToNotification = (item: WorkspaceNotificationDto) => {
@@ -166,7 +167,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     setError(undefined);
     try {
       await api.setNotificationStatus(item.id, status);
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Notification could not be updated.");
     }
@@ -175,16 +176,16 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     setPending("read");
     setError(undefined);
     const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) =>
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
       current.map((item) => item.readAt ? item : { ...item, readAt }),
     );
     try {
       await api.markAllNotificationsRead();
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      await queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Notifications could not be marked read.");
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     } finally {
       setPending(undefined);
     }
@@ -193,14 +194,14 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const clearAll = async () => {
     setPending("clear");
     setError(undefined);
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], []);
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, []);
     try {
       await api.clearAllNotifications();
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      await queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Notifications could not be cleared.");
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     } finally {
       setPending(undefined);
     }
@@ -209,14 +210,14 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const clearProject = async (projectId: string) => {
     setPendingProjectId(projectId);
     setError(undefined);
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(["notifications"], (current = []) => current.filter((item) => item.projectId !== projectId));
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) => current.filter((item) => item.projectId !== projectId));
     try {
       await api.clearProjectNotifications(projectId);
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
-      await queryClient.invalidateQueries({ queryKey: ["global-search"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Project notifications could not be cleared.");
-      await queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     } finally {
       setPendingProjectId(undefined);
     }

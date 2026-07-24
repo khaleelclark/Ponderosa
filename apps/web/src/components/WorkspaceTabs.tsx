@@ -22,9 +22,9 @@ import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQueries } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import type { WorkspaceTabState } from "../workspaceTabs";
-import { OperatorAvatar } from "./OperatorAvatar";
-import { operatorInitials } from "./WorkspaceSidebar";
+import { OperatorAvatar, operatorInitials } from "./OperatorAvatar";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
   if (kind === "home") return <HomeOutlinedIcon fontSize="small" />;
@@ -72,12 +72,12 @@ export function WorkspaceTabs({
   const projectIds = [...new Set(tabs.flatMap((tab) => "projectId" in tab.route && typeof tab.route.projectId === "string" ? [tab.route.projectId] : []))];
   const conversationQueries = useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: ["conversations", projectId], queryFn: () => api.listConversations(projectId), staleTime: 10_000,
+      queryKey: queryKeys.conversations.project(projectId), queryFn: () => api.listConversations(projectId), staleTime: 10_000,
     })),
   });
   const agentQueries = useQueries({
     queries: projectIds.map((projectId) => ({
-      queryKey: ["agents", projectId], queryFn: () => api.listAgents(projectId), staleTime: 10_000,
+      queryKey: queryKeys.agents.project(projectId), queryFn: () => api.listAgents(projectId), staleTime: 10_000,
     })),
   });
   const resourcesByProject = new Map(projectIds.map((projectId, index) => [projectId, {

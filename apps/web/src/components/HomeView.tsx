@@ -15,27 +15,10 @@ import { queryKeys } from "../queryKeys";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
-import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
+import { reorderStableIds, sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
-
-export function orderHomeResources<T extends { id: string }>(items: T[], order: string[] = []): T[] {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  const ordered = order.flatMap((id) => byId.get(id) ? [byId.get(id)!] : []);
-  const retained = new Set(ordered.map((item) => item.id));
-  return [...ordered, ...items.filter((item) => !retained.has(item.id))];
-}
-
-export function reorderHomeResources(order: string[] = [], available: string[], sourceId: string, targetId: string): string[] {
-  const normalized = [...order.filter((id) => available.includes(id)), ...available.filter((id) => !order.includes(id))];
-  const from = normalized.indexOf(sourceId);
-  const to = normalized.indexOf(targetId);
-  if (from < 0 || to < 0 || from === to) return normalized;
-  const [moved] = normalized.splice(from, 1);
-  normalized.splice(to, 0, moved!);
-  return normalized;
-}
 
 function Stat({ label, value, onClick }: { label: string; value: string | number; onClick?(): void }): JSX.Element {
   const content = <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}><Typography variant="h5" fontWeight={800}>{value}</Typography><Typography variant="body2" color="text.secondary">{label}</Typography></Stack>;
@@ -113,7 +96,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
       <Box component="section">
         <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "allChats" })}>View All Chats</Button></Stack>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-          {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderHomeResources(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
+          {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
           {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}
         </Box>
       </Box>

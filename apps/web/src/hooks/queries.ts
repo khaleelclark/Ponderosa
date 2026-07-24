@@ -24,14 +24,6 @@ export function useAllChat(limit = 50) {
   });
 }
 
-export function useProjectFolders(open: boolean) {
-  return useQuery({
-    queryKey: queryKeys.projectFolders,
-    queryFn: () => api.getProjectFolders(),
-    enabled: open,
-  });
-}
-
 export function useConversations(projectId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.conversations.project(projectId),

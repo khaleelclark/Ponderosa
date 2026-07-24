@@ -8,6 +8,8 @@ import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
+import { queryKeys } from "../queryKeys";
 
 function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
@@ -71,7 +73,6 @@ export function MessageDeliveryStatus({
   receipts?: MessageDeliveryReceiptDto[];
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
-  onOpenWorkLog?(agentId: string): void;
 }): JSX.Element | null {
   const queryClient = useQueryClient();
   const [now, setNow] = useState(Date.now());
@@ -93,11 +94,11 @@ export function MessageDeliveryStatus({
     setPendingInjectionId(receipt.injectionId);
     try {
       await api.letCurrentRunFinish(receipt.injectionId, {
-        idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        idempotencyKey: createClientId(),
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent", receipt.targetAgentId] }),
-        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not change steering recovery.");
@@ -115,9 +116,9 @@ export function MessageDeliveryStatus({
       });
       setConfirmRetry(undefined);
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent", receipt.targetAgentId] }),
-        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
-        queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not retry message delivery.");
@@ -134,10 +135,10 @@ export function MessageDeliveryStatus({
         idempotencyKey: `operator-delivery-cancel:${receipt.activationId}`,
       });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["agent", receipt.targetAgentId] }),
-        queryClient.invalidateQueries({ queryKey: ["conversation"] }),
-        queryClient.invalidateQueries({ queryKey: ["collaboration-chat"] }),
-        queryClient.invalidateQueries({ queryKey: ["notifications"] }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not cancel message delivery.");
