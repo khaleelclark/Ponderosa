@@ -91,13 +91,9 @@ body {
   outline-offset: -2px;
 }
 
-/* Text navigation should read as part of the document, while keeping a useful
-   target and an unmistakable keyboard-focus state. */
+/* Text navigation keeps a visible keyboard-focus state without underlining. */
 .chat-text-navigation.MuiButton-root:hover {
   background-color: transparent;
-  text-decoration: underline;
-  text-decoration-thickness: 2px;
-  text-underline-offset: 3px;
 }
 
 .chat-text-navigation:focus-visible {
