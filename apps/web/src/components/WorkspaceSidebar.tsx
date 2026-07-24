@@ -70,6 +70,7 @@ import {
   ResourceContextMenu,
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
+import { IconTitle } from "./IconTitle";
 
 export const SIDEBAR_MIN_WIDTH = WORKSPACE_SIDEBAR_MIN_WIDTH;
 export const SIDEBAR_MAX_WIDTH = WORKSPACE_SIDEBAR_MAX_WIDTH;
@@ -125,6 +126,7 @@ function SidebarSectionHeading({
 }
 
 function SharedSidebarPanel({
+  icon,
   title,
   total,
   searchLabel,
@@ -143,6 +145,7 @@ function SharedSidebarPanel({
   onViewAll,
   drawer,
 }: {
+  icon: ReactNode;
   title: string;
   total: number;
   searchLabel: string;
@@ -183,9 +186,9 @@ function SharedSidebarPanel({
           pb: 1.25,
         }}
       >
-        <Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>
-          {title}
-        </Typography>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <IconTitle icon={icon} title={title} />
+        </Box>
         <Typography variant="caption" color="text.secondary">
           {total} total
         </Typography>
@@ -392,20 +395,14 @@ export function WorkspaceSidebar({
       resource: { route, ...(conversation ? { conversation } : {}) },
     });
   useEffect(() => {
+    // Directory workplaces are destinations, not sidebar-section commands.
+    // Keep the operator's current panel, filter, and scroll state when one opens.
     const section =
-      route.kind === "allChats"
-        ? "chats"
-        : route.kind === "allAgents"
-          ? "agents"
-          : route.kind === "allTriggers"
-            ? "triggers"
-            : route.kind === "projects"
-              ? "projects"
-              : route.kind === "wiki"
-                ? "wiki"
-                : route.kind === "settings" || route.kind === "usage"
-                  ? "settings"
-                  : undefined;
+      route.kind === "wiki"
+        ? "wiki"
+        : route.kind === "settings" || route.kind === "usage"
+          ? "settings"
+          : undefined;
     if (!section) return;
     setSidebarSection(section);
     setFilter("");
@@ -754,6 +751,7 @@ export function WorkspaceSidebar({
     });
   const homePanel = (
     <SharedSidebarPanel
+      icon={<HomeOutlinedIcon />}
       title="Home"
       total={homeResourceCatalog.length}
       searchLabel="Search Home"
@@ -856,6 +854,7 @@ export function WorkspaceSidebar({
   );
   const projectsPanel = (
     <SharedSidebarPanel
+      icon={<FolderOutlinedIcon />}
       title="Projects"
       total={projects.length}
       searchLabel="Search projects"
@@ -990,6 +989,7 @@ export function WorkspaceSidebar({
     });
   const globalChatsPanel = (
     <SharedSidebarPanel
+      icon={<ChatBubbleOutlineIcon />}
       title="Chats"
       total={allChatRows.length}
       searchLabel="Search chats"
@@ -1147,6 +1147,7 @@ export function WorkspaceSidebar({
     });
   const agentsPanel = (
     <SharedSidebarPanel
+      icon={<SmartToyOutlinedIcon />}
       title="Agents"
       total={allAgentRows.length}
       searchLabel="Search agents"
@@ -1308,6 +1309,7 @@ export function WorkspaceSidebar({
     });
   const triggersPanel = (
     <SharedSidebarPanel
+      icon={<BoltOutlinedIcon />}
       title="Triggers"
       total={(allTriggersQuery.data ?? []).length}
       searchLabel="Search triggers or agents"
@@ -1395,9 +1397,7 @@ export function WorkspaceSidebar({
           pb: 1.25,
         }}
       >
-        <Typography variant="h6" fontWeight={800}>
-          Wiki
-        </Typography>
+        <IconTitle icon={<MenuBookOutlinedIcon />} title="Wiki" />
       </Stack>
       <Box sx={{ px: 1.75, pb: 1.5 }}>
         <TextField
@@ -1491,10 +1491,7 @@ export function WorkspaceSidebar({
         direction="row"
         sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}
       >
-        <SettingsOutlinedIcon sx={{ mr: 1 }} />
-        <Typography variant="h6" fontWeight={800}>
-          Settings
-        </Typography>
+        <IconTitle icon={<SettingsOutlinedIcon />} title="Settings" />
       </Stack>
       <List sx={{ px: 1.25 }}>
         <ListItemButton

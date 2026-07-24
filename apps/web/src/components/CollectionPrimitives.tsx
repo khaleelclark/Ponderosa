@@ -18,6 +18,7 @@ export interface CollectionWorkspaceProps {
   toolbar: ReactNode;
   children: ReactNode;
   listLabel: string;
+  variant?: "page" | "embedded";
 }
 
 export function CollectionHeader({
@@ -60,11 +61,37 @@ export function CollectionWorkspace({
   toolbar,
   children,
   listLabel,
+  variant = "page",
 }: CollectionWorkspaceProps): JSX.Element {
-  return <Box className="ponderosa-scroll" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden" }}>
-    <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} />
+  const embedded = variant === "embedded";
+  return <Box
+    className={embedded ? undefined : "ponderosa-scroll"}
+    sx={{
+      height: "100%",
+      minHeight: 0,
+      minWidth: 0,
+      overflow: embedded ? "hidden" : undefined,
+      overflowY: embedded ? undefined : "auto",
+      overflowX: "hidden",
+      display: embedded ? "grid" : undefined,
+      gridTemplateRows: embedded ? "auto minmax(0, 1fr)" : undefined,
+    }}
+  >
+    {embedded ? null : <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} />}
     {toolbar}
-    <Stack component="section" aria-label={listLabel} spacing={0.75} sx={{ px: { xs: 2, md: 3 }, pb: 3 }}>
+    <Stack
+      className={embedded ? "ponderosa-scroll" : undefined}
+      component="section"
+      aria-label={listLabel}
+      spacing={0.75}
+      sx={{
+        minHeight: 0,
+        overflowY: embedded ? "auto" : undefined,
+        overflowX: "hidden",
+        px: { xs: 2, md: 3 },
+        pb: embedded ? 2 : 3,
+      }}
+    >
       {children}
     </Stack>
   </Box>;

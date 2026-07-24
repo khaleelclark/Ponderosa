@@ -262,8 +262,6 @@ export function ProjectShell({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         projectAgents={agents}
-        projectConversations={conversations}
-        projectLabel={project.label}
         onOpenProject={() => navigate({ kind: "project", projectId })}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })

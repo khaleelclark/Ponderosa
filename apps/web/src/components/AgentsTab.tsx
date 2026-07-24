@@ -138,7 +138,7 @@ function AgentRosterShell({
   toolbar,
   children,
 }: {
-  collection?: { title: string; detail: string };
+  collection?: { title: string; detail: string; variant?: "page" | "embedded" };
   scopeLabel?: string;
   headerActions: ReactNode;
   toolbar: ReactNode;
@@ -149,9 +149,10 @@ function AgentRosterShell({
       icon={<SmartToyOutlinedIcon />}
       title={collection.title}
       detail={collection.detail}
-      primaryAction={headerActions}
+      primaryAction={collection.variant === "embedded" ? undefined : headerActions}
       toolbar={toolbar}
       listLabel={collection.title}
+      variant={collection.variant}
     >
       {children}
     </CollectionWorkspace>;
@@ -215,6 +216,7 @@ export function AgentsTab({
   collection?: {
     title: string;
     detail: string;
+    variant?: "page" | "embedded";
   };
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -314,32 +316,34 @@ export function AgentsTab({
     await queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     setStoppingAll(false);
   };
+  const embeddedCollection = collection?.variant === "embedded";
+  const headerActions = <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+    {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()}>New Agent</Button> : null}
+    {selectionMode ? <>
+      <Button color="inherit" size="small" onClick={() => {
+        const visibleIds = filtered.map(({ agent }) => agent.id);
+        const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedAgentIds.has(id));
+        setSelectedAgentIds((current) => {
+          const next = new Set(current);
+          visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id));
+          return next;
+        });
+      }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear Visible" : "Select All Visible"}</Button>
+      <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete Selected ({selectedAgentIds.size})</Button>
+      <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel Selection</Button>
+    </> : <Tooltip title="Agent actions: stop, select, import, or create"><IconButton aria-label="Agent actions" onClick={(event) => setActionsAnchor(event.currentTarget)}><MoreVertIcon /></IconButton></Tooltip>}
+    {actionsAnchor ? <Menu anchorEl={actionsAnchor} open onClose={() => setActionsAnchor(undefined)}>
+      <MenuItem disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => { setActionsAnchor(undefined); void stopAll(); }}>Stop All</MenuItem>
+      <MenuItem disabled={agents.length === 0 || !selectionAllowed} onClick={() => { setActionsAnchor(undefined); setSelectionMode(true); }}>Select Agents</MenuItem>
+      <MenuItem disabled={!projectId} onClick={() => { setActionsAnchor(undefined); setImportOpen(true); }}><FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Import Agent or Organization</MenuItem>
+      <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
+    </Menu> : null}
+  </Stack>;
   return (
     <AgentRosterShell
       collection={collection}
       scopeLabel={scopeLabel}
-      headerActions={<Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-        {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()}>New Agent</Button> : null}
-        {selectionMode ? <>
-          <Button color="inherit" size="small" onClick={() => {
-            const visibleIds = filtered.map(({ agent }) => agent.id);
-            const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedAgentIds.has(id));
-            setSelectedAgentIds((current) => {
-              const next = new Set(current);
-              visibleIds.forEach((id) => allVisibleSelected ? next.delete(id) : next.add(id));
-              return next;
-            });
-          }}>{filtered.length > 0 && filtered.every(({ agent }) => selectedAgentIds.has(agent.id)) ? "Clear Visible" : "Select All Visible"}</Button>
-          <Button color="error" variant="outlined" size="small" disabled={selectedAgentIds.size === 0} onClick={() => setDeleteSelectedOpen(true)}>Delete Selected ({selectedAgentIds.size})</Button>
-          <Button color="inherit" size="small" onClick={leaveSelectionMode}>Cancel Selection</Button>
-        </> : <Tooltip title="Agent actions: stop, select, import, or create"><IconButton aria-label="Agent actions" onClick={(event) => setActionsAnchor(event.currentTarget)}><MoreVertIcon /></IconButton></Tooltip>}
-        {actionsAnchor ? <Menu anchorEl={actionsAnchor} open onClose={() => setActionsAnchor(undefined)}>
-          <MenuItem disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => { setActionsAnchor(undefined); void stopAll(); }}>Stop All</MenuItem>
-          <MenuItem disabled={agents.length === 0 || !selectionAllowed} onClick={() => { setActionsAnchor(undefined); setSelectionMode(true); }}>Select Agents</MenuItem>
-          <MenuItem disabled={!projectId} onClick={() => { setActionsAnchor(undefined); setImportOpen(true); }}><FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Import Agent or Organization</MenuItem>
-          <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
-        </Menu> : null}
-      </Stack>}
+      headerActions={headerActions}
       toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Agents">
         {toolbarControls}
         <Stack direction="row" role="group" aria-label="Agent organization view" sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}>
@@ -366,7 +370,7 @@ export function AgentsTab({
             {option.label} ({option.count})
           </MenuItem>)}
         </Menu> : null}
-        <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
+        {embeddedCollection ? null : <FormControl size="small" sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}>
           <InputLabel id="agents-master-filter-label">Project chat</InputLabel>
           <Select
             labelId="agents-master-filter-label"
@@ -381,7 +385,8 @@ export function AgentsTab({
               </MenuItem>
             ))}
           </Select>
-        </FormControl>
+        </FormControl>}
+        {embeddedCollection ? headerActions : null}
       </CollectionToolbar>}
     >
       {bulkError ? <Alert severity="warning" sx={{ mx: 2, mt: 1 }}>{bulkError}</Alert> : null}
@@ -443,11 +448,14 @@ export function AgentsTab({
                         size="small"
                         disabled={childAgents.length === 0}
                         aria-label={childAgents.length ? `${expanded ? "Collapse" : "Expand"} ${agent.title}` : `${agent.title} has no delegated agents`}
-                        onClick={() => setCollapsedAgentIds((current) => {
-                          const next = new Set(current);
-                          if (next.has(agent.id)) next.delete(agent.id); else next.add(agent.id);
-                          return next;
-                        })}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setCollapsedAgentIds((current) => {
+                            const next = new Set(current);
+                            if (next.has(agent.id)) next.delete(agent.id); else next.add(agent.id);
+                            return next;
+                          });
+                        }}
                         sx={{ ml: 0.5 }}
                       >{childAgents.length ? expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon /> : <Box sx={{ width: 24 }} />}</IconButton> : null}
                       {selectionMode ? <Checkbox
