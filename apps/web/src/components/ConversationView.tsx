@@ -814,7 +814,7 @@ export function ConversationView({
         >
           <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180} sx={{ minWidth: 0, flex: 1 }}>
           <Box sx={{ minWidth: 0 }}>
-            <Typography variant="h5" fontWeight={800} noWrap>
+            <Typography variant="h6" fontWeight={800} noWrap>
               {conversation.title}
             </Typography>
             <ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />
