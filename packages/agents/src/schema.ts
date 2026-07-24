@@ -1,5 +1,5 @@
 // Tables actually accessed through Drizzle. Authoritative Communication V3
-// tables live in migrations and the raw-SQL coordination store; duplicating
+// tables live in the launch baseline and the raw-SQL coordination store; duplicating
 // those declarations here provided no type checking for their queries.
 
 import { integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";

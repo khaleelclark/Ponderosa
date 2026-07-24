@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && rm -rf dist/migrations && cp -R src/migrations dist/migrations",
+    "build": "tsc -p tsconfig.json && rm -rf dist/migrations dist/schema && cp -R src/schema dist/schema",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },

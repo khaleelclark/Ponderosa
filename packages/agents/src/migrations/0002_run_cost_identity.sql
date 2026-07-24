@@ -1,3 +1,0 @@
-ALTER TABLE runs ADD COLUMN model TEXT;
-ALTER TABLE runs ADD COLUMN effort TEXT;
-ALTER TABLE runs ADD COLUMN cache_write_input_tokens INTEGER;
