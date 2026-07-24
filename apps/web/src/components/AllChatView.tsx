@@ -87,12 +87,15 @@ function AllChatInfoPill({ message }: { message: string }): JSX.Element {
     <Box
       role="status"
       sx={{
+        position: "relative",
+        zIndex: 3,
         display: "flex",
         width: "fit-content",
         alignItems: "center",
         minHeight: 28,
         maxWidth: "100%",
-        mt: 0.35,
+        mt: { xs: 0.75, sm: 1 },
+        mb: { xs: 1, sm: 1.5 },
         px: 0.75,
         py: 0.25,
         borderRadius: 999,
