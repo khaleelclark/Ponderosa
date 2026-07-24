@@ -61,6 +61,7 @@ import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
+import { WorkspaceTabBar } from "./WorkspaceFrame";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   return uniqueBy(groups.flat(), (message) => message.id, (a, b) =>
@@ -858,26 +859,12 @@ export function ConversationView({
           />
         </Stack>
         <Collapse in={!mobileHeaderCollapsed || !mobileRoster} timeout={180}>
-        <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
-          <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentWorkOpen(false); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
-          <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentWorkOpen(false); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button
-            color="inherit"
-            startIcon={<GroupsOutlinedIcon fontSize="small" />}
-            aria-pressed={!agentWorkOpen && activeView === "agents"}
-            onClick={() => { setAgentWorkOpen(false); setActiveView("agents"); }}
-            aria-label={`Open ${projectAgents.length} Project Agents`}
-            sx={{
-              position: "relative",
-              px: 1.5,
-              color: !agentWorkOpen && activeView === "agents" ? "text.primary" : "text.secondary",
-              "&::after": !agentWorkOpen && activeView === "agents" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined,
-            }}
-          >
-            Agents
-          </Button>
-          <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} aria-pressed={agentWorkOpen} onClick={() => { setAgentWorkOpen(true); }} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary", "&::after": agentWorkOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Work</Button>
-        </Stack>
+        <WorkspaceTabBar
+          label="Chat views"
+          value={agentWorkOpen ? "work" : activeView}
+          onChange={(next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); }}
+          items={[{ value: "main", label: "Chat" }, { value: "collaboration", label: "Team Chat" }, { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> }, { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> }]}
+        />
         </Collapse>
       </Box>
 

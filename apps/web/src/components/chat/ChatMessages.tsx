@@ -303,7 +303,7 @@ export function ChatMarkdown({
         "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
         "& table": { display: "block", maxWidth: "100%", overflowX: "auto", borderCollapse: "collapse" },
         "& th, & td": { px: 1, py: 0.5, border: 1, borderColor: "divider" },
-        "& a": { maxWidth: "100%", color: "inherit", textDecoration: "underline", overflowWrap: "anywhere", wordBreak: "break-word" },
+        "& a": { maxWidth: "100%", color: "inherit", textDecoration: "none", overflowWrap: "anywhere", wordBreak: "break-word" },
       }}
     >
       <ReactMarkdown
@@ -321,7 +321,7 @@ export function ChatMarkdown({
             if (!href?.startsWith(MESSAGE_TAG_PREFIX)) return <ChatLink href={href ?? ""} previewScope={previewScope} projectId={projectId}>{label}</ChatLink>;
             const handle = decodeURIComponent(href.slice(MESSAGE_TAG_PREFIX.length));
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
-              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "underline", textUnderlineOffset: 2, cursor: "pointer" }}>{label}</Box>;
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Project chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
