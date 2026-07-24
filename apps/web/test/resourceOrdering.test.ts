@@ -1,6 +1,6 @@
 import type { WorkspacePreferencesDto } from "@ponderosa/core";
 import { describe, expect, it } from "vitest";
-import { orderByStableIds, reorderStableIds } from "../src/components/WorkspaceSidebar";
+import { orderByStableIds, reorderStableIds } from "../src/resourcePreferences";
 import {
   resourcePreferenceKey,
   sortWorkspaceResources,

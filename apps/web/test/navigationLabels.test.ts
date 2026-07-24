@@ -9,6 +9,7 @@ describe("launch navigation labels", () => {
       readSource("../src/App.tsx"),
       readSource("../src/components/AgentDetail.tsx"),
       readSource("../src/components/AgentsTab.tsx"),
+      readSource("../src/components/ProjectOverview.tsx"),
       readSource("../src/components/WorkspaceOverview.tsx"),
       readSource("../src/components/WorkspaceSidebar.tsx"),
       readSource("../src/components/WorkspaceTabs.tsx"),

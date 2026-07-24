@@ -1,4 +1,4 @@
-import type { AgentDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, ArtifactDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,49 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
+
+const preferences: WorkspacePreferencesDto = {
+  projectSort: "last_used",
+  projectOrder: [],
+  homeSort: "last_used",
+  homeOrder: [],
+  chatSort: "last_used",
+  chatOrder: [],
+  agentSort: "last_used",
+  agentOrder: [],
+  triggerSort: "last_used",
+  triggerOrder: [],
+  starredProjectIds: [],
+  starredResourceIds: [],
+  sidebarCollapsed: false,
+  sidebarWidth: 320,
+  notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
+  fontFamily: "inter",
+  providerAvailability: {},
+  globalInstructions: "",
+  maxConcurrentAgentRuns: 8,
+  onboardingCompletedAt: "2026-07-17T00:00:00.000Z",
+  profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
+  updatedAt: "2026-07-17T00:00:00.000Z",
+};
+
+function projectOverviewProps() {
+  return {
+    health: [],
+    engines: [],
+    notifications: [],
+    preferences,
+    onPreferences: vi.fn(),
+    onCreateConversation: vi.fn(),
+    conversations: [],
+    onOpenConversation: vi.fn(),
+    onRenameConversation: vi.fn(),
+    onDeleteConversation: vi.fn(),
+    onOpenProjectAgents: vi.fn(),
+    onManageProject: vi.fn(),
+    onOpenEngineStatus: vi.fn(),
+  };
+}
 
 describe("project artifacts view", () => {
   it("derives deterministic file categories and line-oriented created-file diffs", () => {
@@ -76,6 +119,15 @@ describe("project artifacts view", () => {
       id: "project-1", label: "Ponderosa", hostPath: "/repo", defaultEngine: "codex", createdAt: "2026-07-17T10:00:00.000Z",
       instructions: "Ship a durable Agent organization.",
     } satisfies ProjectDto;
+    const conversation = {
+      id: "chat-1",
+      projectId: project.id,
+      title: "Release planning",
+      createdAt: "2026-07-17T10:00:00.000Z",
+      updatedAt: "2026-07-17T10:04:00.000Z",
+      archived: false,
+    } satisfies ConversationDto;
+    const overviewControls = projectOverviewProps();
     const command = { ...artifact, id: "command-1", kind: "log", path: "events/command.md", summary: "pnpm test", previewUrl: "/api/projects/project-1/artifacts/command-1/preview" } satisfies ArtifactDto;
     const changedFile = { ...artifact, id: "diff-1", kind: "diff", path: "diffs/src-app-ts.diff", sourcePath: "src/app.ts", summary: "edit src/app.ts" } satisfies ArtifactDto;
     const testResult = { ...artifact, id: "test-1", kind: "test_report", path: "results/web-tests.md", summary: "Web tests passed" } satisfies ArtifactDto;
@@ -101,6 +153,8 @@ describe("project artifacts view", () => {
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><ProjectArtifactsView
+        {...overviewControls}
+        conversations={[conversation]}
         projectId="project-1"
         project={project}
         agents={[agent]}
@@ -118,7 +172,9 @@ describe("project artifacts view", () => {
     expect(JSON.stringify(view.toJSON())).toContain("Web tests passed");
     expect(JSON.stringify(view.toJSON())).toContain("Modified & Created Files");
     expect(JSON.stringify(view.toJSON())).toContain("Results");
-    expect(JSON.stringify(view.toJSON())).toContain("Project overview");
+    expect(JSON.stringify(view.toJSON())).toContain("Project Overview");
+    expect(JSON.stringify(view.toJSON())).toContain("Project Chats");
+    expect(JSON.stringify(view.toJSON())).toContain("Release planning");
     expect(JSON.stringify(view.toJSON())).toContain("Ship a durable Agent organization.");
     expect(JSON.stringify(view.toJSON())).toContain("Download");
     expect(JSON.stringify(view.toJSON())).not.toContain("Commands");
@@ -126,6 +182,22 @@ describe("project artifacts view", () => {
     expect(projectArtifactGroup("diff")).toBe("Modified & Created Files");
     expect(projectArtifactGroup("test_report")).toBe("Results");
     expect(projectArtifactGroup("log")).toBeUndefined();
+    act(() => view.root.findAllByProps({ children: "New Chat" })[0]!.props.onClick());
+    expect(overviewControls.onCreateConversation).toHaveBeenCalledTimes(1);
+    act(() => view.root.findByProps({ children: "Project Agents" }).props.onClick());
+    expect(overviewControls.onOpenProjectAgents).toHaveBeenCalledTimes(1);
+    act(() => view.root.findByProps({ "aria-label": "Project settings for Ponderosa" }).props.onClick());
+    expect(overviewControls.onManageProject).toHaveBeenCalledTimes(1);
+    act(() => view.root.findByProps({ "aria-label": "Open Chat Release planning" }).props.onClick());
+    expect(overviewControls.onOpenConversation).toHaveBeenCalledWith(conversation.id);
+    act(() => view.root.findByProps({ "aria-label": "Star Release planning" }).props.onClick());
+    expect(overviewControls.onPreferences).toHaveBeenCalledWith(expect.objectContaining({
+      starredResourceIds: [`conversation:${conversation.id}`],
+    }));
+    act(() => view.root.findByProps({ labelId: "project-chat-sort-label" }).props.onChange({ target: { value: "alphabetical" } }));
+    expect(overviewControls.onPreferences).toHaveBeenCalledWith({ chatSort: "alphabetical" });
+    act(() => view.root.findByProps({ "aria-label": "Search Project Chats" }).props.onChange({ target: { value: "missing" } }));
+    expect(JSON.stringify(view.toJSON())).toContain("No matching Chats");
     act(() => view.root.findByProps({ "aria-label": "Open Accessibility audit from Cabrillo" }).props.onClick());
     expect(onOpenArtifact).toHaveBeenCalledWith(agent.id, artifact.id);
     const previewButton = view.root.findByProps({ "aria-label": "Preview Final report.pdf" });
@@ -172,6 +244,7 @@ describe("project artifacts view", () => {
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><ProjectArtifactsView
+        {...projectOverviewProps()}
         projectId={project.id} project={project} agents={[agent]} healthByAgentId={new Map()}
         onOpenArtifact={vi.fn()} onOpenRun={vi.fn()} onOpenAgentWork={vi.fn()}
       /></QueryClientProvider>);
@@ -233,6 +306,7 @@ describe("project artifacts view", () => {
     let view!: ReturnType<typeof create>;
     await act(async () => {
       view = create(<QueryClientProvider client={client}><ProjectArtifactsView
+        {...projectOverviewProps()}
         projectId={project.id} project={project} agents={[agent]} healthByAgentId={new Map()}
         onOpenArtifact={vi.fn()} onOpenRun={vi.fn()} onOpenAgentWork={vi.fn()}
       /></QueryClientProvider>);

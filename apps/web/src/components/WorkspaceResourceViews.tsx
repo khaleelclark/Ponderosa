@@ -19,11 +19,10 @@ import {
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
 import {
-  resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
+  reorderStableIds, resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
   toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import type { Route } from "../routing";
-import { reorderStableIds } from "./WorkspaceSidebar";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
