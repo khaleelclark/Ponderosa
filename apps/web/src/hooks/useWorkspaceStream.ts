@@ -16,18 +16,18 @@ function initialInstanceId(): string | null {
   return window.sessionStorage.getItem(INSTANCE_KEY);
 }
 
-export interface WorkspaceCursorReconciliation {
+interface WorkspaceCursorReconciliation {
   cursor: number;
   duplicate: boolean;
   gap: boolean;
 }
 
-export type WorkspaceCapabilityBoundary =
+type WorkspaceCapabilityBoundary =
   | { kind: "runtime-change"; projectId: string }
   | { kind: "reconnect" };
 
 /** Apply the same adapter-discovery cache boundary in every mounted tab. */
-export function invalidateWorkspaceCapabilities(
+function invalidateWorkspaceCapabilities(
   queryClient: QueryClient,
   boundary: WorkspaceCapabilityBoundary,
 ): Promise<void> {
@@ -38,7 +38,7 @@ export function invalidateWorkspaceCapabilities(
 }
 
 /** Conversation caches whose canonical response file summaries changed. */
-export function fileActivityConversationQueryKeys(event: WorkspaceEvent): Array<readonly ["conversation", string]> {
+function fileActivityConversationQueryKeys(event: WorkspaceEvent): Array<readonly ["conversation", string]> {
   if (
     event.type !== "agent_event"
     || (event.category !== "file" && event.category !== "artifact" && event.category !== "lifecycle")
@@ -47,13 +47,13 @@ export function fileActivityConversationQueryKeys(event: WorkspaceEvent): Array<
 }
 
 /** Pure ordered-cursor reducer shared by every tab's stream consumer. */
-export function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
+function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
   if (envelope.id <= current) return { cursor: current, duplicate: true, gap: false };
   return { cursor: envelope.id, duplicate: false, gap: envelope.id !== current + 1 };
 }
 
 /** Every tab invalidates both chat projections from the same canonical change. */
-export function conversationChangedQueryKeys(
+function conversationChangedQueryKeys(
   event: Extract<WorkspaceEvent, { type: "conversation_changed" }>,
 ): ReadonlyArray<readonly unknown[]> {
   return [
@@ -64,19 +64,19 @@ export function conversationChangedQueryKeys(
 }
 
 /** Chat mutations (including passive edits) and unread changes refresh search. */
-export function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): boolean {
+function workspaceEventInvalidatesGlobalSearch(event: WorkspaceEvent): boolean {
   return event.type === "conversation_changed" || event.type === "notification_changed";
 }
 
 /** Messages is a canonical communication projection. Refresh it only for
  * workspace events that can add or change one of its communication rows. */
-export function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
+function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
   return event.type === "conversation_changed"
     || event.type === "message_delivery_changed"
     || (event.type === "agent_event" && event.category === "message");
 }
 
-export function workspaceReconnectRequiresRefresh(
+function workspaceReconnectRequiresRefresh(
   cursor: number,
   previousInstance: string | null,
   status: { cursor: number; instanceId: string; reset: boolean },
@@ -86,7 +86,7 @@ export function workspaceReconnectRequiresRefresh(
 
 /** Coalesces a burst of coordination events into one refetch per affected
  * Project. A global invalidation supersedes narrower pending work. */
-export function createAgentWorkInvalidator(
+function createAgentWorkInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 350,
 ): { schedule(projectId?: string): void; flush(): void; dispose(): void } {
@@ -122,7 +122,7 @@ export function createAgentWorkInvalidator(
 /** Coalesces repeated lifecycle notifications before refreshing Project rosters.
  * Agent detail remains event-driven; this only prevents the shared list from
  * refetching once for every event in a short lifecycle burst. */
-export function createAgentListInvalidator(
+function createAgentListInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 350,
 ): { schedule(projectId: string): void; flush(): void; dispose(): void } {
@@ -152,7 +152,7 @@ export function createAgentListInvalidator(
 /** Coalesces live operational changes by conversation. Team Chat can be costly
  * to project, so unrelated Projects and short event bursts must not multiply
  * full-page reads across every mounted browser tab. */
-export function createCollaborationChatInvalidator(
+function createCollaborationChatInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 750,
 ): { schedule(conversationIds?: readonly string[]): void; flush(): void; dispose(): void } {

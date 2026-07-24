@@ -33,18 +33,18 @@ function kindLabel(kind: AgentWorkItemDto["kind"]): string {
   return "Decision";
 }
 
-export function agentWorkStateLabel(state: string): string {
+function agentWorkStateLabel(state: string): string {
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
-export function agentWorkItemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
+function agentWorkItemMatchesFocus(item: AgentWorkItemDto, focusId: string | undefined): boolean {
   if (!focusId) return false;
   const bareId = focusId.includes(":") ? focusId.slice(focusId.indexOf(":") + 1) : focusId;
   return item.id === focusId || item.recordId === focusId || item.referenceIds.includes(focusId)
     || item.recordId === bareId || item.referenceIds.includes(bareId);
 }
 
-export function AgentWorkTechnicalDetails({
+function AgentWorkTechnicalDetails({
   projectId,
   conversationId,
   item,

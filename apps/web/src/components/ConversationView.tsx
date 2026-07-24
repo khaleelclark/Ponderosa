@@ -71,7 +71,7 @@ function mergeOperationalEvents(...groups: TeamOperationalEventDto[][]): TeamOpe
     (a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
 }
 
-export function conversationComposerRuntime(
+function conversationComposerRuntime(
   engine: Pick<EngineDto, "id" | "authenticated" | "available"> & { enabled?: boolean } | undefined,
   engineCapabilities: ProjectEngineCapabilitiesDto[],
 ): { commands: EngineCommand[]; capabilities: ProjectEngineCapabilitiesDto["composerCapabilities"] } {
@@ -200,7 +200,7 @@ function ConversationMessageComponent({
  * let unchanged messages skip Markdown parsing when only panel visibility
  * changes.
  */
-export const ConversationMessage = memo(ConversationMessageComponent);
+const ConversationMessage = memo(ConversationMessageComponent);
 
 export function ConversationView({
   conversationId,

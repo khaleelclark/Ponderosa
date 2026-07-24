@@ -4,7 +4,7 @@ export type ColorMode = "light" | "dark";
 
 export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
 
-export const ponderosaFocusIndicator = {
+const ponderosaFocusIndicator = {
   light: "#123126",
   dark: "#9ED4AA",
 } as const;
@@ -20,7 +20,7 @@ export const ponderosaLayoutTokens = {
   panelRadius: 12,
 } as const;
 
-export const ponderosaColorTokens = {
+const ponderosaColorTokens = {
   light: {
     background: "#F7F9F8",
     rail: "#17221E",

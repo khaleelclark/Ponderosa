@@ -43,8 +43,8 @@ import {
   RuntimeSettings,
 } from "./RuntimeSettings";
 
-export const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
-export const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
+const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
+const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
   "Applies to every Agent on the next fresh provider session. Project and Agent instructions follow it. Behavioral preferences, such as preferred models, are guidance rather than guaranteed structural routing.";
 
 function SettingsHeader({

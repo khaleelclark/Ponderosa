@@ -11,7 +11,6 @@ import { telemetryElementId } from "../../telemetryFocus";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { AgentArtifactPreview } from "./ArtifactPreview";
-export { languageForPath } from "./fileTypes";
 
 function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   if (kind === "diff") {

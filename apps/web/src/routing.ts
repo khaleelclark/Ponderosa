@@ -139,7 +139,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   return { kind: "project", projectId };
 }
 
-export function routeToPath(route: Route): string {
+function routeToPath(route: Route): string {
   switch (route.kind) {
     case "home":
       return "/";

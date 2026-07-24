@@ -132,7 +132,7 @@ const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
   tab === "activity" ? ["runOutput", "activity", "runs"]
     : tab === "artifacts" ? ["artifacts"] : [];
 
-export function directAgentDeliveryNotice(
+function directAgentDeliveryNotice(
   response: SendMessageResponse,
   activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]> = "steer",
 ): string | undefined {
@@ -198,9 +198,7 @@ const AGENT_DETAIL_TABS: Array<{ value: AgentTab; label: string; icon: JSX.Eleme
   { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
 ];
 
-export const AGENT_DETAIL_TAB_LABELS = AGENT_DETAIL_TABS.map(({ label }) => label);
-
-export function eligibleOrganizationParents(agent: AgentDto, agents: AgentDto[]): AgentDto[] {
+function eligibleOrganizationParents(agent: AgentDto, agents: AgentDto[]): AgentDto[] {
   const byId = new Map(agents.map((candidate) => [candidate.id, candidate]));
   const isDescendant = (candidate: AgentDto): boolean => {
     const seen = new Set<string>();

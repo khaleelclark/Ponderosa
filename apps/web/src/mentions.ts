@@ -55,25 +55,3 @@ export function findMentionedAgents(text: string, agents: AgentDto[]): AgentDto[
     .map((handle) => byHandle.get(handle.toLocaleLowerCase()))
     .filter((agent): agent is AgentDto => Boolean(agent));
 }
-
-/** Resolve routing tags only when each display handle maps to exactly one stable ID. */
-export function findMentionedAgentsStrict(text: string, agents: AgentDto[]): AgentDto[] {
-  const handles = findMentionedHandles(text, agents.map((agent) => agentMentionHandle(agent.title)));
-  return handles.map((handle) => {
-    const matches = agents.filter((agent) =>
-      !agent.archived && agentMentionHandle(agent.title).toLocaleLowerCase() === handle.toLocaleLowerCase());
-    if (matches.length !== 1) throw new Error(`Agent tag #${handle} is ambiguous or unavailable.`);
-    return matches[0]!;
-  });
-}
-
-/** Remove presentation routing tags before the server renders canonical recipient labels. */
-export function stripCollaborationRoutingTags(text: string, agents: AgentDto[]): string {
-  const handles = new Set(["everyone", ...agents.map((agent) => agentMentionHandle(agent.title).toLocaleLowerCase())]);
-  return text.replace(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu, (match, handle: string) =>
-    handles.has(handle.toLocaleLowerCase()) ? " " : match).replace(/\s+/g, " ").trim();
-}
-
-export function findMentionedAgent(text: string, agents: AgentDto[]): AgentDto | undefined {
-  return findMentionedAgents(text, agents)[0];
-}

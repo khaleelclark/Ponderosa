@@ -1,11 +1,11 @@
 import { Alert, Box, Chip, Stack, Typography } from "@mui/material";
 import type { TokenUsageSummaryDto } from "@ponderosa/core";
 
-export function formatTokens(value = 0): string {
+function formatTokens(value = 0): string {
   return new Intl.NumberFormat(undefined, { notation: value >= 10_000 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value);
 }
 
-export function formatDuration(value = 0): string {
+function formatDuration(value = 0): string {
   const seconds = Math.round(value / 1_000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -13,15 +13,6 @@ export function formatDuration(value = 0): string {
   if (minutes < 60) return `${minutes}m ${remainder}s`;
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
-}
-
-export function providerUsageSummaryLabel(engineId: string, data?: TokenUsageSummaryDto, loading = false): string {
-  if (loading) return "Provider-reported usage: checking Ponderosa Run telemetry…";
-  const usage = data?.breakdown.filter((item) => item.engine === engineId);
-  const runs = usage?.reduce((total, item) => total + item.runs, 0) ?? 0;
-  if (runs === 0) return "Provider-reported usage: unknown — no Run telemetry is available for this provider.";
-  const tokens = usage?.reduce((total, item) => total + (item.usage.totalTokens ?? 0), 0) ?? 0;
-  return `Provider-reported usage: ${new Intl.NumberFormat().format(tokens)} tokens across ${runs} finalized Run${runs === 1 ? "" : "s"}.`;
 }
 
 function runsLabel(value: number): string {

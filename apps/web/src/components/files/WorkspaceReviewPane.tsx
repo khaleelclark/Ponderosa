@@ -12,7 +12,7 @@ import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
 import { languageForPath } from "../filePreview/fileTypes";
 
-export function resolveWorkspaceReviewPath(
+function resolveWorkspaceReviewPath(
   changes: ReadonlyArray<{ path: string }>,
   selectedPath?: string,
   initialPath?: string,

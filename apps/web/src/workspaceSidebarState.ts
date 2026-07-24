@@ -1,6 +1,6 @@
 export const WORKSPACE_SIDEBAR_STORAGE_KEY = "ponderosa.workspaceSidebar.v1";
-export const WORKSPACE_SIDEBAR_MIN_WIDTH = 320;
-export const WORKSPACE_SIDEBAR_MAX_WIDTH = 520;
+const WORKSPACE_SIDEBAR_MIN_WIDTH = 320;
+const WORKSPACE_SIDEBAR_MAX_WIDTH = 520;
 const WORKSPACE_SIDEBAR_DEFAULT_WIDTH = 390;
 
 export interface WorkspaceSidebarState {

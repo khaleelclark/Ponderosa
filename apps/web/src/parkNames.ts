@@ -3,7 +3,7 @@ import configuredAgentNames from "./agent-names.json";
 // Edit agent-names.json to replace or extend the names offered by Ponderosa.
 // Blank entries and case-insensitive duplicates are ignored so local
 // customization cannot make name selection unreliable.
-export const AGENT_NAMES: readonly string[] = Array.from(
+const AGENT_NAMES: readonly string[] = Array.from(
   new Map(
     configuredAgentNames
       .map((name) => name.trim())

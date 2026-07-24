@@ -14,7 +14,7 @@ import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { ChatMessageBody } from "../chat/ChatMessages";
 import { isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "../chat/scroll";
 
-export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
+function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   const { event } = item;
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   let title: string = event.type;
@@ -96,7 +96,7 @@ export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   );
 }
 
-export function summarizeActivityText(value: string, maxLength: number): string {
+function summarizeActivityText(value: string, maxLength: number): string {
   const normalized = value.replace(/\s+/gu, " ").trim();
   return normalized.length > maxLength ? `${normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…` : normalized;
 }
@@ -182,7 +182,7 @@ type MergedActivityEntry =
   | { type: "activity"; id: string; seq: number; createdAt: string; executionId?: string; item: AgentActivityDto }
   | { type: "work"; id: string; seq: number; createdAt: string; executionId: string; item: RunOutputDto };
 
-export interface MergedActivityRun {
+interface MergedActivityRun {
   key: string;
   executionId?: string;
   run?: AgentRunDto;
@@ -191,7 +191,7 @@ export interface MergedActivityRun {
   lastAt: string;
 }
 
-export function mergeActivityByRun(activity: AgentActivityDto[], runOutput: RunOutputDto[], runs: AgentRunDto[], activeExecutionId?: string): MergedActivityRun[] {
+function mergeActivityByRun(activity: AgentActivityDto[], runOutput: RunOutputDto[], runs: AgentRunDto[], activeExecutionId?: string): MergedActivityRun[] {
   const runById = new Map(runs.map((run) => [run.id, run]));
   const groups = new Map<string, MergedActivityRun>();
   const entries: MergedActivityEntry[] = [
@@ -233,7 +233,7 @@ export function mergeActivityByRun(activity: AgentActivityDto[], runOutput: RunO
   });
 }
 
-export function scrollActivityToCurrent(
+function scrollActivityToCurrent(
   element: Pick<HTMLElement, "scrollTo">,
   target?: Pick<HTMLElement, "scrollIntoView">,
 ): void {

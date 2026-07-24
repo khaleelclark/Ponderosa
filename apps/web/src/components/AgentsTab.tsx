@@ -50,9 +50,9 @@ import {
   type AgentStatus,
 } from "../agents";
 
-export type StatusFilter = AgentStatus | "unassigned";
+type StatusFilter = AgentStatus | "unassigned";
 
-export const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
+const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unassigned">; label: string }> = [
   { value: "running", label: "Running" },
   { value: "waiting", label: "Waiting" },
   { value: "blocked", label: "Blocked" },
@@ -65,7 +65,7 @@ export const STATUS_FILTERS: Array<{ value: Exclude<StatusFilter, "all" | "unass
   { value: "idle", label: "Idle" },
 ];
 
-export function agentStatusFilterOptions(
+function agentStatusFilterOptions(
   agents: AgentDto[],
   statusByAgentId: ReadonlyMap<string, AgentStatus>,
 ): Array<{ value: StatusFilter | "all"; label: string; count: number }> {
@@ -87,7 +87,7 @@ export function agentStatusFilterOptions(
   ];
 }
 
-export function matchesAgentStatusFilters(
+function matchesAgentStatusFilters(
   agent: Pick<AgentDto, "conversationIds">,
   status: AgentStatus,
   selected: readonly StatusFilter[],
@@ -98,7 +98,7 @@ export function matchesAgentStatusFilters(
     : status === filter);
 }
 
-export function agentHierarchyContextIds(
+function agentHierarchyContextIds(
   agents: readonly AgentDto[],
   matchingAgentIds: ReadonlySet<string>,
 ): Set<string> {
@@ -116,7 +116,7 @@ export function agentHierarchyContextIds(
   return result;
 }
 
-export function agentHasCollapsedAncestor(
+function agentHasCollapsedAncestor(
   agent: AgentDto,
   agentsById: ReadonlyMap<string, AgentDto>,
   collapsedAgentIds: ReadonlySet<string>,

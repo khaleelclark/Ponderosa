@@ -44,7 +44,7 @@ function openProjectRoute(snapshot: WorkspaceProjectSnapshot): Route {
   return { kind: "project", projectId: snapshot.project.id };
 }
 
-export function reorderProjectIds(order: string[], draggedId: string, targetId: string, position: "before" | "after" = "before"): string[] {
+function reorderProjectIds(order: string[], draggedId: string, targetId: string, position: "before" | "after" = "before"): string[] {
   if (draggedId === targetId) return order;
   const next = order.filter((projectId) => projectId !== draggedId);
   const targetIndex = next.indexOf(targetId);
@@ -53,7 +53,7 @@ export function reorderProjectIds(order: string[], draggedId: string, targetId: 
   return next;
 }
 
-export function projectDropPreferencePatch(
+function projectDropPreferencePatch(
   order: string[],
   draggedId: string,
   targetId: string,
@@ -63,7 +63,7 @@ export function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
-export function projectMovePreferencePatch(
+function projectMovePreferencePatch(
   order: string[],
   projectId: string,
   direction: "before" | "after",

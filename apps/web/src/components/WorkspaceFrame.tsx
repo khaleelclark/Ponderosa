@@ -2,7 +2,7 @@ import { Box, Stack, Tab, Tabs } from "@mui/material";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
 
-export type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
+type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactElement };
 
 export interface TabbedWorkspaceFrameProps<T extends string> {
   icon: ReactElement;

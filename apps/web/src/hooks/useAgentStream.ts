@@ -40,7 +40,7 @@ const executionTypes: ReadonlySet<string> = new Set([
   "browser_screenshot",
 ]);
 
-export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {
+function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {
   if (event.type === "turn_done" || event.type === "error") return false;
   if (event.type === "agent_lifecycle") return event.status === "running" || event.status === "compacting";
   return current || event.type === "session" || event.type === "work_item_update" || executionTypes.has(event.type);
@@ -49,7 +49,7 @@ export function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope
 const MAX_CACHED_AGENT_CURSORS = 100;
 const streamCursors = new Map<string, { lastSeq?: number; instanceId?: string }>();
 
-export interface AgentCursorReconciliation {
+interface AgentCursorReconciliation {
   cursor: number;
   duplicate: boolean;
   gap: boolean;
@@ -57,7 +57,7 @@ export interface AgentCursorReconciliation {
 
 /** Agent events are strictly ordered, so one cursor replaces an unbounded set
  * of every sequence number ever observed. */
-export function reconcileAgentCursor(current: number, envelope: Pick<SseEventEnvelope, "seq">): AgentCursorReconciliation {
+function reconcileAgentCursor(current: number, envelope: Pick<SseEventEnvelope, "seq">): AgentCursorReconciliation {
   if (envelope.seq <= current) return { cursor: current, duplicate: true, gap: false };
   return { cursor: envelope.seq, duplicate: false, gap: envelope.seq !== current + 1 };
 }
@@ -102,7 +102,7 @@ function mergeLiveResponseFileActivity(
     : [...files, next];
 }
 
-export function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
+function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
 
