@@ -28,6 +28,7 @@ import { OperatorAvatar, operatorInitials } from "./OperatorAvatar";
 
 function TabIcon({ kind }: { kind: WorkspaceTabState["route"]["kind"] }): JSX.Element {
   if (kind === "home") return <HomeOutlinedIcon fontSize="small" />;
+  if (kind === "new") return <AddIcon fontSize="small" />;
   if (kind === "conversation" || kind === "allChat" || kind === "allChats") return <ChatBubbleOutlineIcon fontSize="small" />;
   if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
   if (kind === "agents" || kind === "allAgents") return <GroupsOutlinedIcon fontSize="small" />;
@@ -129,6 +130,7 @@ export function WorkspaceTabs({
                       : tabRoute.kind === "profile" ? "Operator Profile"
                         : tabRoute.kind === "usage" ? "Provider Activity"
                   : tabRoute.kind === "home" ? "Home"
+                    : tabRoute.kind === "new" ? "Create New"
                     : tabRoute.kind === "allChat" ? "All Messages"
                   : tabRoute.kind === "project" ? "Project Overview"
                     : tabRoute.kind === "wiki" ? "Wiki"
