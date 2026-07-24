@@ -165,8 +165,14 @@ export function WorkspaceTabs({
           sx={{
             position: "relative", containerType: "inline-size", minWidth: { xs: 132, md: 140 }, maxWidth: 240, flex: "0 1 220px",
             height: { xs: 44, md: 38 }, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 2, scrollSnapAlign: "start",
-            border: 1, borderColor: dragTargetKey === tab.key ? "var(--ponderosa-rail-foreground-active)" : selected ? "var(--ponderosa-rail-border)" : "transparent",
-            color: selected ? "#E6E7DF" : "var(--ponderosa-rail-foreground)", bgcolor: selected ? "rgba(124, 191, 138, .14)" : "transparent",
+            border: 1,
+            borderColor: dragTargetKey === tab.key
+              ? "var(--ponderosa-rail-foreground-active)"
+              : selected
+                ? "var(--ponderosa-rail-border)"
+                : "rgba(178, 187, 180, 0.18)",
+            color: selected ? "#E6E7DF" : "var(--ponderosa-rail-foreground)",
+            bgcolor: selected ? "rgba(124, 191, 138, .14)" : "rgba(178, 187, 180, 0.05)",
             boxShadow: dragTargetKey === tab.key ? "inset 3px 0 0 var(--ponderosa-rail-foreground-active)" : "none",
             opacity: draggedKey === tab.key ? 0.55 : 1, cursor: draggedKey === tab.key ? "grabbing" : "grab",
             "&:hover": { bgcolor: selected ? "rgba(124, 191, 138, .20)" : "rgba(178, 187, 180, .10)", color: "#E6E7DF" },
