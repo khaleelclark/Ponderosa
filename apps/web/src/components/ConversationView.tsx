@@ -60,6 +60,7 @@ import { queryKeys } from "../queryKeys";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
+import { AgentsTab } from "./AgentsTab";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   return uniqueBy(groups.flat(), (message) => message.id, (a, b) =>
@@ -204,9 +205,12 @@ export function ConversationView({
   onRefreshCapabilities,
   statusByAgentId,
   healthByAgentId,
+  projectAgents,
+  projectConversations,
+  projectLabel,
   onOpenProject,
   onOpenAgent,
-  onOpenProjectAgents,
+  onOpenAgentInNewTab,
   onOpenReview,
   onOpenAgentWork,
   onOpenBrowser,
@@ -222,19 +226,25 @@ export function ConversationView({
   onRefreshCapabilities(context?: { engineId?: string; model?: string; agentId?: string }): Promise<unknown> | unknown;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
+  projectAgents: AgentDto[];
+  projectConversations: ConversationDto[];
+  projectLabel: string;
   onOpenProject(): void;
   onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
-  onOpenProjectAgents(): void;
+  onOpenAgentInNewTab?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
-  onNewAgent(master: ConversationDto): void;
+  onNewAgent(master: ConversationDto, managerAgentId?: string): void;
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useState<"main" | "collaboration">(() => initialView ??
-    (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
+  const [activeView, setActiveView] = useState<"main" | "collaboration" | "agents">(() => {
+    if (initialView) return initialView;
+    const saved = readChatState(chatStateKey("view", `conversation.${conversationId}`));
+    return saved === "collaboration" || saved === "agents" ? saved : "main";
+  });
   const detailQuery = useConversation(conversationId);
   // Team Chat is a comparatively expensive operational projection. Keep it
   // dormant while ordinary Chat is visible; React Query fetches the latest page
@@ -293,8 +303,8 @@ export function ConversationView({
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
-    setActiveView(initialView ??
-      (readChatState(chatStateKey("view", `conversation.${conversationId}`)) === "collaboration" ? "collaboration" : "main"));
+    const saved = readChatState(chatStateKey("view", `conversation.${conversationId}`));
+    setActiveView(initialView ?? (saved === "collaboration" || saved === "agents" ? saved : "main"));
   }, [conversationId, initialView]);
 
   useEffect(() => {
@@ -851,14 +861,41 @@ export function ConversationView({
         <Stack component="nav" aria-label="Chat views" direction="row" spacing={.5} sx={{ minHeight: 46, mt: .5, alignItems: "stretch" }}>
           <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "main"} aria-label="Switch to Chat" onClick={() => { setAgentWorkOpen(false); setActiveView("main"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "main" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "main" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Chat</Button>
           <Button color="inherit" aria-pressed={!agentWorkOpen && activeView === "collaboration"} aria-label="Switch to team chat" onClick={() => { setAgentWorkOpen(false); setActiveView("collaboration"); }} sx={{ position: "relative", px: 1.5, color: !agentWorkOpen && activeView === "collaboration" ? "text.primary" : "text.secondary", "&::after": !agentWorkOpen && activeView === "collaboration" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Team Chat</Button>
-          <Button color="inherit" startIcon={<GroupsOutlinedIcon fontSize="small" />} onClick={onOpenProjectAgents} aria-label={`Open ${agents.length} Project Agents`} sx={{ position: "relative", px: 1.5, color: "text.secondary" }}>Agents</Button>
+          <Button
+            color="inherit"
+            startIcon={<GroupsOutlinedIcon fontSize="small" />}
+            aria-pressed={!agentWorkOpen && activeView === "agents"}
+            onClick={() => { setAgentWorkOpen(false); setActiveView("agents"); }}
+            aria-label={`Open ${projectAgents.length} Project Agents`}
+            sx={{
+              position: "relative",
+              px: 1.5,
+              color: !agentWorkOpen && activeView === "agents" ? "text.primary" : "text.secondary",
+              "&::after": !agentWorkOpen && activeView === "agents" ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined,
+            }}
+          >
+            Agents
+          </Button>
           <Button color="inherit" startIcon={<AccountTreeOutlinedIcon fontSize="small" />} aria-pressed={agentWorkOpen} onClick={() => { setAgentWorkOpen(true); }} aria-label="Open Work" sx={{ position: "relative", px: 1.5, color: agentWorkOpen ? "text.primary" : "text.secondary", "&::after": agentWorkOpen ? { content: '""', position: "absolute", left: 8, right: 8, bottom: 0, height: 2, bgcolor: "primary.light" } : undefined }}>Work</Button>
         </Stack>
         </Collapse>
       </Box>
 
       <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-        {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : <>
+        {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : activeView === "agents" ? (
+          <AgentsTab
+            agents={projectAgents}
+            projectId={conversation.projectId}
+            engines={engines}
+            conversations={projectConversations}
+            statusByAgentId={statusByAgentId}
+            healthByAgentId={healthByAgentId}
+            onOpenAgent={(agentId) => onOpenAgent(agentId)}
+            onOpenAgentInNewTab={onOpenAgentInNewTab}
+            onNewAgent={(managerAgentId) => onNewAgent(conversation, managerAgentId)}
+            scopeLabel={projectLabel}
+          />
+        ) : <>
         <ChatSurface
           layout="project"
           layoutKey={`${activeView}:${activeView === "main" ? messageLayoutKey : `${collaborationLayoutKey}:${operationalLayoutKey}`}`}

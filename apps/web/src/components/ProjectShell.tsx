@@ -261,16 +261,19 @@ export function ProjectShell({
         onRefreshCapabilities={refreshCapabilities}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
+        projectAgents={agents}
+        projectConversations={conversations}
+        projectLabel={project.label}
         onOpenProject={() => navigate({ kind: "project", projectId })}
         onOpenAgent={(agentId, view, technicalFocusId) => view
           ? navigate({ kind: "agent", projectId, agentId, view, ...(technicalFocusId ? { technicalFocusId } : {}) })
           : navigate({ kind: "agent", projectId, agentId })}
-        onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
+        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onOpenReview={openAgentReview}
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenFileActivity={openAgentFileActivity}
-        onNewAgent={openNewAgentFromMaster}
+        onNewAgent={(master, managerAgentId) => managerAgentId ? openNewSubagent(managerAgentId) : openNewAgentFromMaster(master)}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "conversation", projectId, conversationId: route.conversationId });
           navigate({ kind: "agents", projectId });

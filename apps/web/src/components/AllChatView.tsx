@@ -535,12 +535,7 @@ export function AllChatView({
             return;
           mobileComposer.finishTransition();
         }}
-        sx={{
-          borderTop: 1,
-          borderColor: "divider",
-          bgcolor: "background.paper",
-          p: { xs: 1, md: 2 },
-        }}
+        sx={{ minWidth: 0 }}
       >
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
           {!selected ? (
