@@ -27,7 +27,6 @@ export function ChatPane({
   agentNameForId,
   agentIdForHandle,
   onOpenAgent,
-  onOpenWorkLog,
   onOpenBroadcast,
   onReply,
   onMentionAgent,
@@ -46,7 +45,6 @@ export function ChatPane({
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
   onOpenAgent?(agentId: string): void;
-  onOpenWorkLog?(agentId: string): void;
   onOpenBroadcast?(message: MessageDto): void;
   onReply?(message: MessageDto): void;
   onMentionAgent?(): void;
@@ -133,7 +131,6 @@ export function ChatPane({
                   receipts={message.deliveryReceipts}
                   recipientName={(agentId) => agentNameForId?.(agentId) ?? agentName}
                   onOpenAgent={onOpenAgent}
-                  onOpenWorkLog={onOpenWorkLog}
                 />
               : undefined,
             actions: <>

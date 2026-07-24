@@ -36,6 +36,7 @@ import type { ConversationDto, AgentDto, AgentHealthDto, EngineDto } from "@pond
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
@@ -257,7 +258,7 @@ export function AgentsTab({
     setStoppingAll(true); setBulkError(undefined);
     const results = await Promise.allSettled(activeRunTargets.map(({ agentId, runId }) => api.cancelRun(agentId, {
       targetRunId: runId,
-      idempotencyKey: `bulk-stop:${agentId}:${runId}:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`,
+      idempotencyKey: `bulk-stop:${agentId}:${runId}:${createClientId()}`,
     })));
     const failed = results.filter((item) => item.status === "rejected").length;
     if (failed) setBulkError(`${activeRunTargets.length - failed} agents stopped; ${failed} could not be stopped. Retry or open those agents for details.`);

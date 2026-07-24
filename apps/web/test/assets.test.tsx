@@ -1,10 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { create } from "react-test-renderer";
 import { describe, expect, it } from "vitest";
 import { artifactDisplayLabel } from "../src/components/panes";
-import { AttachmentPreview } from "../src/components/filePreview/AttachmentPreview";
 import { ChatAttachments } from "../src/components/chat/ChatAttachments";
 import { Composer } from "../src/components/chat/Composer";
 import { createPonderosaTheme } from "../src/theme";
@@ -34,22 +32,7 @@ describe("general asset UI contract", () => {
       .toMatchObject({ minWidth: 44, minHeight: 44 });
   });
 
-  it("renders safe previews separately from general download metadata", () => {
-    const previewHtml = renderToStaticMarkup(createElement(AttachmentPreview, { attachment: {
-      id: "file-1",
-      name: "report.pdf",
-      mediaType: "application/pdf",
-      size: 4096,
-      url: "/asset",
-      previewUrl: "/asset/preview",
-      downloadUrl: "/asset/download",
-    } }));
-    expect(previewHtml).toContain('data-preview-capability="pdf"');
-    expect(previewHtml).not.toContain("<iframe");
-    expect(previewHtml).toContain('href="/asset/preview"');
-    expect(previewHtml).toContain('href="/asset/download"');
-    expect(previewHtml).toContain('aria-label="Download report.pdf"');
-
+  it("renders chat attachment previews separately from general download metadata", () => {
     const attachmentHtml = renderToStaticMarkup(<ChatAttachments attachments={[
       { id: "image", agentId: "a", name: "preview.png", mediaType: "image/png", size: 10, url: "/image", previewUrl: "/preview" },
       { id: "pdf", agentId: "a", name: "brief.pdf", mediaType: "application/pdf", size: 20, url: "/pdf", downloadUrl: "/download" },

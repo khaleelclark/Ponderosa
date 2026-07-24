@@ -154,7 +154,7 @@ describe("workspace tab bar", () => {
     expect(inactiveClose.props.disabled).toBeUndefined();
     expect(inactiveClose.props.sx.opacity).toEqual({ xs: 0.45, md: 0 });
     expect(inactiveClose.props.sx["&:focus-visible, &.Mui-focusVisible"]).toEqual({
-      color: "text.primary",
+      color: "#E6E7DF",
       opacity: 1,
     });
     view.unmount();

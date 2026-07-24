@@ -45,6 +45,21 @@ export function workspaceResourceSortPatch(kind: WorkspaceResourceSortKind, sort
   return { triggerSort: sort };
 }
 
+export function reorderStableIds(
+  current: readonly string[] | undefined,
+  visibleIds: readonly string[],
+  sourceId: string,
+  targetId: string,
+): string[] {
+  const ordered = [...new Set([...(current ?? []).filter((id) => visibleIds.includes(id)), ...visibleIds])];
+  const source = ordered.indexOf(sourceId);
+  const target = ordered.indexOf(targetId);
+  if (source < 0 || target < 0 || source === target) return ordered;
+  ordered.splice(source, 1);
+  ordered.splice(target, 0, sourceId);
+  return ordered;
+}
+
 export function sortWorkspaceResources<T>(
   items: T[],
   sort: ProjectSort,
@@ -64,27 +79,4 @@ export function sortWorkspaceResources<T>(
     if (right === undefined) return -1;
     return left - right;
   });
-}
-
-export function orderByStableIds<T>(items: T[], order: readonly string[] | undefined, id: (item: T) => string): T[] {
-  if (!order?.length) return items;
-  const rank = new Map(order.map((value, index) => [value, index] as const));
-  return [...items].sort((a, b) => {
-    const left = rank.get(id(a));
-    const right = rank.get(id(b));
-    if (left === undefined && right === undefined) return 0;
-    if (left === undefined) return 1;
-    if (right === undefined) return -1;
-    return left - right;
-  });
-}
-
-export function reorderStableIds(current: readonly string[] | undefined, visibleIds: readonly string[], sourceId: string, targetId: string): string[] {
-  const ordered = [...new Set([...(current ?? []).filter((id) => visibleIds.includes(id)), ...visibleIds])];
-  const source = ordered.indexOf(sourceId);
-  const target = ordered.indexOf(targetId);
-  if (source < 0 || target < 0 || source === target) return ordered;
-  ordered.splice(source, 1);
-  ordered.splice(target, 0, sourceId);
-  return ordered;
 }

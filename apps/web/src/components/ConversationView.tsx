@@ -30,13 +30,14 @@ import {
 } from "@mui/material";
 import type { AgentHealthDto, EngineCommand, EngineDto, ImageAttachmentDto, ConversationChannel, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto, TeamOperationalEventDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { createClientId } from "../clientId";
 import { CopyMessageButton } from "./CopyMessageButton";
-import { compactDefined } from "../collections";
+import { compactDefined, uniqueBy } from "../collections";
 import { type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
-import { useCollaborationView, useConversation, useNotifications } from "../hooks/queries";
+import { useCollaborationView, useConversation, useNotifications, useProjects, useWorkspacePreferences } from "../hooks/queries";
 import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
 import { agentIdForMentionHandle, agentMentionHandle, findMentionedAgents, hasEveryoneMention } from "../mentions";
 import { managerBroadcastText, resolveConversationSendRoute, uploadDirectReplyFiles } from "../conversationReply";
@@ -44,8 +45,8 @@ import { ResponseFileActivity } from "./activity/ActivityPane";
 import { ChatMessageBody, CommunicationDocumentCard, chatMessageLayoutKey } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
-import { isChatNearBottom, revealChatScrollbar, ScrollToLatestButton, scrollChatToBottom } from "./chat/scroll";
-import { formatExecutionElapsed } from "./AgentDetail";
+import { ChatSurface } from "./chat/ChatSurface";
+import { formatExecutionElapsed } from "../time";
 import { ProjectRelationshipLink } from "./HeaderRelationshipLinks";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
@@ -61,16 +62,13 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
-  const byId = new Map<string, ConversationMessageDto>();
-  for (const message of groups.flat()) byId.set(message.id, message);
-  return [...byId.values()].sort((a, b) =>
+  return uniqueBy(groups.flat(), (message) => message.id, (a, b) =>
     (a.canonicalOrderKey ?? a.createdAt).localeCompare(b.canonicalOrderKey ?? b.createdAt) || a.id.localeCompare(b.id));
 }
 
 function mergeOperationalEvents(...groups: TeamOperationalEventDto[][]): TeamOperationalEventDto[] {
-  const byId = new Map<string, TeamOperationalEventDto>();
-  for (const event of groups.flat()) byId.set(event.id, event);
-  return [...byId.values()].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
+  return uniqueBy(groups.flat(), (event) => event.id,
+    (a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
 }
 
 export function conversationComposerRuntime(
@@ -104,7 +102,7 @@ function MasterRespondingIndicator({ agents, healthByAgentId }: {
     {names} {responding.length === 1 ? "is" : "are"} responding · {formatExecutionElapsed(earliest, now)}
   </ChatLiveBanner>;
 }
-import { chatStateKey, readChatState, readScrollPosition, writeChatState } from "../chatState";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { highlightFocusedMessage, projectedMessageIdForFocus } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -116,7 +114,6 @@ export function ConversationMessage({
   agentTitle,
   agentIdForHandle,
   onOpenAgent,
-  onOpenWorkLog,
   onOpenReview,
   onOpenFileActivity,
   onReply,
@@ -131,7 +128,6 @@ export function ConversationMessage({
   agentTitle(agentId: string | undefined): string;
   agentIdForHandle(handle: string): string | undefined;
   onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
-  onOpenWorkLog?(agentId: string): void;
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onReply?(message: ConversationMessageDto): void;
@@ -201,7 +197,6 @@ export function ConversationMessage({
       receipts={message.deliveryReceipts}
       recipientName={(agentId) => agentTitle(agentId)}
       onOpenAgent={onOpenAgent}
-      onOpenWorkLog={onOpenWorkLog}
     /> : undefined,
     actions: conversation === "main" ? <>
       <CopyMessageButton text={visibleText} />
@@ -222,7 +217,6 @@ export function ConversationView({
   healthByAgentId,
   onOpenProject,
   onOpenAgent,
-  onOpenWorkLog,
   onOpenProjectAgents,
   onOpenReview,
   onOpenAgentWork,
@@ -241,7 +235,6 @@ export function ConversationView({
   healthByAgentId: Map<string, AgentHealthDto>;
   onOpenProject(): void;
   onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
-  onOpenWorkLog?(agentId: string): void;
   onOpenProjectAgents(): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
@@ -269,12 +262,12 @@ export function ConversationView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const queuedMessagesQuery = useQuery({
-    queryKey: ["queued-messages", conversationId],
+    queryKey: queryKeys.queuedMessages.conversation(conversationId),
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const notificationsQuery = useNotifications();
-  const preferencesQuery = useQuery({ queryKey: ["workspace-preferences"], queryFn: () => api.getWorkspacePreferences() });
-  const projectsQuery = useQuery({ queryKey: ["projects"], queryFn: () => api.listProjects() });
+  const preferencesQuery = useWorkspacePreferences();
+  const projectsQuery = useProjects();
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -295,7 +288,6 @@ export function ConversationView({
   const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] = useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
-  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{ id: string; text: string }>();
   const clearReply = () => {
     if (directReplyRequestId && directReplyTargetId) {
@@ -315,10 +307,6 @@ export function ConversationView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
-  const shouldFollowNewMessages = useRef(true);
-  const displayedConversationId = useRef<string>();
-  const displayedView = useRef<"main" | "collaboration">();
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
@@ -453,40 +441,11 @@ export function ConversationView({
     }
     const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
-    shouldFollowNewMessages.current = false;
-    setShowScrollToLatest(true);
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
     highlightFocusedMessage(target);
     focusedMessage.current = focusMessageId;
   }, [activeView, collaborationMessages, collaborationQuery.data?.messages, conversationId, detailQuery.data?.messages, focusMessageId, initialView, messages]);
-  useLayoutEffect(() => {
-    if (
-      displayedConversationId.current !== conversationId ||
-      displayedView.current !== activeView
-    ) {
-      displayedConversationId.current = conversationId;
-      displayedView.current = activeView;
-      const key = chatStateKey("scroll", `conversation.${conversationId}.${activeView}`);
-      const saved = readScrollPosition(key);
-      if (chatScrollRef.current && saved !== undefined) {
-        chatScrollRef.current.scrollTop = saved;
-        shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
-        setShowScrollToLatest(!shouldFollowNewMessages.current);
-        mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
-        return;
-      }
-      shouldFollowNewMessages.current = true;
-      setShowScrollToLatest(false);
-      mobileComposer.showAtLatest(chatScrollRef.current);
-    }
-    if (chatScrollRef.current && shouldFollowNewMessages.current) {
-      scrollChatToBottom(chatScrollRef.current);
-      setShowScrollToLatest(false);
-      mobileComposer.showAtLatest(chatScrollRef.current);
-    }
-  }, [conversationId, activeView, messageLayoutKey, collaborationLayoutKey, operationalLayoutKey]);
-
   useEffect(() => {
     if (!conversation || initializedFor.current === conversation.id) {
       return;
@@ -661,26 +620,26 @@ export function ConversationView({
       idempotencyKey: `cancel:${deliveryId}`,
     }),
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.conversation(conversationId) });
     },
   });
   const editQueued = useMutation({
     mutationFn: ({ deliveryId, targetAgentId, text }: { deliveryId: string; targetAgentId: string; text: string }) => api.editQueuedAgentMessage(targetAgentId, deliveryId, {
       text,
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
     }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.conversation(conversationId) }),
   });
   const steerQueued = useMutation({
     mutationFn: ({ deliveryId, targetAgentId }: { deliveryId: string; targetAgentId: string }) => api.steerQueuedAgentMessage(targetAgentId, deliveryId, {
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
     }),
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["queued-messages", conversationId] }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: queryKeys.queuedMessages.conversation(conversationId) }),
   });
   const correctMessage = useMutation({
     mutationFn: (message: ConversationMessageDto) => api.correctConversationMessage(conversationId, message.id, {
       text: correctionText.trim(),
-      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+      idempotencyKey: createClientId(),
       activeRunDelivery: "queue",
     }),
     onSuccess: () => {
@@ -833,7 +792,7 @@ export function ConversationView({
   const operationRunning = Boolean(activeOperation && (busy || activeOperation.state === "running"));
   const cancelOperationTargets = async (targets: { agentId: string; runId: string }[], names: string) => {
     setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
-    const requestId = stopOperationRequestId.current ?? (globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+    const requestId = stopOperationRequestId.current ?? createClientId();
     stopOperationRequestId.current = requestId;
     await Promise.allSettled(targets.map(({ agentId, runId }) => api.cancelRun(agentId, {
       targetRunId: runId,
@@ -862,7 +821,7 @@ export function ConversationView({
     const broadcastText = managerBroadcastText(text);
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) throw new Error("Add informational context or an attachment after #broadcast.");
-      await broadcast.mutateAsync({ text: broadcastText, files, replyToMessageId: replyTo?.id, requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}` });
+      await broadcast.mutateAsync({ text: broadcastText, files, replyToMessageId: replyTo?.id, requestId: createClientId() });
       return;
     }
     const targets = hasEveryoneMention(text)
@@ -893,7 +852,7 @@ export function ConversationView({
         text,
         files,
         replyToMessageId: replyTo?.id,
-        requestId: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        requestId: createClientId(),
         activeRunDelivery,
       });
     } else {
@@ -997,27 +956,24 @@ export function ConversationView({
 
       <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
         {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : <>
-        <Box
-          ref={chatScrollRef}
-          className="chat-scroll-region"
-          role="region"
-          aria-label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
-          tabIndex={0}
-          onScroll={(event) => {
-            revealChatScrollbar(event.currentTarget);
-            if (chatScrollRef.current) {
-              shouldFollowNewMessages.current = isChatNearBottom(chatScrollRef.current);
-              setShowScrollToLatest(!shouldFollowNewMessages.current);
-              mobileComposer.observeScroll(chatScrollRef.current, shouldFollowNewMessages.current);
-              writeChatState(
-                chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
-                String(chatScrollRef.current.scrollTop),
-              );
-            }
+        <ChatSurface
+          layout="project"
+          layoutKey={`${activeView}:${activeView === "main" ? messageLayoutKey : `${collaborationLayoutKey}:${operationalLayoutKey}`}`}
+          label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
+          follow={{
+            kind: "latest",
+            storageKey: chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
+            onPositionChange: (element, nearBottom) => mobileComposer.observeScroll(element, nearBottom),
           }}
-          sx={{ height: "100%", minHeight: 0, minWidth: 0, overflowY: "auto", overflowX: "hidden", overscrollBehavior: "contain" }}
-        >
-        <Box data-chat-column sx={{ display: "block", width: "min(1180px, 100%)", mx: "auto", px: { xs: 1, sm: 2, md: 3, lg: 4 }, py: { xs: 1, sm: 1.5 }, pb: 3 }}>
+          history={{
+            kind: "cursor",
+            hasEarlier: activeView === "collaboration"
+              ? collaborationHistory.hasMore || collaborationHistory.operationHasMore
+              : mainHistory.hasMore,
+            loading: loadingOlder,
+            onLoadEarlier: () => void loadOlderHistory(),
+          }}
+          beforeMessages={<>
           {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => {
             const focusId = notificationTechnicalFocusId(item);
             if (item.agentId) onOpenAgent(item.agentId, "technical", focusId);
@@ -1033,19 +989,9 @@ export function ConversationView({
             </Alert>
           ) : null}
           {activeView === "main" && projectBrowser.data?.status === "ready" ? <Alert severity="info" action={<Button color="inherit" size="small" onClick={onOpenBrowser}>Open Tab</Button>} sx={{ mb: 1.5 }}>Interactive Browser is active{projectBrowser.data.title ? ` · ${projectBrowser.data.title}` : ""}.</Alert> : null}
-
+          </>}
+        >
           <Stack spacing={0} sx={{ mb: 2 }}>
-            {(activeView === "collaboration" ? collaborationHistory.hasMore || collaborationHistory.operationHasMore : mainHistory.hasMore) ? (
-              <Button
-                size="small"
-                color="inherit"
-                disabled={loadingOlder}
-                onClick={() => void loadOlderHistory()}
-                sx={{ alignSelf: "center", mb: 1 }}
-              >
-                {loadingOlder ? "Loading…" : "Load Older History"}
-              </Button>
-            ) : null}
             {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
               {operationalEvents.map((event) => {
                 const content = <>
@@ -1078,7 +1024,6 @@ export function ConversationView({
                 agentTitle={agentTitle}
                 agentIdForHandle={agentIdForHandle}
                 onOpenAgent={onOpenAgent}
-                onOpenWorkLog={onOpenWorkLog}
                 onOpenReview={onOpenReview}
                 onOpenFileActivity={onOpenFileActivity}
                 onReply={activeView === "main" ? (selected) => {
@@ -1092,19 +1037,7 @@ export function ConversationView({
               />
             ))}
           </Stack>
-
-        </Box>
-        </Box>
-        <ScrollToLatestButton
-          visible={showScrollToLatest}
-          onClick={() => {
-            if (!chatScrollRef.current) return;
-            shouldFollowNewMessages.current = true;
-            scrollChatToBottom(chatScrollRef.current);
-            setShowScrollToLatest(false);
-            mobileComposer.showAtLatest(chatScrollRef.current);
-          }}
-        />
+        </ChatSurface>
         </>}
       </Box>
 

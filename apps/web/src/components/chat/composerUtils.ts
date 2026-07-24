@@ -162,7 +162,7 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
 ]);
 export const COMPOSER_MAX_FILES = 20;
 export const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
-export const COMPOSER_MAX_MESSAGE_BYTES = 80 * 1024 * 1024;
+const COMPOSER_MAX_MESSAGE_BYTES = 80 * 1024 * 1024;
 
 export function filesFromClipboard(
   items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>,

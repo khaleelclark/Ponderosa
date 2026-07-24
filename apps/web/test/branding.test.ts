@@ -13,8 +13,7 @@ describe("Ponderosa branding", () => {
     expect(app).toContain('/icons/app-icon.png');
     expect(app).toContain('/icons/app-icon-inverted.png');
     expect(sidebar).toContain('/icons/app-icon.png');
-    expect(sidebar).toContain('/icons/app-icon-inverted.png');
-    expect(`${app}${sidebar}`).toContain('mode === "light"');
+    expect(app).toContain('colorMode === "light"');
     expect(build).toContain('/icons/app-icon.png');
     expect(build).toContain('/icons/maskable-icon.png');
     expect(`${app}${sidebar}${build}`).not.toContain('/icons/icon.svg');

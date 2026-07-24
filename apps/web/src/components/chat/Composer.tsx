@@ -11,7 +11,9 @@ import { useEffect, useId, useReducer, useRef, useState } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
+import { createClientId } from "../../clientId";
 import { findMentionedHandles } from "../../mentions";
+import { queryKeys } from "../../queryKeys";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ChatComposerContract } from "./composerContracts";
@@ -97,7 +99,7 @@ export function Composer({
     const key = "ponderosa.draft.owner.v1";
     const existing = window.localStorage.getItem(key);
     if (existing) return existing;
-    const created = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const created = createClientId();
     window.localStorage.setItem(key, created);
     return created;
   });
@@ -185,7 +187,7 @@ export function Composer({
     return () => window.cancelAnimationFrame(frame);
   }, [insertTextRequest]);
   const draftQuery = useQuery({
-    queryKey: ["conversation-draft", conversationDraftId, draftOwnerId],
+    queryKey: queryKeys.conversationDraft.detail(conversationDraftId, draftOwnerId),
     queryFn: () => api.getConversationDraft(conversationDraftId!, draftOwnerId),
     enabled: Boolean(conversationDraftId) && typeof window !== "undefined",
     staleTime: 0,
@@ -222,7 +224,7 @@ export function Composer({
     const key = "ponderosa.draft.client.v1";
     let clientId = window.sessionStorage.getItem(key);
     if (!clientId) {
-      clientId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      clientId = createClientId();
       window.sessionStorage.setItem(key, clientId);
     }
     draftClientId.current = clientId;
@@ -281,7 +283,7 @@ export function Composer({
           if (generation !== draftGeneration.current) return;
           draftRevision.current = draft.revision;
           if (draftEditVersion.current === editVersion) draftLocallyEdited.current = false;
-          queryClient.setQueryData(["conversation-draft", conversationDraftId, draftOwnerId], draft);
+          queryClient.setQueryData(queryKeys.conversationDraft.detail(conversationDraftId, draftOwnerId), draft);
         } catch (error) {
           if (!(error instanceof ApiRequestError) || error.status !== 409) {
             setSendError(error instanceof Error ? error.message : "Draft could not be saved.");
@@ -290,7 +292,7 @@ export function Composer({
           const current = await api.getConversationDraft(conversationDraftId, draftOwnerId);
           draftGeneration.current += 1;
           draftRevision.current = current.revision;
-          queryClient.setQueryData(["conversation-draft", conversationDraftId, draftOwnerId], current);
+          queryClient.setQueryData(queryKeys.conversationDraft.detail(conversationDraftId, draftOwnerId), current);
           const conflicts = await api.getConversationDraftConflicts(conversationDraftId, draftOwnerId).catch(() => undefined);
           const displaced = conflicts?.conflicts.at(-1);
           if (displaced) setDraftConflict(displaced);

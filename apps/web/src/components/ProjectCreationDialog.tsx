@@ -23,7 +23,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
-  effortOptionsForModel,
   engineCanTestAccess,
   engineIsAvailable,
   resolveRuntimeSelection,
@@ -36,6 +35,7 @@ import {
 import { queryKeys } from "../queryKeys";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { HostFolderPicker } from "./HostFolderPicker";
+import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 
 export function ProjectCreationDialog({
   open,
@@ -103,8 +103,6 @@ export function ProjectCreationDialog({
 
   const selectedEngine = engines.find((candidate) => candidate.id === defaultEngine);
   const inherited = resolveRuntimeSelection(selectedEngine, preferences);
-  const model = defaultModel || inherited.model;
-  const efforts = effortOptionsForModel(selectedEngine, model);
 
   return (
     <>
@@ -145,30 +143,23 @@ export function ProjectCreationDialog({
                 ))}
               </Select>
             </FormControl>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-              <FormControl fullWidth disabled={!defaultEngine}>
-                <InputLabel id="project-default-model-label">Model</InputLabel>
-                <Select
-                  labelId="project-default-model-label"
-                  label="Model"
-                  value={defaultModel}
-                  onChange={(event) => {
-                    setDefaultModel(event.target.value);
-                    setDefaultEffort("");
-                  }}
-                >
-                  <MenuItem value="">Provider Default — {(selectedEngine?.models.find((option) => option.id === inherited.model)?.label ?? inherited.model) || "Automatic"}</MenuItem>
-                  {(selectedEngine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth disabled={!defaultEngine}>
-                <InputLabel id="project-default-effort-label">Reasoning</InputLabel>
-                <Select labelId="project-default-effort-label" label="Reasoning" value={defaultEffort} onChange={(event) => setDefaultEffort(event.target.value)}>
-                  <MenuItem value="">Provider Default — {(efforts.find((option) => option.id === inherited.effort)?.label ?? inherited.effort) || "Automatic"}</MenuItem>
-                  {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-            </Stack>
+            <ProjectRuntimeFields
+              engine={selectedEngine}
+              inherited={inherited}
+              model={defaultModel}
+              effort={defaultEffort}
+              onChange={(selection) => {
+                setDefaultModel(selection.model);
+                setDefaultEffort(selection.effort);
+              }}
+              modelLabel="Model"
+              effortLabel="Reasoning"
+              modelLabelId="project-default-model-label"
+              effortLabelId="project-default-effort-label"
+              inheritedPrefix="Provider Default"
+              inheritedFallback="Automatic"
+              disabled={!defaultEngine}
+            />
             {engines.filter(engineCanTestAccess).map((engine) => (
               <Alert
                 key={engine.id}

@@ -2,16 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createPonderosaTheme, ponderosaColorTokens } from "../src/theme";
 
 describe("Ponderosa visual system", () => {
-  it("uses warm natural surfaces in light mode", () => {
+  it("uses bright natural surfaces in light mode", () => {
     const theme = createPonderosaTheme("light");
 
-    expect(theme.palette.background.default).toBe("#F8F6EF");
+    expect(theme.palette.background.default).toBe("#FFFFFF");
     expect(theme.palette.background.paper).toBe("#FFFFFF");
     expect(theme.palette.text.primary).toBe("#10231C");
     expect(theme.palette.text.secondary).toBe("#53645D");
-    expect(theme.palette.divider).toBe("#D7DAD5");
-    expect(theme.palette.action.hover).toBe("#E8EBE7");
-    expect(ponderosaColorTokens.light.sidebar).toBe("#F1EEE5");
+    expect(theme.palette.divider).toBe("#CDD5D1");
+    expect(theme.palette.action.hover).toBe("#E1E6E3");
+    expect(ponderosaColorTokens.light.sidebar).toBe("#E7ECE9");
   });
 
   it("uses layered forest-at-dusk surfaces without terminal black or neon green", () => {

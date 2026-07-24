@@ -8,5 +8,5 @@ export * from "./chat/QueuedMessageTray";
 export * from "./chat/scroll";
 export * from "./files/WorkspaceReviewPane";
 export * from "./filePreview/ArtifactsPane";
-export { UnifiedDiffViewer, diffLineKind } from "./filePreview/FilePreview";
+export { diffLineKind } from "./filePreview/FilePreview";
 export { unifiedDiffLineTotals } from "@ponderosa/core";

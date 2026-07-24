@@ -100,7 +100,7 @@ describe("global chat search", () => {
     expect(component).toContain("refetchOnReconnect: true");
     expect(component).toContain('"aria-activedescendant"');
     expect(component).toContain("onOpenInNewTab");
-    expect(stream).toContain('["global-search"]');
+    expect(stream).toContain("queryKeys.globalSearch.all");
   });
 
   it("keeps mounted combobox focus ownership while real key events wrap, reset, and route exact messages", async () => {

@@ -1,12 +1,12 @@
 import type { ImageAttachmentDto, OperatorProfileDto } from "@ponderosa/core";
 import type { ReactNode } from "react";
 
-export type ChatAuthor =
+type ChatAuthor =
   | { kind: "operator"; profile?: OperatorProfileDto }
   | { kind: "agent"; name: string; onOpen?(): void }
   | { kind: "notice"; name?: string };
 
-export interface ChatReplyReference {
+interface ChatReplyReference {
   text: string;
   onOpen(): void;
 }

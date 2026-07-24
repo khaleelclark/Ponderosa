@@ -17,10 +17,11 @@ import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { effortOptionsForModel, engineIsAvailable, resolveRuntimeSelection } from "../conversationEngine";
+import { engineIsAvailable, resolveRuntimeSelection } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
 import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
+import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 
 export function ProjectSettingsDialog({
   project,
@@ -87,8 +88,6 @@ export function ProjectSettingsDialog({
 
   const engine = engines.find((candidate) => candidate.id === defaultEngine);
   const inherited = resolveRuntimeSelection(engine, preferences);
-  const model = defaultModel || inherited.model;
-  const efforts = effortOptionsForModel(engine, model);
 
   return (
     <>
@@ -118,30 +117,21 @@ export function ProjectSettingsDialog({
                 {engines.map((candidate) => <MenuItem key={candidate.id} value={candidate.id} disabled={!engineIsAvailable(candidate)}>{candidate.displayName}</MenuItem>)}
               </Select>
             </FormControl>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-              <FormControl fullWidth>
-                <InputLabel id="settings-project-model-label">Project model</InputLabel>
-                <Select
-                  labelId="settings-project-model-label"
-                  label="Project model"
-                  value={defaultModel}
-                  onChange={(event) => {
-                    setDefaultModel(event.target.value);
-                    setDefaultEffort("");
-                  }}
-                >
-                  <MenuItem value="">Use Workspace Setting — {engine?.models.find((option) => option.id === inherited.model)?.label ?? inherited.model}</MenuItem>
-                  {(engine?.models ?? []).filter((option) => option.id).map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth>
-                <InputLabel id="settings-project-effort-label">Project effort</InputLabel>
-                <Select labelId="settings-project-effort-label" label="Project effort" value={defaultEffort} onChange={(event) => setDefaultEffort(event.target.value)}>
-                  <MenuItem value="">Use Workspace Setting — {efforts.find((option) => option.id === inherited.effort)?.label ?? inherited.effort}</MenuItem>
-                  {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-            </Stack>
+            <ProjectRuntimeFields
+              engine={engine}
+              inherited={inherited}
+              model={defaultModel}
+              effort={defaultEffort}
+              onChange={(selection) => {
+                setDefaultModel(selection.model);
+                setDefaultEffort(selection.effort);
+              }}
+              modelLabel="Project model"
+              effortLabel="Project effort"
+              modelLabelId="settings-project-model-label"
+              effortLabelId="settings-project-effort-label"
+              inheritedPrefix="Use Workspace Setting"
+            />
             <TextField
               label="Project master rules"
               value={instructions}

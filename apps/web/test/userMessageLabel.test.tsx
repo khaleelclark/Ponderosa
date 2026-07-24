@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { act, create } from "react-test-renderer";
 import { describe, expect, it, vi } from "vitest";
 import { ConversationMessage } from "../src/components/ConversationView";
-import { ChatPane, UserMessageLabel } from "../src/components/panes";
+import { ChatPane } from "../src/components/panes";
 
 const createdAt = "2026-07-12T12:34:56.000Z";
 
@@ -45,27 +45,6 @@ function renderMaster(message: ConversationMessageDto, conversation: "main" | "c
 }
 
 describe("user message labels on chat surfaces", () => {
-  it("renders visible, non-aria-hidden label text", () => {
-    const html = renderToStaticMarkup(<UserMessageLabel />);
-
-    expect(html).toContain(">User</div>");
-    expect(html).toContain('aria-label="User avatar"');
-    expect(html).toContain("width:32px");
-    expect(html).toContain("height:32px");
-    expect(html).toContain("data-message-sender");
-    expect(html).not.toContain("aria-hidden");
-  });
-
-  it("preserves generated and managed uploaded profile pictures in the reordered identity", () => {
-    const generated = renderToStaticMarkup(<UserMessageLabel profile={{ displayName: "User", handle: "operator", avatarId: "fox" }} createdAt={createdAt} />);
-    const uploadedId = `uploaded:png:${"a".repeat(64)}`;
-    const uploaded = renderToStaticMarkup(<UserMessageLabel profile={{ displayName: "User", handle: "operator", avatarId: uploadedId }} createdAt={createdAt} />);
-
-    expect(generated).toContain("🦊");
-    expect(uploaded).toContain(`/api/workspace/profile-images/${encodeURIComponent(uploadedId)}`);
-    expect(uploaded.indexOf("data-user-message-timestamp")).toBeLessThan(uploaded.indexOf("data-user-message-avatar"));
-  });
-
   it("reveals a mobile timestamp only beneath the exact tapped message", () => {
     let view!: ReturnType<typeof create>;
     act(() => {

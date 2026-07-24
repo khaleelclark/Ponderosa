@@ -2,7 +2,8 @@ import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePrefere
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { globalSearchShortcutAccessibleLabel, globalSearchShortcutLabel, operatorInitials, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { operatorInitials } from "../src/components/OperatorAvatar";
 import { projectHealthDetail, projectHealthPresentation } from "../src/components/ProjectOverview";
 
 const projects: ProjectDto[] = [
@@ -116,10 +117,6 @@ describe("responsive workspace sidebar flow", () => {
   });
 
   it("keeps OS-aware global search labels while search lives in the top utility bar", () => {
-    expect(globalSearchShortcutLabel("MacIntel")).toBe("⌘K");
-    expect(globalSearchShortcutLabel("Win32")).toBe("Ctrl K");
-    expect(globalSearchShortcutAccessibleLabel("MacIntel")).toBe("Command K");
-    expect(globalSearchShortcutAccessibleLabel("Linux x86_64")).toBe("Control K");
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     projects.forEach((project) => {
       client.setQueryData(["conversations", project.id], []);

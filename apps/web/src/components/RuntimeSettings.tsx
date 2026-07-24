@@ -1,7 +1,7 @@
 import { Stack, TextField, Typography } from "@mui/material";
 
-export const MIN_AGENT_RUN_CONCURRENCY = 1;
-export const MAX_AGENT_RUN_CONCURRENCY = 64;
+const MIN_AGENT_RUN_CONCURRENCY = 1;
+const MAX_AGENT_RUN_CONCURRENCY = 64;
 
 export function parseAgentRunConcurrencyLimit(value: string): number | undefined {
   const parsed = Number(value);

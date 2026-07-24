@@ -2,7 +2,7 @@ import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Chip, CircularProgress, Divider, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
-import type { AgentActivityDto, AgentActivityOutputDto, AgentCoordinationV3Dto, AgentRunDto, ProviderInputDto, ResponseFileActivityDto, RunOutputDto, WorkItemDto } from "@ponderosa/core";
+import type { AgentActivityDto, AgentActivityOutputDto, AgentRunDto, ResponseFileActivityDto, RunOutputDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../../api";
@@ -13,57 +13,6 @@ import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { ChatMessageBody } from "../chat/ChatMessages";
 import { isChatNearBottom, ScrollToLatestButton, scrollChatToBottom } from "../chat/scroll";
-
-export function workItemStatusLabel(status: WorkItemDto["status"]): string {
-  if (status === "waiting_approval") {
-    return "Waiting";
-  }
-  return status[0] ? `${status[0].toUpperCase()}${status.slice(1)}` : status;
-}
-
-export function workItemStatusColor(status: WorkItemDto["status"]): "success" | "warning" | "info" {
-  if (status === "done") {
-    return "success";
-  }
-  if (status === "waiting_approval") {
-    return "warning";
-  }
-  return "info";
-}
-
-function runStatusColor(status: AgentRunDto["status"]): "success" | "warning" | "info" | "error" | "default" {
-  if (status === "completed") return "success";
-  if (status === "running" || status === "compacting") return "info";
-  if (status === "waiting") return "warning";
-  if (["failed", "interrupted", "blocked", "stalled"].includes(status)) return "error";
-  return "default";
-}
-
-function runStatusLabel(status: AgentRunDto["status"]): string {
-  return status[0] ? `${status[0].toUpperCase()}${status.slice(1)}` : status;
-}
-
-function wakeCauseLabel(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
-  switch (cause) {
-    case "project_request": return "Project request";
-    case "direct_message": return "Direct message";
-    case "collaboration": return "Collaboration";
-    case "trigger": return "Trigger";
-    case "decision": return "Decision response";
-    case "managed_failure": return "Managed-agent failure";
-  }
-}
-
-function runCauseSentence(cause: NonNullable<AgentRunDto["wakeCause"]>): string {
-  switch (cause) {
-    case "project_request": return "Started because the Project received a new request";
-    case "direct_message": return "Started because a direct message arrived";
-    case "collaboration": return "Started because coordinated work produced a new result or message";
-    case "trigger": return "Started because a Trigger fired";
-    case "decision": return "Started because your Decision response arrived";
-    case "managed_failure": return "Started because a managed Agent failed";
-  }
-}
 
 export function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   const { event } = item;
@@ -225,196 +174,6 @@ export function ResponseFileActivity({
       {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll} sx={{ flexShrink: 0, minWidth: 0, px: 0.75 }}>Review All</Button> : null}
     </Stack>
     <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
-  </Box>;
-}
-
-export function RunsPane({
-  runs,
-  coordinationV3,
-  workItems,
-  timeline,
-  focus,
-  onOpenAgentWork,
-}: {
-  runs: AgentRunDto[];
-  coordinationV3?: AgentCoordinationV3Dto;
-  workItems: WorkItemDto[];
-  timeline: ExecutionItem[];
-  focus?: { stream: "runs" | "workItems"; id: string };
-  onOpenAgentWork?(runId?: string): void;
-}): JSX.Element {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const firstLayout = useRef(true);
-  const followLatest = useRef(true);
-  const [showLatest, setShowLatest] = useState(false);
-  const layoutKey = runs.at(-1)?.id ?? workItems.at(-1)?.id ?? "empty";
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (!element || (!firstLayout.current && !followLatest.current)) return;
-    scrollChatToBottom(element);
-    firstLayout.current = false;
-    setShowLatest(false);
-  }, [layoutKey]);
-  return (
-    <Box sx={{ position: "relative", minHeight: 0, height: "100%" }}>
-    <Stack
-      ref={scrollRef}
-      spacing={1}
-      className="ponderosa-scroll"
-      onScroll={(event) => {
-        followLatest.current = isChatNearBottom(event.currentTarget);
-        setShowLatest(!followLatest.current);
-      }}
-      sx={{ p: 1.5, pb: 3, minHeight: 0, height: "100%", overflowY: "auto", overscrollBehavior: "contain" }}
-    >
-      <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-        <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>
-          Runs
-        </Typography>
-        {runs.length > 0 ? (
-          <Typography variant="caption" color="text.secondary">
-            {runs.length}
-          </Typography>
-        ) : null}
-      </Stack>
-      {coordinationV3 ? (
-        <Alert severity={coordinationV3.requests.some((request) => request.state === "outcome_unknown") ? "warning" : coordinationV3.availability === "waiting" ? "info" : "success"}>
-          <Typography variant="subtitle2">{coordinationV3.availability === "waiting" ? "Waiting for coordinated work" : coordinationV3.availability === "idle" ? "No coordinated work is active" : "Coordinated work is active"}</Typography>
-          {coordinationV3.joins.some((join) => join.state === "open")
-            ? `Waiting for ${coordinationV3.joins.filter((join) => join.state === "open").length} dependent result(s). `
-            : ""}
-          {coordinationV3.requests.some((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state))
-            ? `${coordinationV3.requests.filter((request) => !["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"].includes(request.state)).length} assignment(s) are still active. `
-            : ""}
-          Technical evidence is read-only. Current issues and any operator decisions remain available in Chat.
-        </Alert>
-      ) : null}
-      {runs.length === 0 ? (
-        <Alert severity="info">No runs yet.</Alert>
-      ) : (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 1.25,
-            pr: 0.5,
-          }}
-        >
-          {runs.map((run) => (
-            <Paper key={run.id} id={telemetryElementId("runs", run.id)} tabIndex={focus?.stream === "runs" && focus.id === run.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }} data-execution-id={run.id}>
-              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0 }} noWrap>
-                  {run.title}
-                </Typography>
-                <Chip
-                  size="small"
-                  label={runStatusLabel(run.status)}
-                  color={runStatusColor(run.status)}
-                />
-              </Stack>
-              <Typography variant="caption" color="text.secondary">
-                {run.engine} · {run.id.slice(0, 8)} · {new Date(run.startedAt).toLocaleString()}
-              </Typography>
-              {run.wakeCause ? (
-                onOpenAgentWork ? <Button
-                  size="small"
-                  color="inherit"
-                  onClick={() => onOpenAgentWork(run.id)}
-                  sx={{ display: "flex", justifyContent: "flex-start", px: 0, py: 0.25, textAlign: "left", color: "text.secondary" }}
-                >Why This Run Started: {runCauseSentence(run.wakeCause)}</Button>
-                  : <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>Started by {wakeCauseLabel(run.wakeCause)}</Typography>
-              ) : null}
-              <Typography variant="caption" color={run.usage ? "text.secondary" : "warning.main"} sx={{ display: "block" }}>
-                {run.usage
-                  ? `${new Intl.NumberFormat().format(run.usage.totalTokens ?? 0)} tokens · ${new Intl.NumberFormat().format(run.usage.inputTokens ?? 0)} in / ${new Intl.NumberFormat().format(run.usage.outputTokens ?? 0)} out`
-                  : run.status === "running" ? "Usage available when this run finishes" : "Usage not reported"}
-              </Typography>
-              {onOpenAgentWork && !run.wakeCause ? <Button size="small" sx={{ mt: 0.5 }} onClick={() => onOpenAgentWork(run.id)}>Review Work</Button> : null}
-              {run.providerInput ? <RunProviderInput run={run} /> : null}
-            </Paper>
-          ))}
-        </Box>
-      )}
-      {workItems.length > 0 ? <>
-        <Divider />
-        <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-          <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Work items</Typography>
-          <Typography variant="caption" color="text.secondary">{workItems.length}</Typography>
-        </Stack>
-        {workItems.map((item) => (
-          <Paper key={item.id} id={telemetryElementId("workItems", item.id)} tabIndex={focus?.stream === "workItems" && focus.id === item.id ? -1 : undefined} variant="outlined" sx={{ p: 1.25 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-              <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
-              <Chip size="small" label={workItemStatusLabel(item.status)} color={workItemStatusColor(item.status)} />
-            </Stack>
-            {item.executionId ? <Typography variant="caption" color="text.secondary">Run {item.executionId.slice(0, 8)}</Typography> : null}
-          </Paper>
-        ))}
-      </> : null}
-      <Divider />
-      <Typography variant="overline" color="text.secondary">
-        Timeline
-      </Typography>
-      {timeline.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          Commands, file changes, test results, and tool output will appear here.
-        </Typography>
-      ) : (
-        <Box
-          sx={{
-            display: "flex",
-            flexDirection: "column",
-            pr: 0.5,
-          }}
-        >
-          {timeline.map((item) => (
-            <EventLine key={item.id} item={item} />
-          ))}
-        </Box>
-      )}
-    </Stack>
-    <ScrollToLatestButton visible={showLatest} onClick={() => {
-      if (!scrollRef.current) return;
-      followLatest.current = true;
-      scrollChatToBottom(scrollRef.current);
-      setShowLatest(false);
-    }} />
-    </Box>
-  );
-}
-
-function RunProviderInput({ run }: { run: AgentRunDto }): JSX.Element {
-  const [showExact, setShowExact] = useState(false);
-  const exact = useQuery({
-    queryKey: ["provider-input", run.id],
-    queryFn: async () => {
-      const response = await fetch(`/api/runs/${encodeURIComponent(run.id)}/provider-input?exact=1`);
-      if (!response.ok) throw new Error("Provider input is unavailable");
-      return await response.json() as ProviderInputDto;
-    },
-    enabled: showExact,
-    staleTime: Infinity,
-  });
-  const manifest = run.providerInput!.sourceManifest;
-  return <Box sx={{ mt: 0.75 }}>
-    <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-      Context {run.providerInput!.promptHash.slice(0, 12)} · {manifest.providerSessionDisposition.replaceAll("_", " ")} · {manifest.historyMessageCount} submitted history · {"retainedSessionSourceCount" in manifest ? `${manifest.retainedSessionSourceCount} retained-session source(s) · ` : ""}{manifest.activationIds.length} activation(s) · {manifest.artifactIds.length} artifact(s)
-    </Typography>
-    <Box sx={{ mt: 0.5, maxHeight: 150, overflowY: "auto", borderLeft: 2, borderColor: "divider", pl: 1 }} aria-label={`Provider input sources for Run ${run.id}`}>
-      {manifest.sources.map((source, index) => <Stack key={`${source.kind}:${source.ref}:${index}`} direction="row" spacing={0.75} sx={{ alignItems: "baseline", minWidth: 0 }}>
-        <Typography variant="caption" fontWeight={700} sx={{ flexShrink: 0 }}>{source.kind.replaceAll("_", " ")}</Typography>
-        <Typography variant="caption" color="text.secondary" noWrap title={source.ref}>{source.ref}</Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ ml: "auto !important", flexShrink: 0 }}>{"delivery" in source ? source.delivery.replaceAll("_", " ") : "submitted"}</Typography>
-      </Stack>)}
-    </Box>
-    <Button size="small" sx={{ px: 0, minWidth: 0 }} onClick={() => setShowExact((value) => !value)}>
-      {showExact ? "Hide Exact Provider Input" : "Show Exact Provider Input"}
-    </Button>
-    {showExact ? <Paper variant="outlined" sx={{ p: 1, mt: 0.5, maxHeight: 260, overflow: "auto" }}>
-      <Typography variant="caption" component="pre" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
-        {exact.isPending ? "Loading…" : exact.isError ? exact.error.message : exact.data?.exactPrompt}
-      </Typography>
-    </Paper> : null}
   </Box>;
 }
 
@@ -685,30 +444,7 @@ function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element 
   </Box>;
 }
 
-export interface ActivityExecutionGroup {
-  key: string;
-  executionId?: string;
-  firstAt: string;
-  lastAt: string;
-  items: AgentActivityDto[];
-}
-
-export function groupActivityByExecution(activity: AgentActivityDto[]): ActivityExecutionGroup[] {
-  const groups = new Map<string, ActivityExecutionGroup>();
-  for (const item of [...activity].sort((a, b) => a.seq - b.seq)) {
-    const key = item.executionId ?? "unscoped";
-    const group = groups.get(key);
-    if (group) {
-      group.items.push(item);
-      group.lastAt = item.createdAt;
-    } else {
-      groups.set(key, { key, ...(item.executionId ? { executionId: item.executionId } : {}), firstAt: item.createdAt, lastAt: item.createdAt, items: [item] });
-    }
-  }
-  return [...groups.values()];
-}
-
-export function formatActivitySpan(firstAt: string, lastAt: string): string {
+function formatActivitySpan(firstAt: string, lastAt: string): string {
   const seconds = Math.max(0, Math.round((Date.parse(lastAt) - Date.parse(firstAt)) / 1_000));
   if (seconds < 60) return seconds === 0 ? "single moment" : `${seconds}s activity span`;
   const minutes = Math.floor(seconds / 60);

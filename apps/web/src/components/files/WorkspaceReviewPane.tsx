@@ -1,4 +1,3 @@
-import DifferenceIcon from "@mui/icons-material/Difference";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
@@ -137,72 +136,4 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
             </Box>}
     <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
-}
-
-/** Durable execution provenance, distinct from the live Git working-tree Review surface. */
-function ChangedFileEntry({ agentId, file, onOpenReviewInNewTab }: {
-  agentId: string;
-  file: ChangedFileDto;
-  onOpenReviewInNewTab?(path: string): void;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
-  const detail = useQuery({
-    queryKey: ["changed-file", agentId, file.path, file.lastSeq],
-    queryFn: () => api.getChangedFileDetail(agentId, file.path),
-    enabled: expanded && file.diffAvailable,
-    staleTime: Infinity,
-  });
-  const current = detail.data ?? file;
-  return <Paper
-    variant="outlined"
-    onContextMenu={(event) => {
-      if (!onOpenReviewInNewTab) return;
-      event.preventDefault();
-      setFileMenu({ anchor: event.currentTarget, resource: file.path });
-    }}
-    sx={{ p: 1.25 }}
-  >
-    <Button
-      fullWidth
-      color="inherit"
-      onClick={() => setExpanded((value) => !value)}
-      aria-label={`${expanded ? "Hide" : "Open"} recorded diff for ${file.path}`}
-      aria-expanded={expanded}
-      sx={{ justifyContent: "flex-start", p: 0, textTransform: "none" }}
-    >
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
-        <Chip size="small" label={file.kind} color={file.kind === "delete" ? "error" : file.kind === "create" ? "success" : "default"} />
-        <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere", textAlign: "left" }}>{file.path}</Typography>
-      </Stack>
-    </Button>
-    <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-      Last changed {new Date(current.lastChangedAt).toLocaleString()} · {current.executionCount} run{current.executionCount === 1 ? "" : "s"}
-    </Typography>
-    <Button size="small" color="inherit" startIcon={<DifferenceIcon />} onClick={() => setExpanded((value) => !value)} aria-expanded={expanded} sx={{ mt: 0.5 }}>{expanded ? "Hide Current Diff" : "Open Current Diff"}</Button>
-    {expanded ? !file.diffAvailable
-      ? <Alert severity="info" sx={{ mt: 1 }}>A durable recorded diff is unavailable for this historical Agent file event. Current working-tree state is separate and is not used here.</Alert>
-      : detail.isLoading ? <CircularProgress size={20} sx={{ mt: 1 }} />
-        : detail.isError ? <Alert severity="error" sx={{ mt: 1 }}>The durable recorded diff could not be loaded.</Alert>
-          : detail.data?.diff ? <Box sx={{ mt: 1 }}><UnifiedDiffViewer diff={detail.data.diff} /></Box>
-            : <Alert severity="info" sx={{ mt: 1 }}>The Agent did not provide a durable recorded diff for this historical file event. Current working-tree state is separate and is not used here.</Alert>
-      : null}
-    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenReviewInNewTab} />
-  </Paper>;
-}
-
-export function ChangedFilesPane({ agentId, files, onOpenReviewInNewTab }: {
-  agentId: string;
-  files: ChangedFileDto[];
-  onOpenReviewInNewTab?(path: string): void;
-}): JSX.Element {
-  const ordered = [...files].sort((a, b) => b.lastSeq - a.lastSeq);
-  return <Stack spacing={1} sx={{ p: 1.5, pb: 3, minHeight: 0 }} aria-label="Changed files">
-    <Stack direction="row" spacing={1} sx={{ alignItems: "baseline" }}>
-      <Typography variant="overline" color="text.secondary" sx={{ flex: 1 }}>Changed Files</Typography>
-      <Typography variant="caption" color="text.secondary">{ordered.length}</Typography>
-    </Stack>
-    {ordered.length === 0 ? <Alert severity="info">Files touched by this agent will remain listed here after refresh.</Alert> : ordered.map((file) =>
-      <ChangedFileEntry key={file.path} agentId={agentId} file={file} onOpenReviewInNewTab={onOpenReviewInNewTab} />)}
-  </Stack>;
 }

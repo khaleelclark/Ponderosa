@@ -7,7 +7,7 @@ import LanguageIcon from "@mui/icons-material/Language";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography, useTheme } from "@mui/material";
 import { unicodeCodePointLength } from "@ponderosa/core";
-import type { CommunicationDocumentReference, MessageDto, OperatorProfileDto, VerifiedCitationDto } from "@ponderosa/core";
+import type { CommunicationDocumentReference, MessageDto, VerifiedCitationDto } from "@ponderosa/core";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -16,7 +16,6 @@ import remarkGfm from "remark-gfm";
 import { copyText } from "../../clipboard";
 import { useProjectBrowser } from "../ProjectBrowserContext";
 import { ChatDocumentCard } from "./ChatDocumentCard";
-import { ChatOperatorLabel } from "./ChatOperatorLabel";
 
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
@@ -153,7 +152,7 @@ function fencedCodeLanguage(children: ReactNode): string {
   return "text";
 }
 
-export function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
+function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element {
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
   const resetTimer = useRef<ReturnType<typeof setTimeout>>();
   const theme = useTheme();
@@ -224,7 +223,7 @@ const MESSAGE_TAG_PREFIX = "#ponderosa-tag:";
 const MESSAGE_TAG_PATTERN = /(^|[^\p{L}\p{N}_-])#([\p{L}\p{N}_-]+)/gu;
 
 /** Mark #tags in Markdown text nodes without touching code or existing links. */
-export function remarkMessageTags() {
+function remarkMessageTags() {
   return (tree: MarkdownAstNode): void => {
     const visit = (node: MarkdownAstNode): void => {
       if (!node.children || node.type === "link" || node.type === "code" || node.type === "inlineCode") return;
@@ -352,20 +351,6 @@ export function ChatMarkdown({
   );
 }
 
-export function MessageMarkdown({ text, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, projectId, operatorHandle, compact }: {
-  text: string;
-  agentIdForHandle?(handle: string): string | undefined;
-  agentMentionForHandle?(handle: string): { agentId: string; label: string } | undefined;
-  onOpenAgent?(agentId: string): void;
-  onOpenBroadcast?(): void;
-  previewScope?: LinkPreviewScope;
-  projectId?: string;
-  operatorHandle?: string;
-  compact?: boolean;
-}): JSX.Element {
-  return <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compact}>{text}</ChatMarkdown>;
-}
-
 export function CommunicationDocumentCard({ document }: { document: CommunicationDocumentReference }): JSX.Element {
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown>{content}</ChatMarkdown>} />;
 }
@@ -399,7 +384,7 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
           } : {}),
         }}
       >
-        <MessageMarkdown text={text} agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} />
+        <ChatMarkdown agentIdForHandle={agentIdForHandle} agentMentionForHandle={agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown}>{text}</ChatMarkdown>
       </Box>
       {collapsible ? (
         <Button
@@ -417,8 +402,4 @@ export function ChatMessageBody({ text, citations, collapseLongMessage = true, a
       {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><a href={citation.url} target="_blank" rel="noreferrer">{citation.title}</a></Typography>)}</Box> : null}
     </Box>
   );
-}
-
-export function UserMessageLabel({ profile, createdAt }: { profile?: OperatorProfileDto; createdAt?: string }): JSX.Element {
-  return <ChatOperatorLabel profile={profile} createdAt={createdAt} />;
 }

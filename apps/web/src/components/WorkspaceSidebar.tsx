@@ -62,23 +62,6 @@ export function clampSidebarWidth(width: number): number {
   return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
 }
 
-export function operatorInitials(displayName: string): string {
-  const words = displayName.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return "U";
-  const initials = words.length === 1
-    ? words[0]!.slice(0, 2)
-    : `${words[0]![0] ?? ""}${words.at(-1)?.[0] ?? ""}`;
-  return initials.toLocaleUpperCase();
-}
-
-export function globalSearchShortcutLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "⌘K" | "Ctrl K" {
-  return /Mac|iPhone|iPad/iu.test(platform) ? "⌘K" : "Ctrl K";
-}
-
-export function globalSearchShortcutAccessibleLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): "Command K" | "Control K" {
-  return /Mac|iPhone|iPad/iu.test(platform) ? "Command K" : "Control K";
-}
-
 function projectSnapshots(
   projects: ProjectDto[],
   conversations: Array<ConversationDto[] | undefined>,
