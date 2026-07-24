@@ -1,7 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
@@ -24,8 +23,6 @@ import {
   ListItemButton,
   ListItemIcon,
   ListItemText,
-  Menu,
-  MenuItem,
   Stack,
   TextField,
   Tooltip,
@@ -39,11 +36,7 @@ import type {
 } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import type {
-  MouseEvent as ReactMouseEvent,
-  PointerEvent as ReactPointerEvent,
-  ReactNode,
-} from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import {
@@ -60,7 +53,6 @@ import {
   starredWorkspaceResources,
   toggleWorkspaceResourceStar,
   workspaceResourceSort,
-  workspaceResourceSortPatch,
 } from "../resourcePreferences";
 import {
   projectDisambiguator,
@@ -105,77 +97,6 @@ function projectSnapshots(
   }));
 }
 
-function SidebarSortControl({
-  sort,
-  onSort,
-}: {
-  sort: WorkspacePreferencesDto["projectSort"];
-  onSort(sort: WorkspacePreferencesDto["projectSort"]): void;
-}): JSX.Element {
-  const [anchor, setAnchor] = useState<HTMLElement>();
-  const label =
-    sort === "alphabetical"
-      ? "A–Z"
-      : sort === "custom"
-        ? "Custom"
-        : "Recent Activity";
-  return (
-    <>
-      <Button
-        fullWidth
-        color="inherit"
-        aria-label="Sort resources"
-        endIcon={<ExpandMoreIcon fontSize="small" />}
-        onClick={event => setAnchor(event.currentTarget)}
-        sx={{
-          mt: 0.5,
-          px: 0.75,
-          justifyContent: "space-between",
-          color: "text.secondary",
-        }}
-      >
-        <Typography variant="caption">
-          Sort:{" "}
-          <Box component="span" sx={{ color: "text.primary" }}>
-            {label}
-          </Box>
-        </Typography>
-      </Button>
-      {anchor ? (
-        <Menu anchorEl={anchor} open onClose={() => setAnchor(undefined)}>
-          <MenuItem
-            selected={sort === "last_used"}
-            onClick={() => {
-              onSort("last_used");
-              setAnchor(undefined);
-            }}
-          >
-            Recent Activity
-          </MenuItem>
-          <MenuItem
-            selected={sort === "alphabetical"}
-            onClick={() => {
-              onSort("alphabetical");
-              setAnchor(undefined);
-            }}
-          >
-            Alphabetical (A–Z)
-          </MenuItem>
-          <MenuItem
-            selected={sort === "custom"}
-            onClick={() => {
-              onSort("custom");
-              setAnchor(undefined);
-            }}
-          >
-            Custom Order
-          </MenuItem>
-        </Menu>
-      ) : null}
-    </>
-  );
-}
-
 const sidebarSurface = "var(--ponderosa-sidebar)";
 const railSurface = "var(--ponderosa-rail)";
 const starColor = "var(--ponderosa-star)";
@@ -214,13 +135,12 @@ function SharedSidebarPanel({
   allRows,
   empty,
   newLabel,
+  newIcon,
   onNew,
   newDisabled = false,
   viewAllLabel,
   viewAllIcon,
   onViewAll,
-  sort,
-  onSort,
   drawer,
 }: {
   title: string;
@@ -233,13 +153,12 @@ function SharedSidebarPanel({
   allRows: ReactNode;
   empty?: ReactNode;
   newLabel: string;
-  onNew(event: ReactMouseEvent<HTMLButtonElement>): void;
+  newIcon?: ReactNode;
+  onNew(): void;
   newDisabled?: boolean;
   viewAllLabel: string;
   viewAllIcon: ReactNode;
   onViewAll(): void;
-  sort: WorkspacePreferencesDto["projectSort"];
-  onSort(sort: WorkspacePreferencesDto["projectSort"]): void;
   drawer: boolean;
 }): JSX.Element {
   return (
@@ -313,27 +232,31 @@ function SharedSidebarPanel({
         <Button
           fullWidth
           variant="contained"
-          startIcon={<AddIcon />}
-          onClick={onNew}
-          disabled={newDisabled}
-          sx={{ justifyContent: "flex-start" }}
+          startIcon={viewAllIcon}
+          onClick={onViewAll}
+          sx={theme => ({
+            justifyContent: "flex-start",
+            bgcolor: theme.palette.mode === "dark" ? "#C9CECA" : "primary.main",
+            color: theme.palette.mode === "dark" ? "#173127" : "primary.contrastText",
+            "&:hover": { bgcolor: theme.palette.mode === "dark" ? "#E0E3E0" : "primary.dark" },
+          })}
         >
-          {newLabel}
+          {viewAllLabel}
         </Button>
         <Button
           fullWidth
           color="inherit"
-          startIcon={viewAllIcon}
-          onClick={onViewAll}
+          startIcon={newIcon ?? <AddIcon />}
+          onClick={onNew}
+          disabled={newDisabled}
           sx={{
             mt: 0.5,
             justifyContent: "flex-start",
             color: "text.secondary",
           }}
         >
-          {viewAllLabel}
+          {newLabel}
         </Button>
-        <SidebarSortControl sort={sort} onSort={onSort} />
       </Box>
     </Box>
   );
@@ -488,7 +411,6 @@ export function WorkspaceSidebar({
     setFilter("");
   }, [route.kind]);
 
-  const [createMenuAnchor, setCreateMenuAnchor] = useState<HTMLElement>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const showingAgents = sidebarSection === "agents";
   const showingChats = sidebarSection === "chats";
@@ -837,41 +759,6 @@ export function WorkspaceSidebar({
       searchLabel="Search Home"
       searchValue={filter}
       onSearchValueChange={setFilter}
-      topContent={
-        <Box
-          component="section"
-          data-sidebar-section="all-messages"
-          sx={{ mb: 2 }}
-        >
-          <SidebarSectionHeading>Messages</SidebarSectionHeading>
-          <List disablePadding>
-            <ListItemButton
-              aria-label="Open All Messages"
-              selected={route.kind === "allChat"}
-              onClick={() => showNavigation({ kind: "allChat" })}
-              onContextMenu={event => {
-                event.preventDefault();
-                openResourceMenu(event.currentTarget, { kind: "allChat" });
-              }}
-              sx={{ borderRadius: 1.25, px: 1, minHeight: 48 }}
-            >
-              <ListItemIcon sx={{ minWidth: 38 }}>
-                <ChatBubbleOutlineIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText
-                primary="All Messages"
-                secondary="Everything sent to or from you"
-                primaryTypographyProps={{
-                  noWrap: true,
-                  fontSize: 13,
-                  fontWeight: 750,
-                }}
-                secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
-              />
-            </ListItemButton>
-          </List>
-        </Box>
-      }
       starredRows={homeResourceRows(starredHomeResources)}
       allRows={homeResourceRows(allUnstarredHomeResources)}
       empty={
@@ -881,13 +768,12 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New"
-      onNew={event => setCreateMenuAnchor(event.currentTarget)}
+      newLabel="All Messages"
+      newIcon={<ChatBubbleOutlineIcon />}
+      onNew={() => showNavigation({ kind: "allChat" })}
       viewAllLabel="View Home"
       viewAllIcon={<HomeOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "home" })}
-      sort={workspaceResourceSort(preferences, "home")}
-      onSort={sort => onPreferences(workspaceResourceSortPatch("home", sort))}
       drawer={drawer}
     />
   );
@@ -990,13 +876,11 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Project"
+      newLabel="New"
       onNew={() => onCreateProject()}
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
       onViewAll={openAllProjects}
-      sort={preferences.projectSort}
-      onSort={sort => onPreferences({ projectSort: sort })}
       drawer={drawer}
     />
   );
@@ -1139,14 +1023,12 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Chat"
+      newLabel="New"
       onNew={() => onCreateChat?.()}
       newDisabled={!projects.length}
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
       onViewAll={() => onNavigate({ kind: "allChats" })}
-      sort={workspaceResourceSort(preferences, "chat")}
-      onSort={sort => onPreferences(workspaceResourceSortPatch("chat", sort))}
       drawer={drawer}
     />
   );
@@ -1294,13 +1176,11 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Agent"
+      newLabel="New"
       onNew={() => onCreateAgent?.()}
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allAgents" })}
-      sort={workspaceResourceSort(preferences, "agent")}
-      onSort={sort => onPreferences(workspaceResourceSortPatch("agent", sort))}
       drawer={drawer}
     />
   );
@@ -1470,15 +1350,11 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Trigger"
+      newLabel="New"
       onNew={() => onCreateTrigger?.()}
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}
-      sort={workspaceResourceSort(preferences, "trigger")}
-      onSort={sort =>
-        onPreferences(workspaceResourceSortPatch("trigger", sort))
-      }
       drawer={drawer}
     />
   );
@@ -1790,49 +1666,6 @@ export function WorkspaceSidebar({
             },
           }}
         />
-      ) : null}
-      {createMenuAnchor ? (
-        <Menu
-          anchorEl={createMenuAnchor}
-          open
-          onClose={() => setCreateMenuAnchor(undefined)}
-        >
-          <MenuItem
-            onClick={() => {
-              setCreateMenuAnchor(undefined);
-              onCreateProject();
-            }}
-          >
-            New Project
-          </MenuItem>
-          <MenuItem
-            disabled={!projects.length || !onCreateChat}
-            onClick={() => {
-              setCreateMenuAnchor(undefined);
-              onCreateChat?.();
-            }}
-          >
-            New Chat
-          </MenuItem>
-          <MenuItem
-            disabled={!projects.length || !onCreateAgent}
-            onClick={() => {
-              setCreateMenuAnchor(undefined);
-              onCreateAgent?.();
-            }}
-          >
-            New Agent
-          </MenuItem>
-          <MenuItem
-            disabled={!projects.length || !onCreateTrigger}
-            onClick={() => {
-              setCreateMenuAnchor(undefined);
-              onCreateTrigger?.();
-            }}
-          >
-            New Trigger
-          </MenuItem>
-        </Menu>
       ) : null}
       <ResourceContextMenu
         state={menu}

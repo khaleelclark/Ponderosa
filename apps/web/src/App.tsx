@@ -33,6 +33,7 @@ import { GlobalChatSearch, isGlobalSearchShortcut, routeForGlobalSearchSelection
 import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
 import { HomeView } from "./components/HomeView";
+import { NewWorkspace } from "./components/NewWorkspace";
 import { AllAgentsWorkspace, AllChatsWorkspace, AllTriggersWorkspace, ProviderActivityWorkspace } from "./components/WorkspaceResourceViews";
 import { OperatorProfileWorkspace, WorkspaceSettingsView } from "./components/WorkspaceSettingsView";
 import { OperatorAvatar } from "./components/OperatorAvatar";
@@ -241,7 +242,7 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (["home", "projects", "allChat", "allChats", "allAgents", "allTriggers", "settings", "profile", "usage", "wiki"].includes(route.kind)) return;
+    if (["home", "new", "projects", "allChat", "allChats", "allAgents", "allTriggers", "settings", "profile", "usage", "wiki"].includes(route.kind)) return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
@@ -335,6 +336,9 @@ export default function App({
     setWorkspaceTabs((current) => openWorkspaceTab(current, next, tab.lastActivatedAt, tab.key));
     setActiveWorkspaceTabKey(tab.key);
     navigate(next);
+  };
+  const openNewWorkspace = (createKind: "project" | "chat" | "agent" | "trigger") => {
+    openWorkspaceRoute({ kind: "new", createKind });
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     const tab = createWorkspaceTab(next);
@@ -533,10 +537,10 @@ export default function App({
             notifications={notificationsQuery.data ?? []}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
-            onCreateProject={() => openProjectCreator()}
-            onCreateChat={() => beginHomeCreate("chat")}
-            onCreateAgent={() => beginHomeCreate("agent")}
-            onCreateTrigger={() => beginHomeCreate("trigger")}
+            onCreateProject={() => openNewWorkspace("project")}
+            onCreateChat={() => openNewWorkspace("chat")}
+            onCreateAgent={() => openNewWorkspace("agent")}
+            onCreateTrigger={() => openNewWorkspace("trigger")}
             onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
@@ -591,6 +595,15 @@ export default function App({
               Ponderosa could not load its workspace data. Check the server connection and try again.
             </Alert>
           </Box>
+        ) : route.kind === "new" ? (
+          <NewWorkspace
+            initialKind={route.createKind}
+            onKindChange={(createKind) => navigateWorkspace({ kind: "new", createKind })}
+            onCreate={(createKind) => {
+              if (createKind === "project") openProjectCreator();
+              else beginHomeCreate(createKind);
+            }}
+          />
         ) : route.kind === "home" ? (
           <HomeView
             projects={projects}
@@ -600,10 +613,10 @@ export default function App({
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
             onPreferences={savePreferences}
-            onCreateProject={() => openProjectCreator()}
-            onCreateChat={() => beginHomeCreate("chat")}
-            onCreateAgent={() => beginHomeCreate("agent")}
-            onCreateTrigger={() => beginHomeCreate("trigger")}
+            onCreateProject={() => openNewWorkspace("project")}
+            onCreateChat={() => openNewWorkspace("chat")}
+            onCreateAgent={() => openNewWorkspace("agent")}
+            onCreateTrigger={() => openNewWorkspace("trigger")}
             onOpenInbox={() => setNotificationPanelOpen(true)}
           />
         ) : route.kind === "allChat" ? (
@@ -614,7 +627,7 @@ export default function App({
             preferences={preferences}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
-            onCreateProject={() => openProjectCreator()}
+            onCreateProject={() => openNewWorkspace("project")}
             onManageProject={openProjectSettings}
             onPreferences={savePreferences}
           />
@@ -627,7 +640,7 @@ export default function App({
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
-            onCreate={(projectId, managerAgentId) => projectId ? createHomeAgent(projectId, false, managerAgentId) : beginHomeCreate("agent")}
+            onCreate={(projectId, managerAgentId) => projectId ? createHomeAgent(projectId, false, managerAgentId) : openNewWorkspace("agent")}
           />
         ) : route.kind === "allChats" ? (
           <AllChatsWorkspace
@@ -637,7 +650,7 @@ export default function App({
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
-            onCreate={(projectId) => projectId ? void createHomeChat(projectId) : beginHomeCreate("chat")}
+            onCreate={(projectId) => projectId ? void createHomeChat(projectId) : openNewWorkspace("chat")}
           />
         ) : route.kind === "allTriggers" ? (
           <AllTriggersWorkspace
@@ -646,7 +659,7 @@ export default function App({
             onPreferences={savePreferences}
             onNavigate={navigateWorkspace}
             onOpenInNewTab={openWorkspaceRouteInBackground}
-            onCreate={beginTriggerCreate}
+            onCreate={() => openNewWorkspace("trigger")}
           />
         ) : route.kind === "settings" ? (
           <WorkspaceSettingsView
@@ -707,10 +720,10 @@ export default function App({
           notifications={notificationsQuery.data ?? []}
           onNavigate={(next) => { setMobileNavOpen(false); navigateWorkspace(next); }}
           onOpenInNewTab={(next) => { setMobileNavOpen(false); openWorkspaceRoute(next); }}
-          onCreateProject={() => { setMobileNavOpen(false); openProjectCreator(); }}
-          onCreateChat={() => { setMobileNavOpen(false); beginHomeCreate("chat"); }}
-          onCreateAgent={() => { setMobileNavOpen(false); beginHomeCreate("agent"); }}
-          onCreateTrigger={() => { setMobileNavOpen(false); beginHomeCreate("trigger"); }}
+          onCreateProject={() => { setMobileNavOpen(false); openNewWorkspace("project"); }}
+          onCreateChat={() => { setMobileNavOpen(false); openNewWorkspace("chat"); }}
+          onCreateAgent={() => { setMobileNavOpen(false); openNewWorkspace("agent"); }}
+          onCreateTrigger={() => { setMobileNavOpen(false); openNewWorkspace("trigger"); }}
           onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}

@@ -52,6 +52,7 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
   if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allTriggers" || candidate.kind === "profile") return true;
+  if (candidate.kind === "new") return candidate.createKind === undefined || ["project", "chat", "agent", "trigger"].includes(String(candidate.createKind));
   if (candidate.kind === "allChats") return candidate.filterProjectId === undefined || typeof candidate.filterProjectId === "string";
   if (candidate.kind === "allAgents") return candidate.filterProjectId === undefined || typeof candidate.filterProjectId === "string";
   if (candidate.kind === "settings") return candidate.section === undefined || ["general", "providers", "notifications"].includes(String(candidate.section));
@@ -82,6 +83,7 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
 function workspaceTabKey(route: Route): string {
   switch (route.kind) {
     case "home": return "home";
+    case "new": return "new";
     case "projects": return "projects";
     case "allChat": return "all-chat";
     case "allChats": return "all-chats";
