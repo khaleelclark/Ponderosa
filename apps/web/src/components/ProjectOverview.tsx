@@ -59,8 +59,6 @@ import { unreadByConversation } from "../workspaceNavigation";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
-const attentionAgentStates = new Set(["blocked", "failed", "interrupted", "stalled"]);
-
 function actionableProjectHealth(
   health: AgentHealthDto[] | undefined,
   agents: Pick<AgentDto, "id" | "activeEngine">[],
@@ -197,15 +195,11 @@ export function ProjectOverview({
     const status = healthByAgentId.get(agent.id)?.status;
     return status === "running" || status === "compacting";
   });
-  const attentionAgents = agents.filter((agent) => attentionAgentStates.has(healthByAgentId.get(agent.id)?.status ?? ""));
   const activeWork = (work.data?.traces ?? []).filter((trace) => trace.state === "active");
-  const attentionWork = (work.data?.traces ?? []).filter((trace) => trace.state === "attention");
   const importantOutputs = importantArtifacts
     .filter((artifact) => artifact.pinned || artifact.visibility === "published")
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(0, 3);
-  const pendingDecisionCount = decisions.data?.length ?? 0;
-  const attentionTotal = attentionWork.length + pendingDecisionCount + attentionAgents.length;
   const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
   const chatSort = workspaceResourceSort(preferences, "chat");
   const activeConversations = useMemo(() => sortWorkspaceResources(
@@ -231,7 +225,6 @@ export function ProjectOverview({
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
           <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Project Overview</Typography>
           <Chip size="small" color={activeAgents.length ? "info" : "default"} label={`${activeAgents.length} active`} />
-          <Chip size="small" color={attentionTotal ? "warning" : "default"} label={`${attentionTotal} need attention`} />
         </Stack>
       </AccordionSummary>
       <AccordionDetails id="project-overview-content" sx={{ pt: 0 }}>
@@ -248,15 +241,6 @@ export function ProjectOverview({
               <Typography variant="overline" color="text.secondary">Interactive Browser</Typography>
               <Typography variant="body2" color="text.secondary">{browser.data?.status === "ready" ? browser.data.title || browser.data.url || "Browser session active" : "No active browser session."}</Typography>
               <Button size="small" startIcon={<LanguageIcon />} onClick={onOpenBrowser} sx={{ mt: 0.5 }}>{browser.data?.status === "ready" ? "Open Tab" : "Open Browser"}</Button>
-            </Box>
-            <Box sx={{ flex: 1, minWidth: 0 }}>
-              <Typography variant="overline" color="text.secondary">Open Issues</Typography>
-              {attentionTotal === 0 ? <Typography variant="body2" color="text.secondary">Nothing currently needs attention.</Typography> : <Stack spacing={0.35}>
-                {pendingDecisionCount ? <Typography variant="body2">{pendingDecisionCount} pending {pendingDecisionCount === 1 ? "Decision" : "Decisions"}</Typography> : null}
-                {attentionWork.length ? <Typography variant="body2">{attentionWork.length} work {attentionWork.length === 1 ? "trace" : "traces"} need attention</Typography> : null}
-                {attentionAgents.length ? <Typography variant="body2">{attentionAgents.length} {attentionAgents.length === 1 ? "Agent is" : "Agents are"} blocked, failed, or interrupted</Typography> : null}
-              </Stack>}
-              <Button size="small" startIcon={<AccountTreeOutlinedIcon />} onClick={onOpenAgentWork} sx={{ mt: 0.5 }}>Open Work</Button>
             </Box>
             <Box sx={{ flex: 1, minWidth: 0 }}>
               <Typography variant="overline" color="text.secondary">Current activity</Typography>
