@@ -99,7 +99,9 @@ export function WorkspaceTabs({
 
   return <Stack component="nav" aria-label="Open workspace tabs" direction="row" sx={{
     minWidth: 0, height: { xs: 52, md: 52 }, px: { xs: 0.5, sm: 1 }, py: 0.5,
-    bgcolor: "background.paper", alignItems: "center", overflow: "hidden", borderBottom: 1, borderColor: "divider",
+    bgcolor: "var(--ponderosa-rail)", color: "var(--ponderosa-rail-foreground)", alignItems: "center", overflow: "hidden",
+    borderBottom: 1, borderColor: "var(--ponderosa-rail-border)",
+    "& .MuiButtonBase-root.Mui-focusVisible": { outlineColor: "var(--ponderosa-rail-foreground-active)" },
   }}>
     <Stack className="workspace-tab-strip" direction="row" spacing={0.5} sx={{
       minWidth: 0, flex: 1, height: { xs: 44, md: 38 }, overflowX: "auto", overflowY: "hidden", alignItems: "stretch", overscrollBehaviorInline: "contain", scrollSnapType: "x proximity",
@@ -163,11 +165,11 @@ export function WorkspaceTabs({
           sx={{
             position: "relative", containerType: "inline-size", minWidth: { xs: 132, md: 140 }, maxWidth: 240, flex: "0 1 220px",
             height: { xs: 44, md: 38 }, display: "flex", alignItems: "stretch", overflow: "hidden", borderRadius: 2, scrollSnapAlign: "start",
-            border: 1, borderColor: dragTargetKey === tab.key ? "primary.main" : selected ? "divider" : "transparent",
-            color: selected ? "text.primary" : "text.secondary", bgcolor: selected ? "action.selected" : "transparent",
-            boxShadow: dragTargetKey === tab.key ? (theme) => `inset 3px 0 0 ${theme.palette.primary.main}` : "none",
+            border: 1, borderColor: dragTargetKey === tab.key ? "var(--ponderosa-rail-foreground-active)" : selected ? "var(--ponderosa-rail-border)" : "transparent",
+            color: selected ? "#E6E7DF" : "var(--ponderosa-rail-foreground)", bgcolor: selected ? "rgba(124, 191, 138, .14)" : "transparent",
+            boxShadow: dragTargetKey === tab.key ? "inset 3px 0 0 var(--ponderosa-rail-foreground-active)" : "none",
             opacity: draggedKey === tab.key ? 0.55 : 1, cursor: draggedKey === tab.key ? "grabbing" : "grab",
-            "&:hover": { bgcolor: "action.hover", color: "text.primary" },
+            "&:hover": { bgcolor: selected ? "rgba(124, 191, 138, .20)" : "rgba(178, 187, 180, .10)", color: "#E6E7DF" },
           }}
         >
           <Tooltip title={`${label} · ${projectLabel}`} enterDelay={500}>
@@ -190,19 +192,19 @@ export function WorkspaceTabs({
             size="small" aria-label={`Close ${label}`}
             onClick={(event) => { event.stopPropagation(); onClose(tab.key); }}
             sx={{
-              width: { xs: 36, md: 28 }, minWidth: { xs: 36, md: 28 }, height: { xs: 36, md: 28 }, alignSelf: "center", mr: 0.25, color: "text.secondary",
-              opacity: { xs: selected ? 0.75 : 0.45, md: selected ? 0.75 : 0 }, "&:hover": { color: "text.primary", opacity: 1 },
-              "&:focus-visible, &.Mui-focusVisible": { color: "text.primary", opacity: 1 },
+              width: { xs: 36, md: 28 }, minWidth: { xs: 36, md: 28 }, height: { xs: 36, md: 28 }, alignSelf: "center", mr: 0.25, color: "var(--ponderosa-rail-foreground)",
+              opacity: { xs: selected ? 0.75 : 0.45, md: selected ? 0.75 : 0 }, "&:hover": { color: "#E6E7DF", opacity: 1 },
+              "&:focus-visible, &.Mui-focusVisible": { color: "#E6E7DF", opacity: 1 },
               "@container (max-width: 86px)": { display: "none" },
             }}
           ><CloseIcon sx={{ fontSize: 14 }} /></IconButton> : null}
         </Box>;
       })}
     </Stack>
-    <Tooltip title={`New Tab (${newTabShortcutLabel()})`}><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: { xs: 44, md: 36 }, height: { xs: 44, md: 36 }, flexShrink: 0 }}><AddIcon fontSize="small" /></IconButton></Tooltip>
-    <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "divider", flexShrink: 0 }}>
-    <Tooltip title="Search"><IconButton aria-label="Search Ponderosa" onClick={onSearch} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0 }}><SearchIcon fontSize="small" /></IconButton></Tooltip>
-    <Tooltip title="Inbox"><IconButton aria-label="Open Inbox" onClick={onOpenInbox} sx={{ width: 36, height: 36, flexShrink: 0 }}><Badge color="error" badgeContent={notificationCount} max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge></IconButton></Tooltip>
+    <Tooltip title={`New Tab (${newTabShortcutLabel()})`}><IconButton aria-label="New tab" onClick={onCreate} sx={{ ml: 0.5, width: { xs: 44, md: 36 }, height: { xs: 44, md: 36 }, flexShrink: 0, color: "var(--ponderosa-rail-foreground)", "&:hover": { color: "#E6E7DF", bgcolor: "rgba(178, 187, 180, .10)" } }}><AddIcon fontSize="small" /></IconButton></Tooltip>
+    <Box sx={{ ml: 0.75, pl: 1, pr: 0.25, height: 34, display: { xs: "none", sm: "flex" }, alignItems: "center", borderLeft: 1, borderColor: "var(--ponderosa-rail-border)", flexShrink: 0 }}>
+    <Tooltip title="Search"><IconButton aria-label="Search Ponderosa" onClick={onSearch} sx={{ ml: 0.5, width: 36, height: 36, flexShrink: 0, color: "var(--ponderosa-rail-foreground)", "&:hover": { color: "#E6E7DF", bgcolor: "rgba(178, 187, 180, .10)" } }}><SearchIcon fontSize="small" /></IconButton></Tooltip>
+    <Tooltip title="Inbox"><IconButton aria-label="Open Inbox" onClick={onOpenInbox} sx={{ width: 36, height: 36, flexShrink: 0, color: "var(--ponderosa-rail-foreground)", "&:hover": { color: "#E6E7DF", bgcolor: "rgba(178, 187, 180, .10)" } }}><Badge color="error" badgeContent={notificationCount} max={99}><NotificationsOutlinedIcon fontSize="small" /></Badge></IconButton></Tooltip>
       <Tooltip title="Operator Profile"><IconButton aria-label="Open operator profile" onClick={onOpenProfile} sx={{ width: 36, height: 36, ml: .25, p: 0 }}><OperatorAvatar profile={preferences.profile} size={30} fallback={operatorInitials(preferences.profile.displayName)} /></IconButton></Tooltip>
     </Box>
     {contextMenu ? <Menu anchorEl={contextMenu.anchor} open onClose={() => setContextMenu(undefined)}>
