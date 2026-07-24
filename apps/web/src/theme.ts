@@ -64,7 +64,7 @@ export const ponderosaColorTokens = {
     brandHover: "#4D8065",
     accent: "#4D8065",
     highlight: "#7CBF8A",
-    star: "#987400",
+    star: "#BFA34A",
     userMessage: "#27332F",
   },
 } as const;
