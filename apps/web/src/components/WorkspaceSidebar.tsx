@@ -248,6 +248,7 @@ function SharedSidebarPanel({
           {newLabel}
         </Button>
         <Button
+          variant="text"
           fullWidth
           startIcon={viewAllIcon}
           onClick={onViewAll}
