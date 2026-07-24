@@ -528,7 +528,6 @@ export default function App({
         <Box sx={{ display: { xs: "none", md: "block" }, minHeight: 0 }}>
           <WorkspaceSidebar
             projects={projects}
-            engines={engines}
             preferences={preferences}
             route={route}
             notifications={notificationsQuery.data ?? []}
@@ -538,14 +537,10 @@ export default function App({
             onCreateChat={() => beginHomeCreate("chat")}
             onCreateAgent={() => beginHomeCreate("agent")}
             onCreateTrigger={() => beginHomeCreate("trigger")}
-            onManageProject={openProjectSettings}
             onPreferences={savePreferences}
             onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
             onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
             onSearch={() => setGlobalSearchOpen(true)}
-            onOpenNotifications={() => setNotificationPanelOpen(true)}
-            onOpenSettings={openSettings}
-            onOpenEngineStatus={() => setEngineStatusOpen(true)}
             collapsed={sidebarPresentation.collapsed}
             width={sidebarPresentation.width}
             onCollapsedChange={(collapsed) => setSidebarPresentation((current) => ({ ...current, collapsed }))}
@@ -672,6 +667,13 @@ export default function App({
             project={projects.find((project) => project.id === selectedProjectId)!}
             route={route}
             engines={engines}
+            notifications={notificationsQuery.data ?? []}
+            preferences={preferences}
+            onPreferences={savePreferences}
+            onManageProject={openProjectSettings}
+            onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
+            onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
+            onOpenEngineStatus={() => setEngineStatusOpen(true)}
             navigate={navigateWorkspace}
             browserRequest={projectBrowserRequest}
             onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
@@ -700,7 +702,6 @@ export default function App({
         <WorkspaceSidebar
           drawer
           projects={projects}
-          engines={engines}
           preferences={preferences}
           route={route}
           notifications={notificationsQuery.data ?? []}
@@ -710,14 +711,10 @@ export default function App({
           onCreateChat={() => { setMobileNavOpen(false); beginHomeCreate("chat"); }}
           onCreateAgent={() => { setMobileNavOpen(false); beginHomeCreate("agent"); }}
           onCreateTrigger={() => { setMobileNavOpen(false); beginHomeCreate("trigger"); }}
-          onManageProject={(project) => { setMobileNavOpen(false); openProjectSettings(project); }}
           onPreferences={savePreferences}
           onRenameConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("rename", conversation); }}
           onDeleteConversation={(conversation) => { setMobileNavOpen(false); openSidebarConversationAction("delete", conversation); }}
           onSearch={() => { setMobileNavOpen(false); setGlobalSearchOpen(true); }}
-          onOpenNotifications={() => { setMobileNavOpen(false); setNotificationPanelOpen(true); }}
-          onOpenSettings={() => { setMobileNavOpen(false); openSettings(); }}
-          onOpenEngineStatus={() => { setMobileNavOpen(false); setEngineStatusOpen(true); }}
         />
         </Box>
       </SwipeableDrawer>

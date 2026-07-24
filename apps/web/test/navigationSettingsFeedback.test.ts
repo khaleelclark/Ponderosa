@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("../src/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
+const projectOverview = readFileSync(new URL("../src/components/ProjectOverview.tsx", import.meta.url), "utf8");
 const overview = readFileSync(new URL("../src/components/WorkspaceOverview.tsx", import.meta.url), "utf8");
 const wiki = readFileSync(new URL("../src/components/WikiView.tsx", import.meta.url), "utf8");
 const globalSearch = readFileSync(new URL("../src/components/GlobalChatSearch.tsx", import.meta.url), "utf8");
@@ -16,7 +17,10 @@ describe("navigation and settings feedback", () => {
   });
 
   it("keeps keyboard helpers out of local Project-chat search and mobile navigation", () => {
-    const projectSearch = sidebar.slice(sidebar.indexOf('placeholder="Search Chats"'), sidebar.indexOf("New Chat"));
+    const projectSearch = projectOverview.slice(
+      projectOverview.indexOf('placeholder="Search Project Chats"'),
+      projectOverview.indexOf('labelId="project-chat-sort-label"'),
+    );
     expect(projectSearch).not.toContain("component=\"kbd\"");
     expect(sidebar).not.toContain('<SearchIcon /></RailButton>');
     expect(sidebar).not.toContain('component="kbd"');
@@ -28,7 +32,7 @@ describe("navigation and settings feedback", () => {
   });
 
   it("allows Project titles and Wiki content to consume their available width", () => {
-    expect(sidebar).toContain('overflowWrap: "anywhere"');
+    expect(projectOverview).toContain('overflowWrap: "anywhere"');
     expect(overview).toContain('primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }}');
     expect(wiki).toContain('xl: "minmax(0, 1fr) 280px"');
     expect(wiki).not.toContain('md: "250px minmax(0, 1fr)"');

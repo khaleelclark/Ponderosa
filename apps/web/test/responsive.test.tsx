@@ -6,6 +6,7 @@ import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
 
 const app = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const sidebar = readFileSync(new URL("../src/components/WorkspaceSidebar.tsx", import.meta.url), "utf8");
+const projectOverview = readFileSync(new URL("../src/components/ProjectOverview.tsx", import.meta.url), "utf8");
 const timestamps = readFileSync(new URL("../src/components/MessageTimestamp.tsx", import.meta.url), "utf8");
 const artifacts = readFileSync(new URL("../src/components/ProjectArtifactsView.tsx", import.meta.url), "utf8");
 const globalCss = readFileSync(new URL("../src/global.css", import.meta.url), "utf8");
@@ -44,7 +45,7 @@ describe("responsive compact controls", () => {
     expect(app).toContain('aria-label="Close workspace navigation"');
     expect(app).toContain("setMobileNavOpen(false); navigateWorkspace(next)");
     expect(sidebar).toContain('aria-label="Primary navigation"');
-    expect(sidebar).toContain('placeholder="Search Chats"');
+    expect(projectOverview).toContain('placeholder="Search Project Chats"');
     expect(sidebar).toContain("drawer?: boolean");
     expect(sidebar).toContain('width: 48');
     expect(sidebar).toContain('onContextMenu={(event)');
@@ -74,7 +75,9 @@ describe("responsive compact controls", () => {
   it("keeps navigation semantic while the spine and one-level panel remain stable", () => {
     expect(sidebar).toContain("SIDEBAR_RAIL_WIDTH");
     expect(sidebar).toContain("SIDEBAR_PANEL_WIDTH");
-    expect(sidebar).toContain('showingProjectNavigation && insideProject ? chatsPanel : homePanel');
+    expect(sidebar).not.toContain("showingProjectNavigation");
+    expect(sidebar).not.toContain("chatsPanel");
+    expect(sidebar).not.toContain('setSidebarSection("project")');
     expect(sidebar).not.toContain("localStorage");
     expect(sidebar).not.toContain("updateWorkspacePreferences");
     expect(sidebar).not.toContain("preferences.sidebarWidth");
