@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 
 export type WorkspaceTabItem<T extends string> = { value: T; label: string; icon?: ReactNode };
 
-/** The Agent-detail header is the common identity frame for primary workplaces. */
+/** Shared identity frame for tabbed primary workplaces. */
 export function WorkspaceHeader({ title, context, meta, status, actions }: {
   title: string;
   context?: ReactNode;
@@ -25,7 +25,7 @@ export function WorkspaceHeader({ title, context, meta, status, actions }: {
 
 /** Shared local navigation chrome for primary Ponderosa workplaces. */
 export function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
-  value: T;
+  value: T | false;
   items: readonly WorkspaceTabItem<T>[];
   onChange(value: T): void;
   label: string;
@@ -35,8 +35,4 @@ export function WorkspaceTabBar<T extends string>({ value, items, onChange, labe
   }}>
     {items.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
   </Tabs>;
-}
-
-export function WorkspaceContent({ children }: { children: ReactNode }): JSX.Element {
-  return <Box sx={{ minHeight: 0, minWidth: 0, overflow: "auto" }}>{children}</Box>;
 }

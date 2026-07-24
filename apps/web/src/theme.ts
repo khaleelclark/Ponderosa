@@ -187,6 +187,14 @@ export function createPonderosaTheme(mode: ColorMode) {
           },
         },
       },
+      MuiLink: {
+        defaultProps: { underline: "none" },
+        styleOverrides: {
+          root: {
+            "&:hover": { color: dark ? colors.highlight : colors.brand },
+          },
+        },
+      },
       MuiButton: {
         styleOverrides: {
           root: { minHeight: 44, borderRadius: 8 },

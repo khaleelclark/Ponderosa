@@ -12,8 +12,6 @@ import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import ExpandLessIcon from "@mui/icons-material/ExpandLess";
-import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import {
   Alert,
   Box,
@@ -21,7 +19,6 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
-  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -30,7 +27,6 @@ import {
   FormControlLabel,
   IconButton,
   InputLabel,
-  LinearProgress,
   Link,
   ListItemText,
   MenuItem,
@@ -38,8 +34,6 @@ import {
   Select,
   Stack,
   Switch,
-  Tab,
-  Tabs,
   TextField,
   Tooltip,
   Typography,
@@ -84,6 +78,7 @@ import { queryKeys } from "../queryKeys";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../time";
+import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
 
 type AgentTab = AgentDetailView;
 
@@ -317,7 +312,6 @@ export function AgentDetail({
   const focusedMessage = useRef<string>();
   const theme = useTheme();
   const mobileViewport = useMediaQuery(theme.breakpoints.down("sm"));
-  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(false);
   const mobileComposer = useMobileComposerAutoHide(mobileViewport);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) => api.cancelQueuedAgentMessage(agentId, deliveryId, {
@@ -340,7 +334,6 @@ export function AgentDetail({
   });
 
   useEffect(() => {
-    setMobileHeaderCollapsed(false);
     mobileComposer.reset();
     if (initialView) {
       setTab(initialView);
@@ -985,44 +978,24 @@ export function AgentDetail({
 
   return (
     <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr) auto" }}>
-      <Box className="mobile-chat-chrome mobile-chat-header" sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", px: { xs: 1, sm: 1.5, md: 2 }, py: { xs: 0.5, sm: 1.25 }, borderBottom: 1, borderColor: "divider" }}>
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ width: "100%", maxWidth: "100%", alignItems: "center", minWidth: 0, overflow: "hidden" }}
-        >
-          <Box sx={{ minWidth: 0, maxWidth: "100%", flex: 1, overflow: "hidden" }}>
-            <Typography variant="h6" noWrap>
-              {detail.agent.title}
-            </Typography>
-            <AgentHeaderRelationships
+      <WorkspaceHeader
+        title={detail.agent.title}
+        context={<>
+          <AgentHeaderRelationships
               projectLabel={project?.label}
               chats={headerChats}
               onOpenProject={onOpenProject}
               onOpenChat={onOpenMaster}
             />
-            {lineageAgentId ? <Typography variant="caption" color="text.secondary" noWrap>
+          {lineageAgentId ? <Typography variant="caption" color="text.secondary" noWrap>
               {lineageLabel}{" "}
               {lineageAgent ? <Link component="button" variant="caption" onClick={() => onOpenAgent(lineageAgent.id)}>
                 {lineageAgent.title}
               </Link> : lineageAgentId}
             </Typography> : null}
-          </Box>
-          <Tooltip title={mobileHeaderCollapsed ? "Expand Agent Header" : "Minimize Agent Header"}><IconButton
-            size="small"
-            aria-label={mobileHeaderCollapsed ? "Expand agent header" : "Minimize agent header"}
-            onClick={() => setMobileHeaderCollapsed((current) => !current)}
-            sx={{ display: { xs: "inline-flex", sm: "none" }, minWidth: 36, minHeight: 36 }}
-          >{mobileHeaderCollapsed ? <ExpandMoreIcon /> : <ExpandLessIcon />}</IconButton></Tooltip>
-          <Collapse
-            in={!mobileHeaderCollapsed || !mobileViewport}
-            timeout={180}
-            sx={{ flexBasis: { xs: "100%", sm: "auto" }, minWidth: 0 }}
-          >
-          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: { sm: "flex-end" } }}>
-          <AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />
+        </>}
+        status={<AgentRunState status={status} connected={stream.connected} startedAt={runtimeActivity?.startedAt} />}
+        actions={<Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
           {running ? (
             <Button
               size="small"
@@ -1097,23 +1070,15 @@ export function AgentDetail({
               },
             ]}
           />
-          </Stack>
-          </Collapse>
-        </Stack>
-        {running ? <Collapse in={!mobileHeaderCollapsed || !mobileViewport} timeout={180}><LinearProgress aria-label="Agent is running" sx={{ mt: 1 }} /></Collapse> : null}
-      </Box>
+        </Stack>}
+      />
 
-      <Tabs
-        aria-label="Agent details"
+      <WorkspaceTabBar
+        label="Agent details"
         value={tab === "technical" ? false : tab}
-        onChange={(_event, value: AgentTab) => { setTab(value); onViewChange?.(value); }}
-        variant="scrollable"
-        scrollButtons="auto"
-        allowScrollButtonsMobile
-        sx={{ width: "100%", maxWidth: "100%", minWidth: 0, overflow: "hidden", borderBottom: 1, borderColor: "divider", minHeight: 48 }}
-      >
-        {AGENT_DETAIL_TABS.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: { xs: "auto", sm: 112 }, px: { xs: 1.25, sm: 2 } }} />)}
-      </Tabs>
+        onChange={(value) => { setTab(value); onViewChange?.(value); }}
+        items={AGENT_DETAIL_TABS}
+      />
 
       <Box role="tabpanel" aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
         {tab === "chat" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={(item) => {

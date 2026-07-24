@@ -7,7 +7,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { ReactNode } from "react";
+import type { DragEvent, ReactNode } from "react";
 
 export interface CollectionHeaderProps {
   title: string;
@@ -65,6 +65,7 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
 export interface ResourceRowProps {
   label: string;
   description?: ReactNode;
+  leading?: ReactNode;
   icon?: ReactNode;
   meta?: ReactNode;
   trailing?: ReactNode;
@@ -73,12 +74,15 @@ export interface ResourceRowProps {
   draggable?: boolean;
   onDragStart?(): void;
   onDragEnd?(): void;
-  onDrop?(): void;
+  onDragOver?(event: DragEvent<HTMLElement>): void;
+  onDrop?(event: DragEvent<HTMLElement>): void;
+  highlighted?: boolean;
 }
 
 export function ResourceRow({
   label,
   description,
+  leading,
   icon,
   meta,
   trailing,
@@ -87,7 +91,9 @@ export function ResourceRow({
   draggable,
   onDragStart,
   onDragEnd,
+  onDragOver,
   onDrop,
+  highlighted = false,
 }: ResourceRowProps): JSX.Element {
   return <Paper
     variant="outlined"
@@ -95,20 +101,29 @@ export function ResourceRow({
     onDragStart={onDragStart}
     onDragEnd={onDragEnd}
     onDragOver={(event) => {
-      if (!onDrop) return;
+      if (!onDrop && !onDragOver) return;
       event.preventDefault();
+      onDragOver?.(event);
     }}
     onDrop={(event) => {
       if (!onDrop) return;
       event.preventDefault();
-      onDrop();
+      onDrop(event);
     }}
     onContextMenu={(event) => {
       if (!onContextMenu) return;
       event.preventDefault();
       onContextMenu(event.currentTarget);
     }}
-    sx={{ display: "flex", alignItems: "stretch", overflow: "hidden" }}
+    sx={{
+      display: "flex",
+      alignItems: "stretch",
+      overflow: "hidden",
+      borderColor: highlighted ? "primary.main" : undefined,
+      bgcolor: highlighted ? "action.hover" : undefined,
+      transform: highlighted ? "translateY(1px)" : "none",
+      transition: "border-color 120ms ease, background-color 120ms ease, transform 120ms ease",
+    }}
   >
     <Box
       component="button"
@@ -133,6 +148,7 @@ export function ResourceRow({
         "&:focus-visible": { outline: "2px solid var(--ponderosa-focus-ring)", outlineOffset: -2 },
       }}
     >
+      {leading}
       {icon}
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Typography fontWeight={800} noWrap>{label}</Typography>

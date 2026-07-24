@@ -13,10 +13,6 @@ import {
   Chip,
   IconButton,
   InputAdornment,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
   MenuItem,
   Stack,
   TextField,
@@ -30,6 +26,7 @@ import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import { ResourceRow } from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -173,17 +170,21 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     </Stack>
     <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>{filteredSnapshots.length === projects.length ? `${projects.length} projects` : `${filteredSnapshots.length} of ${projects.length} projects`}</Typography>
     <Box id="project-order-status" role="status" aria-live="polite" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{orderAnnouncement}</Box>
-    <List aria-label="All projects" disablePadding sx={{ display: "grid", gap: 1, width: "100%" }}>
+    <Box component="section" aria-label="All projects" sx={{ display: "grid", gap: 1, width: "100%" }}>
       {filteredSnapshots.map((snapshot) => {
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
         const projectIndex = projects.findIndex((project) => project.id === snapshot.project.id);
         const previousProject = projectIndex > 0 ? projects[projectIndex - 1] : undefined;
         const nextProject = projectIndex >= 0 && projectIndex < projects.length - 1 ? projects[projectIndex + 1] : undefined;
-        return <Stack
+        return <ResourceRow
           key={snapshot.project.id}
-          direction="row"
-          onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: openProjectRoute(snapshot) }); }}
+          label={snapshot.project.label}
+          description={`${snapshot.project.hostPath}${recent ? ` · Recent: ${recent.title}` : " · No Project chats"}`}
+          icon={<FolderOutlinedIcon />}
+          meta={running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
+          onOpen={() => onNavigate(openProjectRoute(snapshot))}
+          onContextMenu={(anchor) => setTabMenu({ anchor, resource: openProjectRoute(snapshot) })}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -192,22 +193,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             setDropTarget({ projectId: snapshot.project.id, position: event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before" });
           }}
           onDrop={(event) => {
-            event.preventDefault();
             const bounds = event.currentTarget.getBoundingClientRect();
             dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
           }}
-          sx={{ border: 1, borderColor: dropTarget?.projectId === snapshot.project.id ? "primary.main" : "divider", borderRadius: 1.5, overflow: "hidden", bgcolor: dropTarget?.projectId === snapshot.project.id ? "action.hover" : "background.paper", transform: dropTarget?.projectId === snapshot.project.id ? `translateY(${dropTarget.position === "before" ? 2 : -2}px)` : "none", transition: "border-color 120ms ease, background-color 120ms ease, transform 120ms ease" }}
-        >
-          <ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => onNavigate(openProjectRoute(snapshot))} sx={{ minWidth: 0, px: 1.5 }}>
-            <ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon /></ListItemIcon>
-            <ListItemText
-              primary={snapshot.project.label}
-              secondary={`${snapshot.project.hostPath}${recent ? ` · Recent: ${recent.title}` : " · No Project chats"}`}
-              primaryTypographyProps={{ fontWeight: 750, sx: { overflowWrap: "anywhere" } }}
-              secondaryTypographyProps={{ noWrap: true }}
-            />
-            {running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
-          </ListItemButton>
+          highlighted={dropTarget?.projectId === snapshot.project.id}
+          trailing={<>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={0} sx={{ alignSelf: "stretch", justifyContent: "center", flexShrink: 0 }}>
             <Tooltip title={previousProject ? `Move before ${previousProject.label}` : "Already first"}>
               <span>
@@ -266,10 +256,11 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           <Tooltip title={`Project settings for ${snapshot.project.label}`}>
             <IconButton aria-label={`Project settings for ${snapshot.project.label}`} onClick={() => onManageProject(snapshot.project)} sx={{ borderRadius: 0 }}><MoreHorizIcon /></IconButton>
           </Tooltip>
-        </Stack>;
+          </>}
+        />;
       })}
       {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
-    </List>
+    </Box>
     <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </Box>;
 }
