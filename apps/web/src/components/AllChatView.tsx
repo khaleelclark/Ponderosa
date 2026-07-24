@@ -172,20 +172,22 @@ export function AllChatView({ onNavigate, notifications = [] }: { onNavigate(rou
         <Typography variant="body2" color="text.secondary">Everything sent to or from you across Ponderosa.</Typography>
       </Box>
     </Stack>
-    <AttentionSurface notifications={notifications} onOpen={(item) => {
-      if (!item.projectId) return;
-      const focusId = notificationTechnicalFocusId(item);
-      if (item.action?.kind === "open_agent" && item.action.targetId) {
-        onNavigate({
-          kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical",
-          ...(focusId ? { technicalFocusId: focusId } : {}),
-        });
-      } else if (item.conversationId) {
-        onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId, ...(focusId ? { focusId } : {}) });
-      } else {
-        onNavigate({ kind: "projectWork", projectId: item.projectId, ...(focusId ? { focusId } : {}) });
-      }
-    }} />
+    <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
+      <AttentionSurface notifications={notifications} onOpen={(item) => {
+        if (!item.projectId) return;
+        const focusId = notificationTechnicalFocusId(item);
+        if (item.action?.kind === "open_agent" && item.action.targetId) {
+          onNavigate({
+            kind: "agent", projectId: item.projectId, agentId: item.action.targetId, view: "technical",
+            ...(focusId ? { technicalFocusId: focusId } : {}),
+          });
+        } else if (item.conversationId) {
+          onNavigate({ kind: "projectWork", projectId: item.projectId, conversationId: item.conversationId, ...(focusId ? { focusId } : {}) });
+        } else {
+          onNavigate({ kind: "projectWork", projectId: item.projectId, ...(focusId ? { focusId } : {}) });
+        }
+      }} />
+    </Box>
 
     <ChatSurface
       layout="workspace"
