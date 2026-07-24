@@ -50,6 +50,16 @@ export function useChatScroll(
     }
   }, [follow.storageKey, layoutKey]);
 
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followLatest.current) scrollChatToBottom(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   const onScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;

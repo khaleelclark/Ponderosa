@@ -1,11 +1,14 @@
 import type { EngineDto, MessageDto } from "@ponderosa/core";
 import { act, create, type ReactTestInstance } from "react-test-renderer";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatMessageFrame } from "../src/components/chat/ChatMessageFrame";
 import { ChatPane } from "../src/components/chat/ChatPane";
 import { ChatSurface } from "../src/components/chat/ChatSurface";
+import { useChatScroll } from "../src/components/chat/useChatScroll";
 import { useRuntimeControls } from "../src/hooks/useRuntimeControls";
+
+afterEach(() => vi.unstubAllGlobals());
 
 function buttons(root: ReactTestInstance, text: string): ReactTestInstance[] {
   return root.findAll((node) =>
@@ -119,6 +122,53 @@ describe("shared chat presentation contracts", () => {
     act(() => buttons(view.root, "Load Older History")[0]!.props.onClick());
     expect(loadEarlier).toHaveBeenCalledTimes(1);
     expect(view.root.findByProps({ "aria-label": "Conversation" })).toBeTruthy();
+  });
+
+  it("re-anchors a resized viewport only while the reader is following latest", () => {
+    let resize: (() => void) | undefined;
+    const disconnectObserver = vi.fn();
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) {
+        resize = () => callback([], this as unknown as ResizeObserver);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {
+        disconnectObserver();
+      }
+    });
+    const viewport = {
+      clientHeight: 500,
+      scrollHeight: 1_000,
+      scrollTop: 0,
+      classList: { add: vi.fn(), remove: vi.fn() },
+    };
+    function ScrollHarness() {
+      const scroll = useChatScroll("one");
+      return <div aria-label="Conversation" ref={scroll.scrollRef} onScroll={scroll.onScroll} />;
+    }
+    const view = create(<ScrollHarness />, {
+      createNodeMock: (element) => element.props["aria-label"] === "Conversation" ? viewport : {},
+    });
+    const surface = view.root.findByProps({ "aria-label": "Conversation" });
+
+    expect(viewport.scrollTop).toBe(1_000);
+    act(() => {
+      viewport.scrollTop = 400;
+      surface.props.onScroll();
+      resize?.();
+    });
+    expect(viewport.scrollTop).toBe(400);
+
+    act(() => {
+      viewport.scrollTop = 460;
+      surface.props.onScroll();
+      resize?.();
+    });
+    expect(viewport.scrollTop).toBe(1_000);
+
+    view.unmount();
+    expect(disconnectObserver).toHaveBeenCalledOnce();
   });
 
   it("shows Agent Chat guidance when there are no renderable chat messages", () => {
