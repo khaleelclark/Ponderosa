@@ -101,9 +101,6 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.101.2
         version: 5.101.2(react@18.3.1)
-      frimousse:
-        specifier: ^0.3.0
-        version: 0.3.0(react@18.3.1)(typescript@5.9.3)
       react:
         specifier: ^18.3.1
         version: 18.3.1
@@ -2173,15 +2170,6 @@ packages:
   format@0.2.2:
     resolution: {integrity: sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==}
     engines: {node: '>=0.4.x'}
-
-  frimousse@0.3.0:
-    resolution: {integrity: sha512-kO6LMoKY/cLAYEhXXtqLRaLIE6L/DagpFPrUZaLv3LsUa1/8Iza3HhwZcgN8eZ+weXnhv69eoclNUPohcCa/IQ==}
-    peerDependencies:
-      react: ^18 || ^19
-      typescript: '>=5.1.0'
-    peerDependenciesMeta:
-      typescript:
-        optional: true
 
   fs-constants@1.0.0:
     resolution: {integrity: sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow==}
@@ -5498,12 +5486,6 @@ snapshots:
       signal-exit: 4.1.0
 
   format@0.2.2: {}
-
-  frimousse@0.3.0(react@18.3.1)(typescript@5.9.3):
-    dependencies:
-      react: 18.3.1
-    optionalDependencies:
-      typescript: 5.9.3
 
   fs-constants@1.0.0: {}
 
