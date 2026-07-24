@@ -78,7 +78,7 @@ export function allChatSourceAccessibleName(item: AllChatItemDto): string {
     normalized.length > 80
       ? `${normalized.slice(0, 79)}…`
       : normalized || "Empty message";
-  return `Select message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
+  return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 export function AllChatView({
   onNavigate,
@@ -410,7 +410,6 @@ export function AllChatView({
                       },
                   createdAt: item.createdAt,
                   ariaLabel: allChatSourceAccessibleName(item),
-                  onSelect: () => selectItem(item),
                   body: (
                     <ChatMessageBody
                       text={item.text}
