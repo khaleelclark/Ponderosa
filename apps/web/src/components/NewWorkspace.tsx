@@ -6,13 +6,13 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { NewWorkspaceKind } from "../routing";
-import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
+import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
-const choices: Array<{ kind: NewWorkspaceKind; label: string; description: string; icon: JSX.Element }> = [
-  { kind: "project", label: "Project", description: "A workspace, its runtime defaults, and its working folder.", icon: <FolderOutlinedIcon /> },
-  { kind: "chat", label: "Chat", description: "A project conversation that people and Agents can work in together.", icon: <ChatBubbleOutlineIcon /> },
-  { kind: "agent", label: "Agent", description: "A persistent teammate with its own model, role, and reporting line.", icon: <SmartToyOutlinedIcon /> },
-  { kind: "trigger", label: "Trigger", description: "An unattended automation owned and run by an Agent.", icon: <BoltOutlinedIcon /> },
+const choices: Array<{ value: NewWorkspaceKind; label: string; description: string; icon: JSX.Element }> = [
+  { value: "project", label: "Project", description: "A workspace, its runtime defaults, and its working folder.", icon: <FolderOutlinedIcon /> },
+  { value: "chat", label: "Chat", description: "A project conversation that people and Agents can work in together.", icon: <ChatBubbleOutlineIcon /> },
+  { value: "agent", label: "Agent", description: "A persistent teammate with its own model, role, and reporting line.", icon: <SmartToyOutlinedIcon /> },
+  { value: "trigger", label: "Trigger", description: "An unattended automation owned and run by an Agent.", icon: <BoltOutlinedIcon /> },
 ];
 
 /** The creation workplace is intentionally a tab, not a top-bar popout. */
@@ -27,14 +27,17 @@ export function NewWorkspace({
 }): JSX.Element {
   const [kind, setKind] = useState<NewWorkspaceKind>(initialKind);
   useEffect(() => setKind(initialKind), [initialKind]);
-  const choice = choices.find((item) => item.kind === kind)!;
+  const choice = choices.find((item) => item.value === kind)!;
   const select = (next: NewWorkspaceKind) => { setKind(next); onKindChange(next); };
 
   return <Box sx={{ minHeight: 0, overflow: "auto" }}>
-    <WorkspaceHeader title="Create new" context={<Typography color="text.secondary">Choose the kind of workspace item you want to add.</Typography>} />
+    <TabbedWorkspaceFrame
+      title="Create New"
+      context={<Typography variant="body2" color="text.secondary">Choose the kind of workspace item you want to add.</Typography>}
+      tabs={{ value: kind, onChange: select, label: "Create New", items: choices }}
+    />
     <Box sx={{ p: { xs: 2, md: 4 } }}>
     <Stack spacing={3} sx={{ maxWidth: 880, mx: "auto" }}>
-      <WorkspaceTabBar value={kind} onChange={select} label="Create new" items={choices} />
       <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
         <Stack spacing={2} alignItems="flex-start">
           <Stack direction="row" spacing={1} alignItems="center">

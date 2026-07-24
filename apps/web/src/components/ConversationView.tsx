@@ -58,7 +58,7 @@ import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
-import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
+import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
 function mergeConversationMessages(...groups: ConversationMessageDto[][]): ConversationMessageDto[] {
   return uniqueBy(groups.flat(), (message) => message.id, (a, b) =>
@@ -800,7 +800,7 @@ export function ConversationView({
 
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
-      <WorkspaceHeader
+      <TabbedWorkspaceFrame
         title={conversation.title}
         context={<ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />}
         actions={<>
@@ -836,12 +836,17 @@ export function ConversationView({
             ]}
           />
         </>}
-      />
-      <WorkspaceTabBar
-        label="Chat views"
-        value={agentWorkOpen ? "work" : activeView}
-        onChange={(next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); }}
-        items={[{ value: "main", label: "Chat" }, { value: "collaboration", label: "Team Chat" }, { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> }, { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> }]}
+        tabs={{
+          label: "Chat views",
+          value: agentWorkOpen ? "work" : activeView,
+          onChange: (next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); },
+          items: [
+            { value: "main", label: "Chat" },
+            { value: "collaboration", label: "Team Chat" },
+            { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> },
+            { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> },
+          ],
+        }}
       />
 
       <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>

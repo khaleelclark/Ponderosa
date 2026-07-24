@@ -18,7 +18,7 @@ import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
 import { reorderStableIds, sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { WorkspaceHeader, WorkspaceTabBar } from "./WorkspaceFrame";
+import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
 
@@ -72,11 +72,21 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   };
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
-    <WorkspaceHeader title="Home" context={<Typography color="text.secondary">A calm overview of your organization and its recent work.</Typography>} />
+    <TabbedWorkspaceFrame<"overview" | "work">
+      title="Home"
+      context={<Typography variant="body2" color="text.secondary">A calm overview of your organization and its recent work.</Typography>}
+      tabs={{
+        value: tab,
+        onChange: setTab,
+        label: "Home",
+        items: [
+          { value: "overview", label: "Overview", icon: <HomeOutlinedIcon /> },
+          { value: "work", label: "Recent work", icon: <ChatBubbleOutlineIcon /> },
+        ],
+      }}
+    />
     <Box sx={{ p: { xs: 2, sm: 3, lg: 4 } }}>
     <Stack spacing={3} sx={{ width: "100%", maxWidth: 1320, mx: "auto" }}>
-      <WorkspaceTabBar value={tab} onChange={setTab} label="Home" items={[{ value: "overview", label: "Overview", icon: <HomeOutlinedIcon /> }, { value: "work", label: "Recent work", icon: <ChatBubbleOutlineIcon /> }]} />
-
       {tab === "overview" ? <><Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1.25 }}>
         <Stat label="Active Agents" value={activeAgents} />
         <Stat label="Open Issues" value={needsAttention} onClick={onOpenInbox} />

@@ -3,9 +3,7 @@ import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import SearchIcon from "@mui/icons-material/Search";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -135,9 +133,7 @@ function relativeChatTime(updatedAt: string): string {
 export function ProjectOverview({
   project,
   agents,
-  health,
   healthByAgentId,
-  engines,
   importantArtifacts,
   conversations,
   notifications,
@@ -148,9 +144,6 @@ export function ProjectOverview({
   onOpenConversationInNewTab,
   onRenameConversation,
   onDeleteConversation,
-  onOpenProjectAgents,
-  onManageProject,
-  onOpenEngineStatus,
   onOpenBrowser,
   onOpenAgentWork,
   onOpenProjectFiles,
@@ -158,9 +151,7 @@ export function ProjectOverview({
 }: {
   project: ProjectDto;
   agents: AgentDto[];
-  health: AgentHealthDto[] | undefined;
   healthByAgentId: Map<string, AgentHealthDto>;
-  engines: EngineDto[];
   importantArtifacts: ArtifactDto[];
   conversations: ConversationDto[];
   notifications: WorkspaceNotificationDto[];
@@ -171,9 +162,6 @@ export function ProjectOverview({
   onOpenConversationInNewTab?(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onOpenProjectAgents(): void;
-  onManageProject(): void;
-  onOpenEngineStatus(): void;
   onOpenBrowser(): void;
   onOpenAgentWork(): void;
   onOpenProjectFiles(): void;
@@ -218,8 +206,6 @@ export function ProjectOverview({
     .slice(0, 3);
   const pendingDecisionCount = decisions.data?.length ?? 0;
   const attentionTotal = attentionWork.length + pendingDecisionCount + attentionAgents.length;
-  const projectHealth = projectHealthPresentation(health, agents, engines);
-  const projectHealthTooltip = projectHealthDetail(health, agents, engines);
   const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
   const chatSort = workspaceResourceSort(preferences, "chat");
   const activeConversations = useMemo(() => sortWorkspaceResources(
@@ -240,27 +226,6 @@ export function ProjectOverview({
   const starred = starredWorkspaceResources(preferences);
 
   return <Stack spacing={1.5}>
-    <Stack direction={{ xs: "column", md: "row" }} spacing={1.5} sx={{ alignItems: { md: "center" } }}>
-      <Box sx={{ flex: 1, minWidth: 0 }}>
-        <Typography variant="h4" component="h1" fontWeight={850} sx={{ overflowWrap: "anywhere" }}>{project.label}</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{project.hostPath}</Typography>
-      </Box>
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-        <Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow>
-          <Button
-            size="small"
-            color="inherit"
-            aria-label={`${projectHealth.label}. ${projectHealthTooltip} Open AI provider details.`}
-            onClick={onOpenEngineStatus}
-            startIcon={<Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} />}
-          >{projectHealth.label}</Button>
-        </Tooltip>
-        <Button variant="contained" startIcon={<AddIcon />} onClick={onCreateConversation}>New Chat</Button>
-        <Button variant="outlined" startIcon={<GroupsOutlinedIcon />} onClick={onOpenProjectAgents}>Project Agents</Button>
-        <Tooltip title="Project Settings"><IconButton aria-label={`Project settings for ${project.label}`} onClick={onManageProject}><MoreVertIcon /></IconButton></Tooltip>
-      </Stack>
-    </Stack>
-
     <Accordion defaultExpanded disableGutters variant="outlined" sx={{ borderRadius: "10px !important", "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="project-overview-content">
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
