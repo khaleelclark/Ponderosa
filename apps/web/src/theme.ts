@@ -24,6 +24,7 @@ export const ponderosaColorTokens = {
   light: {
     background: "#FFFFFF",
     rail: "#17221E",
+    topbar: "#1D2A26",
     railBorder: "#354542",
     railForeground: "#B2BBB4",
     railForegroundActive: "#7CBF8A",
@@ -47,6 +48,7 @@ export const ponderosaColorTokens = {
   dark: {
     background: "#121816",
     rail: "#17221E",
+    topbar: "#1D2A26",
     railBorder: "#354542",
     railForeground: "#B2BBB4",
     railForegroundActive: "#7CBF8A",
@@ -151,6 +153,7 @@ export function createPonderosaTheme(mode: ColorMode) {
             color: colors.textPrimary,
             "--ponderosa-focus-ring": focusIndicator,
             "--ponderosa-rail": colors.rail,
+            "--ponderosa-topbar": colors.topbar,
             "--ponderosa-rail-border": colors.railBorder,
             "--ponderosa-rail-foreground": colors.railForeground,
             "--ponderosa-rail-foreground-active": colors.railForegroundActive,
