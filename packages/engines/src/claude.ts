@@ -30,6 +30,8 @@ export interface ClaudeAdapterOptions {
   bin?: string;
   /** Injected spawn (for tests). */
   spawnFn?: SpawnFn;
+  /** Environment used to discover Claude Code's configured model pins. */
+  modelEnvironment?: Readonly<Record<string, string | undefined>>;
   /**
    * Claude Code permission mode. Default "bypassPermissions" so the agent can edit
    * files and run commands headlessly (SPEC §11 full-access model on the solo box).
@@ -49,6 +51,31 @@ const DEFAULT_MODELS: ModelOption[] = [
   { id: "haiku", label: "Haiku" },
 ];
 
+const CONFIGURED_MODEL_ENVIRONMENT = [
+  ["ANTHROPIC_DEFAULT_FABLE_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL_NAME"],
+  ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL_NAME"],
+  ["ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME"],
+  ["ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME"],
+  ["ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"],
+] as const;
+
+function configuredClaudeModels(
+  environment: Readonly<Record<string, string | undefined>>,
+): ModelOption[] {
+  const models = [...DEFAULT_MODELS];
+  const seen = new Set(models.map((model) => model.id));
+  for (const [idKey, nameKey] of CONFIGURED_MODEL_ENVIRONMENT) {
+    const id = environment[idKey]?.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    models.push({
+      id,
+      label: environment[nameKey]?.trim() || id,
+    });
+  }
+  return models;
+}
+
 const DEFAULT_EFFORTS: EffortOption[] = [
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
@@ -62,12 +89,14 @@ export class ClaudeAdapter implements Adapter {
 
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
+  private readonly modelEnvironment: Readonly<Record<string, string | undefined>>;
   private readonly permissionMode: string;
   private readonly killGraceMs: number;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.bin = opts.bin ?? "claude";
     this.spawnFn = opts.spawnFn ?? nodeSpawn;
+    this.modelEnvironment = opts.modelEnvironment ?? process.env;
     this.permissionMode =
       opts.permissionMode ??
       process.env.PONDEROSA_CLAUDE_PERMISSION_MODE ??
@@ -76,7 +105,7 @@ export class ClaudeAdapter implements Adapter {
   }
 
   listModels(): ModelOption[] {
-    return DEFAULT_MODELS;
+    return configuredClaudeModels(this.modelEnvironment);
   }
 
   listEfforts(): EffortOption[] {
