@@ -1,6 +1,7 @@
 import type { AgentDto } from "@ponderosa/core";
 
 const RESERVED_HANDLES = new Set(["broadcast", "everyone", "user"]);
+const NUMERIC_HANDLE_PATTERN = /^\p{N}+$/u;
 
 function mentionHandle(title: string): string {
   return title.trim().replace(/\s+/gu, "-").replace(/[^\p{L}\p{N}_-]/gu, "");
@@ -31,7 +32,8 @@ export function resolveAgentMentionBindings(
     usedAgentIds.add(matches[0]!.id);
   }
 
-  const remainingHandles = handles.filter((handle) => !bound.has(handle));
+  const remainingHandles = handles.filter((handle) =>
+    !bound.has(handle) && !NUMERIC_HANDLE_PATTERN.test(handle));
   const remainingAgentIds = [...recipients.keys()].filter((agentId) => !usedAgentIds.has(agentId));
   if (remainingHandles.length === 1 && remainingAgentIds.length === 1) {
     bound.set(remainingHandles[0]!, remainingAgentIds[0]!);
