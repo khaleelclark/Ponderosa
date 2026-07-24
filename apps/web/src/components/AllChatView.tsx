@@ -12,6 +12,7 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type {
   AllChatItemDto,
   EngineCommand,
@@ -80,6 +81,41 @@ export function allChatSourceAccessibleName(item: AllChatItemDto): string {
       : normalized || "Empty message";
   return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
+
+function AllChatInfoPill({ message }: { message: string }): JSX.Element {
+  return (
+    <Box
+      role="status"
+      sx={{
+        display: "flex",
+        width: "fit-content",
+        alignItems: "center",
+        minHeight: 28,
+        maxWidth: "100%",
+        mt: 0.35,
+        px: 0.75,
+        py: 0.25,
+        borderRadius: 999,
+        color: "info.main",
+        bgcolor: "action.hover",
+      }}
+    >
+      <InfoOutlinedIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
+      <Typography
+        variant="caption"
+        component="span"
+        sx={{
+          color: "text.secondary",
+          fontWeight: 650,
+          overflowWrap: "anywhere",
+        }}
+      >
+        {message}
+      </Typography>
+    </Box>
+  );
+}
+
 export function AllChatView({
   onNavigate,
   notifications = [],
@@ -539,13 +575,9 @@ export function AllChatView({
       >
         <Box sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
           {!selected ? (
-            <Alert severity="info">
-              Select an Agent-authored message to mention that Agent.
-            </Alert>
+            <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
           ) : !selected.directMessageAgent ? (
-            <Alert severity="info">
-              This message does not identify an active Agent you can message.
-            </Alert>
+            <AllChatInfoPill message="This message does not identify an active Agent you can message." />
           ) : (
             <Stack spacing={1}>
               {notice ? <Alert severity="success">{notice}</Alert> : null}
@@ -566,6 +598,7 @@ export function AllChatView({
                 disabled={send.isPending}
                 running={false}
                 attachmentsEnabled
+                guidance="Message this Agent directly. Use @ to reference a project file."
                 placeholder={`Message ${selected.directMessageAgent.title}`}
                 insertTextRequest={mentionInsertRequest}
                 draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
