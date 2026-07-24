@@ -22,16 +22,16 @@ export const ponderosaLayoutTokens = {
 
 export const ponderosaColorTokens = {
   light: {
-    background: "#FFFFFF",
+    background: "#F7F9F8",
     rail: "#17221E",
     topbar: "#1D2A26",
     railBorder: "#354542",
     railForeground: "#B2BBB4",
     railForegroundActive: "#7CBF8A",
     sidebar: "#E7ECE9",
-    surface: "#FFFFFF",
-    surfaceSecondary: "#F5F7F6",
-    elevated: "#FFFFFF",
+    surface: "#F2F5F3",
+    surfaceSecondary: "#E9EEEB",
+    elevated: "#FAFBFA",
     hover: "#E1E6E3",
     selected: "#DCE6E1",
     border: "#CDD5D1",
@@ -81,7 +81,9 @@ export function loadColorMode(): ColorMode {
     return savedMode;
   }
 
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
 }
 
 export function createPonderosaTheme(mode: ColorMode) {
@@ -121,7 +123,9 @@ export function createPonderosaTheme(mode: ColorMode) {
         hover: colors.hover,
         selected: colors.selected,
         disabled: colors.textMuted,
-        disabledBackground: dark ? "rgba(126,139,132,.14)" : "rgba(135,148,142,.14)",
+        disabledBackground: dark
+          ? "rgba(126,139,132,.14)"
+          : "rgba(135,148,142,.14)",
         focus: dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
       },
       success: { main: dark ? "#57C77A" : "#2E8B57" },
@@ -164,7 +168,9 @@ export function createPonderosaTheme(mode: ColorMode) {
             "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
           },
           "::selection": {
-            backgroundColor: dark ? "rgba(124,191,138,.28)" : "rgba(92,138,101,.22)",
+            backgroundColor: dark
+              ? "rgba(124,191,138,.28)"
+              : "rgba(92,138,101,.22)",
           },
         },
       },
@@ -193,7 +199,10 @@ export function createPonderosaTheme(mode: ColorMode) {
           },
           outlined: {
             borderColor: colors.border,
-            "&:hover": { borderColor: colors.textMuted, backgroundColor: colors.hover },
+            "&:hover": {
+              borderColor: colors.textMuted,
+              backgroundColor: colors.hover,
+            },
           },
         },
       },
@@ -201,7 +210,9 @@ export function createPonderosaTheme(mode: ColorMode) {
         styleOverrides: {
           root: { backgroundImage: "none" },
           elevation1: {
-            boxShadow: dark ? "0 10px 28px rgba(3,8,6,.18)" : "0 10px 30px rgba(33,45,38,.08)",
+            boxShadow: dark
+              ? "0 10px 28px rgba(3,8,6,.18)"
+              : "0 10px 30px rgba(33,45,38,.08)",
           },
         },
       },
@@ -218,9 +229,14 @@ export function createPonderosaTheme(mode: ColorMode) {
           root: {
             backgroundColor: dark ? colors.surface : colors.surface,
             borderRadius: 10,
-            "& fieldset": { borderColor: dark ? colors.textMuted : colors.border },
+            "& fieldset": {
+              borderColor: dark ? colors.textMuted : colors.border,
+            },
             "&:hover fieldset": { borderColor: colors.textMuted },
-            "&.Mui-focused fieldset": { borderColor: colors.accent, borderWidth: 1 },
+            "&.Mui-focused fieldset": {
+              borderColor: colors.accent,
+              borderWidth: 1,
+            },
             "&.Mui-disabled fieldset": { borderColor: colors.border },
           },
         },
