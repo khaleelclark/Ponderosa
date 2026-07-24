@@ -13,6 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
 import type { Route } from "../routing";
+import { IconTitle } from "./IconTitle";
 
 function headingId(children: unknown): string {
   return String(children).toLocaleLowerCase().normalize("NFKD").replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").replace(/-+/g, "-");
@@ -40,13 +41,13 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
     navigate({ kind: "wiki", articleId: candidate.id });
   };
 
-  return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
-    <Paper aria-hidden square elevation={0} sx={{ display: "none" }}>
+  return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+    <Paper component="header" square elevation={0} sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: 1, borderColor: "divider" }}>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" } }}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: { sm: 230 } }}>
-          <MenuBookOutlinedIcon color="primary" />
-          <Box><Typography variant="h6" component="h1" fontWeight={850}>Ponderosa Wiki</Typography><Typography variant="caption" color="text.secondary">Version-controlled product guide</Typography></Box>
-        </Stack>
+        <Box sx={{ flex: 1, minWidth: { sm: 230 } }}>
+          <IconTitle icon={<MenuBookOutlinedIcon />} title="Ponderosa Wiki" component="h1" />
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>Version-controlled product guide</Typography>
+        </Box>
         <Box sx={{ position: "relative", flex: 1, maxWidth: 720 }}>
           <TextField fullWidth size="small" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search product documentation" inputProps={{ "aria-label": "Search product documentation" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} />
           {normalizedSearch.length >= 2 ? <Paper role="listbox" aria-label="Wiki search results" elevation={6} sx={{ position: "absolute", top: "calc(100% + 8px)", left: 0, right: 0, maxHeight: 360, overflow: "auto", zIndex: 10, border: 1, borderColor: "divider" }}>
@@ -71,7 +72,7 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
         {article.isError ? <Alert severity="error">This wiki article could not be loaded.</Alert> : null}
         {article.data ? <>
           <Typography variant="overline" color="primary.main">{article.data.section}</Typography>
-          <Typography variant="h3" component="h1" sx={{ mt: .5, mb: 1.5, fontSize: { xs: 34, md: 44 }, lineHeight: 1.08, fontWeight: 880 }}>{article.data.title}</Typography>
+          <Typography variant="h3" component="h2" sx={{ mt: .5, mb: 1.5, fontSize: { xs: 34, md: 44 }, lineHeight: 1.08, fontWeight: 880 }}>{article.data.title}</Typography>
           <Typography variant="h6" color="text.secondary" sx={{ fontWeight: 450, lineHeight: 1.5, mb: 3 }}>{article.data.summary}</Typography>
           <Divider sx={{ mb: 3 }} />
           <Box className="wiki-markdown" sx={{ color: "text.primary", lineHeight: 1.75, "& h2": { mt: 4, mb: 1.25, fontSize: 27 }, "& h3": { mt: 3, mb: 1, fontSize: 21 }, "& p": { mb: 2 }, "& li": { mb: .75 }, "& img": { display: "block", width: "100%", maxHeight: 520, objectFit: "contain", my: 3, borderRadius: 2, border: 1, borderColor: "divider", bgcolor: "background.paper" }, "& code": { px: .5, py: .2, borderRadius: .75, bgcolor: "action.hover", fontSize: ".9em" }, "& pre": { overflowX: "auto", p: 2, borderRadius: 2, bgcolor: "action.hover" } }}>

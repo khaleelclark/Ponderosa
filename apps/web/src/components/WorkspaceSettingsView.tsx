@@ -37,6 +37,7 @@ import {
   OperatorProfileEditor,
   useOperatorProfileForm,
 } from "./OperatorProfileEditor";
+import { IconTitle } from "./IconTitle";
 import {
   parseAgentRunConcurrencyLimit,
   RuntimeSettings,
@@ -63,23 +64,12 @@ function SettingsHeader({
         borderColor: "divider",
       }}
     >
-      <Box
-        sx={{
-          width: 44,
-          height: 44,
-          borderRadius: 2,
-          bgcolor: "action.selected",
-          display: "grid",
-          placeItems: "center",
-          color: "primary.main",
-        }}
-      >
-        {profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}
-      </Box>
-      <Box>
-        <Typography variant="h5" component="h1" fontWeight={850}>
-          {profile ? "Operator Profile" : "Settings"}
-        </Typography>
+      <Box sx={{ minWidth: 0 }}>
+        <IconTitle
+          icon={profile ? <PersonOutlineIcon /> : <SettingsOutlinedIcon />}
+          title={profile ? "Operator Profile" : "Settings"}
+          component="h1"
+        />
         <Typography variant="body2" color="text.secondary">
           {profile
             ? "How you appear to Agents and throughout Ponderosa"

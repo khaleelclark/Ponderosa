@@ -8,6 +8,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { DragEvent, ReactNode } from "react";
+import { IconTitle } from "./IconTitle";
 
 export interface CollectionWorkspaceProps {
   title: string;
@@ -34,16 +35,13 @@ export function CollectionHeader({
     spacing={1.5}
     sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}
   >
-    <Stack direction="row" spacing={1.25} sx={{ flex: 1, minWidth: 0, alignItems: "center" }}>
-      {icon ? <Box sx={{ width: 42, height: 42, flex: "0 0 auto", borderRadius: 2, bgcolor: "action.selected", display: "grid", placeItems: "center", color: "primary.main" }}>{icon}</Box> : null}
-      <Box sx={{ minWidth: 0 }}>
-        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-          <Typography variant="h5" component="h1" fontWeight={850}>{title}</Typography>
-          {scope}
-        </Stack>
-        {detail ? <Typography variant="body2" color="text.secondary">{detail}</Typography> : null}
-      </Box>
-    </Stack>
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+        {icon ? <IconTitle icon={icon} title={title} component="h1" /> : <Typography variant="h6" component="h1" fontWeight={800}>{title}</Typography>}
+        {scope}
+      </Stack>
+      {detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>{detail}</Typography> : null}
+    </Box>
     {primaryAction}
   </Stack>;
 }
