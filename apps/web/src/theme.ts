@@ -27,7 +27,7 @@ export const ponderosaColorTokens = {
     railBorder: "#354542",
     railForeground: "#B2BBB4",
     railForegroundActive: "#7CBF8A",
-    sidebar: "#ECEFEE",
+    sidebar: "#E7ECE9",
     surface: "#FFFFFF",
     surfaceSecondary: "#F5F7F6",
     elevated: "#FFFFFF",
