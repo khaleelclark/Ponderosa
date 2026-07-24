@@ -62,13 +62,6 @@ export function workspaceCounts(
   };
 }
 
-export function currentProjectSnapshot(
-  snapshots: WorkspaceProjectSnapshot[],
-  projectId: string | undefined,
-): WorkspaceProjectSnapshot | undefined {
-  return projectId ? snapshots.find(({ project }) => project.id === projectId) : undefined;
-}
-
 export function projectDisambiguator(project: ProjectDto, projects: ProjectDto[]): string {
   const duplicateLabel = projects.some((candidate) => candidate.id !== project.id && candidate.label.localeCompare(project.label, undefined, { sensitivity: "base" }) === 0);
   return duplicateLabel ? `${project.label} · ${project.hostPath}` : project.label;

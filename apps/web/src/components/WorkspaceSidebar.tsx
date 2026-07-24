@@ -1,14 +1,11 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
-import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
@@ -33,24 +30,21 @@ import {
   TextField,
   Tooltip,
   Typography,
-  useTheme,
 } from "@mui/material";
-import type { AgentDto, AgentHealthDto, ConversationDto, EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import type { ConversationDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
-import { conversationDisplayTitle } from "../conversationLabels";
-import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
-import { routeProjectId, type Route } from "../routing";
+import type { Route } from "../routing";
 import {
   reorderStableIds, resourcePreferenceKey, sortWorkspaceResources, starredWorkspaceResources,
   toggleWorkspaceResourceStar, workspaceResourceSort, workspaceResourceSortPatch,
 } from "../resourcePreferences";
-import { currentProjectSnapshot, projectDisambiguator, unreadByConversation, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { projectDisambiguator, workspaceAgents, workspaceCounts, type WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import {
   clampWorkspaceSidebarWidth,
   WORKSPACE_SIDEBAR_MAX_WIDTH,
@@ -68,59 +62,6 @@ export function clampSidebarWidth(width: number): number {
   return Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, Math.round(width)));
 }
 
-function actionableProjectHealth(
-  health: AgentHealthDto[] | undefined,
-  agents: Pick<AgentDto, "id" | "activeEngine">[],
-  engines: EngineDto[],
-): { health: AgentHealthDto[] | undefined; unavailableEngineFailures: number } {
-  if (!health || engines.length === 0) {
-    return { health, unavailableEngineFailures: 0 };
-  }
-  const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
-  const enginesById = new Map(engines.map((engine) => [engine.id, engine]));
-  let unavailableEngineFailures = 0;
-  const actionable = health.filter((item) => {
-    if (item.status !== "failed" && item.status !== "stalled") return true;
-    const engine = enginesById.get(agentsById.get(item.agentId)?.activeEngine ?? "");
-    if (!engine || engineIsAvailable(engine)) return true;
-    unavailableEngineFailures += 1;
-    return false;
-  });
-  return { health: actionable, unavailableEngineFailures };
-}
-
-export function projectHealthPresentation(
-  health: AgentHealthDto[] | undefined,
-  agents: Pick<AgentDto, "id" | "activeEngine">[] = [],
-  engines: EngineDto[] = [],
-): {
-  label: string;
-  color: "success.main" | "info.main" | "warning.main" | "error.main" | "text.disabled";
-} {
-  const actionable = actionableProjectHealth(health, agents, engines).health;
-  if (!actionable) return { label: "Checking", color: "text.disabled" };
-  if (actionable.some((agent) => agent.status === "failed" || agent.status === "stalled")) return { label: "Needs attention", color: "error.main" };
-  if (actionable.some((agent) => agent.status === "blocked" || agent.status === "interrupted")) return { label: "Blocked", color: "warning.main" };
-  if (actionable.some((agent) => agent.status === "running" || agent.status === "compacting")) return { label: "Active", color: "info.main" };
-  if (actionable.some((agent) => agent.status === "waiting")) return { label: "Waiting", color: "warning.main" };
-  return { label: "Healthy", color: "success.main" };
-}
-
-export function projectHealthDetail(
-  health: AgentHealthDto[] | undefined,
-  agents: Pick<AgentDto, "id" | "activeEngine">[] = [],
-  engines: EngineDto[] = [],
-): string {
-  const presentation = projectHealthPresentation(health, agents, engines);
-  if (engines.length === 0) return `${presentation.label}. Engine availability is still loading.`;
-  const { unavailableEngineFailures } = actionableProjectHealth(health, agents, engines);
-  const providerDetail = engineAvailabilityPresentation(engines).detail;
-  const deferredDetail = unavailableEngineFailures > 0
-    ? ` ${unavailableEngineFailures} ${unavailableEngineFailures === 1 ? "agent failure is" : "agent failures are"} tied to an unavailable engine and ${unavailableEngineFailures === 1 ? "remains" : "remain"} visible in Agent details without blocking this Project.`
-    : "";
-  return `${presentation.label}. ${providerDetail}${deferredDetail}`;
-}
-
 function projectSnapshots(
   projects: ProjectDto[],
   conversations: Array<ConversationDto[] | undefined>,
@@ -135,24 +76,6 @@ function projectSnapshots(
   }));
 }
 
-function conversationGroup(updatedAt: string): "Today" | "Yesterday" | "Earlier" {
-  const value = new Date(updatedAt);
-  const today = new Date();
-  const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  const timestamp = value.getTime();
-  if (timestamp >= start) return "Today";
-  if (timestamp >= start - 86_400_000) return "Yesterday";
-  return "Earlier";
-}
-
-function relativeChatTime(updatedAt: string): string {
-  const elapsed = Math.max(0, Date.now() - new Date(updatedAt).getTime());
-  if (elapsed < 60_000) return "now";
-  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m`;
-  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h`;
-  return new Date(updatedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
 function SidebarSortControl({ sort, onSort }: { sort: WorkspacePreferencesDto["projectSort"]; onSort(sort: WorkspacePreferencesDto["projectSort"]): void }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement>();
   const label = sort === "alphabetical" ? "A–Z" : sort === "custom" ? "Custom" : "Recent Activity";
@@ -160,6 +83,8 @@ function SidebarSortControl({ sort, onSort }: { sort: WorkspacePreferencesDto["p
 }
 
 const sidebarSurface = "var(--ponderosa-sidebar)";
+const railSurface = "var(--ponderosa-rail)";
+const starColor = "var(--ponderosa-star)";
 
 function SidebarSectionHeading({ children }: { children: ReactNode }): JSX.Element {
   return <Typography
@@ -264,9 +189,9 @@ function RailButton({ label, selected = false, badge, badgeColor = "primary", ch
         width: 48,
         height: 48,
         borderRadius: 1,
-        color: selected ? "primary.light" : "text.secondary",
-        bgcolor: selected ? "action.selected" : "transparent",
-        "&:hover": { bgcolor: selected ? "action.focus" : "action.hover", color: "text.primary" },
+        color: selected ? "var(--ponderosa-rail-foreground-active)" : "var(--ponderosa-rail-foreground)",
+        bgcolor: selected ? "rgba(124, 191, 138, .14)" : "transparent",
+        "&:hover": { bgcolor: selected ? "rgba(124, 191, 138, .20)" : "rgba(178, 187, 180, .10)", color: "#E6E7DF" },
       }}
     ><Badge color={badgeColor} badgeContent={badge} max={99}>{children}</Badge></IconButton>
   </Tooltip>;
@@ -274,7 +199,6 @@ function RailButton({ label, selected = false, badge, badgeColor = "primary", ch
 
 export function WorkspaceSidebar({
   projects,
-  engines,
   preferences,
   route,
   notifications,
@@ -285,21 +209,16 @@ export function WorkspaceSidebar({
   onCreateChat,
   onCreateAgent,
   onCreateTrigger,
-  onManageProject,
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
   onSearch,
-  onOpenNotifications,
-  onOpenSettings,
-  onOpenEngineStatus,
   collapsed = false,
   width = SIDEBAR_RAIL_WIDTH + SIDEBAR_PANEL_WIDTH,
   onCollapsedChange,
   onWidthChange,
 }: {
   projects: ProjectDto[];
-  engines: EngineDto[];
   preferences: WorkspacePreferencesDto;
   route: Route;
   notifications: WorkspaceNotificationDto[];
@@ -310,33 +229,21 @@ export function WorkspaceSidebar({
   onCreateChat?(): void;
   onCreateAgent?(): void;
   onCreateTrigger?(): void;
-  onManageProject(project: ProjectDto): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onSearch?(): void;
-  onOpenNotifications?(): void;
-  onOpenSettings?(): void;
-  onOpenEngineStatus?(): void;
   collapsed?: boolean;
   width?: number;
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
 }): JSX.Element {
-  const theme = useTheme();
-  const appIconSource = theme.palette.mode === "light" ? "/icons/app-icon-inverted.png" : "/icons/app-icon.png";
-  const queryClient = useQueryClient();
-  const routedProjectId = routeProjectId(route);
-  const selectedProjectId = routedProjectId && projects.some((project) => project.id === routedProjectId) ? routedProjectId : undefined;
   const conversationQueries = useProjectConversations(projects);
   const agentQueries = useProjectAgents(projects);
   const healthQueries = useProjectAgentHealth(projects);
   const snapshots = projectSnapshots(projects, conversationQueries.map((query) => query.data), agentQueries.map((query) => query.data), healthQueries.map((query) => query.data));
-  const selected = currentProjectSnapshot(snapshots, selectedProjectId);
   const counts = workspaceCounts(snapshots, notifications);
-  const unread = useMemo(() => unreadByConversation(notifications), [notifications]);
-  const insideProject = Boolean(selected && ["project", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind));
-  const [sidebarSection, setSidebarSection] = useState<"home" | "project" | "projects" | "chats" | "agents" | "triggers" | "wiki" | "settings">(() => route.kind === "allChats" ? "chats" : route.kind === "allAgents" ? "agents" : route.kind === "allTriggers" ? "triggers" : route.kind === "projects" ? "projects" : route.kind === "wiki" ? "wiki" : route.kind === "settings" || route.kind === "usage" ? "settings" : insideProject ? "project" : "home");
+  const [sidebarSection, setSidebarSection] = useState<"home" | "projects" | "chats" | "agents" | "triggers" | "wiki" | "settings">(() => route.kind === "allChats" ? "chats" : route.kind === "allAgents" ? "agents" : route.kind === "allTriggers" ? "triggers" : route.kind === "projects" ? "projects" : route.kind === "wiki" ? "wiki" : route.kind === "settings" || route.kind === "usage" ? "settings" : "home");
   const [filter, setFilter] = useState("");
   const [draggedResource, setDraggedResource] = useState<{ kind: "home" | "chat" | "agent" | "trigger"; id: string }>();
   type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
@@ -361,7 +268,6 @@ export function WorkspaceSidebar({
   const showingAgents = sidebarSection === "agents";
   const showingChats = sidebarSection === "chats";
   const showingProjects = sidebarSection === "projects";
-  const showingProjectNavigation = sidebarSection === "project";
   const showingTriggers = sidebarSection === "triggers";
   const showingHome = sidebarSection === "home";
   const showingWiki = sidebarSection === "wiki";
@@ -404,20 +310,11 @@ export function WorkspaceSidebar({
   };
 
   const openProject = (snapshot: WorkspaceProjectSnapshot) => {
-    setSidebarSection("project");
     onNavigate({ kind: "project", projectId: snapshot.project.id });
   };
   const openChat = (project: ProjectDto, conversation: ConversationDto) => {
-    setSidebarSection("project");
     void api.markProjectUsed(project.id, conversation.id);
     void api.clearConversationNotifications(conversation.id);
-    onNavigate({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
-  };
-  const createChat = async (project: ProjectDto) => {
-    setSidebarSection("project");
-    const conversation = await api.createConversation(project.id, { title: "New Chat", defaultEngine: project.defaultEngine });
-    await api.markProjectUsed(project.id, conversation.id);
-    void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(project.id) });
     onNavigate({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
   };
 
@@ -428,9 +325,7 @@ export function WorkspaceSidebar({
       width: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
       minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
       minHeight: 0,
-      borderRight: 1,
-      borderColor: "divider",
-      bgcolor: (theme) => theme.palette.mode === "dark" ? "#17221E" : "#F1EEE5",
+      bgcolor: railSurface,
       display: "grid",
       gridTemplateRows: "auto minmax(0, 1fr) auto",
       justifyItems: "center",
@@ -438,17 +333,17 @@ export function WorkspaceSidebar({
     }}
   >
     <Stack spacing={.4} sx={{ alignItems: "center" }}>
-      <Tooltip title="Ponderosa" placement="right"><Box component="img" src={appIconSource} alt="Ponderosa" sx={{ width: 42, height: 42, mb: 3.25, p: 0.25, borderRadius: 1, objectFit: "cover" }} /></Tooltip>
+      <Tooltip title="Ponderosa" placement="right"><Box component="img" src="/icons/app-icon.png" alt="Ponderosa" sx={{ width: 42, height: 42, mb: 3.25, p: 0.25, borderRadius: 1, objectFit: "cover" }} /></Tooltip>
       <RailButton label="Home" selected={showingHome} onClick={showHome}><HomeOutlinedIcon /></RailButton>
-      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "divider", my: .5 }} />
-      <RailButton label="Projects" selected={showingProjects || showingProjectNavigation} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
+      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", my: .5 }} />
+      <RailButton label="Projects" selected={showingProjects} onClick={showProjects}><FolderOutlinedIcon /></RailButton>
       <RailButton label="Chats" selected={showingChats} onClick={showChats}><ChatBubbleOutlineIcon /></RailButton>
       <RailButton label="Agents" selected={showingAgents} badge={counts.running || undefined} badgeColor="info" onClick={showAgents}><SmartToyOutlinedIcon /></RailButton>
       <RailButton label="Triggers" selected={showingTriggers} onClick={showTriggers}><BoltOutlinedIcon /></RailButton>
     </Stack>
     <Box />
     <Stack spacing={.65} sx={{ alignItems: "center" }}>
-      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "divider", mb: .25 }} />
+      <Box aria-hidden sx={{ width: 40, borderTop: 1, borderColor: "var(--ponderosa-rail-border)", mb: .25 }} />
       <RailButton label="Wiki" selected={showingWiki} onClick={showWiki}><MenuBookOutlinedIcon /></RailButton>
       <RailButton label="Settings" selected={showingSettings} onClick={() => revealSection("settings")}><SettingsOutlinedIcon /></RailButton>
     </Stack>
@@ -480,7 +375,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(item.id);
     return <Stack key={item.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "home", id: item.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "home") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "home") onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, homeResources.map((resource) => resource.id), draggedResource.id, item.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, item.route); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton onClick={() => onNavigate(item.route)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon><ListItemText primary={item.title} secondary={item.detail} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`} onClick={() => { const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string]; toggleStar(kind, id); }}>{starred ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${item.title}`} onClick={() => { const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string]; toggleStar(kind, id); }}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const homePanel = <SharedSidebarPanel
@@ -496,7 +391,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id));
     return <Stack key={snapshot.project.id} direction="row" onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "project", projectId: snapshot.project.id }); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton aria-label={`Open project ${snapshot.project.label}`} onClick={() => openProject(snapshot)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><FolderOutlinedIcon fontSize="small" /></ListItemIcon><ListItemText primary={snapshot.project.label} secondary={snapshot.project.hostPath} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /><Typography variant="caption" color="text.secondary" sx={{ ml: 1, minWidth: 24, textAlign: "right", flexShrink: 0 }}>{snapshot.conversations.filter((item) => !item.archived).length}</Typography></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${snapshot.project.label}` : `Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar("project", snapshot.project.id)}>{starred ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${snapshot.project.label}` : `Star ${snapshot.project.label}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar("project", snapshot.project.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const starredProjects = projectList.filter((snapshot) => starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)));
@@ -515,7 +410,7 @@ export function WorkspaceSidebar({
     const starred = starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id));
     return <Stack key={conversation.id} direction="row" draggable onDragStart={() => setDraggedResource({ kind: "chat", id: conversation.id })} onDragEnd={() => setDraggedResource(undefined)} onDragOver={(event) => { if (draggedResource?.kind === "chat") event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, allChatRows.map((row) => row.conversation.id), draggedResource.id, conversation.id) }); setDraggedResource(undefined); }} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "conversation", projectId: chatProject.id, conversationId: conversation.id }, conversation); }} sx={{ alignItems: "center", mb: .25 }}>
       <ListItemButton onClick={() => openChat(chatProject, conversation)} sx={{ borderRadius: 1.25, px: 1, py: .65, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><ChatBubbleOutlineIcon fontSize="small" /></ListItemIcon><ListItemText primary={conversation.title} secondary={projectDisambiguator(chatProject, projects)} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} /></ListItemButton>
-      <Tooltip title={starred ? `Unstar ${conversation.title}` : `Star ${conversation.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${conversation.title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starred ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={starred ? `Unstar ${conversation.title}` : `Star ${conversation.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${conversation.title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const globalChatsPanel = <SharedSidebarPanel
@@ -540,7 +435,7 @@ export function WorkspaceSidebar({
         <ListItemText primary={agent.title} secondary={`${projectDisambiguator(agentProject, projects)} · ${agent.activeEngine}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
         <Box title={agentStatusLabel(status)} aria-label={agentStatusLabel(status)} sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: agentStatusColor(status) === "default" ? "text.disabled" : `${agentStatusColor(status)}.main`, flex: "0 0 auto" }} />
       </ListItemButton>
-      <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${agent.title}`} onClick={() => toggleStar("agent", agent.id)}>{starred ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${agent.title}`} onClick={() => toggleStar("agent", agent.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const agentsPanel = <SharedSidebarPanel
@@ -575,7 +470,7 @@ export function WorkspaceSidebar({
         <ListItemText primary={trigger.name} secondary={`${destination.project.label} · ${destination.agent.title}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: starred ? 750 : 500 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />
         <Box title={trigger.enabled ? "Enabled" : "Disabled"} sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: trigger.enabled ? "success.main" : "text.disabled", flex: "0 0 auto" }} />
       </ListItemButton>
-      <Tooltip title={`${starred ? "Unstar" : "Star"} ${trigger.name}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${trigger.name}`} onClick={() => toggleStar("trigger", trigger.id)}>{starred ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
+      <Tooltip title={`${starred ? "Unstar" : "Star"} ${trigger.name}`}><IconButton size="small" aria-label={`${starred ? "Unstar" : "Star"} ${trigger.name}`} onClick={() => toggleStar("trigger", trigger.id)}>{starred ? <StarRoundedIcon sx={{ color: starColor }} fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip>
     </Stack>;
   });
   const triggersPanel = <SharedSidebarPanel
@@ -611,45 +506,8 @@ export function WorkspaceSidebar({
     </Box>
   </Box>;
 
-  const project = selected;
-  const selectedProjectIndex = project ? projects.findIndex((candidate) => candidate.id === project.project.id) : -1;
-  const selectedHealth = selectedProjectIndex >= 0 ? healthQueries[selectedProjectIndex]?.data?.agents : undefined;
-  const projectHealth = projectHealthPresentation(selectedHealth, project?.agents ?? [], engines);
-  const projectHealthTooltip = projectHealthDetail(selectedHealth, project?.agents ?? [], engines);
-  const activeConversations = sortWorkspaceResources((project?.conversations ?? []).filter((conversation) => !conversation.archived), workspaceResourceSort(preferences, "chat"), preferences.chatOrder, (conversation) => conversation.id, (conversation) => conversation.title, (conversation) => conversation.updatedAt);
-  const filteredConversations = activeConversations.filter((conversation) => !normalizedFilter || conversationDisplayTitle(conversation, activeConversations).toLocaleLowerCase().includes(normalizedFilter));
-  const grouped = (["Today", "Yesterday", "Earlier"] as const).map((group) => ({ group, conversations: filteredConversations.filter((conversation) => conversationGroup(conversation.updatedAt) === group) }));
-
-  const chatsPanel = project ? <Box sx={{ minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto auto auto minmax(0, 1fr) auto", bgcolor: sidebarSurface }}>
-    <Stack direction="row" sx={{ alignItems: "center", pl: 1.25, pr: drawer ? 7 : 1.25, pt: 1.25 }}><Button size="small" color="inherit" startIcon={<ArrowBackIcon />} onClick={showProjects} sx={{ color: "text.secondary", justifyContent: "flex-start" }}>Projects</Button><Tooltip title="Project Settings"><IconButton aria-label={`Project settings for ${project.project.label}`} onClick={() => onManageProject(project.project)} sx={{ ml: "auto" }}><MoreVertIcon /></IconButton></Tooltip></Stack>
-    <Stack spacing={.4} sx={{ alignItems: "flex-start", px: 2, py: 1, minWidth: 0 }}><Typography variant="h6" fontWeight={800} sx={{ minWidth: 0, overflowWrap: "anywhere", lineHeight: 1.25 }}>{project.project.label}</Typography><Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow><Stack direction="row" spacing={.75} role="button" tabIndex={0} aria-label={`${projectHealth.label}. ${projectHealthTooltip} Open AI provider details.`} onClick={() => onOpenEngineStatus?.()} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenEngineStatus?.(); } }} sx={{ alignItems: "center", cursor: "pointer" }}><Typography variant="caption" sx={{ color: projectHealth.color }}>{projectHealth.label}</Typography><Box sx={{ width: 9, height: 9, borderRadius: "50%", bgcolor: projectHealth.color }} /></Stack></Tooltip></Stack>
-    <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5 }}><TextField fullWidth size="small" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Search Chats" inputProps={{ "aria-label": "Search Chats" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} /></Stack>
-    <Box data-testid="workspace-navigation-scroll" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: 1.25 }}>
-      {grouped.map(({ group, conversations }) => conversations.length ? <Box key={group} component="section" sx={{ mb: 1.75 }}><Typography variant="overline" color="text.secondary" sx={{ px: 1 }}>{group}</Typography><List disablePadding>{conversations.map((conversation) => {
-        const title = conversationDisplayTitle(conversation, activeConversations);
-        return <Stack key={conversation.id} direction="row" draggable
-          onDragStart={() => setDraggedResource({ kind: "chat", id: conversation.id })}
-          onDragEnd={() => setDraggedResource(undefined)}
-          onDragOver={(event) => { if (draggedResource?.kind === "chat") event.preventDefault(); }}
-          onDrop={(event) => {
-            event.preventDefault();
-            if (draggedResource?.kind === "chat") onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, activeConversations.map((item) => item.id), draggedResource.id, conversation.id) });
-            setDraggedResource(undefined);
-          }}
-          onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "conversation", projectId: project.project.id, conversationId: conversation.id }, conversation); }} sx={{ alignItems: "center" }}><ListItemButton selected={route.kind === "conversation" && route.conversationId === conversation.id} onClick={() => openChat(project.project, conversation)} sx={{ borderRadius: 1, px: 1, minWidth: 0 }}><ListItemIcon sx={{ minWidth: 38 }}><Box sx={{ width: 30, height: 30, borderRadius: "50%", bgcolor: "action.hover", display: "grid", placeItems: "center" }}><ChatBubbleOutlineIcon sx={{ fontSize: 16 }} /></Box></ListItemIcon><ListItemText primary={title} secondary={`${unread.get(conversation.id) ? `${unread.get(conversation.id)} unread · ` : ""}${relativeChatTime(conversation.updatedAt)}`} primaryTypographyProps={{ noWrap: true, fontSize: 13, fontWeight: 700 }} secondaryTypographyProps={{ noWrap: true, fontSize: 11 }} />{unread.get(conversation.id) ? <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: "primary.light" }} /> : null}</ListItemButton><Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`}><IconButton size="small" aria-label={`${starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? "Unstar" : "Star"} ${title}`} onClick={() => toggleStar("conversation", conversation.id)}>{starredResourceIds.has(resourcePreferenceKey("conversation", conversation.id)) ? <StarRoundedIcon color="primary" fontSize="small" /> : <StarBorderRoundedIcon fontSize="small" />}</IconButton></Tooltip></Stack>;
-      })}</List></Box> : null)}
-      {filteredConversations.length === 0 ? filter.trim() ? <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: "center" }}>No Chats match “{filter.trim()}”.</Typography> : <Stack spacing={.75} sx={{ p: 2, textAlign: "center", alignItems: "center" }}><Typography variant="subtitle2" fontWeight={750}>No Chats Yet</Typography><Typography variant="body2" color="text.secondary">Chats are shared spaces where you and your Agents prompt, plan, and coordinate work. Create one to get started.</Typography></Stack> : null}
-    </Box>
-    <Box sx={{ boxShadow: (theme) => `inset 0 1px 0 ${theme.palette.divider}`, p: 1.5 }}>
-      <Button fullWidth variant="contained" size="large" startIcon={<AddIcon />} onClick={() => void createChat(project.project)} sx={{ mb: .75, justifyContent: "flex-start" }}>New Chat</Button>
-      <Button fullWidth color="inherit" aria-label="Open project agents" aria-current={route.kind === "agents" && route.projectId === project.project.id ? "page" : undefined} onClick={() => onNavigate({ kind: "agents", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "agents", projectId: project.project.id }); }} startIcon={<GroupsOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "agents" && route.projectId === project.project.id ? "text.primary" : "text.secondary", bgcolor: route.kind === "agents" && route.projectId === project.project.id ? "action.selected" : "transparent" }}>Project Agents</Button>
-      <Button fullWidth color="inherit" aria-label="Open project overview" aria-current={route.kind === "project" ? "page" : undefined} onClick={() => onNavigate({ kind: "project", projectId: project.project.id })} onContextMenu={(event) => { event.preventDefault(); openResourceMenu(event.currentTarget, { kind: "project", projectId: project.project.id }); }} startIcon={<FolderOutlinedIcon />} sx={{ justifyContent: "flex-start", color: route.kind === "project" ? "text.primary" : "text.secondary", bgcolor: route.kind === "project" ? "action.selected" : "transparent" }}>Project Overview</Button>
-      <SidebarSortControl sort={workspaceResourceSort(preferences, "chat")} onSort={(sort) => onPreferences(workspaceResourceSortPatch("chat", sort))} />
-    </Box>
-  </Box> : null;
-
   const settingsPanel = <Box sx={{ minHeight: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", bgcolor: sidebarSurface }}><Stack direction="row" sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}><SettingsOutlinedIcon sx={{ mr: 1 }} /><Typography variant="h6" fontWeight={800}>Settings</Typography></Stack><List sx={{ px: 1.25 }}><ListItemButton selected={route.kind === "settings" && (route.section ?? "general") === "general"} onClick={() => onNavigate({ kind: "settings", section: "general" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SettingsOutlinedIcon /></ListItemIcon><ListItemText primary="General" secondary="Appearance and Agent defaults" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "providers"} onClick={() => onNavigate({ kind: "settings", section: "providers" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><SmartToyOutlinedIcon /></ListItemIcon><ListItemText primary="AI Providers" secondary="Availability, models, and reasoning" /></ListItemButton><ListItemButton selected={route.kind === "settings" && route.section === "notifications"} onClick={() => onNavigate({ kind: "settings", section: "notifications" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><NotificationsNoneOutlinedIcon /></ListItemIcon><ListItemText primary="Notifications" secondary="In-app and browser attention" /></ListItemButton><ListItemButton selected={route.kind === "usage"} onClick={() => onNavigate({ kind: "usage" })} sx={{ borderRadius: 1.25 }}><ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon><ListItemText primary="Provider Activity" secondary="Tokens and Run telemetry" /></ListItemButton></List></Box>;
-  const panel = showingAgents ? agentsPanel : showingChats ? globalChatsPanel : showingTriggers ? triggersPanel : showingWiki ? wikiPanel : showingSettings ? settingsPanel : showingProjects ? projectsPanel : showingProjectNavigation && insideProject ? chatsPanel : homePanel;
+  const panel = showingAgents ? agentsPanel : showingChats ? globalChatsPanel : showingTriggers ? triggersPanel : showingWiki ? wikiPanel : showingSettings ? settingsPanel : showingProjects ? projectsPanel : homePanel;
   const [resizing, setResizing] = useState(false);
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;
@@ -669,7 +527,7 @@ export function WorkspaceSidebar({
     window.addEventListener("pointercancel", stop);
   };
 
-  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} data-sidebar-resizing={resizing ? "true" : "false"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, maxWidth: "100vw", height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden", transition: !drawer && !resizing ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)" : "none", "@media (prefers-reduced-motion: reduce)": { transition: "none" } }}>
+  return <Box component="aside" aria-label="Workspace navigation" data-sidebar-state={collapsed ? "collapsed" : "expanded"} data-sidebar-resizing={resizing ? "true" : "false"} sx={{ position: "relative", width: drawer ? "min(100vw, 390px)" : collapsed ? SIDEBAR_RAIL_WIDTH : width, maxWidth: "100vw", height: "100%", minHeight: 0, minWidth: 0, borderRight: 1, borderColor: collapsed && !drawer ? "transparent" : "divider", display: "grid", gridTemplateColumns: collapsed && !drawer ? `${SIDEBAR_RAIL_WIDTH}px` : `${drawer ? 64 : SIDEBAR_RAIL_WIDTH}px minmax(0, 1fr)`, bgcolor: sidebarSurface, overflow: "hidden", transition: !drawer && !resizing ? "width 180ms cubic-bezier(0.2, 0, 0, 1), grid-template-columns 180ms cubic-bezier(0.2, 0, 0, 1)" : "none", "@media (prefers-reduced-motion: reduce)": { transition: "none" } }}>
     {rail}
     {collapsed && !drawer ? null : panel}
     {!drawer && !collapsed && onWidthChange ? <Box

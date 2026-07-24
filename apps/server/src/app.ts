@@ -2180,6 +2180,42 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     workspace.setNotificationStatus(current.id, "resolved");
     publishWorkspaceSince(cursor);
   };
+  const projectWorkspaceNotificationKey = (projectId: string): string =>
+    `project:${projectId}:workspace-unavailable`;
+  const projectWorkspaceIssue = async (project: { hostPath: string }): Promise<string | undefined> => {
+    try {
+      const metadata = await fs.stat(project.hostPath);
+      return metadata.isDirectory()
+        ? undefined
+        : `The Project working folder ${project.hostPath} is not a directory.`;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return `The Project working folder ${project.hostPath} is unavailable. ${detail}`;
+    }
+  };
+  const reconcileProjectWorkspace = async (
+    project: { id: string; hostPath: string },
+    agent: { id: string; conversationId?: string },
+  ): Promise<string | undefined> => {
+    const issue = await projectWorkspaceIssue(project);
+    const notificationKey = projectWorkspaceNotificationKey(project.id);
+    if (!issue) {
+      resolveOperationalNotification(notificationKey);
+      return undefined;
+    }
+    createOperationalNotification({
+      dedupeKey: notificationKey,
+      category: "system",
+      severity: "urgent",
+      title: "Project folder is unavailable",
+      body: `${issue} Restore the folder before retrying this message. Ponderosa did not start the provider and will not retry automatically.`,
+      projectId: project.id,
+      ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
+      agentId: agent.id,
+      action: { kind: "open_project", targetId: project.id },
+    });
+    return issue;
+  };
   const reconcileCommunicationFailureNotifications = (): void => {
     for (const failure of coordinationV3.terminalActivations(undefined, 500)) {
       if (failure.state === "cancelled") continue;
@@ -11409,6 +11445,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           typeof v3FreshProviderSession !== "boolean" || !v3ActivationPrompt)) {
         return reply.code(400).send({ error: "V3 scheduler run, fencing token, injection ID, and provider-session disposition are required" });
       }
+      if (internalV3Dispatch) {
+        const workspaceIssue = await reconcileProjectWorkspace(project, agent);
+        if (workspaceIssue) {
+          return reply.code(422).send({
+            code: "project_workspace_unavailable",
+            error: workspaceIssue,
+          });
+        }
+      }
       const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
@@ -12426,6 +12471,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         let providerWorkObserved = false;
         let schedulerCancelled = false;
         let usedFreshFallback = false;
+        let projectWorkspaceUnavailable = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -12828,8 +12874,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           schedulerCancelled = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
           if (schedulerCancelled) return;
           const message = err instanceof Error ? err.message : String(err);
-          persistRuntimeEvent(agent.id, activeRun, { type: "error", message });
-          runError = message;
+          const workspaceIssue = await reconcileProjectWorkspace(project, agent);
+          projectWorkspaceUnavailable = Boolean(workspaceIssue);
+          runError = workspaceIssue ?? message;
+          persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
         } finally {
           const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
           schedulerCancelled ||= Boolean(!closed && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
@@ -12938,7 +12986,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 sameRunResumable: false,
                 failureKind,
                 confirmedNotExecuted: !providerWorkObserved && (failureKind === "capacity" || failureKind === "rate_limit"),
-                retryable: failureKind !== "authentication",
+                retryable: !projectWorkspaceUnavailable && failureKind !== "authentication",
                 error: `[${failureKind}] ${runError}`,
                 failureDetail: {
                   phase: v3PromptInjected ? "provider_execution" : "prompt_submission",

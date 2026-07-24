@@ -2,7 +2,17 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import TuneIcon from "@mui/icons-material/Tune";
 import { Alert, Box, Button, IconButton, LinearProgress, Stack, Typography, useMediaQuery } from "@mui/material";
 import { useTheme } from "@mui/material/styles";
-import type { AgentHealthDto, EngineDto, ConversationDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto } from "@ponderosa/core";
+import type {
+  AgentDto,
+  AgentHealthDto,
+  ConversationDto,
+  EngineDto,
+  ProjectDto,
+  ProjectEngineCapabilitiesDto,
+  ResponseFileActivityDto,
+  WorkspaceNotificationDto,
+  WorkspacePreferencesDto,
+} from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -39,6 +49,13 @@ export function ProjectShell({
   project,
   route,
   engines,
+  notifications,
+  preferences,
+  onPreferences,
+  onManageProject,
+  onRenameConversation,
+  onDeleteConversation,
+  onOpenEngineStatus,
   navigate,
   browserRequest,
   onBrowserRequestHandled,
@@ -49,6 +66,13 @@ export function ProjectShell({
   project: ProjectDto;
   route: Route;
   engines: EngineDto[];
+  notifications: WorkspaceNotificationDto[];
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onManageProject(project: ProjectDto): void;
+  onRenameConversation(conversation: ConversationDto): void;
+  onDeleteConversation(conversation: ConversationDto): void;
+  onOpenEngineStatus(): void;
   navigate(route: Route, options?: { replace?: boolean }): void;
   browserRequest?: ProjectBrowserRequest;
   onBrowserRequestHandled?(requestId: number): void;
@@ -168,6 +192,11 @@ export function ProjectShell({
 
   const openProjectArtifact = (agentId: string, artifactId: string) => {
     navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } });
+  };
+  const openProjectConversation = (conversationId: string) => {
+    void api.markProjectUsed(projectId, conversationId);
+    void api.clearConversationNotifications(conversationId);
+    navigate({ kind: "conversation", projectId, conversationId });
   };
 
   const loading = conversationsQuery.isLoading || agentsQuery.isLoading;
@@ -327,9 +356,21 @@ export function ProjectShell({
         projectId={projectId}
         project={project}
         agents={agents}
+        health={healthQuery.data?.agents}
         healthByAgentId={healthByAgentId}
+        engines={engines}
+        notifications={notifications}
+        preferences={preferences}
+        onPreferences={onPreferences}
+        onCreateConversation={() => setMasterDialogOpen(true)}
         conversations={conversations}
-        onOpenConversation={(conversationId) => navigate({ kind: "conversation", projectId, conversationId })}
+        onOpenConversation={openProjectConversation}
+        onOpenConversationInNewTab={openInNewTab ? (conversationId) => openInNewTab({ kind: "conversation", projectId, conversationId }) : undefined}
+        onRenameConversation={onRenameConversation}
+        onDeleteConversation={onDeleteConversation}
+        onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
+        onManageProject={() => onManageProject(project)}
+        onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}
         onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}

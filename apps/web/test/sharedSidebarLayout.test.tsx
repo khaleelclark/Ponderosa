@@ -1,4 +1,4 @@
-import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useState } from "react";
@@ -33,16 +33,6 @@ const agent: AgentDto = {
   updatedAt: "2026-07-20T00:00:00.000Z",
   archived: false,
 };
-const engines: EngineDto[] = [{
-  id: "codex",
-  displayName: "Codex",
-  models: [],
-  efforts: [],
-  configured: true,
-  enabled: true,
-  authenticated: true,
-  available: true,
-}];
 const preferences = {
   projectSort: "last_used",
   projectOrder: [],
@@ -108,7 +98,6 @@ function renderSidebar(route: Route, options: {
   const client = createClient();
   const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
     projects={[project]}
-    engines={engines}
     preferences={preferences}
     route={route}
     notifications={[]}
@@ -117,7 +106,6 @@ function renderSidebar(route: Route, options: {
     onCreateChat={options.onCreateChat ?? vi.fn()}
     onCreateAgent={options.onCreateAgent ?? vi.fn()}
     onCreateTrigger={options.onCreateTrigger ?? vi.fn()}
-    onManageProject={vi.fn()}
     onPreferences={options.onPreferences ?? vi.fn()}
     onRenameConversation={vi.fn()}
     onDeleteConversation={vi.fn()}
@@ -172,10 +160,10 @@ describe("shared global resource sidebar", () => {
     function Harness(): JSX.Element {
       const [collapsed, setCollapsed] = useState(true);
       return <WorkspaceSidebar
-        projects={[project]} engines={engines} preferences={preferences}
+        projects={[project]} preferences={preferences}
         route={{ kind: "conversation", projectId: project.id, conversationId: conversation.id }}
         notifications={[]} collapsed={collapsed} onCollapsedChange={setCollapsed}
-        onNavigate={onNavigate} onCreateProject={vi.fn()} onManageProject={vi.fn()} onPreferences={vi.fn()}
+        onNavigate={onNavigate} onCreateProject={vi.fn()} onPreferences={vi.fn()}
         onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()}
       />;
     }
@@ -194,11 +182,11 @@ describe("shared global resource sidebar", () => {
     client.clear();
   });
 
-  it("does not replace protected Project Chats, Wiki, or Settings panels", () => {
+  it("keeps project routes in the shared sidebar while preserving Wiki and Settings panels", () => {
     const projectView = renderSidebar({ kind: "conversation", projectId: project.id, conversationId: conversation.id });
-    expect(projectView.view.root.findAllByProps({ "data-sidebar-layout": "shared-resource" })).toHaveLength(0);
-    expect(projectView.view.root.findByProps({ "aria-label": "Search Chats" })).toBeTruthy();
-    expect(projectView.view.root.findByProps({ children: "Project Overview" })).toBeTruthy();
+    expect(projectView.view.root.findByProps({ "data-sidebar-layout": "shared-resource", "data-sidebar-panel": "home" })).toBeTruthy();
+    expect(projectView.view.root.findByProps({ "aria-label": "Search Home" })).toBeTruthy();
+    expect(projectView.view.root.findAllByProps({ "aria-label": "Search Project Chats" })).toHaveLength(0);
     projectView.view.unmount();
     projectView.client.clear();
 

@@ -2,8 +2,9 @@ import type { AgentDto, ConversationDto, EngineDto, ProjectDto, WorkspacePrefere
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, create } from "react-test-renderer";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectHealthDetail, projectHealthPresentation, WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
+import { WorkspaceSidebar } from "../src/components/WorkspaceSidebar";
 import { operatorInitials } from "../src/components/OperatorAvatar";
+import { projectHealthDetail, projectHealthPresentation } from "../src/components/ProjectOverview";
 
 const projects: ProjectDto[] = [
   { id: "alpha", label: "Website", hostPath: "/repos/alpha", defaultEngine: "codex", createdAt: "2026-07-01T00:00:00.000Z" },
@@ -47,7 +48,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(projectHealthPresentation(failed, [claudeAgent], engineRoster.map((item) => ({ ...item, enabled: false, available: false })))).toEqual({ label: "Healthy", color: "success.main" });
   });
 
-  it("keeps one project-scoped chat navigator and persistent global destinations", async () => {
+  it("keeps the shared sidebar collection stable while project destinations change the workspace", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     projects.forEach((project, index) => {
       client.setQueryData(["conversations", project.id], [conversations[index]]);
@@ -66,13 +67,11 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
-      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "conversation", projectId: "alpha", conversationId: "chat-alpha" }}
       notifications={[{ id: "unread", projectId: "beta", conversationId: "chat-beta", kind: "mentions", title: "Mention", body: "Review", createdAt: "2026-07-16T00:00:00.000Z" }]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
-      onManageProject={vi.fn()}
       onPreferences={vi.fn()}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
@@ -82,7 +81,7 @@ describe("responsive workspace sidebar flow", () => {
     const rendered = JSON.stringify(view.toJSON());
     expect(view.root.findByProps({ "aria-label": "Home" })).toBeTruthy();
     expect(view.root.findAll((node) => node.props["aria-label"] === "Projects").length).toBeGreaterThan(0);
-    expect(rendered).toContain("Search Chats");
+    expect(rendered).toContain("Search Home");
     expect(rendered).toContain("Website");
     expect(rendered).toContain("Release");
     expect(view.root.findAll((node) => node.props.color === "info" && node.props.badgeContent === 1)).toHaveLength(1);
@@ -91,7 +90,7 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).not.toHaveBeenCalled();
     expect(view.root.findByProps({ "aria-label": "Open All Messages" })).toBeTruthy();
     expect(JSON.stringify(view.toJSON())).toContain("Search Home");
-    expect(JSON.stringify(view.toJSON())).not.toContain("Search Chats");
+    expect(JSON.stringify(view.toJSON())).not.toContain("Search Project Chats");
     expect(JSON.stringify(view.toJSON())).toContain("View Home");
     expect(JSON.stringify(view.toJSON())).not.toContain("View All Projects");
     act(() => view.root.findByProps({ "aria-label": "Projects" }).props.onClick());
@@ -99,10 +98,9 @@ describe("responsive workspace sidebar flow", () => {
     expect(onNavigate).toHaveBeenCalledWith({ kind: "projects" });
     act(() => view.root.findAllByProps({ "aria-label": "Open project Website" })[0]!.props.onClick());
     expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
-    act(() => view.root.findByProps({ "aria-label": "Open project overview" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "project", projectId: "alpha" });
-    act(() => view.root.findByProps({ "aria-label": "Open project agents" }).props.onClick());
-    expect(onNavigate).toHaveBeenCalledWith({ kind: "agents", projectId: "alpha" });
+    expect(view.root.findByProps({ "aria-label": "Search projects" })).toBeTruthy();
+    expect(view.root.findAllByProps({ "aria-label": "Search Project Chats" })).toHaveLength(0);
+    expect(view.root.findAllByProps({ "aria-label": "Open project overview" })).toHaveLength(0);
     act(() => view.root.findByProps({ "aria-label": "Agents" }).props.onClick());
     expect(onNavigate).not.toHaveBeenCalledWith({ kind: "allAgents" });
     expect(JSON.stringify(view.toJSON())).toContain("Search agents");
@@ -126,8 +124,8 @@ describe("responsive workspace sidebar flow", () => {
       client.setQueryData(["agent-health", project.id], { scope: { type: "project", id: project.id }, generatedAt: "2026-07-16T00:00:00.000Z", agents: [] });
     });
     const render = (drawer = false) => create(<QueryClientProvider client={client}><WorkspaceSidebar
-      projects={projects} engines={engineRoster} preferences={preferences} route={{ kind: "projects" }} notifications={[]}
-      drawer={drawer} onNavigate={vi.fn()} onCreateProject={vi.fn()} onManageProject={vi.fn()} onPreferences={vi.fn()}
+      projects={projects} preferences={preferences} route={{ kind: "projects" }} notifications={[]}
+      drawer={drawer} onNavigate={vi.fn()} onCreateProject={vi.fn()} onPreferences={vi.fn()}
       onRenameConversation={vi.fn()} onDeleteConversation={vi.fn()} onSearch={vi.fn()}
     /></QueryClientProvider>);
     const desktop = render();
@@ -154,13 +152,11 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
-      engines={engineRoster}
       preferences={{ ...preferences, profile: { ...preferences.profile, displayName: "Khaleel Clark" } }}
       route={{ kind: "projects" }}
       notifications={[]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
-      onManageProject={vi.fn()}
       onPreferences={vi.fn()}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
@@ -181,13 +177,11 @@ describe("responsive workspace sidebar flow", () => {
     const onNavigate = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
-      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "allAgents" }}
       notifications={[]}
       onNavigate={onNavigate}
       onCreateProject={vi.fn()}
-      onManageProject={vi.fn()}
       onPreferences={vi.fn()}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}
@@ -213,13 +207,11 @@ describe("responsive workspace sidebar flow", () => {
     const onPreferences = vi.fn();
     const view = create(<QueryClientProvider client={client}><WorkspaceSidebar
       projects={projects}
-      engines={engineRoster}
       preferences={preferences}
       route={{ kind: "projects" }}
       notifications={[]}
       onNavigate={vi.fn()}
       onCreateProject={vi.fn()}
-      onManageProject={vi.fn()}
       onPreferences={onPreferences}
       onRenameConversation={vi.fn()}
       onDeleteConversation={vi.fn()}

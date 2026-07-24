@@ -260,7 +260,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           </Tooltip>
           <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
-              {starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? <StarRoundedIcon color="primary" /> : <StarBorderRoundedIcon />}
+              {starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}
             </IconButton>
           </Tooltip>
           <Tooltip title={`Project settings for ${snapshot.project.label}`}>

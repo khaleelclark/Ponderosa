@@ -29,7 +29,16 @@ import {
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentDto, AgentHealthDto, ArtifactDto, ProjectDto } from "@ponderosa/core";
+import type {
+  AgentDto,
+  AgentHealthDto,
+  ArtifactDto,
+  ConversationDto,
+  EngineDto,
+  ProjectDto,
+  WorkspaceNotificationDto,
+  WorkspacePreferencesDto,
+} from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -106,25 +115,49 @@ export function ProjectArtifactsView({
   projectId,
   project,
   agents,
+  health,
   healthByAgentId,
+  engines,
+  notifications,
+  preferences,
+  onPreferences,
+  onCreateConversation,
+  onOpenConversation,
+  onOpenConversationInNewTab,
+  onRenameConversation,
+  onDeleteConversation,
+  onOpenProjectAgents,
+  onManageProject,
+  onOpenEngineStatus,
   onOpenArtifact,
   onOpenArtifactInNewTab,
   onOpenRun,
   onOpenAgentWork,
-  conversations = [],
-  onOpenConversation = () => undefined,
+  conversations,
   onOpenBrowser = () => undefined,
 }: {
   projectId: string;
   project: ProjectDto;
   agents: AgentDto[];
+  health: AgentHealthDto[] | undefined;
   healthByAgentId: Map<string, AgentHealthDto>;
+  engines: EngineDto[];
+  notifications: WorkspaceNotificationDto[];
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onCreateConversation(): void;
+  onOpenConversation(conversationId: string): void;
+  onOpenConversationInNewTab?(conversationId: string): void;
+  onRenameConversation(conversation: ConversationDto): void;
+  onDeleteConversation(conversation: ConversationDto): void;
+  onOpenProjectAgents(): void;
+  onManageProject(): void;
+  onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
   onOpenRun(agentId: string, runId: string): void;
   onOpenAgentWork(): void;
-  conversations?: import("@ponderosa/core").ConversationDto[];
-  onOpenConversation?(conversationId: string): void;
+  conversations: ConversationDto[];
   onOpenBrowser?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -196,10 +229,22 @@ export function ProjectArtifactsView({
       <ProjectOverview
         project={project}
         agents={agents}
+        health={health}
         healthByAgentId={healthByAgentId}
+        engines={engines}
         importantArtifacts={(projectArtifacts.data?.items ?? []).filter((artifact) => artifact.pinned || artifact.visibility === "published")}
         conversations={conversations}
+        notifications={notifications}
+        preferences={preferences}
+        onPreferences={onPreferences}
+        onCreateConversation={onCreateConversation}
         onOpenConversation={onOpenConversation}
+        onOpenConversationInNewTab={onOpenConversationInNewTab}
+        onRenameConversation={onRenameConversation}
+        onDeleteConversation={onDeleteConversation}
+        onOpenProjectAgents={onOpenProjectAgents}
+        onManageProject={onManageProject}
+        onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={onOpenBrowser}
         onOpenAgentWork={onOpenAgentWork}
         onOpenProjectFiles={() => document.getElementById("project-files-and-results")?.scrollIntoView({ behavior: "smooth", block: "start" })}
