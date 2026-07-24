@@ -954,7 +954,7 @@ export function ConversationView({
         </Collapse>
       </Box>
 
-      <Box sx={{ position: "relative", minHeight: 0, minWidth: 0 }}>
+      <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
         {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : <>
         <ChatSurface
           layout="project"
