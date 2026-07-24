@@ -108,16 +108,6 @@ export function ChatMessageFrame({
             }}
           >
             {author.kind === "operator" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={senderName} /></Box> : null}
-            {message.reply ? (
-              <Box
-                component="button"
-                aria-label="Go to replied-to message"
-                onClick={(event) => { event.stopPropagation(); message.reply?.onOpen(); }}
-                sx={{ display: "block", width: "100%", mb: 0.75, p: 0.75, border: 0, borderLeft: 3, borderColor: "currentColor", bgcolor: "rgba(127,127,127,.14)", color: "inherit", textAlign: "left", cursor: "pointer", borderRadius: 1 }}
-              >
-                <Box component="span" sx={{ typography: "caption", display: "block", overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis" }}>{replyFallbackText(message.reply.text)}</Box>
-              </Box>
-            ) : null}
             {message.body}
             {message.afterBody}
             <ChatAttachments
@@ -134,14 +124,6 @@ export function ChatMessageFrame({
             status={message.status}
             actions={<>
               {message.actions}
-              {message.onReply ? <Tooltip title="Reply"><IconButton
-                size="small"
-                aria-label="Reply to message"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  message.onReply?.();
-                }}
-              ><ReplyIcon fontSize="inherit" /></IconButton></Tooltip> : null}
             </>}
           />
         </Box>

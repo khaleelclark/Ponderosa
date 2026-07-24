@@ -97,7 +97,6 @@ export function ChatPane({
                 target?.focus({ preventScroll: true });
               },
             } : undefined,
-            onReply: onReply ? () => onReply(message) : undefined,
             body: <ChatMessageBody
               text={message.document
                 ? message.text.replace(/^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu, "")

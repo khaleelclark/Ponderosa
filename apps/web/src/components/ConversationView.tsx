@@ -164,7 +164,6 @@ export function ConversationMessage({
         target?.focus({ preventScroll: true });
       },
     } : undefined,
-    onReply: onReply ? () => onReply(message) : undefined,
     body: <ChatMessageBody
       text={visibleText}
       compactMarkdown

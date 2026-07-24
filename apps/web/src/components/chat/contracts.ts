@@ -31,7 +31,6 @@ export interface ChatMessagePresentation {
   createdAt: string;
   body: ReactNode;
   reply?: ChatReplyReference;
-  onReply?(): void;
   attachments?: ImageAttachmentDto[];
   attachmentDensity?: "comfortable" | "compact";
   afterBody?: ReactNode;
