@@ -1,5 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -233,6 +234,7 @@ export function ProjectArtifactsView({
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}>
     <TabbedWorkspaceFrame<"overview" | "files">
+      icon={<FolderOutlinedIcon />}
       title={project.label}
       context={<Typography variant="body2" color="text.secondary" noWrap>{project.hostPath}</Typography>}
       status={<Tooltip title={`${projectHealthTooltip} Click for AI provider details.`} arrow>

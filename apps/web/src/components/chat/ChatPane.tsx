@@ -2,6 +2,7 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import TagIcon from "@mui/icons-material/Tag";
 import { Box, IconButton, Tooltip, Typography } from "@mui/material";
 import type { MessageDto, OperatorProfileDto } from "@ponderosa/core";
+import { memo } from "react";
 import { agentMentionHandle } from "../../mentions";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
@@ -60,7 +61,7 @@ function CompletedWorkDurationStatus({
   );
 }
 
-export function ChatPane({
+function ChatPaneComponent({
   messages,
   agentName = "Agent",
   agentNameForId,
@@ -236,3 +237,10 @@ export function ChatPane({
     </ChatSurface>
   );
 }
+
+/**
+ * Agent detail keeps this pane mounted while another local tab is visible.
+ * Most tab changes do not alter any chat inputs, so avoid reparsing every
+ * Markdown message merely to hide or reveal the preserved pane.
+ */
+export const ChatPane = memo(ChatPaneComponent);

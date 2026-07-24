@@ -32,6 +32,7 @@ export function NewWorkspace({
 
   return <Box sx={{ minHeight: 0, overflow: "auto" }}>
     <TabbedWorkspaceFrame
+      icon={<AddIcon />}
       title="Create New"
       context={<Typography variant="body2" color="text.secondary">Choose the kind of workspace item you want to add.</Typography>}
       tabs={{ value: kind, onChange: select, label: "Create New", items: choices }}

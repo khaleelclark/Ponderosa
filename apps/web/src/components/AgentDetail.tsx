@@ -10,6 +10,7 @@ import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import {
@@ -43,7 +44,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationDetailDto, ConversationDto, MessageDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, SendMessageRequest, SendMessageResponse, AgentDetailDto, AgentDto, AgentTelemetryPageDto, AgentTelemetryStream, HistoryWindowDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { agentStatusColor, agentStatusLabel, deriveAgentStatus, type AgentStatus } from "../agents";
@@ -673,7 +674,7 @@ export function AgentDetail({
     onError: () => setRuntimeSettingsNotice(undefined),
   });
 
-  const loadOlderMessages = async () => {
+  const loadOlderMessages = useCallback(async () => {
     const cursor = detail?.history?.cursor;
     if (!detail?.history?.hasMore || !cursor || loadingOlder) return;
     setLoadingOlder(true);
@@ -688,7 +689,66 @@ export function AgentDetail({
     } finally {
       setLoadingOlder(false);
     }
-  };
+  }, [agentId, agentQuery.data?.messages, detail?.history?.cursor, detail?.history?.hasMore, loadingOlder]);
+
+  const agentIdForHandle = useCallback(
+    (handle: string): string | undefined => agentIdForMentionHandle(agents, handle),
+    [agents],
+  );
+  const agentNameForId = useCallback(
+    (candidateId: string): string | undefined =>
+      agents.find((candidate) => candidate.id === candidateId)?.title,
+    [agents],
+  );
+  const finalizedRunDurationLabels = useMemo(() => new Map((detail?.runs ?? []).flatMap((run) => {
+    if (!run.completedAt) return [];
+    const duration = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
+    return Number.isFinite(duration) && duration >= 0
+      ? [[run.id, `Worked for ${formatFinalizedWorkDuration(duration)}`] as const]
+      : [];
+  })), [detail?.runs]);
+  const completedWorkDurationLabel = useCallback(
+    (message: MessageDto): string | undefined =>
+      message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined,
+    [finalizedRunDurationLabels],
+  );
+  const openBroadcastFromMessage = useCallback(
+    (message: MessageDto) => onOpenBroadcast(message.conversationId!, message.communicationEventId!),
+    [onOpenBroadcast],
+  );
+  const mentionCurrentAgent = useCallback(() => {
+    if (!detail) return;
+    setMentionInsertRequest({ id: createClientId(), text: `#${agentMentionHandle(detail.agent.title)}` });
+  }, [detail?.agent.title]);
+  const loadOlderChatMessages = useCallback(() => {
+    void loadOlderMessages();
+  }, [loadOlderMessages]);
+  const chatPreviewScope = useMemo(
+    () => detail && projectedHealth?.runtimeActivity?.executionId
+      ? {
+          projectId: detail.agent.projectId,
+          agentId: detail.agent.id,
+          runId: projectedHealth.runtimeActivity.executionId,
+        }
+      : undefined,
+    [detail?.agent.id, detail?.agent.projectId, projectedHealth?.runtimeActivity?.executionId],
+  );
+  const agentTranscriptMarkdown = useMemo(() => detail
+    ? buildMarkdownTranscript(
+        `${detail.agent.title} — Agent chat`,
+        detail.messages.map((message) => ({
+          author: message.role === "user"
+            ? "You"
+            : message.authorAgentId
+              ? agentNameForId(message.authorAgentId) ?? "Agent"
+              : detail.agent.title,
+          text: message.text,
+          createdAt: message.createdAt,
+          attachments: message.attachments,
+          document: message.document,
+        })),
+      )
+    : "", [agentNameForId, detail?.agent.title, detail?.messages]);
 
   const loadOlderTelemetry = async () => {
     const streams = telemetryStreamsForTab(tab).filter((stream) => detail?.telemetryHistory?.[stream]?.hasMore);
@@ -756,24 +816,8 @@ export function AgentDetail({
     conversations,
     detail.agent.conversationId,
   );
-  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
-  const agentNameForId = (candidateId: string): string | undefined =>
-    agents.find((candidate) => candidate.id === candidateId)?.title;
   const transcriptTitle = `${detail.agent.title} — Agent chat`;
-  const transcriptMarkdown = buildMarkdownTranscript(
-    transcriptTitle,
-    detail.messages.map((message) => ({
-      author: message.role === "user"
-        ? "You"
-        : message.authorAgentId
-          ? agentNameForId(message.authorAgentId) ?? "Agent"
-          : detail.agent.title,
-      text: message.text,
-      createdAt: message.createdAt,
-      attachments: message.attachments,
-      document: message.document,
-    })),
-  );
+  const transcriptMarkdown = agentTranscriptMarkdown;
   const organizationalParent = detail.agent.managerAgentId
     ? agents.find((candidate) => candidate.id === detail.agent.managerAgentId)
     : undefined;
@@ -830,15 +874,6 @@ export function AgentDetail({
       return sent;
     };
 
-  const finalizedRunDurationLabels = new Map(detail.runs.flatMap((run) => {
-    if (!run.completedAt) return [];
-    const duration = new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
-    return Number.isFinite(duration) && duration >= 0
-      ? [[run.id, `Worked for ${formatFinalizedWorkDuration(duration)}`] as const]
-      : [];
-  }));
-  const completedWorkDurationLabel = (message: MessageDto): string | undefined =>
-    message.executionId ? finalizedRunDurationLabels.get(message.executionId) : undefined;
   const openTechnicalDetails = (focusId?: string) => {
     setAgentWorkFocus(focusId);
     setTab("technical");
@@ -853,7 +888,7 @@ export function AgentDetail({
     if (file.artifactId) onOpenArtifactInNewTab(file.artifactId);
     else onOpenReviewInNewTab(file.path);
   };
-  const settingsPane = <Stack spacing={2} aria-label="Agent settings" className="ponderosa-scroll" sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}>
+  const renderSettingsPane = () => <Stack spacing={2} aria-label="Agent settings" className="ponderosa-scroll" sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}>
     <Box>
       <Typography variant="h6">Agent Settings</Typography>
       <Typography variant="body2" color="text.secondary">Agent controls, assignments, permissions, and runtime choices for upcoming work.</Typography>
@@ -968,17 +1003,18 @@ export function AgentDetail({
   </Stack>;
 
   const panes: Record<AgentTab, JSX.Element> = {
-    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={(message) => onOpenBroadcast(message.conversationId!, message.communicationEventId!)} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={runtimeActivity?.executionId ? { projectId: detail.agent.projectId, agentId: detail.agent.id, runId: runtimeActivity.executionId } : undefined} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={(element, nearBottom) => mobileComposer.observeScroll(element, nearBottom)} onMentionAgent={() => setMentionInsertRequest({ id: createClientId(), text: `#${agentMentionHandle(detail.agent.title)}` })} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={() => void loadOlderMessages()} /></Box>,
+    chat: <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}><ChatPane messages={detail.messages} agentName={detail.agent.title} agentNameForId={agentNameForId} agentIdForHandle={agentIdForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={openBroadcastFromMessage} operatorProfile={preferencesQuery.data?.profile} projectId={detail.agent.projectId} completedWorkDurationLabel={completedWorkDurationLabel} previewScope={chatPreviewScope} scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)} onScrollPositionChange={mobileComposer.observeScroll} onMentionAgent={mentionCurrentAgent} hasOlder={detail.history?.hasMore} loadingOlder={loadingOlder} onLoadOlder={loadOlderChatMessages} /></Box>,
     activity: <ActivityPane activity={detail.activity} runOutput={detail.runOutput} runs={detail.runs} connected={stream.connected} running={stream.running} activeExecutionId={runtimeActivity?.executionId} focusId={focusTelemetry?.stream === "activity" || focusTelemetry?.stream === "runOutput" ? focusTelemetry.id : undefined} projectId={detail.agent.projectId} onOpenFile={openActivityFile} onOpenFileInNewTab={openActivityFileInNewTab} onViewAll={() => onOpenReview()} />,
     triggers: <TriggersPane agent={detail.agent} initialCreateOpen={createTrigger} onOpenAgentWork={(occurrenceId) => openTechnicalDetails(`trigger:${occurrenceId}`)} />,
     artifacts: <ArtifactsPane artifacts={detail.artifacts} agentId={agentId} agentTitle={detail.agent.title} timeline={stream.timeline} initialArtifactId={focusTelemetry?.stream === "artifacts" ? focusTelemetry.id : readChatState(chatStateKey("view", `agent.${agentId}.artifact`))} onSelectArtifact={onOpenArtifact} onOpenArtifactInNewTab={onOpenArtifactInNewTab} onOpenRun={(runId) => openTechnicalDetails(`run:${runId}`)} />,
-    settings: settingsPane,
+    settings: <></>,
     technical: <AgentWorkInspector open projectId={detail.agent.projectId} agentId={detail.agent.id} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => undefined} />,
   };
 
   return (
     <Box data-testid="agent-detail" data-agent-id={agentId} sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <TabbedWorkspaceFrame
+        icon={<SmartToyOutlinedIcon />}
         title={detail.agent.title}
         context={<>
           <AgentHeaderRelationships
@@ -1079,24 +1115,41 @@ export function AgentDetail({
         }}
       />
 
-      <Box role="tabpanel" aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`} tabIndex={0} sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "chat" || tab === "activity" || tab === "technical" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: tab === "chat" ? "auto minmax(0, 1fr)" : hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}>
-        {tab === "chat" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={(item) => {
-          openTechnicalDetails(notificationTechnicalFocusId(item));
-        }} /> : null}
-        {tab !== "chat" && hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : tab === "activity" ? "Load Earlier Activity" : "Load Earlier Records"}</Button> : null}
-        {panes[tab]}
+      <Box sx={{ position: "relative", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+        <Box
+          role="tabpanel"
+          aria-label="Chat panel"
+          tabIndex={tab === "chat" ? 0 : -1}
+          hidden={tab !== "chat"}
+          sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", outlineOffset: -2, display: tab === "chat" ? "grid" : "none", gridTemplateRows: "auto minmax(0, 1fr)" }}
+        >
+          <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={detail.agent.projectId} agentId={agentId} onOpen={(item) => {
+            openTechnicalDetails(notificationTechnicalFocusId(item));
+          }} />
+          {panes.chat}
+        </Box>
+        {tab !== "chat" ? <Box
+          role="tabpanel"
+          aria-label={`${tab === "technical" ? "Technical details" : tab[0]!.toUpperCase() + tab.slice(1)} panel`}
+          tabIndex={0}
+          sx={{ height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: tab === "activity" || tab === "technical" ? "hidden" : "auto", outlineOffset: -2, display: "grid", gridTemplateRows: hasOlderTelemetry ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)" }}
+        >
+          {hasOlderTelemetry ? <Button size="small" color="inherit" disabled={loadingOlder} onClick={() => void loadOlderTelemetry()} sx={{ justifySelf: "center", my: .5 }}>{loadingOlder ? "Loading…" : tab === "activity" ? "Load Earlier Activity" : "Load Earlier Records"}</Button> : null}
+          {tab === "settings" ? renderSettingsPane() : panes[tab]}
+        </Box> : null}
       </Box>
 
-      {tab === "chat" ? <Box
+      <Box
         className="mobile-chat-chrome mobile-chat-composer"
         data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
+        hidden={tab !== "chat"}
         onTransitionEnd={(event) => {
           if (
             event.currentTarget === event.target
             && event.propertyName === "max-height"
           ) mobileComposer.finishTransition();
         }}
-        sx={{ minWidth: 0 }}
+        sx={{ minWidth: 0, display: tab === "chat" ? "block" : "none" }}
       >
         {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
         {sendMessage.isError || cancelRun.isError ? (
@@ -1139,7 +1192,7 @@ export function AgentDetail({
           preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
           onCancel={() => stopActiveRun()}
         />
-      </Box> : null}
+      </Box>
 
       <ConfirmDialog
         open={Boolean(elevatedCopyPackage)}

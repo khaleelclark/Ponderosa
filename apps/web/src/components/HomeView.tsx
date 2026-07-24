@@ -73,6 +73,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
     <TabbedWorkspaceFrame<"overview" | "work">
+      icon={<HomeOutlinedIcon />}
       title="Home"
       context={<Typography variant="body2" color="text.secondary">A calm overview of your organization and its recent work.</Typography>}
       tabs={{

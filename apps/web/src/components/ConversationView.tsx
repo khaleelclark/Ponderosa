@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
@@ -27,12 +28,12 @@ import {
 } from "@mui/material";
 import type { AgentHealthDto, EngineCommand, EngineDto, ConversationChannel, ConversationDto, ConversationMessageDto, OperatorProfileDto, ProjectDto, ProjectEngineCapabilitiesDto, ResponseFileActivityDto, AgentDto, TeamOperationalEventDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { compactDefined, uniqueBy } from "../collections";
-import { type AgentStatus } from "../agents";
+import { agentBelongsToConversation, type AgentStatus } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useCollaborationView, useConversation, useNotifications, useProjects, useWorkspacePreferences } from "../hooks/queries";
 import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, resolveConversationEngine, resolveRuntimeSelection, selectedRunConfig } from "../conversationEngine";
@@ -107,7 +108,7 @@ import { mobileOperationalStatus } from "../mobileChat";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
-export function ConversationMessage({
+function ConversationMessageComponent({
   message,
   conversation,
   agentTitle,
@@ -194,6 +195,13 @@ export function ConversationMessage({
   }} />;
 }
 
+/**
+ * Local Chat tabs preserve their message panels. Stable screen-level callbacks
+ * let unchanged messages skip Markdown parsing when only panel visibility
+ * changes.
+ */
+export const ConversationMessage = memo(ConversationMessageComponent);
+
 export function ConversationView({
   conversationId,
   focusMessageId,
@@ -204,8 +212,6 @@ export function ConversationView({
   statusByAgentId,
   healthByAgentId,
   projectAgents,
-  projectConversations,
-  projectLabel,
   onOpenProject,
   onOpenAgent,
   onOpenAgentInNewTab,
@@ -225,8 +231,6 @@ export function ConversationView({
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   projectAgents: AgentDto[];
-  projectConversations: ConversationDto[];
-  projectLabel: string;
   onOpenProject(): void;
   onOpenAgent(agentId: string, view?: "technical", technicalFocusId?: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
@@ -270,6 +274,7 @@ export function ConversationView({
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
+  const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string | undefined>();
   const [activeOperation, setActiveOperation] = useState<{ agentIds: string[]; state: "starting" | "running" }>();
@@ -296,12 +301,15 @@ export function ConversationView({
 
   useEffect(() => {
     mobileComposer.reset();
+    collaborationVisited.current = false;
     setOlderMain(undefined);
     setOlderCollaboration(undefined);
     focusedMessage.current = undefined;
     const saved = readChatState(chatStateKey("view", `conversation.${conversationId}`));
     setActiveView(initialView ?? (saved === "collaboration" || saved === "agents" ? saved : "main"));
   }, [conversationId, initialView]);
+
+  if (activeView === "collaboration") collaborationVisited.current = true;
 
   useEffect(() => {
     writeChatState(chatStateKey("view", `conversation.${conversationId}`), activeView);
@@ -317,12 +325,31 @@ export function ConversationView({
   });
   // Live query updates can briefly leave sparse entries in cached collections.
   // Compact at the page boundary so historical chats remain renderable.
-  const messages = mergeConversationMessages(olderMain?.messages ?? [], compactDefined(detailQuery.data?.messages ?? []));
-  const agents = compactDefined(detailQuery.data?.agents ?? []);
-  const collaborationMessages = mergeConversationMessages(olderCollaboration?.messages ?? [], compactDefined(collaborationQuery.data?.messages ?? []));
-  const operationalEvents = mergeOperationalEvents(
-    olderCollaboration?.operations ?? [],
-    compactDefined(collaborationQuery.data?.operations ?? []),
+  const messages = useMemo(
+    () => mergeConversationMessages(olderMain?.messages ?? [], compactDefined(detailQuery.data?.messages ?? [])),
+    [detailQuery.data?.messages, olderMain?.messages],
+  );
+  const agents = useMemo(
+    () => compactDefined(detailQuery.data?.agents ?? []),
+    [detailQuery.data?.agents],
+  );
+  const conversationAgents = useMemo(
+    () => projectAgents.filter((agent) => agentBelongsToConversation(agent, conversationId)),
+    [conversationId, projectAgents],
+  );
+  const collaborationMessages = useMemo(
+    () => mergeConversationMessages(
+      olderCollaboration?.messages ?? [],
+      compactDefined(collaborationQuery.data?.messages ?? []),
+    ),
+    [collaborationQuery.data?.messages, olderCollaboration?.messages],
+  );
+  const operationalEvents = useMemo(
+    () => mergeOperationalEvents(
+      olderCollaboration?.operations ?? [],
+      compactDefined(collaborationQuery.data?.operations ?? []),
+    ),
+    [collaborationQuery.data?.operations, olderCollaboration?.operations],
   );
   const messageLayoutKey = chatMessageLayoutKey(messages);
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
@@ -643,6 +670,48 @@ export function ConversationView({
       setEffort(next.effort);
     },
   });
+  const agentTitle = useCallback(
+    (agentId: string | undefined): string =>
+      agents.find((agent) => agent.id === agentId)?.title ?? "Agent",
+    [agents],
+  );
+  const agentIdForHandle = useCallback(
+    (handle: string): string | undefined => agentIdForMentionHandle(agents, handle),
+    [agents],
+  );
+  const mentionAgent = useCallback((agentId: string) => {
+    setMentionInsertRequest({ id: String(Date.now()), text: `#${agentMentionHandle(agentTitle(agentId))} ` });
+  }, [agentTitle]);
+  const editConversationMessage = useCallback((selected: ConversationMessageDto) => {
+    setEditingMessage(selected);
+    setCorrectionText(selected.text);
+  }, []);
+  const mainTranscriptMarkdown = useMemo(() => conversation
+    ? buildMarkdownTranscript(
+        conversation.title,
+        messages.map((message) => ({
+          author: message.authorAgentId ? agentTitle(message.authorAgentId) : message.role === "system" ? "System" : "You",
+          text: message.authorAgentId
+            ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
+            : message.text,
+          createdAt: message.createdAt,
+          attachments: message.attachments,
+          document: message.document,
+        })),
+      )
+    : "", [agentTitle, conversation?.title, messages]);
+  const collaborationTranscriptMarkdown = useMemo(() => conversation
+    ? buildMarkdownTranscript(
+        `${conversation.title} — Team chat`,
+        collaborationMessages.map((message) => ({
+          author: message.authorAgentId ? agentTitle(message.authorAgentId) : message.role === "system" ? "System" : "You",
+          text: message.text,
+          createdAt: message.createdAt,
+          attachments: message.attachments,
+          document: message.document,
+        })),
+      )
+    : "", [agentTitle, collaborationMessages, conversation?.title]);
 
   if (detailQuery.isLoading) {
     return (
@@ -684,24 +753,12 @@ export function ConversationView({
   const efforts = selectedRuntime.efforts;
   const engineReady = selectedRuntime.ready;
 
-  const agentTitle = (agentId: string | undefined): string =>
-    agents.find((agent) => agent.id === agentId)?.title ?? "Agent";
   const transcriptTitle = activeView === "collaboration"
     ? `${conversation.title} — Team chat`
     : conversation.title;
-  const transcriptMarkdown = buildMarkdownTranscript(
-    transcriptTitle,
-    (activeView === "collaboration" ? collaborationMessages : messages).map((message) => ({
-      author: message.authorAgentId ? agentTitle(message.authorAgentId) : message.role === "system" ? "System" : "You",
-      text: activeView === "main" && message.authorAgentId
-        ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
-        : message.text,
-      createdAt: message.createdAt,
-      attachments: message.attachments,
-      document: message.document,
-    })),
-  );
-  const agentIdForHandle = (handle: string): string | undefined => agentIdForMentionHandle(agents, handle);
+  const transcriptMarkdown = activeView === "collaboration"
+    ? collaborationTranscriptMarkdown
+    : mainTranscriptMarkdown;
   const mentionHandles = [
     "broadcast",
     "everyone",
@@ -801,6 +858,7 @@ export function ConversationView({
   return (
     <Box data-testid="conversation" data-conversation-id={conversationId} sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <TabbedWorkspaceFrame
+        icon={<ChatBubbleOutlineIcon />}
         title={conversation.title}
         context={<ProjectRelationshipLink projectLabel={project?.label} onOpenProject={onOpenProject} />}
         actions={<>
@@ -809,6 +867,11 @@ export function ConversationView({
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={[
+              {
+                label: "Work",
+                icon: <AccountTreeOutlinedIcon fontSize="small" />,
+                onSelect: () => setAgentWorkOpen(true),
+              },
               {
                 label: "Rename",
                 icon: <DriveFileRenameOutlineIcon fontSize="small" />,
@@ -838,111 +901,169 @@ export function ConversationView({
         </>}
         tabs={{
           label: "Chat views",
-          value: agentWorkOpen ? "work" : activeView,
-          onChange: (next) => { setAgentWorkOpen(next === "work"); if (next !== "work") setActiveView(next); },
+          value: agentWorkOpen ? false : activeView,
+          onChange: (next) => {
+            setAgentWorkOpen(false);
+            setActiveView(next);
+          },
           items: [
             { value: "main", label: "Chat" },
             { value: "collaboration", label: "Team Chat" },
             { value: "agents", label: "Agents", icon: <GroupsOutlinedIcon fontSize="small" /> },
-            { value: "work", label: "Work", icon: <AccountTreeOutlinedIcon fontSize="small" /> },
           ],
         }}
       />
 
       <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+        <Box
+          role="tabpanel"
+          aria-label="Project chat messages"
+          tabIndex={!agentWorkOpen && activeView === "main" ? 0 : -1}
+          hidden={agentWorkOpen || activeView !== "main"}
+          sx={{ height: "100%", minHeight: 0, minWidth: 0, display: !agentWorkOpen && activeView === "main" ? "block" : "none" }}
+        >
+          <ChatSurface
+            layout="project"
+            layoutKey={`main:${messageLayoutKey}`}
+            label="Project chat messages"
+            follow={{
+              kind: "latest",
+              storageKey: chatStateKey("scroll", `conversation.${conversationId}.main`),
+              onPositionChange: mobileComposer.observeScroll,
+            }}
+            history={{
+              kind: "cursor",
+              hasEarlier: mainHistory.hasMore,
+              loading: loadingOlder,
+              onLoadEarlier: () => void loadOlderHistory(),
+            }}
+            beforeMessages={<>
+              <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => {
+                const focusId = notificationTechnicalFocusId(item);
+                if (item.agentId) onOpenAgent(item.agentId, "technical", focusId);
+                else onOpenAgentWork(focusId);
+              }} />
+              {!engineReady ? (
+                <Alert severity="warning" sx={{ mb: 1.5 }}>
+                  {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
+                  host, or pick a signed-in engine, before spawning agents.
+                </Alert>
+              ) : null}
+              {projectBrowser.data?.status === "ready" ? <Alert severity="info" action={<Button color="inherit" size="small" onClick={onOpenBrowser}>Open Tab</Button>} sx={{ mb: 1.5 }}>Interactive Browser is active{projectBrowser.data.title ? ` · ${projectBrowser.data.title}` : ""}.</Alert> : null}
+            </>}
+          >
+            <Stack spacing={0} sx={{ mb: 2 }}>
+              {messages.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No messages yet. Send a request to start your first agent — its completed answer returns here.
+                </Typography>
+              ) : null}
+              {messages.map((message) => (
+                <ConversationMessage
+                  key={message.id}
+                  message={message}
+                  conversation="main"
+                  projectId={conversation.projectId}
+                  activeRunId={message.authorAgentId ? healthByAgentId.get(message.authorAgentId)?.runtimeActivity?.executionId : undefined}
+                  operatorProfile={preferencesQuery.data?.profile}
+                  agentTitle={agentTitle}
+                  agentIdForHandle={agentIdForHandle}
+                  onOpenAgent={onOpenAgent}
+                  onOpenReview={onOpenReview}
+                  onOpenFileActivity={onOpenFileActivity}
+                  onMentionAgent={mentionAgent}
+                  onEdit={message.role === "user" && !message.authorAgentId && !message.correctedByMessageId && !message.correctionOfMessageId
+                    ? editConversationMessage
+                    : undefined}
+                />
+              ))}
+            </Stack>
+          </ChatSurface>
+        </Box>
+
+        {collaborationVisited.current ? <Box
+          role="tabpanel"
+          aria-label="Team chat messages"
+          tabIndex={!agentWorkOpen && activeView === "collaboration" ? 0 : -1}
+          hidden={agentWorkOpen || activeView !== "collaboration"}
+          sx={{ height: "100%", minHeight: 0, minWidth: 0, display: !agentWorkOpen && activeView === "collaboration" ? "block" : "none" }}
+        >
+          <ChatSurface
+            layout="project"
+            layoutKey={`collaboration:${collaborationLayoutKey}:${operationalLayoutKey}`}
+            label="Team chat messages"
+            follow={{
+              kind: "latest",
+              storageKey: chatStateKey("scroll", `conversation.${conversationId}.collaboration`),
+              onPositionChange: mobileComposer.observeScroll,
+            }}
+            history={{
+              kind: "cursor",
+              hasEarlier: collaborationHistory.hasMore || collaborationHistory.operationHasMore,
+              loading: loadingOlder,
+              onLoadEarlier: () => void loadOlderHistory(),
+            }}
+            beforeMessages={<Alert severity="info" sx={{ mb: 1.5 }}>
+              Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
+            </Alert>}
+          >
+            <Stack spacing={0} sx={{ mb: 2 }}>
+              {operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
+                {operationalEvents.map((event) => {
+                  const content = <>
+                    <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
+                    <Typography variant="body2" sx={{ display: { xs: "none", sm: "block" }, flex: 1 }}>{event.text}</Typography>
+                    <Typography variant="body2" sx={{ display: { xs: "block", sm: "none" }, flex: 1 }}>{mobileOperationalStatus(event.state)}</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+                  </>;
+                  const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
+                  return event.kind === "organization"
+                    ? <Box key={event.id} sx={sx}>{content}</Box>
+                    : <ButtonBase key={event.id} onClick={() => onOpenAgentWork(event.id)} aria-label={`${event.text}. Open Work details`} sx={sx}>{content}</ButtonBase>;
+                })}
+              </Stack> : null}
+              {collaborationMessages.length + operationalEvents.length === 0 ? (
+                <Typography variant="body2" color="text.secondary">
+                  No agent-to-agent messages yet.
+                </Typography>
+              ) : null}
+              {collaborationMessages.map((message) => (
+                <ConversationMessage
+                  key={message.id}
+                  message={message}
+                  conversation="collaboration"
+                  projectId={conversation.projectId}
+                  activeRunId={message.authorAgentId ? healthByAgentId.get(message.authorAgentId)?.runtimeActivity?.executionId : undefined}
+                  operatorProfile={preferencesQuery.data?.profile}
+                  agentTitle={agentTitle}
+                  agentIdForHandle={agentIdForHandle}
+                  onOpenAgent={onOpenAgent}
+                  onOpenReview={onOpenReview}
+                  onOpenFileActivity={onOpenFileActivity}
+                />
+              ))}
+            </Stack>
+          </ChatSurface>
+        </Box> : null}
+
         {agentWorkOpen ? <AgentWorkInspector open projectId={conversation.projectId} conversationId={conversationId} focus={agentWorkFocus ? { id: agentWorkFocus } : undefined} onClose={() => setAgentWorkOpen(false)} /> : activeView === "agents" ? (
           <AgentsTab
-            agents={projectAgents}
+            agents={conversationAgents}
             projectId={conversation.projectId}
             engines={engines}
-            conversations={projectConversations}
+            conversations={[conversation]}
             statusByAgentId={statusByAgentId}
             healthByAgentId={healthByAgentId}
             onOpenAgent={(agentId) => onOpenAgent(agentId)}
             onOpenAgentInNewTab={onOpenAgentInNewTab}
             onNewAgent={(managerAgentId) => onNewAgent(conversation, managerAgentId)}
-            scopeLabel={projectLabel}
+            collection={{
+              title: `${conversation.title} Agents`,
+              detail: `${conversationAgents.length} ${conversationAgents.length === 1 ? "Agent" : "Agents"}`,
+              variant: "embedded",
+            }}
           />
-        ) : <>
-        <ChatSurface
-          layout="project"
-          layoutKey={`${activeView}:${activeView === "main" ? messageLayoutKey : `${collaborationLayoutKey}:${operationalLayoutKey}`}`}
-          label={activeView === "collaboration" ? "Team chat messages" : "Project chat messages"}
-          follow={{
-            kind: "latest",
-            storageKey: chatStateKey("scroll", `conversation.${conversationId}.${activeView}`),
-            onPositionChange: (element, nearBottom) => mobileComposer.observeScroll(element, nearBottom),
-          }}
-          history={{
-            kind: "cursor",
-            hasEarlier: activeView === "collaboration"
-              ? collaborationHistory.hasMore || collaborationHistory.operationHasMore
-              : mainHistory.hasMore,
-            loading: loadingOlder,
-            onLoadEarlier: () => void loadOlderHistory(),
-          }}
-          beforeMessages={<>
-          {activeView === "main" ? <AttentionSurface notifications={notificationsQuery.data ?? []} projectId={conversation.projectId} conversationId={conversationId} conversationAgentIds={agents.map((agent) => agent.id)} onOpen={(item) => {
-            const focusId = notificationTechnicalFocusId(item);
-            if (item.agentId) onOpenAgent(item.agentId, "technical", focusId);
-            else onOpenAgentWork(focusId);
-          }} /> : null}
-          {activeView === "collaboration" ? <Alert severity="info" sx={{ mb: 1.5 }}>
-            Team chat is a read-only audit trail of agent-to-agent coordination. Message an agent from its Agent chat; collaboration will appear here automatically.
-          </Alert> : null}
-          {activeView === "main" && !engineReady ? (
-            <Alert severity="warning" sx={{ mb: 1.5 }}>
-              {activeEngine?.displayName ?? "The selected engine"} is not signed in. Sign in on the
-              host, or pick a signed-in engine, before spawning agents.
-            </Alert>
-          ) : null}
-          {activeView === "main" && projectBrowser.data?.status === "ready" ? <Alert severity="info" action={<Button color="inherit" size="small" onClick={onOpenBrowser}>Open Tab</Button>} sx={{ mb: 1.5 }}>Interactive Browser is active{projectBrowser.data.title ? ` · ${projectBrowser.data.title}` : ""}.</Alert> : null}
-          </>}
-        >
-          <Stack spacing={0} sx={{ mb: 2 }}>
-            {activeView === "collaboration" && operationalEvents.length ? <Stack spacing={0.5} aria-label="Team operational activity">
-              {operationalEvents.map((event) => {
-                const content = <>
-                  <Chip size="small" variant="outlined" label={event.kind === "run" ? "Agent" : event.kind === "join" ? "Waiting" : event.kind === "request" ? "Work" : event.kind === "trigger" ? "Trigger" : event.kind === "decision" ? "Decision" : event.kind === "organization" ? "Team" : "Ready"} />
-                  <Typography variant="body2" sx={{ display: { xs: "none", sm: "block" }, flex: 1 }}>{event.text}</Typography>
-                  <Typography variant="body2" sx={{ display: { xs: "block", sm: "none" }, flex: 1 }}>{mobileOperationalStatus(event.state)}</Typography>
-                  <Typography variant="caption" color="text.secondary" sx={{ display: { xs: "none", sm: "block" } }}>{new Date(event.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
-                </>;
-                const sx = { display: "flex", width: "100%", gap: 1, alignItems: "center", px: 1.25, py: 0.75, borderRadius: 1.5, bgcolor: "action.hover", textAlign: "left" } as const;
-                return event.kind === "organization"
-                  ? <Box key={event.id} sx={sx}>{content}</Box>
-                  : <ButtonBase key={event.id} onClick={() => onOpenAgentWork(event.id)} aria-label={`${event.text}. Open Work details`} sx={sx}>{content}</ButtonBase>;
-              })}
-            </Stack> : null}
-            {(activeView === "collaboration" ? collaborationMessages.length + operationalEvents.length : messages.length) === 0 ? (
-              <Typography variant="body2" color="text.secondary">
-                {activeView === "collaboration"
-                  ? "No agent-to-agent messages yet."
-                  : "No messages yet. Send a request to start your first agent — its completed answer returns here."}
-              </Typography>
-            ) : null}
-            {(activeView === "collaboration" ? collaborationMessages : messages).map((message) => (
-              <ConversationMessage
-                key={message.id}
-                message={message}
-                conversation={activeView}
-                projectId={conversation.projectId}
-                activeRunId={message.authorAgentId ? healthByAgentId.get(message.authorAgentId)?.runtimeActivity?.executionId : undefined}
-                operatorProfile={preferencesQuery.data?.profile}
-                agentTitle={agentTitle}
-                agentIdForHandle={agentIdForHandle}
-                onOpenAgent={onOpenAgent}
-                onOpenReview={onOpenReview}
-                onOpenFileActivity={onOpenFileActivity}
-                onMentionAgent={(agentId) => setMentionInsertRequest({ id: String(Date.now()), text: `#${agentMentionHandle(agentTitle(agentId))} ` })}
-                onEdit={activeView === "main" && message.role === "user" && !message.authorAgentId && !message.correctedByMessageId && !message.correctionOfMessageId
-                  ? (selected) => { setEditingMessage(selected); setCorrectionText(selected.text); }
-                  : undefined}
-              />
-            ))}
-          </Stack>
-        </ChatSurface>
-        </>}
+        ) : null}
       </Box>
 
       <Box
