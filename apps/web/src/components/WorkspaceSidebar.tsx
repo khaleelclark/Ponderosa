@@ -221,7 +221,9 @@ function SharedSidebarPanel({
           <List disablePadding>{starredRows}</List>
         </Box>
         <Box component="section" data-sidebar-section="all">
-          <SidebarSectionHeading>All</SidebarSectionHeading>
+          <SidebarSectionHeading>
+            {title === "Home" ? "All" : `All ${title}`}
+          </SidebarSectionHeading>
           <List disablePadding>{allRows}</List>
         </Box>
         {empty}
@@ -247,15 +249,20 @@ function SharedSidebarPanel({
         </Button>
         <Button
           fullWidth
-          variant="contained"
           startIcon={viewAllIcon}
           onClick={onViewAll}
           sx={theme => ({
             mt: 0.5,
             justifyContent: "flex-start",
             bgcolor: theme.palette.mode === "dark" ? "#C9CECA" : "primary.main",
-            color: theme.palette.mode === "dark" ? "#173127" : "primary.contrastText",
-            "&:hover": { bgcolor: theme.palette.mode === "dark" ? "#E0E3E0" : "primary.dark" },
+            color:
+              theme.palette.mode === "dark"
+                ? "#173127"
+                : "primary.contrastText",
+            "&:hover": {
+              bgcolor:
+                theme.palette.mode === "dark" ? "#E0E3E0" : "primary.dark",
+            },
           })}
         >
           {viewAllLabel}
@@ -875,7 +882,7 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New"
+      newLabel="New Project"
       onNew={() => onCreateProject()}
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
@@ -1023,7 +1030,7 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New"
+      newLabel="New Chat"
       onNew={() => onCreateChat?.()}
       newDisabled={!projects.length}
       viewAllLabel="View All Chats"
@@ -1177,7 +1184,7 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New"
+      newLabel="New Agent"
       onNew={() => onCreateAgent?.()}
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
@@ -1352,7 +1359,7 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New"
+      newLabel="New Trigger"
       onNew={() => onCreateTrigger?.()}
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
