@@ -118,6 +118,7 @@ export function Composer({
   const draftEditVersion = useRef(0);
   const draftLocallyEdited = useRef(false);
   const [draftAttachmentVersion, setDraftAttachmentVersion] = useState(0);
+  const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
@@ -151,10 +152,20 @@ export function Composer({
   const canSend = draftUploadsReady && (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
   const canCancel = running && Boolean(onCancel);
 
+  const draftQuery = useQuery({
+    queryKey: queryKeys.conversationDraft.detail(conversationDraftId, draftOwnerId),
+    queryFn: () => api.getConversationDraft(conversationDraftId!, draftOwnerId),
+    enabled: Boolean(conversationDraftId) && typeof window !== "undefined",
+    staleTime: 0,
+  });
+
   useEffect(() => {
     if (!insertTextRequest || appliedInsertRequest.current === insertTextRequest.id) return;
+    if (conversationDraftId && !draftReady.current && !draftQuery.isError) return;
     appliedInsertRequest.current = insertTextRequest.id;
     setText((current) => {
+      const requested = insertTextRequest.text.trim();
+      if (requested && current.toLocaleLowerCase().includes(requested.toLocaleLowerCase())) return current;
       const prefix = current && !/\s$/u.test(current) ? " " : "";
       return `${current}${prefix}${insertTextRequest.text} `;
     });
@@ -165,13 +176,7 @@ export function Composer({
       setCaret(end);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [insertTextRequest]);
-  const draftQuery = useQuery({
-    queryKey: queryKeys.conversationDraft.detail(conversationDraftId, draftOwnerId),
-    queryFn: () => api.getConversationDraft(conversationDraftId!, draftOwnerId),
-    enabled: Boolean(conversationDraftId) && typeof window !== "undefined",
-    staleTime: 0,
-  });
+  }, [conversationDraftId, draftQuery?.isError, draftReadyVersion, insertTextRequest]);
 
   const update = (next: string) => {
     draftEditVersion.current += 1;
@@ -233,6 +238,7 @@ export function Composer({
         if (draftStorageKey) writeChatState(draftStorageKey, nextText);
       }
       draftReady.current = true;
+      setDraftReadyVersion((value) => value + 1);
     };
     void apply().catch(() => {
       if (!cancelled) {
@@ -240,6 +246,7 @@ export function Composer({
         setText(draft.text);
         dispatchAttachments({ type: "replace", files: [], error: "Some staged draft attachments could not be restored." });
         draftReady.current = true;
+        setDraftReadyVersion((value) => value + 1);
       }
     });
     return () => { cancelled = true; };
