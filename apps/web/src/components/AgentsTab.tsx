@@ -15,7 +15,6 @@ import {
   Alert,
   Box,
   Button,
-  ButtonBase,
   Checkbox,
   Chip,
   FormControl,
@@ -23,7 +22,6 @@ import {
   InputLabel,
   Menu,
   MenuItem,
-  Paper,
   Select,
   Stack,
   TextField,
@@ -41,6 +39,7 @@ import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import { ResourceRow } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
   agentStatusColor,
@@ -397,63 +396,45 @@ export function AgentsTab({
               const activeDescendants = descendants.filter((id) => ["running", "waiting", "blocked", "stalled", "interrupted", "compacting"].includes(statusByAgentId.get(id) ?? "idle")).length;
               return (
                 <Stack key={agent.id} role="treeitem" aria-level={depth + 1} aria-expanded={childAgents.length ? expanded : undefined} spacing={0.25} sx={{ ml: organizationView === "hierarchy" ? `${Math.min(depth, 8) * 22}px` : 0, borderLeft: organizationView === "hierarchy" && depth ? 1 : 0, borderColor: "divider", pl: organizationView === "hierarchy" && depth ? 0.75 : 0, opacity: contextOnly ? 0.62 : 1 }}>
-                  <Paper
-                    variant="outlined"
+                  <ResourceRow
+                    label={agent.title}
+                    description={<>{orphaned ? "Unlinked Agent" : organizationParent ? `Delegated under ${organizationParent.title}` : profile.role}{!expanded && descendants.length ? ` · ${descendants.length} children${activeDescendants ? `, ${activeDescendants} active` : ""}` : ""}</>}
+                    leading={<>
+                      {organizationView === "hierarchy" ? <IconButton
+                        size="small"
+                        disabled={childAgents.length === 0}
+                        aria-label={childAgents.length ? `${expanded ? "Collapse" : "Expand"} ${agent.title}` : `${agent.title} has no delegated agents`}
+                        onClick={() => setCollapsedAgentIds((current) => {
+                          const next = new Set(current);
+                          if (next.has(agent.id)) next.delete(agent.id); else next.add(agent.id);
+                          return next;
+                        })}
+                        sx={{ ml: 0.5 }}
+                      >{childAgents.length ? expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon /> : <Box sx={{ width: 24 }} />}</IconButton> : null}
+                      {selectionMode ? <Checkbox
+                        checked={selectedAgentIds.has(agent.id)}
+                        onChange={() => toggleSelection(agent.id)}
+                        inputProps={{ "aria-label": `Select ${agent.title}` }}
+                        sx={{ ml: 0.5 }}
+                      /> : null}
+                    </>}
+                    meta={<Stack direction="row" spacing={1.25} sx={{ alignItems: "center", minWidth: 0 }}>
+                      <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, width: 150 }}>{projectByAgentId?.get(agent.id)?.label ?? masterName(agent.conversationId)}</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" }, width: 100 }}>{agent.activeEngine}</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", lg: "block" }, width: 92, textAlign: "right" }}>{relativeTime(agent.updatedAt)}</Typography>
+                    </Stack>}
+                    trailing={<>
+                      {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
+                      {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5 }}><MoreVertIcon /></IconButton> : null}
+                    </>}
+                    onOpen={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
+                    onContextMenu={selectionMode ? undefined : (anchor) => setAgentMenu({ anchor, resource: agent.id })}
                     draggable={Boolean(onReorder)}
                     onDragStart={() => setDraggedAgentId(agent.id)}
                     onDragEnd={() => setDraggedAgentId(undefined)}
-                    onDragOver={(event) => { if (draggedAgentId) event.preventDefault(); }}
-                    onDrop={(event) => { event.preventDefault(); if (draggedAgentId && draggedAgentId !== agent.id) onReorder?.(draggedAgentId, agent.id); setDraggedAgentId(undefined); }}
-                    sx={{ display: "flex", alignItems: "center", overflow: "hidden", minHeight: 54 }}
-                  >
-                  {organizationView === "hierarchy" ? <IconButton
-                    size="small"
-                    disabled={childAgents.length === 0}
-                    aria-label={childAgents.length ? `${expanded ? "Collapse" : "Expand"} ${agent.title}` : `${agent.title} has no delegated agents`}
-                    onClick={() => setCollapsedAgentIds((current) => {
-                      const next = new Set(current);
-                      if (next.has(agent.id)) next.delete(agent.id); else next.add(agent.id);
-                      return next;
-                    })}
-                    sx={{ ml: 0.5 }}
-                  >{childAgents.length ? expanded ? <KeyboardArrowDownIcon /> : <KeyboardArrowRightIcon /> : <Box sx={{ width: 24 }} />}</IconButton> : null}
-                  {selectionMode ? <Checkbox
-                    checked={selectedAgentIds.has(agent.id)}
-                    onChange={() => toggleSelection(agent.id)}
-                    inputProps={{ "aria-label": `Select ${agent.title}` }}
-                    sx={{ mt: 0.75, ml: 0.5 }}
-                  /> : null}
-                  <ButtonBase
-                    onClick={() => selectionMode ? toggleSelection(agent.id) : onOpenAgent(agent.id)}
-                    onContextMenu={(event) => { if (selectionMode) return; event.preventDefault(); setAgentMenu({ anchor: event.currentTarget, resource: agent.id }); }}
-                    aria-label={`Open agent ${agent.title}`}
-                    sx={{ flex: 1, minWidth: 0, px: 1, py: 0.75, display: "block", textAlign: "left" }}
-                  >
-                    <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", minWidth: 0 }}>
-                      <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography variant="subtitle2" sx={{ minWidth: 0, fontWeight: 700 }} noWrap>
-                        {agent.title}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap>
-                        {orphaned ? "Unlinked Agent" : organizationParent ? `Delegated under ${organizationParent.title}` : profile.role}
-                        {!expanded && descendants.length ? ` · ${descendants.length} children${activeDescendants ? `, ${activeDescendants} active` : ""}` : ""}
-                      </Typography>
-                      </Box>
-                      <Chip size="small" label={agentStatusLabel(status)} color={agentStatusColor(status)} />
-                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, width: 150 }}>
-                        {projectByAgentId?.get(agent.id)?.label ?? masterName(agent.conversationId)}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", sm: "block" }, width: 100 }}>
-                        {agent.activeEngine}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", lg: "block" }, width: 92, textAlign: "right" }}>
-                        {relativeTime(agent.updatedAt)}
-                      </Typography>
-                    </Stack>
-                  </ButtonBase>
-                  {!selectionMode && onToggleStar ? <Tooltip title={starredAgentIds?.has(agent.id) ? "Unstar Agent" : "Star Agent"}><IconButton aria-label={starredAgentIds?.has(agent.id) ? `Unstar ${agent.title}` : `Star ${agent.title}`} onClick={() => onToggleStar(agent.id)} sx={{ mt: 0.75 }}>{starredAgentIds?.has(agent.id) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip> : null}
-                  {!selectionMode ? <IconButton size="small" aria-label={`Actions for ${agent.title}`} onClick={(event) => setAgentMenu({ anchor: event.currentTarget, resource: agent.id })} sx={{ mr: 0.5 }}><MoreVertIcon /></IconButton> : null}
-                  </Paper>
+                    onDrop={() => { if (draggedAgentId && draggedAgentId !== agent.id) onReorder?.(draggedAgentId, agent.id); setDraggedAgentId(undefined); }}
+                  />
                 </Stack>
               );
             })}
