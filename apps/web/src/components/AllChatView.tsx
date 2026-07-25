@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   ButtonBase,
-  Chip,
   CircularProgress,
   IconButton,
   Stack,
@@ -13,7 +12,6 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
@@ -36,7 +34,6 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
-import CloseIcon from "@mui/icons-material/Close";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
@@ -79,6 +76,12 @@ type AllMessagesTimelineEntry =
   | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
   | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
 
+type AllChatReplyTarget = {
+  id: string;
+  title: string;
+  projectId: string;
+};
+
 function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
   const { decision } = item;
   return decision.response?.optionId
@@ -97,47 +100,6 @@ function allChatSourceAccessibleName(item: AllChatItemDto): string {
       ? `${normalized.slice(0, 79)}…`
       : normalized || "Empty message";
   return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
-}
-
-function AllChatInfoPill({ message }: { message: string }): JSX.Element {
-  return (
-    <Box
-      role="status"
-      sx={{
-        position: "relative",
-        zIndex: 3,
-        display: "flex",
-        width: "fit-content",
-        alignItems: "center",
-        minHeight: 28,
-        maxWidth: "100%",
-        mt: { xs: 0.75, sm: 1 },
-        mb: { xs: 1, sm: 1.5 },
-        px: 0.75,
-        py: 0.25,
-        borderRadius: 999,
-        color: "info.main",
-        bgcolor: "action.hover",
-        boxShadow: theme =>
-          theme.palette.mode === "dark"
-            ? "0 10px 30px rgba(3,8,6,.18)"
-            : "0 10px 30px rgba(33,45,38,.09)",
-      }}
-    >
-      <InfoOutlinedIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
-      <Typography
-        variant="caption"
-        component="span"
-        sx={{
-          color: "text.secondary",
-          fontWeight: 650,
-          overflowWrap: "anywhere",
-        }}
-      >
-        {message}
-      </Typography>
-    </Box>
-  );
 }
 
 export function AllChatView({
@@ -159,9 +121,13 @@ export function AllChatView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
-  const [replyTarget, setReplyTarget] = useState<{ id: string; title: string }>();
+  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
+    id: string;
+    text: string;
+  }>();
+  const [mentionRemoveRequest, setMentionRemoveRequest] = useState<{
     id: string;
     text: string;
   }>();
@@ -172,6 +138,39 @@ export function AllChatView({
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
+  const composerTargets = useMemo(() => {
+    const byId = new Map<string, AllChatReplyTarget>();
+    for (const item of items) {
+      if (!item.directMessageAgent) continue;
+      byId.set(item.directMessageAgent.id, {
+        ...item.directMessageAgent,
+        projectId: item.project.id,
+      });
+    }
+    const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
+    for (const target of byId.values()) {
+      const handle = agentMentionHandle(target.title);
+      const normalized = handle.toLocaleLowerCase();
+      if (!handle || ["broadcast", "user", "everyone"].includes(normalized)) continue;
+      const group = groups.get(normalized) ?? [];
+      group.push({ handle, target });
+      groups.set(normalized, group);
+    }
+    const targetByHandle = new Map<string, AllChatReplyTarget>();
+    for (const [handle, group] of groups) {
+      if (group.length === 1) targetByHandle.set(handle, group[0]!.target);
+    }
+    return {
+      handles: [...groups.values()].map((group) => group[0]!.handle),
+      suggestionHandles: [...groups.values()]
+        .filter((group) => group.length === 1)
+        .map((group) => group[0]!.handle),
+      ambiguousHandles: [...groups.values()]
+        .filter((group) => group.length > 1)
+        .map((group) => group[0]!.handle),
+      targetByHandle,
+    };
+  }, [items]);
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -199,6 +198,7 @@ export function AllChatView({
   const layoutKey = timeline.map((entry) => entry.id).join(":");
   const selected = items.find(item => item.communicationEventId === selectedId);
   const selectedAgentId = replyTarget?.id;
+  const selectedProjectId = replyTarget?.projectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, 100),
@@ -208,19 +208,19 @@ export function AllChatView({
   const selectedModel = selectedAgent.data?.agent.model;
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
-      selected?.project.id,
+      selectedProjectId,
       selectedAgentId,
       selectedEngineId,
       selectedModel,
     ),
     queryFn: () =>
-      api.getEngineCapabilities(selected!.project.id, {
+      api.getEngineCapabilities(selectedProjectId!, {
         engineId: selectedEngineId,
         model: selectedModel,
         agentId: selectedAgentId,
       }),
     enabled: Boolean(
-      selected?.project.id && selectedAgentId && selectedEngineId,
+      selectedProjectId && selectedAgentId && selectedEngineId,
     ),
     staleTime: 10_000,
   });
@@ -251,8 +251,8 @@ export function AllChatView({
       });
   }, [notifications, queryClient]);
   const refreshSelectedCapabilities = async () => {
-    if (!selected?.project.id || !selectedAgentId) return;
-    const discovered = await api.getEngineCapabilities(selected.project.id, {
+    if (!selectedProjectId || !selectedAgentId) return;
+    const discovered = await api.getEngineCapabilities(selectedProjectId, {
       engineId: selectedEngineId,
       model: selectedModel,
       agentId: selectedAgentId,
@@ -260,7 +260,7 @@ export function AllChatView({
     });
     queryClient.setQueryData(
       queryKeys.engines.capabilitySelection(
-        selected.project.id,
+        selectedProjectId,
         selectedAgentId,
         selectedEngineId,
         selectedModel,
@@ -280,7 +280,7 @@ export function AllChatView({
     });
     setNotice(
       result.message ??
-        `/${command.name} completed for ${selected?.directMessageAgent?.title ?? "Agent"}.`,
+        `/${command.name} completed for ${replyTarget?.title ?? "Agent"}.`,
     );
   };
   const send = useMutation({
@@ -349,17 +349,62 @@ export function AllChatView({
     setNotice(undefined);
     send.reset();
   };
+  const clearReplyTarget = () => {
+    if (replyTarget) {
+      setMentionRemoveRequest({
+        id: `clear:${replyTarget.id}:${Date.now()}`,
+        text: `#${agentMentionHandle(replyTarget.title)}`,
+      });
+    }
+    setReplyTarget(undefined);
+  };
+  const syncReplyTargetFromMentions = useCallback((handles: string[]) => {
+    const agentHandles = handles.filter(
+      (handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase()),
+    );
+    const handle = agentHandles.length === 1 ? agentHandles[0] : undefined;
+    const resolved = handle
+      ? composerTargets.targetByHandle.get(handle.toLocaleLowerCase())
+      : undefined;
+    setReplyTarget((current) => {
+      if (resolved) return current?.id === resolved.id ? current : resolved;
+      if (
+        handle &&
+        current &&
+        agentMentionHandle(current.title).toLocaleLowerCase() === handle.toLocaleLowerCase()
+      )
+        return current;
+      return undefined;
+    });
+  }, [composerTargets.targetByHandle]);
+  const destinationTitleForHandle = useCallback((handle: string) => {
+    const normalized = handle.toLocaleLowerCase();
+    if (
+      replyTarget &&
+      agentMentionHandle(replyTarget.title).toLocaleLowerCase() === normalized
+    )
+      return replyTarget.title;
+    return composerTargets.targetByHandle.get(normalized)?.title;
+  }, [composerTargets.targetByHandle, replyTarget]);
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
+    const handle = agentMentionHandle(item.directMessageAgent.title);
     if (replyTarget?.id === item.directMessageAgent.id) {
+      setMentionRemoveRequest({
+        id: `${item.communicationEventId}:remove:${Date.now()}`,
+        text: `#${handle}`,
+      });
       setReplyTarget(undefined);
       return;
     }
-    setReplyTarget(item.directMessageAgent);
+    setReplyTarget({
+      ...item.directMessageAgent,
+      projectId: item.project.id,
+    });
     setMentionInsertRequest({
       id: `${item.communicationEventId}:${Date.now()}`,
-      text: `#${agentMentionHandle(item.directMessageAgent.title)}`,
+      text: `#${handle}`,
     });
   };
   const history = older ?? {
@@ -666,9 +711,9 @@ export function AllChatView({
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
         onKeyDown={event => {
-          if (event.key === "Escape" && replyTarget) {
+          if (!event.defaultPrevented && event.key === "Escape" && replyTarget) {
             event.preventDefault();
-            setReplyTarget(undefined);
+            clearReplyTarget();
           }
         }}
         data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
@@ -682,59 +727,58 @@ export function AllChatView({
         }}
         sx={{ minWidth: 0 }}
       >
-        {!selected ? (
-          <Box sx={{ display: "flex", justifyContent: "center" }}>
-            <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
-          </Box>
-        ) : !replyTarget ? (
-          <Box sx={{ display: "flex", justifyContent: "center" }}>
-            <AllChatInfoPill message="This message does not identify an active Agent you can message." />
-          </Box>
-        ) : (
-          <>
-            <Stack direction="row" sx={{ px: 1.5, pt: 1 }}>
-              <Chip label={`Message ${replyTarget.title}`} onDelete={() => setReplyTarget(undefined)} deleteIcon={<CloseIcon />} />
-            </Stack>
-            {notice ? (
-              <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
-                {notice}
-              </Alert>
-            ) : null}
-            {send.isError ? (
-              <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-                {send.error instanceof Error
-                  ? send.error.message
-                  : "Direct message could not be sent."}
-              </Alert>
-            ) : null}
-            <Composer
-              destinationMode="fixed"
-              fixedRecipientTitle={replyTarget.title}
-              commands={selectedCommands}
-              capabilities={
-                selectedEngineCapabilities?.composerCapabilities ?? []
-              }
-              onCapabilitiesOpen={refreshSelectedCapabilities}
-              onCommand={invokeCommand}
-              disabled={send.isPending}
-              running={false}
-              attachmentsEnabled
-              guidance="Message this Agent directly. Use @ to reference a project file."
-              placeholder={`Message ${replyTarget.title}`}
-              insertTextRequest={mentionInsertRequest}
-              draftStorageKey={`messages:agent:${replyTarget.id}`}
-              conversationDraftId={`agent:${replyTarget.id}`}
-              onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
-                send.mutateAsync({
-                  body,
-                  files,
-                  draftAttachmentIds,
-                  draftOwnerId,
-                })
-              }
-            />
-          </>
-        )}
+        {notice ? (
+          <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
+            {notice}
+          </Alert>
+        ) : null}
+        {send.isError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            {send.error instanceof Error
+              ? send.error.message
+              : "Direct message could not be sent."}
+          </Alert>
+        ) : null}
+        <Composer
+          destinationMode="target-required"
+          requiredRecipient={replyTarget ? {
+            handle: agentMentionHandle(replyTarget.title),
+            title: replyTarget.title,
+            onClear: () => setReplyTarget(undefined),
+          } : undefined}
+          recipientRequiredMessage={
+            selected && !selected.directMessageAgent
+              ? "This message does not identify an active Agent you can message."
+              : "Tag an Agent with # to choose a recipient."
+          }
+          mentionHandles={composerTargets.handles}
+          mentionSuggestionHandles={composerTargets.suggestionHandles}
+          ambiguousMentionHandles={composerTargets.ambiguousHandles}
+          destinationTitleForHandle={destinationTitleForHandle}
+          onMentionedHandlesChange={syncReplyTargetFromMentions}
+          commands={selectedCommands}
+          capabilities={
+            selectedEngineCapabilities?.composerCapabilities ?? []
+          }
+          onCapabilitiesOpen={refreshSelectedCapabilities}
+          onCommand={invokeCommand}
+          disabled={send.isPending}
+          running={false}
+          allowUnmentionedSend={Boolean(replyTarget)}
+          attachmentsEnabled
+          placeholder={replyTarget ? `Message ${replyTarget.title}` : "Write a message, then choose an Agent"}
+          insertTextRequest={mentionInsertRequest}
+          removeTextRequest={mentionRemoveRequest}
+          draftStorageKey="messages:composer"
+          onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
+            send.mutateAsync({
+              body,
+              files,
+              draftAttachmentIds,
+              draftOwnerId,
+            })
+          }
+        />
       </Box>
     </Box>
   );

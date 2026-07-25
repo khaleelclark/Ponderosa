@@ -29,7 +29,12 @@ export function findMentionedHandles(text: string, handles: Iterable<string>): s
   return [...mentioned.values()];
 }
 
-/** Whether the reserved collaboration-only broadcast handle is present. */
+/** Whether the reserved Project Broadcast scope handle is present. */
+export function hasBroadcastMention(text: string): boolean {
+  return /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(text);
+}
+
+/** Whether the reserved collaboration-wide Agent handle is present. */
 export function hasEveryoneMention(text: string): boolean {
   return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
 }
