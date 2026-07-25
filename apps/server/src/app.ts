@@ -12835,6 +12835,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               organizationEnvelopeStates.delete(agent.id);
               const staleRuntime = reusableRuntime(agent.id);
               if (staleRuntime) {
+                // This Run is already terminal and is deliberately retiring its
+                // provider. Do not let the observed root-exit callback
+                // reinterpret that intentional teardown as a runtime failure.
+                activeRun.persistentRuntimeIdentity = undefined;
                 try {
                   await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
                 } catch (error) {
