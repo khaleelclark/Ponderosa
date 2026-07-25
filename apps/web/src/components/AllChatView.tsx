@@ -3,7 +3,6 @@ import {
   Box,
   Button,
   ButtonBase,
-  Chip,
   CircularProgress,
   IconButton,
   Stack,
@@ -13,7 +12,6 @@ import {
   useTheme,
 } from "@mui/material";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
-import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
@@ -36,7 +34,6 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
-import CloseIcon from "@mui/icons-material/Close";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
@@ -99,47 +96,6 @@ function allChatSourceAccessibleName(item: AllChatItemDto): string {
   return `Message from ${item.author.label} in ${sourceLabel(item)}, sent ${new Date(item.createdAt).toLocaleString()}: ${excerpt}`;
 }
 
-function AllChatInfoPill({ message }: { message: string }): JSX.Element {
-  return (
-    <Box
-      role="status"
-      sx={{
-        position: "relative",
-        zIndex: 3,
-        display: "flex",
-        width: "fit-content",
-        alignItems: "center",
-        minHeight: 28,
-        maxWidth: "100%",
-        mt: { xs: 0.75, sm: 1 },
-        mb: { xs: 1, sm: 1.5 },
-        px: 0.75,
-        py: 0.25,
-        borderRadius: 999,
-        color: "info.main",
-        bgcolor: "action.hover",
-        boxShadow: theme =>
-          theme.palette.mode === "dark"
-            ? "0 10px 30px rgba(3,8,6,.18)"
-            : "0 10px 30px rgba(33,45,38,.09)",
-      }}
-    >
-      <InfoOutlinedIcon sx={{ mr: 0.5, fontSize: 16, flex: "0 0 auto" }} />
-      <Typography
-        variant="caption"
-        component="span"
-        sx={{
-          color: "text.secondary",
-          fontWeight: 650,
-          overflowWrap: "anywhere",
-        }}
-      >
-        {message}
-      </Typography>
-    </Box>
-  );
-}
-
 export function AllChatView({
   onNavigate,
   notifications = [],
@@ -162,6 +118,10 @@ export function AllChatView({
   const [replyTarget, setReplyTarget] = useState<{ id: string; title: string }>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
+    id: string;
+    text: string;
+  }>();
+  const [mentionRemoveRequest, setMentionRemoveRequest] = useState<{
     id: string;
     text: string;
   }>();
@@ -349,17 +309,31 @@ export function AllChatView({
     setNotice(undefined);
     send.reset();
   };
+  const clearReplyTarget = () => {
+    if (replyTarget) {
+      setMentionRemoveRequest({
+        id: `clear:${replyTarget.id}:${Date.now()}`,
+        text: `#${agentMentionHandle(replyTarget.title)}`,
+      });
+    }
+    setReplyTarget(undefined);
+  };
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
+    const handle = agentMentionHandle(item.directMessageAgent.title);
     if (replyTarget?.id === item.directMessageAgent.id) {
+      setMentionRemoveRequest({
+        id: `${item.communicationEventId}:remove:${Date.now()}`,
+        text: `#${handle}`,
+      });
       setReplyTarget(undefined);
       return;
     }
     setReplyTarget(item.directMessageAgent);
     setMentionInsertRequest({
       id: `${item.communicationEventId}:${Date.now()}`,
-      text: `#${agentMentionHandle(item.directMessageAgent.title)}`,
+      text: `#${handle}`,
     });
   };
   const history = older ?? {
@@ -666,9 +640,9 @@ export function AllChatView({
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
         onKeyDown={event => {
-          if (event.key === "Escape" && replyTarget) {
+          if (!event.defaultPrevented && event.key === "Escape" && replyTarget) {
             event.preventDefault();
-            setReplyTarget(undefined);
+            clearReplyTarget();
           }
         }}
         data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
@@ -682,59 +656,49 @@ export function AllChatView({
         }}
         sx={{ minWidth: 0 }}
       >
-        {!selected ? (
-          <Box sx={{ display: "flex", justifyContent: "center" }}>
-            <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
-          </Box>
-        ) : !replyTarget ? (
-          <Box sx={{ display: "flex", justifyContent: "center" }}>
-            <AllChatInfoPill message="This message does not identify an active Agent you can message." />
-          </Box>
-        ) : (
-          <>
-            <Stack direction="row" sx={{ px: 1.5, pt: 1 }}>
-              <Chip label={`Message ${replyTarget.title}`} onDelete={() => setReplyTarget(undefined)} deleteIcon={<CloseIcon />} />
-            </Stack>
-            {notice ? (
-              <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
-                {notice}
-              </Alert>
-            ) : null}
-            {send.isError ? (
-              <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-                {send.error instanceof Error
-                  ? send.error.message
-                  : "Direct message could not be sent."}
-              </Alert>
-            ) : null}
-            <Composer
-              destinationMode="fixed"
-              fixedRecipientTitle={replyTarget.title}
-              commands={selectedCommands}
-              capabilities={
-                selectedEngineCapabilities?.composerCapabilities ?? []
-              }
-              onCapabilitiesOpen={refreshSelectedCapabilities}
-              onCommand={invokeCommand}
-              disabled={send.isPending}
-              running={false}
-              attachmentsEnabled
-              guidance="Message this Agent directly. Use @ to reference a project file."
-              placeholder={`Message ${replyTarget.title}`}
-              insertTextRequest={mentionInsertRequest}
-              draftStorageKey={`messages:agent:${replyTarget.id}`}
-              conversationDraftId={`agent:${replyTarget.id}`}
-              onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
-                send.mutateAsync({
-                  body,
-                  files,
-                  draftAttachmentIds,
-                  draftOwnerId,
-                })
-              }
-            />
-          </>
-        )}
+        {notice ? (
+          <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
+            {notice}
+          </Alert>
+        ) : null}
+        {send.isError ? (
+          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
+            {send.error instanceof Error
+              ? send.error.message
+              : "Direct message could not be sent."}
+          </Alert>
+        ) : null}
+        <Composer
+          destinationMode="target-required"
+          requiredRecipient={replyTarget ? {
+            handle: agentMentionHandle(replyTarget.title),
+            title: replyTarget.title,
+            onClear: () => setReplyTarget(undefined),
+          } : undefined}
+          recipientRequiredMessage="Tag an Agent with # to choose a recipient."
+          commands={selectedCommands}
+          capabilities={
+            selectedEngineCapabilities?.composerCapabilities ?? []
+          }
+          onCapabilitiesOpen={refreshSelectedCapabilities}
+          onCommand={invokeCommand}
+          disabled={send.isPending}
+          running={false}
+          allowUnmentionedSend={Boolean(replyTarget)}
+          attachmentsEnabled
+          placeholder={replyTarget ? `Message ${replyTarget.title}` : "Write a message, then choose an Agent"}
+          insertTextRequest={mentionInsertRequest}
+          removeTextRequest={mentionRemoveRequest}
+          draftStorageKey="messages:composer"
+          onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
+            send.mutateAsync({
+              body,
+              files,
+              draftAttachmentIds,
+              draftOwnerId,
+            })
+          }
+        />
       </Box>
     </Box>
   );

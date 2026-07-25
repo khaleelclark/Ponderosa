@@ -1,6 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArticleIcon from "@mui/icons-material/Article";
+import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CloseIcon from "@mui/icons-material/Close";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import { Alert, Box, Button, Chip, CircularProgress, ClickAwayListener, Divider, IconButton, MenuItem, MenuList, Paper, Popper, Stack, TextField, Tooltip, Typography } from "@mui/material";
@@ -56,8 +57,11 @@ export interface ComposerProps extends ChatComposerContract {
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };
   /** Project Chat exposes its deliberate fresh-agent default as a destination. */
-  destinationMode?: "project-chat" | "fixed";
+  destinationMode?: "project-chat" | "fixed" | "target-required";
   fixedRecipientTitle?: string;
+  requiredRecipient?: { handle: string; title: string; onClear(): void };
+  recipientRequiredMessage?: string;
+  removeTextRequest?: { id: string; text: string };
   continueWith?: { handle: string; title: string };
   destinationTitleForHandle?(handle: string): string | undefined;
 }
@@ -90,6 +94,9 @@ export function Composer({
   insertTextRequest,
   destinationMode,
   fixedRecipientTitle,
+  requiredRecipient,
+  recipientRequiredMessage,
+  removeTextRequest,
   continueWith,
   destinationTitleForHandle,
 }: ComposerProps): JSX.Element {
@@ -138,17 +145,45 @@ export function Composer({
   const [capabilityFilter, setCapabilityFilter] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const appliedInsertRequest = useRef<string>();
+  const appliedRemoveRequest = useRef<string>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
-  const destinationHandle = destinationMode === "project-chat" ? mentionedHandles.find((handle) => !["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) : undefined;
-  const destinationTitle = destinationHandle ? destinationTitleForHandle?.(destinationHandle) ?? destinationHandle : undefined;
+  const projectDestinationHandles = destinationMode === "project-chat"
+    ? mentionedHandles.filter((handle) => !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()))
+    : [];
+  const projectDestinations = projectDestinationHandles.map((handle) => ({
+    handle,
+    title: destinationTitleForHandle?.(handle) ?? handle,
+  }));
+  const hasBroadcastDestination = /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(submissionText);
+  const hasLeadingBroadcastDestination = /^\s*#broadcast(?=$|\s|[.,!?;:])/iu.test(submissionText);
+  const hasEveryoneDestination = destinationMode === "project-chat" &&
+    mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone");
+  const destinationError = destinationMode === "project-chat" && hasBroadcastDestination &&
+    (projectDestinations.length > 0 || hasEveryoneDestination)
+    ? "Broadcast cannot be combined with Agent recipients."
+    : destinationMode === "project-chat" && hasBroadcastDestination && !hasLeadingBroadcastDestination
+      ? "Put #broadcast first so its shared scope is explicit."
+      : destinationMode === "target-required" && hasBroadcastDestination
+        ? requiredRecipient
+          ? "Broadcast cannot be combined with an Agent recipient."
+          : "#broadcast is not available in All Messages. Choose an Agent."
+        : undefined;
   const replaceDestination = (value: string, nextHandle?: string) => value.replace(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu, (match, handle: string) => {
     if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) return match;
     return nextHandle ? ` #${nextHandle}` : " ";
   });
   const setDestination = (handle: string) => update(`#${handle} ${replaceDestination(text, undefined).trimStart()}`.trimEnd());
-  const clearDestination = () => update(destinationHandle ? text.replace(new RegExp(`(?:^|\\s)#${destinationHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`, "u"), " ").replace(/^\\s+/u, "") : text);
+  const removeHandle = (value: string, handle: string) => value
+    .replace(new RegExp(`(?:^|\\s)#${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`, "iu"), " ")
+    .replace(/^\s+/u, "");
+  const clearDestination = (handle: string) => update(removeHandle(text, handle));
+  const clearRequiredRecipient = () => {
+    if (!requiredRecipient) return;
+    update(removeHandle(text, requiredRecipient.handle));
+    requiredRecipient.onClear();
+  };
   const queuedHandles = new Set((queuedMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedAgentsWithQueues = mentionedHandles.filter((handle) => queuedHandles.has(handle.toLocaleLowerCase()));
   const defaultsToQueue = Boolean(onQueue) && (preferQueue || (
@@ -166,7 +201,8 @@ export function Composer({
     mentionedBusyHandles,
   });
   const draftUploadsReady = !conversationDraftId || files.every((file) => draftAttachmentIds.current.has(file));
-  const canSend = draftUploadsReady && (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
+  const canSend = !destinationError && draftUploadsReady &&
+    (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
   const canCancel = running && Boolean(onCancel);
 
   const draftQuery = useQuery({
@@ -183,6 +219,9 @@ export function Composer({
     setText((current) => {
       const requested = insertTextRequest.text.trim();
       if (requested && current.toLocaleLowerCase().includes(requested.toLocaleLowerCase())) return current;
+      if (destinationMode === "target-required" && /^#[\p{L}\p{N}_-]+$/u.test(requested)) {
+        return `${requested} ${replaceDestination(current, undefined).trimStart()}`.trimEnd();
+      }
       const prefix = current && !/\s$/u.test(current) ? " " : "";
       return `${current}${prefix}${insertTextRequest.text} `;
     });
@@ -193,13 +232,21 @@ export function Composer({
       setCaret(end);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [conversationDraftId, draftQuery?.isError, draftReadyVersion, insertTextRequest]);
+  }, [conversationDraftId, destinationMode, draftQuery?.isError, draftReadyVersion, insertTextRequest]);
 
   const update = (next: string) => {
     draftEditVersion.current += 1;
     draftLocallyEdited.current = true;
     setText(next);
   };
+
+  useEffect(() => {
+    if (!removeTextRequest || appliedRemoveRequest.current === removeTextRequest.id) return;
+    appliedRemoveRequest.current = removeTextRequest.id;
+    const handle = removeTextRequest.text.trim().replace(/^#/u, "");
+    if (!handle) return;
+    update(removeHandle(text, handle));
+  }, [removeTextRequest]);
 
   useEffect(() => {
     if (previousDraftStorageKey.current !== draftStorageKey) {
@@ -522,6 +569,22 @@ export function Composer({
     agentResponding: agentResponding || mentionedBusyHandles.length > 0,
     disabled,
   });
+  const projectDestinationHelper = destinationError ??
+    (hasBroadcastDestination
+      ? "Adds durable shared Project context; starts no Agent."
+      : hasEveryoneDestination
+        ? "Every active Agent in this Chat will receive this."
+        : projectDestinations.length === 1
+          ? `${projectDestinations[0]!.title} will receive this.`
+          : projectDestinations.length === 2
+            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
+            : projectDestinations.length > 2
+              ? `${projectDestinations.length} Agents will receive this.`
+              : "Starts a fresh Agent · use #Agent or #broadcast to change destination.");
+  const targetRequiredHelper = destinationError ??
+    (requiredRecipient
+      ? `${requiredRecipient.title} will receive this.`
+      : recipientRequiredMessage ?? "Tag an Agent with # to choose a recipient.");
 
   return (
     <Paper
@@ -552,11 +615,63 @@ export function Composer({
           {typeof guidance === "string" ? <Typography variant="body2" sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}>{guidance}</Typography> : guidance}
         </Box>
       ) : null}
-      {destinationMode === "project-chat" ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.9, alignItems: "center" }}>
-        <Chip size="small" color={destinationHandle ? "primary" : "default"} variant={destinationHandle ? "filled" : "outlined"} label={destinationHandle ? `#${destinationHandle}` : "New Agent"} onDelete={destinationHandle ? clearDestination : undefined} />
-        {!destinationHandle && continueWith ? <Button size="small" onClick={() => setDestination(continueWith.handle)}>Continue with {continueWith.title}</Button> : null}
-        <Typography variant="caption" color="text.secondary">{destinationHandle ? `${destinationTitle} will receive this.` : "A new Agent will respond."}</Typography>
-      </Stack> : destinationMode === "fixed" && fixedRecipientTitle ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.25, pb: 0.9 }}>{fixedRecipientTitle} will receive this.</Typography> : null}
+      {destinationMode === "project-chat" ? (
+        <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}>
+          {hasBroadcastDestination ? (
+            <Chip
+              size="small"
+              color="info"
+              icon={<CampaignOutlinedIcon />}
+              label="#broadcast"
+              onDelete={() => clearDestination("broadcast")}
+            />
+          ) : null}
+          {hasEveryoneDestination ? (
+            <Chip size="small" color="secondary" label="#everyone" onDelete={() => clearDestination("everyone")} />
+          ) : null}
+          {projectDestinations.map((destination) => (
+            <Chip
+              key={destination.handle.toLocaleLowerCase()}
+              size="small"
+              color="primary"
+              label={`#${destination.handle}`}
+              onDelete={() => clearDestination(destination.handle)}
+            />
+          ))}
+          {!hasBroadcastDestination && !hasEveryoneDestination && projectDestinations.length === 0 ? (
+            <Chip size="small" variant="outlined" label="New Agent" />
+          ) : null}
+          {!hasBroadcastDestination && !hasEveryoneDestination && projectDestinations.length === 0 && continueWith ? (
+            <Button size="small" onClick={() => setDestination(continueWith.handle)}>Continue with {continueWith.title}</Button>
+          ) : null}
+          <Typography variant="caption" color={destinationError ? "error.main" : "text.secondary"}>
+            {projectDestinationHelper}
+          </Typography>
+        </Stack>
+      ) : destinationMode === "target-required" ? (
+        <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}>
+          {requiredRecipient ? (
+            <Chip size="small" color="primary" label={`#${requiredRecipient.handle}`} onDelete={clearRequiredRecipient} />
+          ) : null}
+          {hasBroadcastDestination ? (
+            <Chip
+              size="small"
+              color="info"
+              icon={<CampaignOutlinedIcon />}
+              label="#broadcast"
+              onDelete={() => clearDestination("broadcast")}
+            />
+          ) : null}
+          {!requiredRecipient && !hasBroadcastDestination ? <Chip size="small" variant="outlined" label="Choose an Agent" /> : null}
+          <Typography variant="caption" color={destinationError ? "error.main" : "text.secondary"}>
+            {targetRequiredHelper}
+          </Typography>
+        </Stack>
+      ) : destinationMode === "fixed" && fixedRecipientTitle ? (
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.25, pb: 0.75 }}>
+          {fixedRecipientTitle} will receive this.
+        </Typography>
+      ) : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
         {files.map((file, index) => {
           const upload = draftUploadStates.get(file);
@@ -738,6 +853,11 @@ export function Composer({
                 setSuppressMenu(true);
                 return;
               }
+              if (event.key === "Escape" && destinationMode === "target-required" && requiredRecipient) {
+                event.preventDefault();
+                clearRequiredRecipient();
+                return;
+              }
               if (shouldSendComposerKey({
                 key: event.key,
                 shiftKey: event.shiftKey,
@@ -749,7 +869,7 @@ export function Composer({
               }
             }}
           />
-          {mentionedHandles.length > 0 ? (
+          {mentionedHandles.length > 0 && destinationMode !== "project-chat" && destinationMode !== "target-required" ? (
             <Typography variant="caption" color={mentionedBusyHandles.length > 0 ? "warning.main" : "text.secondary"}>
               {mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "broadcast")
                 ? "Adding durable shared context without starting an agent"
@@ -843,7 +963,9 @@ export function Composer({
           </Tooltip>
         ) : null}
         {!showQueue && (!canCancel || allowSendWhileRunning) ? (
-          <Tooltip title="Send">
+          <Tooltip title={!canSend && (destinationError || (destinationMode === "target-required" && !requiredRecipient))
+            ? destinationError ?? recipientRequiredMessage ?? "Choose at least one Agent recipient."
+            : "Send"}>
             <span>
               <IconButton color="primary" disabled={!canSend} onClick={send} aria-label={mentionedBusyHandles.length > 0 ? "Queue message" : "Send message"}>
                 <ArrowUpwardIcon />

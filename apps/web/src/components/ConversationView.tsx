@@ -1413,7 +1413,14 @@ export function ConversationView({
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
   ) => {
+    const broadcastMentioned = /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(text);
     const broadcastText = managerBroadcastText(text);
+    const everyoneMentioned = hasEveryoneMention(text);
+    const explicitlyMentionedAgents = findMentioned(text);
+    if (broadcastMentioned && (everyoneMentioned || explicitlyMentionedAgents.length > 0))
+      throw new Error("Broadcast cannot be combined with Agent recipients.");
+    if (broadcastMentioned && broadcastText === undefined)
+      throw new Error("Put #broadcast first so its shared scope is explicit.");
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0)
         throw new Error(
@@ -1426,10 +1433,10 @@ export function ConversationView({
       });
       return;
     }
-    const targets = hasEveryoneMention(text)
+    const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
-      : findMentioned(text);
-    if (hasEveryoneMention(text) && targets.length === 0)
+      : explicitlyMentionedAgents;
+    if (everyoneMentioned && targets.length === 0)
       throw new Error("There are no active agents to notify.");
     if (targets.length > 0) {
       setActiveOperation({
@@ -2008,11 +2015,6 @@ export function ConversationView({
               agentMentionHandle(agent.title).toLocaleLowerCase() === handle.toLocaleLowerCase())?.title}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
-            guidance={
-              agents.length > 0
-                ? "Send normally to start a fresh agent, use #agent to target an existing agent, or @ to reference a project file."
-                : "Send normally to start a fresh agent, or use @ to reference a project file."
-            }
             disabled={busy}
             running={operationRunning}
             allowSendWhileRunning
