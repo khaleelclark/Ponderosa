@@ -174,6 +174,12 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
     setScheduleKind("interval");
     setOnceAt(localFuture());
     setIntervalMinutes("60");
+    setCronExpression("0 9 * * 1-5");
+    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setInclude("**/*");
+    setExclude(".git/**\nnode_modules/**\n.ponderosa/**");
+    setQuietSeconds("1");
+    setMaxWindowSeconds("10");
     setBudgetEnabled(false);
     setBudgetLimit("10");
     setBudgetPeriod("month");

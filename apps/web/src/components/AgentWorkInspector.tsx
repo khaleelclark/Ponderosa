@@ -163,7 +163,7 @@ export function AgentWorkInspector({
   }, [focusedItemId, open]);
 
   const stateCounts = query.data?.traces.reduce((counts, trace) => {
-    counts[trace.state] += 1;
+    if (trace.state in counts) counts[trace.state] += 1;
     return counts;
   }, { active: 0, attention: 0, finished: 0 }) ?? { active: 0, attention: 0, finished: 0 };
 

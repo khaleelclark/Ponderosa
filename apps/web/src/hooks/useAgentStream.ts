@@ -76,6 +76,11 @@ function projectedArtifactId(agentId: string, seq: number): string {
   return `${agentId}:a:${seq}:0`;
 }
 
+function activeExecutionId(runs: AgentRunDto[] | undefined): string | undefined {
+  return [...(runs ?? [])].reverse()
+    .find((run) => run.status === "running" || run.status === "compacting")?.id;
+}
+
 function projectedWorkItemId(agentId: string, workItemId: string): string {
   return `${agentId}:work-item:${workItemId}`;
 }
@@ -113,16 +118,15 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
   if (executionTypes.has(event.type)) {
     const activity = detail.activity ?? [];
     const id = `${agentId}:activity:${seq}`;
-    const activeExecutionId = [...(detail.runs ?? [])].reverse()
-      .find((run) => run.status === "running" || run.status === "compacting")?.id;
-    const activeExecutionAlreadyChangedPath = event.type === "file_change" && Boolean(activeExecutionId)
-      && activity.some((item) => item.executionId === activeExecutionId
+    const currentExecutionId = activeExecutionId(detail.runs);
+    const activeExecutionAlreadyChangedPath = event.type === "file_change" && Boolean(currentExecutionId)
+      && activity.some((item) => item.executionId === currentExecutionId
         && item.event.type === "file_change"
         && item.event.path === event.path);
     if (!activity.some((item) => item.id === id)) {
       const entry: AgentActivityDto = {
         id, agentId, seq, createdAt: ts,
-        ...(activeExecutionId ? { executionId: activeExecutionId } : {}),
+        ...(currentExecutionId ? { executionId: currentExecutionId } : {}),
         event: event as AgentActivityDto["event"],
       };
       detail = { ...detail, activity: [...activity, entry].sort((a, b) => a.seq - b.seq) };
@@ -136,8 +140,8 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
         lastSeq: seq,
         lastChangedAt: ts,
         executionCount: previous
-          ? previous.executionCount + (activeExecutionId && !activeExecutionAlreadyChangedPath ? 1 : 0)
-          : activeExecutionId ? 1 : 0,
+          ? previous.executionCount + (currentExecutionId && !activeExecutionAlreadyChangedPath ? 1 : 0)
+          : currentExecutionId ? 1 : 0,
         diffAvailable: Boolean(event.diff),
       };
       detail = {
@@ -287,8 +291,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const artifact: ArtifactDto = {
       id: canonicalArtifactId,
       agentId,
-      executionId: [...(detail.runs ?? [])].reverse()
-        .find((run) => run.status === "running" || run.status === "compacting")?.id,
+      executionId: activeExecutionId(detail.runs),
       kind: isPdf ? "document" : "diff",
       path: event.path,
       summary: `${event.kind} ${event.path}`,
@@ -313,9 +316,9 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
       return detail;
     }
     const artifact: ArtifactDto = {
-      id: `live-artifact-${seq}`,
+      id: projectedArtifactId(agentId, seq),
       agentId,
-      executionId: [...(detail.runs ?? [])].reverse().find((run) => run.status === "running")?.id,
+      executionId: activeExecutionId(detail.runs),
       kind: "test_report",
       path: `test-result-${seq}.md`,
       summary: event.summary,

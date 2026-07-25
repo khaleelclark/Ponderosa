@@ -494,6 +494,7 @@ export function ConversationView({
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
   const focusedMessage = useRef<string>();
+  const focusedMessageHighlightDisposer = useRef<() => void>();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const mobileComposer = useMobileComposerAutoHide(mobileRoster);
@@ -512,6 +513,10 @@ export function ConversationView({
         (saved === "collaboration" || saved === "agents" ? saved : "main"),
     );
   }, [conversationId, initialView]);
+  useEffect(() => () => {
+    focusedMessageHighlightDisposer.current?.();
+    focusedMessageHighlightDisposer.current = undefined;
+  }, []);
 
   if (activeView === "collaboration") collaborationVisited.current = true;
 
@@ -726,7 +731,8 @@ export function ConversationView({
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "center" });
     target.focus({ preventScroll: true });
-    highlightFocusedMessage(target);
+    focusedMessageHighlightDisposer.current?.();
+    focusedMessageHighlightDisposer.current = highlightFocusedMessage(target);
     focusedMessage.current = focusMessageId;
   }, [
     activeView,
