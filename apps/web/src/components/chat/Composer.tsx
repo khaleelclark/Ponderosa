@@ -8,12 +8,12 @@ import { Alert, Box, Button, Chip, CircularProgress, ClickAwayListener, Divider,
 import { LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
 import type { ConversationDraftConflictDto, DraftAttachmentDto, EngineCommand, EngineComposerCapability, FileEntryDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useId, useReducer, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
 import { createClientId } from "../../clientId";
-import { findMentionedHandles } from "../../mentions";
+import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
@@ -62,6 +62,7 @@ export interface ComposerProps extends ChatComposerContract {
   requiredRecipient?: { handle: string; title: string; onClear(): void };
   recipientRequiredMessage?: string;
   removeTextRequest?: { id: string; text: string };
+  onMentionedHandlesChange?(handles: string[]): void;
   continueWith?: { handle: string; title: string };
   destinationTitleForHandle?(handle: string): string | undefined;
 }
@@ -97,6 +98,7 @@ export function Composer({
   requiredRecipient,
   recipientRequiredMessage,
   removeTextRequest,
+  onMentionedHandlesChange,
   continueWith,
   destinationTitleForHandle,
 }: ComposerProps): JSX.Element {
@@ -148,7 +150,10 @@ export function Composer({
   const appliedRemoveRequest = useRef<string>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
-  const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
+  const mentionedHandles = useMemo(
+    () => findMentionedHandles(submissionText, mentionHandles ?? []),
+    [mentionHandles, submissionText],
+  );
   const projectDestinationHandles = destinationMode === "project-chat"
     ? mentionedHandles.filter((handle) => !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()))
     : [];
@@ -156,7 +161,14 @@ export function Composer({
     handle,
     title: destinationTitleForHandle?.(handle) ?? handle,
   }));
-  const hasBroadcastDestination = /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(submissionText);
+  const targetRequiredHandles = destinationMode === "target-required"
+    ? mentionedHandles.filter((handle) => !["broadcast", "everyone"].includes(handle.toLocaleLowerCase()))
+    : [];
+  const targetRequiredDestinations = targetRequiredHandles.map((handle) => ({
+    handle,
+    title: destinationTitleForHandle?.(handle) ?? handle,
+  }));
+  const hasBroadcastDestination = hasBroadcastMention(submissionText);
   const hasLeadingBroadcastDestination = /^\s*#broadcast(?=$|\s|[.,!?;:])/iu.test(submissionText);
   const hasEveryoneDestination = destinationMode === "project-chat" &&
     mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone");
@@ -166,23 +178,27 @@ export function Composer({
     : destinationMode === "project-chat" && hasBroadcastDestination && !hasLeadingBroadcastDestination
       ? "Put #broadcast first so its shared scope is explicit."
       : destinationMode === "target-required" && hasBroadcastDestination
-        ? requiredRecipient
+        ? targetRequiredDestinations.length > 0
           ? "Broadcast cannot be combined with an Agent recipient."
           : "#broadcast is not available in All Messages. Choose an Agent."
+        : destinationMode === "target-required" && targetRequiredDestinations.length > 1
+          ? "Choose one Agent at a time in All Messages."
         : undefined;
   const replaceDestination = (value: string, nextHandle?: string) => value.replace(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu, (match, handle: string) => {
     if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) return match;
     return nextHandle ? ` #${nextHandle}` : " ";
   });
-  const setDestination = (handle: string) => update(`#${handle} ${replaceDestination(text, undefined).trimStart()}`.trimEnd());
+  const setDestination = (handle: string) =>
+    update((current) => `#${handle} ${replaceDestination(current, undefined).trimStart()}`.trimEnd());
   const removeHandle = (value: string, handle: string) => value
     .replace(new RegExp(`(?:^|\\s)#${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`, "iu"), " ")
     .replace(/^\s+/u, "");
-  const clearDestination = (handle: string) => update(removeHandle(text, handle));
+  const clearDestination = (handle: string) =>
+    update((current) => removeHandle(current, handle));
   const clearRequiredRecipient = () => {
-    if (!requiredRecipient) return;
-    update(removeHandle(text, requiredRecipient.handle));
-    requiredRecipient.onClear();
+    const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
+    if (handle) update((current) => removeHandle(current, handle));
+    requiredRecipient?.onClear();
   };
   const queuedHandles = new Set((queuedMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedAgentsWithQueues = mentionedHandles.filter((handle) => queuedHandles.has(handle.toLocaleLowerCase()));
@@ -200,8 +216,13 @@ export function Composer({
     mentionedHandles,
     mentionedBusyHandles,
   });
+  const targetRequiredRecipientTagged = destinationMode !== "target-required" || Boolean(
+    requiredRecipient &&
+    targetRequiredHandles.length === 1 &&
+    requiredRecipient.handle.toLocaleLowerCase() === targetRequiredHandles[0]!.toLocaleLowerCase()
+  );
   const draftUploadsReady = !conversationDraftId || files.every((file) => draftAttachmentIds.current.has(file));
-  const canSend = !destinationError && draftUploadsReady &&
+  const canSend = !destinationError && targetRequiredRecipientTagged && draftUploadsReady &&
     (textCanSend || (!disabled && !composerLocked && allowUnmentionedSend && files.length > 0));
   const canCancel = running && Boolean(onCancel);
 
@@ -234,18 +255,22 @@ export function Composer({
     return () => window.cancelAnimationFrame(frame);
   }, [conversationDraftId, destinationMode, draftQuery?.isError, draftReadyVersion, insertTextRequest]);
 
-  const update = (next: string) => {
+  const update = (next: string | ((current: string) => string)) => {
     draftEditVersion.current += 1;
     draftLocallyEdited.current = true;
     setText(next);
   };
 
   useEffect(() => {
+    onMentionedHandlesChange?.(mentionedHandles);
+  }, [mentionedHandles, onMentionedHandlesChange]);
+
+  useEffect(() => {
     if (!removeTextRequest || appliedRemoveRequest.current === removeTextRequest.id) return;
     appliedRemoveRequest.current = removeTextRequest.id;
     const handle = removeTextRequest.text.trim().replace(/^#/u, "");
     if (!handle) return;
-    update(removeHandle(text, handle));
+    update((current) => removeHandle(current, handle));
   }, [removeTextRequest]);
 
   useEffect(() => {
@@ -571,19 +596,19 @@ export function Composer({
   });
   const projectDestinationHelper = destinationError ??
     (hasBroadcastDestination
-      ? "Adds durable shared Project context; starts no Agent."
+      ? "Adds durable shared Project context; starts no Agent · @ references a file."
       : hasEveryoneDestination
-        ? "Every active Agent in this Chat will receive this."
+        ? "Every active Agent in this Chat will receive this · @ references a file."
         : projectDestinations.length === 1
-          ? `${projectDestinations[0]!.title} will receive this.`
+          ? `${projectDestinations[0]!.title} will receive this · @ references a file.`
           : projectDestinations.length === 2
-            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
+            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this · @ references a file.`
             : projectDestinations.length > 2
-              ? `${projectDestinations.length} Agents will receive this.`
-              : "Starts a fresh Agent · use #Agent or #broadcast to change destination.");
+              ? `${projectDestinations.length} Agents will receive this · @ references a file.`
+              : "Starts a fresh Agent · use #Agent or #broadcast to change destination · @ references a file.");
   const targetRequiredHelper = destinationError ??
-    (requiredRecipient
-      ? `${requiredRecipient.title} will receive this.`
+    (targetRequiredDestinations.length === 1
+      ? `${targetRequiredDestinations[0]!.title} will receive this.`
       : recipientRequiredMessage ?? "Tag an Agent with # to choose a recipient.");
 
   return (
@@ -650,9 +675,15 @@ export function Composer({
         </Stack>
       ) : destinationMode === "target-required" ? (
         <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}>
-          {requiredRecipient ? (
-            <Chip size="small" color="primary" label={`#${requiredRecipient.handle}`} onDelete={clearRequiredRecipient} />
-          ) : null}
+          {targetRequiredDestinations.map((destination) => (
+            <Chip
+              key={destination.handle.toLocaleLowerCase()}
+              size="small"
+              color="primary"
+              label={`#${destination.handle}`}
+              onDelete={() => clearDestination(destination.handle)}
+            />
+          ))}
           {hasBroadcastDestination ? (
             <Chip
               size="small"
@@ -662,7 +693,9 @@ export function Composer({
               onDelete={() => clearDestination("broadcast")}
             />
           ) : null}
-          {!requiredRecipient && !hasBroadcastDestination ? <Chip size="small" variant="outlined" label="Choose an Agent" /> : null}
+          {targetRequiredDestinations.length === 0 && !hasBroadcastDestination
+            ? <Chip size="small" variant="outlined" label="Choose an Agent" />
+            : null}
           <Typography variant="caption" color={destinationError ? "error.main" : "text.secondary"}>
             {targetRequiredHelper}
           </Typography>
@@ -963,7 +996,7 @@ export function Composer({
           </Tooltip>
         ) : null}
         {!showQueue && (!canCancel || allowSendWhileRunning) ? (
-          <Tooltip title={!canSend && (destinationError || (destinationMode === "target-required" && !requiredRecipient))
+          <Tooltip title={!canSend && (destinationError || (destinationMode === "target-required" && !targetRequiredRecipientTagged))
             ? destinationError ?? recipientRequiredMessage ?? "Choose at least one Agent recipient."
             : "Send"}>
             <span>

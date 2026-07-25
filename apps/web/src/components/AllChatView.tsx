@@ -76,6 +76,12 @@ type AllMessagesTimelineEntry =
   | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
   | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
 
+type AllChatReplyTarget = {
+  id: string;
+  title: string;
+  projectId: string;
+};
+
 function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
   const { decision } = item;
   return decision.response?.optionId
@@ -115,7 +121,7 @@ export function AllChatView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
-  const [replyTarget, setReplyTarget] = useState<{ id: string; title: string }>();
+  const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
@@ -132,6 +138,33 @@ export function AllChatView({
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
+  const composerTargets = useMemo(() => {
+    const byId = new Map<string, AllChatReplyTarget>();
+    for (const item of items) {
+      if (!item.directMessageAgent) continue;
+      byId.set(item.directMessageAgent.id, {
+        ...item.directMessageAgent,
+        projectId: item.project.id,
+      });
+    }
+    const groups = new Map<string, Array<{ handle: string; target: AllChatReplyTarget }>>();
+    for (const target of byId.values()) {
+      const handle = agentMentionHandle(target.title);
+      const normalized = handle.toLocaleLowerCase();
+      if (!handle || ["broadcast", "user", "everyone"].includes(normalized)) continue;
+      const group = groups.get(normalized) ?? [];
+      group.push({ handle, target });
+      groups.set(normalized, group);
+    }
+    const targetByHandle = new Map<string, AllChatReplyTarget>();
+    for (const [handle, group] of groups) {
+      if (group.length === 1) targetByHandle.set(handle, group[0]!.target);
+    }
+    return {
+      handles: [...groups.values()].map((group) => group[0]!.handle),
+      targetByHandle,
+    };
+  }, [items]);
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -159,6 +192,7 @@ export function AllChatView({
   const layoutKey = timeline.map((entry) => entry.id).join(":");
   const selected = items.find(item => item.communicationEventId === selectedId);
   const selectedAgentId = replyTarget?.id;
+  const selectedProjectId = replyTarget?.projectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, 100),
@@ -168,19 +202,19 @@ export function AllChatView({
   const selectedModel = selectedAgent.data?.agent.model;
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
-      selected?.project.id,
+      selectedProjectId,
       selectedAgentId,
       selectedEngineId,
       selectedModel,
     ),
     queryFn: () =>
-      api.getEngineCapabilities(selected!.project.id, {
+      api.getEngineCapabilities(selectedProjectId!, {
         engineId: selectedEngineId,
         model: selectedModel,
         agentId: selectedAgentId,
       }),
     enabled: Boolean(
-      selected?.project.id && selectedAgentId && selectedEngineId,
+      selectedProjectId && selectedAgentId && selectedEngineId,
     ),
     staleTime: 10_000,
   });
@@ -211,8 +245,8 @@ export function AllChatView({
       });
   }, [notifications, queryClient]);
   const refreshSelectedCapabilities = async () => {
-    if (!selected?.project.id || !selectedAgentId) return;
-    const discovered = await api.getEngineCapabilities(selected.project.id, {
+    if (!selectedProjectId || !selectedAgentId) return;
+    const discovered = await api.getEngineCapabilities(selectedProjectId, {
       engineId: selectedEngineId,
       model: selectedModel,
       agentId: selectedAgentId,
@@ -220,7 +254,7 @@ export function AllChatView({
     });
     queryClient.setQueryData(
       queryKeys.engines.capabilitySelection(
-        selected.project.id,
+        selectedProjectId,
         selectedAgentId,
         selectedEngineId,
         selectedModel,
@@ -240,7 +274,7 @@ export function AllChatView({
     });
     setNotice(
       result.message ??
-        `/${command.name} completed for ${selected?.directMessageAgent?.title ?? "Agent"}.`,
+        `/${command.name} completed for ${replyTarget?.title ?? "Agent"}.`,
     );
   };
   const send = useMutation({
@@ -318,6 +352,34 @@ export function AllChatView({
     }
     setReplyTarget(undefined);
   };
+  const syncReplyTargetFromMentions = useCallback((handles: string[]) => {
+    const agentHandles = handles.filter(
+      (handle) => !["broadcast", "user", "everyone"].includes(handle.toLocaleLowerCase()),
+    );
+    const handle = agentHandles.length === 1 ? agentHandles[0] : undefined;
+    const resolved = handle
+      ? composerTargets.targetByHandle.get(handle.toLocaleLowerCase())
+      : undefined;
+    setReplyTarget((current) => {
+      if (resolved) return current?.id === resolved.id ? current : resolved;
+      if (
+        handle &&
+        current &&
+        agentMentionHandle(current.title).toLocaleLowerCase() === handle.toLocaleLowerCase()
+      )
+        return current;
+      return undefined;
+    });
+  }, [composerTargets.targetByHandle]);
+  const destinationTitleForHandle = useCallback((handle: string) => {
+    const normalized = handle.toLocaleLowerCase();
+    if (
+      replyTarget &&
+      agentMentionHandle(replyTarget.title).toLocaleLowerCase() === normalized
+    )
+      return replyTarget.title;
+    return composerTargets.targetByHandle.get(normalized)?.title;
+  }, [composerTargets.targetByHandle, replyTarget]);
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
@@ -330,7 +392,10 @@ export function AllChatView({
       setReplyTarget(undefined);
       return;
     }
-    setReplyTarget(item.directMessageAgent);
+    setReplyTarget({
+      ...item.directMessageAgent,
+      projectId: item.project.id,
+    });
     setMentionInsertRequest({
       id: `${item.communicationEventId}:${Date.now()}`,
       text: `#${handle}`,
@@ -675,7 +740,14 @@ export function AllChatView({
             title: replyTarget.title,
             onClear: () => setReplyTarget(undefined),
           } : undefined}
-          recipientRequiredMessage="Tag an Agent with # to choose a recipient."
+          recipientRequiredMessage={
+            selected && !selected.directMessageAgent
+              ? "This message does not identify an active Agent you can message."
+              : "Tag an Agent with # to choose a recipient."
+          }
+          mentionHandles={composerTargets.handles}
+          destinationTitleForHandle={destinationTitleForHandle}
+          onMentionedHandlesChange={syncReplyTargetFromMentions}
           commands={selectedCommands}
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []

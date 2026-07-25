@@ -69,6 +69,7 @@ import {
   agentIdForMentionHandle,
   agentMentionHandle,
   findMentionedAgents,
+  hasBroadcastMention,
   hasEveryoneMention,
 } from "../mentions";
 import {
@@ -1413,7 +1414,7 @@ export function ConversationView({
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
   ) => {
-    const broadcastMentioned = /(?:^|\s)#broadcast(?=$|\s|[.,!?;:])/iu.test(text);
+    const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
     const explicitlyMentionedAgents = findMentioned(text);
