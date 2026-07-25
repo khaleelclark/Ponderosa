@@ -1335,9 +1335,7 @@ export function ConversationView({
     engineCapabilities,
   );
   const commands = composerRuntime.commands;
-  const composerCommands = commands.filter(
-    command => command.invocation === "prompt",
-  );
+  const composerCommands = commands;
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
   const engineReady = selectedRuntime.ready;

@@ -1280,45 +1280,28 @@ export function AgentDetail({
     ? agents.find(candidate => candidate.id === detail.agent.spawnedByAgentId)
     : undefined;
   const lineageAgent = spawningAgent ?? organizationalParent;
-  const lineageAgentId =
-    detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
-  const lineageLabel = detail.agent.spawnedByAgentId
-    ? "Created by"
-    : "Delegated under";
-  const delegatedAgentIds = new Set<string>();
-  const delegatedChildrenByManager = new Map<string, AgentDto[]>();
-  for (const candidate of agents) {
-    if (!candidate.managerAgentId || candidate.archived) continue;
-    delegatedChildrenByManager.set(candidate.managerAgentId, [
-      ...(delegatedChildrenByManager.get(candidate.managerAgentId) ?? []),
-      candidate,
-    ]);
-  }
-  const collectDelegatedAgents = (managerAgentId: string) => {
-    for (const candidate of delegatedChildrenByManager.get(managerAgentId) ?? []) {
-      if (delegatedAgentIds.has(candidate.id)) continue;
-      delegatedAgentIds.add(candidate.id);
-      collectDelegatedAgents(candidate.id);
+  const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
+  const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Delegated under";
+  const agentRuntimeControls = <ComposerRuntimeSelector
+    engine={engine?.id ?? ""}
+    engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
+    engineLocked
+    model={model}
+    models={models}
+    resolvedModel={
+      engineCapability?.selectedModel === model
+        ? engineCapability.model
+        : undefined
     }
-  };
-  collectDelegatedAgents(detail.agent.id);
-  const agentRuntimeControls = (
-    <ComposerRuntimeSelector
-      engine={engine?.id ?? ""}
-      engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
-      engineLocked
-      model={model}
-      models={models}
-      effort={effort}
-      efforts={efforts}
-      onModelChange={nextModel => {
-        selectedRuntime.selectModel(nextModel);
-      }}
-      onEffortChange={nextEffort => {
-        selectedRuntime.selectEffort(nextEffort);
-      }}
-    />
-  );
+    effort={effort}
+    efforts={efforts}
+    onModelChange={(nextModel) => {
+      selectedRuntime.selectModel(nextModel);
+    }}
+    onEffortChange={(nextEffort) => {
+      selectedRuntime.selectEffort(nextEffort);
+    }}
+  />;
 
   const submitAgentMessage =
     (activeRunDelivery: NonNullable<SendMessageRequest["activeRunDelivery"]>) =>
