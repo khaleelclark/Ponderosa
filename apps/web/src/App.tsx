@@ -81,7 +81,6 @@ import {
   restoreWorkspaceTabSession,
   serializeWorkspaceTabs,
 } from "./workspaceTabs";
-import { hasUnreadConversationNotifications } from "./workspaceNavigation";
 import { WORKSPACE_SIDEBAR_STORAGE_KEY, restoreWorkspaceSidebarState, serializeWorkspaceSidebarState } from "./workspaceSidebarState";
 import { routeForTriggerAgentSelection, triggerAgentDestinations } from "./triggerCreation";
 import { queryKeys } from "./queryKeys";
@@ -149,7 +148,6 @@ export default function App({
   const [triggerCreateOpen, setTriggerCreateOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] = useState<SidebarConversationAction>();
   const [projectBrowserRequest, setProjectBrowserRequest] = useState<ProjectBrowserRequest>();
-  const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
@@ -196,25 +194,6 @@ export default function App({
       return next.length === current.length ? current : next;
     });
   }, [projectsQuery.isSuccess, projectsQuery.data]);
-
-  useEffect(() => {
-    const update = () => setPageVisible(document.visibilityState !== "hidden");
-    document.addEventListener("visibilitychange", update);
-    return () => document.removeEventListener("visibilitychange", update);
-  }, []);
-
-  useEffect(() => {
-    const conversationId = route.kind === "conversation" ? route.conversationId : undefined;
-    if (!pageVisible || !hasUnreadConversationNotifications(notificationsQuery.data ?? [], conversationId)) return;
-    const readAt = new Date().toISOString();
-    queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => item.conversationId === conversationId && !item.readAt && ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(item.kind) ? { ...item, readAt } : item));
-    void api.clearConversationNotifications(conversationId!, "messages").then(() => {
-      return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-    }).catch(() => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-    });
-  }, [route.kind, route.kind === "conversation" ? route.conversationId : undefined, notificationsQuery.data, pageVisible, queryClient]);
 
   useEffect(() => {
     const refresh = () => { void inspectWebPush(); };
@@ -825,7 +804,7 @@ export default function App({
         projects={projects}
         notifications={notificationsQuery.data ?? []}
         onClose={() => setNotificationPanelOpen(false)}
-        onNavigate={openWorkspaceRoute}
+        onNavigate={openWorkspaceRouteInBackground}
         onOpenSettings={openSettings}
       />
       <ProviderStatusFlow

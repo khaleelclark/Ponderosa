@@ -31,6 +31,7 @@ import type { Route } from "../routing";
 import { isOpenAttention, visibleNotification } from "../attention";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { notificationDecision } from "../decisions";
+import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 import { DecisionActions } from "./decisions/DecisionActions";
 
 interface NotificationGroup {
@@ -123,6 +124,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
   const groups = groupNotificationsByProject(visibleNotifications);
   const unreadCount = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
+  const ordinaryUnreadCount = notifications.filter((item) => !item.readAt && isOrdinaryMessageNotification(item)).length;
   const openAttentionCount = notifications.filter(isOpenAttention).length;
 
   const markRead = (item: WorkspaceNotificationDto) => {
@@ -178,7 +180,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     setError(undefined);
     const readAt = new Date().toISOString();
     queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => item.readAt ? item : { ...item, readAt }),
+      current.map((item) => item.readAt || !isOrdinaryMessageNotification(item) ? item : { ...item, readAt }),
     );
     try {
       await api.markAllNotificationsRead();
@@ -283,7 +285,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>
-      <Button startIcon={<DoneAllIcon />} disabled={!unreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
+      <Button startIcon={<DoneAllIcon />} disabled={!ordinaryUnreadCount || Boolean(pending)} onClick={() => void markAllRead()}>Mark All Read</Button>
       <Button color="error" startIcon={<DeleteSweepOutlinedIcon />} disabled={!filterNotifications(notifications, "all").length || Boolean(pending)} onClick={() => void clearAll()}>Clear All</Button>
     </DialogActions>
   </Dialog>

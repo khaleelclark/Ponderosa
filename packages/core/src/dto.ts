@@ -730,12 +730,20 @@ export interface AgentWorkItemDetailsDto {
 }
 
 /** GET /api/conversations/:id response. */
+export interface ConversationDecisionEventDto {
+  kind: "decision" | "decision_response";
+  id: string;
+  createdAt: string;
+  /** Canonical Decision state that owns this timeline event. */
+  decision: DecisionDto;
+}
+
 export interface ConversationDetailDto {
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   agents: AgentDto[];
-  /** Canonical Decisions for this Chat; they are not authored messages. */
-  decisions?: DecisionDto[];
+  /** Canonical Decision events for this Chat; they are not Communications. */
+  decisionEvents?: ConversationDecisionEventDto[];
   history?: HistoryWindowDto;
 }
 
@@ -1936,8 +1944,19 @@ export interface AllChatItemDto {
   directMessageAgent?: Pick<AgentDto, "id" | "title">;
 }
 
+/** One canonical Decision event projected into the workspace-wide aggregate timeline. */
+export interface AllChatDecisionEventDto {
+  kind: "decision" | "decision_response";
+  id: string;
+  createdAt: string;
+  decision: DecisionDto;
+  project: Pick<ProjectDto, "id" | "label">;
+  source: { kind: "project"; conversationId: string; title: string };
+}
+
 /** GET /api/all-chat response. Canonical items are oldest-first for timeline prepend. */
 export interface AllChatPageDto {
   items: AllChatItemDto[];
+  decisions?: AllChatDecisionEventDto[];
   history: HistoryWindowDto;
 }

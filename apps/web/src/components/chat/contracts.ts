@@ -33,4 +33,6 @@ export interface ChatMessagePresentation {
   actions?: ReactNode;
   ariaLabel?: string;
   onSelect?(): void;
+  /** Called only while this exact message row intersects the visible page. */
+  onVisible?(): void;
 }

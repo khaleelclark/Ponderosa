@@ -1,5 +1,5 @@
 import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
-import { useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
@@ -14,6 +14,7 @@ export function ChatMessageFrame({
   maxAgentWidth?: number;
 }): JSX.Element {
   const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
+  const articleRef = useRef<HTMLElement | null>(null);
   const author = message.author;
   const fromOperator = author.kind !== "agent";
   const operatorProfile = author.kind === "operator" ? author.profile : undefined;
@@ -32,6 +33,25 @@ export function ChatMessageFrame({
     if ((event.target as HTMLElement).closest("button,a,input,textarea,[role='button']")) return;
     setMobileTimestampRevealed((current) => !current);
   };
+  useEffect(() => {
+    const element = articleRef.current;
+    if (!element || !message.onVisible || typeof IntersectionObserver === "undefined") return;
+    let intersecting = false;
+    const report = () => {
+      if (intersecting && document.visibilityState !== "hidden") message.onVisible?.();
+    };
+    const observer = new IntersectionObserver((entries) => {
+      intersecting = Boolean(entries[0]?.isIntersecting);
+      report();
+    }, { threshold: 0.5 });
+    const onVisibilityChange = () => report();
+    observer.observe(element);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      observer.disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [message.id, message.onVisible]);
   const avatar = (
     <Avatar
       aria-label={`${senderName} avatar`}
@@ -50,6 +70,7 @@ export function ChatMessageFrame({
 
   return (
     <Box
+      ref={articleRef}
       id={message.id}
       component="article"
       className="chat-message"

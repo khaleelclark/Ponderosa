@@ -39,6 +39,8 @@ import type {
   ResponseFileActivityDto,
   AgentDto,
   TeamOperationalEventDto,
+  WorkspaceNotificationDto,
+  ConversationDecisionEventDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -71,7 +73,6 @@ import {
 } from "../mentions";
 import {
   managerBroadcastText,
-  stripBroadcastPrefix,
   uploadFilesForRecipients,
 } from "../conversationRouting";
 import { ResponseFileActivity } from "./activity/ActivityPane";
@@ -101,6 +102,7 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 
 function mergeConversationMessages(
   ...groups: ConversationMessageDto[][]
@@ -112,6 +114,29 @@ function mergeConversationMessages(
       (a.canonicalOrderKey ?? a.createdAt).localeCompare(
         b.canonicalOrderKey ?? b.createdAt,
       ) || a.id.localeCompare(b.id),
+  );
+}
+
+type MainTimelineEntry =
+  | { kind: "message"; id: string; at: string; message: ConversationMessageDto }
+  | { kind: "decision"; id: string; at: string; event: ConversationDecisionEventDto }
+  | { kind: "decision-response"; id: string; at: string; event: ConversationDecisionEventDto; choice: string };
+
+function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
+  return decision.response?.optionId
+    ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
+    : decision.response?.text;
+}
+
+function mergeDecisionEvents(
+  ...groups: ConversationDecisionEventDto[][]
+): ConversationDecisionEventDto[] {
+  return uniqueBy(
+    groups.flat(),
+    event => event.id,
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id),
   );
 }
 
@@ -148,8 +173,11 @@ function groupAdjacentOperationalEvents(
       previous.representative.state === event.state &&
       previous.representative.text === event.text &&
       previous.representative.agentIds.join("\u0000") === event.agentIds.join("\u0000");
-    if (sameAsPrevious) previous.events.push(event);
-    else groups.push({ id: event.id, representative: event, events: [event] });
+    if (sameAsPrevious) {
+      previous.events.push(event);
+      continue;
+    }
+    groups.push({ id: event.id, representative: event, events: [event] });
   }
   return groups;
 }
@@ -223,6 +251,7 @@ function ConversationMessageComponent({
   onOpenFileActivity,
   onEdit,
   onMentionAgent,
+  onVisible,
   projectId,
   activeRunId,
   operatorProfile,
@@ -240,6 +269,7 @@ function ConversationMessageComponent({
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onEdit?: (message: ConversationMessageDto) => void;
   onMentionAgent?(agentId: string): void;
+  onVisible?(): void;
   projectId: string;
   activeRunId?: string;
   operatorProfile?: OperatorProfileDto;
@@ -270,6 +300,7 @@ function ConversationMessageComponent({
               onOpen: () => onOpenAgent(message.authorAgentId!),
             },
         createdAt: message.createdAt,
+        onVisible,
         body: (
           <ChatMessageBody
             text={visibleText}
@@ -466,6 +497,7 @@ export function ConversationView({
   );
   const [olderMain, setOlderMain] = useState<{
     messages: ConversationMessageDto[];
+    decisionEvents: ConversationDecisionEventDto[];
     cursor?: string;
     hasMore: boolean;
   }>();
@@ -483,6 +515,28 @@ export function ConversationView({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const notificationsQuery = useNotifications();
+  const markedVisibleNotificationIds = useRef(new Set<string>());
+  const markCommunicationVisible = useCallback((communicationEventId: string | undefined) => {
+    if (!communicationEventId || document.visibilityState === "hidden") return;
+    const notifications = (notificationsQuery.data ?? []).filter((item) =>
+      item.communicationEventId === communicationEventId &&
+      !item.readAt &&
+      (item.status ?? "open") === "open" &&
+      isOrdinaryMessageNotification(item) &&
+      !markedVisibleNotificationIds.current.has(item.id));
+    if (!notifications.length) return;
+    const ids = new Set(notifications.map((item) => item.id));
+    ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
+    const readAt = new Date().toISOString();
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
+      current.map((item) => ids.has(item.id) ? { ...item, readAt } : item));
+    void Promise.all(notifications.map((item) => api.markNotificationRead(item.id)))
+      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }))
+      .catch(() => {
+        ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
+        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      });
+  }, [notificationsQuery.data, queryClient]);
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -575,7 +629,30 @@ export function ConversationView({
     () => compactDefined(detailQuery.data?.agents ?? []),
     [detailQuery.data?.agents],
   );
-  const decisions = detailQuery.data?.decisions ?? [];
+  const decisionEvents = useMemo(
+    () =>
+      mergeDecisionEvents(
+        olderMain?.decisionEvents ?? [],
+        detailQuery.data?.decisionEvents ?? [],
+      ),
+    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents],
+  );
+  const mainTimeline = useMemo<MainTimelineEntry[]>(() => {
+    const entries: MainTimelineEntry[] = [
+      ...messages.map((message) => ({
+        kind: "message" as const,
+        id: `message:${message.id}`,
+        at: message.createdAt,
+        message,
+      })),
+      ...decisionEvents.flatMap((event): MainTimelineEntry[] => {
+        if (event.kind === "decision") return [{ kind: "decision", id: event.id, at: event.createdAt, event }];
+        const choice = decisionChoice(event.decision);
+        return choice ? [{ kind: "decision-response", id: event.id, at: event.createdAt, event, choice }] : [];
+      }),
+    ];
+    return entries.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+  }, [decisionEvents, messages]);
   const conversationAgents = useMemo(
     () =>
       projectAgents.filter(agent =>
@@ -604,13 +681,14 @@ export function ConversationView({
     [operationalEvents],
   );
   const [expandedOperationalEventGroups, setExpandedOperationalEventGroups] = useState<Set<string>>(() => new Set());
-  const messageLayoutKey = chatMessageLayoutKey(messages);
+  const messageLayoutKey = mainTimeline.map((entry) => entry.id).join(":");
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
   const operationalLayoutKey = operationalEvents.length
     ? `${operationalEvents.length}:${operationalEvents.at(-1)?.id ?? ""}`
     : "0";
   const mainHistory = olderMain ?? {
     messages: [],
+    decisionEvents: [],
     cursor: detailQuery.data?.history?.cursor,
     hasMore: detailQuery.data?.history?.hasMore ?? false,
   };
@@ -639,6 +717,11 @@ export function ConversationView({
             page.messages,
             current?.messages ?? [],
             detailQuery.data?.messages ?? [],
+          ),
+          decisionEvents: mergeDecisionEvents(
+            page.decisionEvents ?? [],
+            current?.decisionEvents ?? [],
+            detailQuery.data?.decisionEvents ?? [],
           ),
           cursor: page.history?.cursor,
           hasMore: page.history?.hasMore ?? false,
@@ -744,6 +827,11 @@ export function ConversationView({
                   page.messages,
                   current?.messages ?? [],
                   detailQuery.data?.messages ?? [],
+                ),
+                decisionEvents: mergeDecisionEvents(
+                  page.decisionEvents ?? [],
+                  current?.decisionEvents ?? [],
+                  detailQuery.data?.decisionEvents ?? [],
                 ),
                 cursor: page.history?.cursor,
                 hasMore: page.history?.hasMore ?? false,
@@ -1173,9 +1261,7 @@ export function ConversationView({
                 : message.role === "system"
                   ? "System"
                   : "You",
-              text: message.authorAgentId
-                ? stripBroadcastPrefix(message.text)
-                : message.text,
+              text: message.text,
               createdAt: message.createdAt,
               attachments: message.attachments,
               document: message.document,
@@ -1533,7 +1619,7 @@ export function ConversationView({
             beforeMessages={
               <>
                 <AttentionSurface
-                  notifications={notificationsQuery.data ?? []}
+                  notifications={(notificationsQuery.data ?? []).filter((item) => item.kind !== "decision")}
                   projectId={conversation.projectId}
                   conversationId={conversationId}
                   conversationAgentIds={agents.map(agent => agent.id)}
@@ -1576,15 +1662,29 @@ export function ConversationView({
             }
           >
             <Stack spacing={0} sx={{ mb: 2 }}>
-              {messages.length === 0 ? (
+              {mainTimeline.length === 0 ? (
                 <Typography variant="body2" color="text.secondary">
                   No messages yet. Send a request to start your first agent —
                   its completed answer returns here.
                 </Typography>
               ) : null}
-              {messages.map(message => (
-                <ConversationMessage
-                  key={message.id}
+              {mainTimeline.map(entry => {
+                if (entry.kind === "decision") return <Box key={entry.id} sx={{ py: 1 }}>
+                  <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
+                </Box>;
+                if (entry.kind === "decision-response") return <ChatMessageFrame
+                  key={entry.id}
+                  message={{
+                    id: entry.id,
+                    author: { kind: "operator", profile: preferencesQuery.data?.profile },
+                    createdAt: entry.at,
+                    ariaLabel: `You chose ${entry.choice}`,
+                    body: <Typography variant="body2">You chose {entry.choice}.</Typography>,
+                  }}
+                />;
+                const message = entry.message;
+                return <ConversationMessage
+                  key={entry.id}
                   message={message}
                   conversation="main"
                   projectId={conversation.projectId}
@@ -1601,6 +1701,7 @@ export function ConversationView({
                   onOpenReview={onOpenReview}
                   onOpenFileActivity={onOpenFileActivity}
                   onMentionAgent={mentionAgent}
+                  onVisible={() => markCommunicationVisible(message.communicationEventId)}
                   onEdit={
                     message.role === "user" &&
                     !message.authorAgentId &&
@@ -1609,16 +1710,7 @@ export function ConversationView({
                       ? editConversationMessage
                       : undefined
                   }
-                />
-              ))}
-              {decisions.map(decision => {
-                const choice = decision.response?.optionId
-                  ? decision.options.find(option => option.id === decision.response?.optionId)?.label
-                  : decision.response?.text;
-                return <Box key={`decision:${decision.id}`} sx={{ py: 1 }}>
-                  <DecisionCard decision={decision} title={decision.question} context={decision.context} />
-                  {decision.status === "resolved" && choice ? <Typography variant="body2" color="text.secondary" sx={{ mt: .75 }}>You chose {choice}.</Typography> : null}
-                </Box>;
+                />;
               })}
             </Stack>
           </ChatSurface>
@@ -1912,6 +2004,8 @@ export function ConversationView({
             conversationDraftId={conversationId}
             destinationMode="project-chat"
             continueWith={lastRespondingAgent ? { handle: agentMentionHandle(lastRespondingAgent.title), title: lastRespondingAgent.title } : undefined}
+            destinationTitleForHandle={handle => agents.find(agent =>
+              agentMentionHandle(agent.title).toLocaleLowerCase() === handle.toLocaleLowerCase())?.title}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             guidance={

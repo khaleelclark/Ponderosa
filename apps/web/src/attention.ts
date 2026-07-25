@@ -2,7 +2,7 @@ import type { WorkspaceNotificationDto } from "@ponderosa/core";
 
 export function isOpenAttention(item: WorkspaceNotificationDto): boolean {
   return (item.status ?? "open") === "open" && (
-    item.kind === "decision" || item.severity === "attention" || item.severity === "urgent"
+    item.kind === "decision" || item.kind === "operational" || item.severity === "attention" || item.severity === "urgent"
   );
 }
 

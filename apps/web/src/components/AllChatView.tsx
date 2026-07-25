@@ -15,12 +15,13 @@ import {
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import type {
+  AllChatDecisionEventDto,
   AllChatItemDto,
   EngineCommand,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
 import type { Route } from "../routing";
@@ -38,6 +39,8 @@ import TagIcon from "@mui/icons-material/Tag";
 import CloseIcon from "@mui/icons-material/Close";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
+import { isOrdinaryMessageNotification } from "../workspaceNavigation";
+import { DecisionCard } from "./decisions/DecisionCard";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -69,6 +72,18 @@ function mergeAllChatItems(
       a.createdAt.localeCompare(b.createdAt) ||
       a.communicationEventId.localeCompare(b.communicationEventId),
   );
+}
+
+type AllMessagesTimelineEntry =
+  | { kind: "message"; id: string; at: string; item: AllChatItemDto }
+  | { kind: "decision"; id: string; at: string; item: AllChatDecisionEventDto }
+  | { kind: "decision-response"; id: string; at: string; item: AllChatDecisionEventDto; choice: string };
+
+function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
+  const { decision } = item;
+  return decision.response?.optionId
+    ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
+    : decision.response?.text;
 }
 
 function sourceLabel(item: AllChatItemDto): string {
@@ -135,8 +150,10 @@ export function AllChatView({
   const query = useAllChat();
   const workspacePreferences = useWorkspacePreferences();
   const queryClient = useQueryClient();
+  const markedVisibleNotificationIds = useRef(new Set<string>());
   const [older, setOlder] = useState<{
     items: AllChatItemDto[];
+    decisions: AllChatDecisionEventDto[];
     cursor?: string;
     hasMore: boolean;
   }>();
@@ -155,7 +172,31 @@ export function AllChatView({
     () => mergeAllChatItems(older?.items ?? [], query.data?.items ?? []),
     [older?.items, query.data?.items],
   );
-  const layoutKey = items.map(item => item.communicationEventId).join(":");
+  const decisionEvents = useMemo(
+    () => uniqueBy(
+      [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
+      (item) => item.id,
+      (left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+    ),
+    [older?.decisions, query.data?.decisions],
+  );
+  const timeline = useMemo<AllMessagesTimelineEntry[]>(() => {
+    const entries: AllMessagesTimelineEntry[] = [
+      ...items.map((item) => ({
+        kind: "message" as const,
+        id: `message:${item.communicationEventId}`,
+        at: item.createdAt,
+        item,
+      })),
+      ...decisionEvents.flatMap((item): AllMessagesTimelineEntry[] => {
+        if (item.kind === "decision") return [{ kind: "decision", id: item.id, at: item.createdAt, item }];
+        const choice = allChatDecisionChoice(item);
+        return choice ? [{ kind: "decision-response", id: item.id, at: item.createdAt, item, choice }] : [];
+      }),
+    ];
+    return entries.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
+  }, [decisionEvents, items]);
+  const layoutKey = timeline.map((entry) => entry.id).join(":");
   const selected = items.find(item => item.communicationEventId === selectedId);
   const selectedAgentId = replyTarget?.id;
   const selectedAgent = useQuery({
@@ -188,6 +229,27 @@ export function AllChatView({
   );
   const selectedCommands: EngineCommand[] =
     selectedEngineCapabilities?.commands ?? [];
+  const markCommunicationVisible = useCallback((communicationEventId: string) => {
+    if (document.visibilityState === "hidden") return;
+    const matching = notifications.filter((item) =>
+      item.communicationEventId === communicationEventId &&
+      !item.readAt &&
+      (item.status ?? "open") === "open" &&
+      isOrdinaryMessageNotification(item) &&
+      !markedVisibleNotificationIds.current.has(item.id));
+    if (!matching.length) return;
+    const ids = new Set(matching.map((item) => item.id));
+    ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
+    const readAt = new Date().toISOString();
+    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
+      current.map((item) => ids.has(item.id) ? { ...item, readAt } : item));
+    void Promise.all(matching.map((item) => api.markNotificationRead(item.id)))
+      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }))
+      .catch(() => {
+        ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
+        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+      });
+  }, [notifications, queryClient]);
   const refreshSelectedCapabilities = async () => {
     if (!selected?.project.id || !selectedAgentId) return;
     const discovered = await api.getEngineCapabilities(selected.project.id, {
@@ -302,6 +364,7 @@ export function AllChatView({
   };
   const history = older ?? {
     items: [],
+    decisions: [],
     cursor: query.data?.history.cursor,
     hasMore: query.data?.history.hasMore ?? false,
   };
@@ -315,6 +378,11 @@ export function AllChatView({
           page.items,
           current?.items ?? [],
           query.data?.items ?? [],
+        ),
+        decisions: uniqueBy(
+          [...(page.decisions ?? []), ...(current?.decisions ?? []), ...(query.data?.decisions ?? [])],
+          (item) => item.id,
+          (left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
         ),
         cursor: page.history.cursor,
         hasMore: page.history.hasMore,
@@ -356,8 +424,8 @@ export function AllChatView({
         </Box>
       </Stack>
       <Box data-chat-attention-slot sx={{ minWidth: 0 }}>
-        <AttentionSurface
-          notifications={notifications}
+          <AttentionSurface
+            notifications={notifications.filter((item) => item.kind !== "decision")}
           onOpen={item => {
             if (!item.projectId) return;
             const focusId = notificationTechnicalFocusId(item);
@@ -433,11 +501,30 @@ export function AllChatView({
           spacing={1.75}
           sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }}
         >
-          {items.map(item => {
+          {timeline.map(entry => {
+            if (entry.kind === "decision") return <Box component="article" key={entry.id} id={entry.id} sx={{ width: "min(1120px, 100%)", mx: "auto" }}>
+              <DecisionCard
+                decision={entry.item.decision}
+                title={entry.item.decision.question}
+                context={entry.item.decision.context}
+              />
+              <Typography variant="caption" color="text.secondary">{entry.item.project.label} · {entry.item.source.title}</Typography>
+            </Box>;
+            if (entry.kind === "decision-response") return <ChatMessageFrame
+              key={entry.id}
+              message={{
+                id: entry.id,
+                author: { kind: "operator", profile: workspacePreferences.data?.profile },
+                createdAt: entry.at,
+                ariaLabel: `You chose ${entry.choice}`,
+                body: <Typography variant="body2">You chose {entry.choice}.</Typography>,
+              }}
+            />;
+            const item = entry.item;
             const fromUser = item.author.kind === "user";
             return (
               <ChatMessageFrame
-                key={item.communicationEventId}
+                key={entry.id}
                 message={{
                   id: `all-message-${item.communicationEventId}`,
                   author: fromUser
@@ -460,6 +547,7 @@ export function AllChatView({
                           : {}),
                       },
                   createdAt: item.createdAt,
+                  onVisible: () => markCommunicationVisible(item.communicationEventId),
                   ariaLabel: allChatSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
@@ -621,7 +709,7 @@ export function AllChatView({
             ) : null}
             <Composer
               destinationMode="fixed"
-              fixedRecipientTitle={selected.directMessageAgent.title}
+              fixedRecipientTitle={replyTarget.title}
               commands={selectedCommands}
               capabilities={
                 selectedEngineCapabilities?.composerCapabilities ?? []

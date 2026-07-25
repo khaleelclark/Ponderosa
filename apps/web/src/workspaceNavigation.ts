@@ -22,6 +22,19 @@ export interface WorkspaceAgentRow {
 
 const activeStatus = (status: AgentLifecycleStatus): boolean => status === "running" || status === "compacting";
 
+const ORDINARY_MESSAGE_NOTIFICATION_KINDS = new Set<WorkspaceNotificationDto["kind"]>([
+  "direct_responses",
+  "project_responses",
+  "mentions",
+  "all_messages",
+  "everyone",
+  "broadcasts",
+]);
+
+export function isOrdinaryMessageNotification(notification: WorkspaceNotificationDto): boolean {
+  return ORDINARY_MESSAGE_NOTIFICATION_KINDS.has(notification.kind);
+}
+
 export function unreadByConversation(notifications: WorkspaceNotificationDto[]): Map<string, number> {
   const unread = new Map<string, number>();
   for (const notification of notifications) {
@@ -37,7 +50,7 @@ export function hasUnreadConversationNotifications(
 ): boolean {
   return Boolean(conversationId && notifications.some((notification) =>
     notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open" &&
-    ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(notification.kind)));
+    isOrdinaryMessageNotification(notification)));
 }
 
 export function workspaceAgents(snapshots: WorkspaceProjectSnapshot[]): WorkspaceAgentRow[] {

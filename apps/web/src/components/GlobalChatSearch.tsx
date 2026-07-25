@@ -25,6 +25,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
+import { useNotifications } from "../hooks/queries";
+import { isOpenAttention } from "../attention";
 
 export type GlobalSearchSelection =
   | { projectId: string; chat: GlobalChatSearchResultDto["chat"]; messageId: string }
@@ -171,6 +173,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
 }): JSX.Element {
   const theme = useTheme();
   const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
+  const notifications = useNotifications();
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState<"all" | "projects" | "chats" | "agents" | "files">("all");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -190,6 +193,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
     refetchOnReconnect: true,
   });
   const unread = useMemo(() => search.data?.results.filter((result) => result.unread) ?? [], [search.data]);
+  const openAttentionCount = (notifications.data ?? []).filter(isOpenAttention).length;
   const visibleResults = useMemo(() => (search.data?.results ?? []).filter((result) => {
     if (scope === "all") return true;
     if (scope === "chats") return result.chat.kind === "conversation";
@@ -311,7 +315,7 @@ export function GlobalChatSearch({ open, onClose, onSelect, onOpenInNewTab }: {
       </>}
       </Box>
       {debouncedQuery && !search.isFetching && visibleResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{scope === "projects" || scope === "files" ? `${scope === "projects" ? "Project" : "File"} discovery is not yet indexed; search matching messages instead.` : `No ${scope === "all" ? "messages" : scope} match “${debouncedQuery}”.`}</Typography> : null}
-      {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>You’re all caught up.</Typography> : null}
+      {!debouncedQuery && !search.isFetching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {search.data?.truncated ? <Alert severity="info" sx={{ mt: 1 }}>Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert> : null}
     </DialogContent>
   </Dialog>;

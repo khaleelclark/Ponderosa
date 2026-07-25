@@ -23,6 +23,17 @@ function resolveWorkspaceReviewPath(
   return changes[0]?.path;
 }
 
+function recordedDiffTotals(diff?: string): { additions: number; deletions: number } | undefined {
+  if (!diff) return undefined;
+  let additions = 0;
+  let deletions = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
 export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onOpenInNewTab }: {
   projectId: string;
   agentId?: string;
@@ -42,20 +53,22 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const [reviewMode, setReviewMode] = useState<"diff" | "file">("diff");
   const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<string>>();
   const lastInitialPath = useRef(initialPath);
-  const activePath = resolveWorkspaceReviewPath(changes, selectedPath, initialPath);
+  const recordedMode = workspace.data?.isGitRepository === false;
+  const reviewEntries = recordedMode ? files : changes;
+  const activePath = resolveWorkspaceReviewPath(reviewEntries, selectedPath, initialPath);
 
   useEffect(() => {
     setSelectedPath((current) => {
       const initialChanged = lastInitialPath.current !== initialPath;
       lastInitialPath.current = initialPath;
-      return resolveWorkspaceReviewPath(changes, initialChanged ? undefined : current, initialPath);
+      return resolveWorkspaceReviewPath(reviewEntries, initialChanged ? undefined : current, initialPath);
     });
-  }, [changes, initialPath]);
+  }, [initialPath, reviewEntries]);
 
   const review = useQuery({
     queryKey: queryKeys.workspaceFile.detail(projectId, activePath),
     queryFn: () => api.getWorkspaceFile(projectId, activePath ?? ""),
-    enabled: Boolean(activePath),
+    enabled: Boolean(activePath && !recordedMode),
     refetchInterval: running ? 1_500 : false,
   });
   const selectedChange = changes.find((change) => change.path === activePath);
@@ -71,28 +84,57 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
     staleTime: Infinity,
   });
   const selectedProvenance = selectedProvenanceQuery.data ?? selectedProvenanceSummary;
+  const recordedDiff = selectedProvenance && "diff" in selectedProvenance && typeof selectedProvenance.diff === "string"
+    ? selectedProvenance.diff
+    : undefined;
+  const recordedTotals = recordedDiffTotals(recordedDiff);
+  const displayedChangeCount = recordedMode ? files.length : changes.length;
 
   return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
       <Typography variant="overline" color="text.secondary">Review</Typography>
       {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
-      <Chip size="small" label={`${changes.length} change${changes.length === 1 ? "" : "s"}`} color={changes.length ? "warning" : "default"} />
+      <Chip size="small" label={`${displayedChangeCount} change${displayedChangeCount === 1 ? "" : "s"}`} color={displayedChangeCount ? "warning" : "default"} />
       <Box sx={{ flex: 1 }} />
       <Tooltip title="Refresh Workspace Changes"><IconButton aria-label="Refresh workspace changes" size="small" onClick={() => void workspace.refetch()}><RefreshIcon /></IconButton></Tooltip>
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
-        : workspace.data && !workspace.data.isGitRepository ? <Box sx={{ minHeight: 0, overflow: "auto", p: 1.5 }}>
+        : recordedMode ? <Box sx={{ minHeight: 0, overflow: "auto", p: 1.5 }}>
           <Alert severity="info" sx={{ mb: 1.5 }}>Showing recorded agent file changes. This working folder is not a Git repository, so no Git diff is available.</Alert>
-          {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Stack spacing={0.75}>
-            {files.map((file) => <Paper key={`${file.path}:${file.lastSeq}`} variant="outlined" sx={{ p: 1.25 }}>
-              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
-                <Chip size="small" label={`${file.executionCount} run${file.executionCount === 1 ? "" : "s"}`} />
+          {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(240px, 34%) minmax(0, 1fr)" }, gap: 1.5 }}>
+            <Stack spacing={0.75}>
+              {files.map((file) => <Button
+                key={`${file.path}:${file.lastSeq}`}
+                variant={file.path === activePath ? "contained" : "outlined"}
+                color={file.path === activePath ? "primary" : "inherit"}
+                onClick={() => setSelectedPath(file.path)}
+                sx={{ justifyContent: "flex-start", textAlign: "left", textTransform: "none" }}
+              >
+                <Box sx={{ minWidth: 0, width: "100%" }}>
+                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{file.path}</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {file.kind} · {file.executionCount} run{file.executionCount === 1 ? "" : "s"}{file.diffAvailable ? " · preview available" : ""}
+                  </Typography>
+                </Box>
+              </Button>)}
+            </Stack>
+            <Paper variant="outlined" sx={{ minWidth: 0, p: 1.25, overflow: "auto" }}>
+              <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
+                <Typography variant="subtitle2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{activePath}</Typography>
+                {recordedTotals ? <>
+                  <Chip size="small" color="success" variant="outlined" label={`+${recordedTotals.additions}`} />
+                  <Chip size="small" color="error" variant="outlined" label={`−${recordedTotals.deletions}`} />
+                </> : null}
+                {activePath && onOpenInNewTab ? <Button size="small" startIcon={<OpenInNewIcon />} onClick={() => onOpenInNewTab(activePath)}>Open in New Tab</Button> : null}
               </Stack>
-            </Paper>)}
-          </Stack>}
+              {selectedProvenanceQuery.isLoading ? <CircularProgress size={22} />
+                : selectedProvenanceQuery.isError ? <Alert severity="error">Recorded change details could not be loaded. {String(selectedProvenanceQuery.error)}</Alert>
+                  : recordedDiff ? <UnifiedDiffViewer diff={recordedDiff} />
+                    : <Alert severity="info">This recorded change has no textual preview. The canonical path and execution provenance remain available.</Alert>}
+            </Paper>
+          </Box>}
         </Box>
           : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
             : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>

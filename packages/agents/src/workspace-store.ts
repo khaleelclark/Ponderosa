@@ -34,6 +34,13 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "push_delivery"; delivery: PushDeliveryRecord };
 };
 
+export interface DecisionEventProjection {
+  kind: "decision" | "decision_response";
+  id: string;
+  createdAt: string;
+  decision: DecisionDto;
+}
+
 export interface PushDeliveryRecord {
   notificationId: string;
   deviceId: string;
@@ -86,6 +93,9 @@ export class WorkspaceStore {
   private readonly decisionIdsByAgent = new Map<string, string[]>();
   private readonly decisionIdsByConversationAgent = new Map<string, string[]>();
   private readonly decisionIdsByRun = new Map<string, Set<string>>();
+  private readonly decisionEventIds: string[] = [];
+  private readonly decisionEventIdsByProject = new Map<string, string[]>();
+  private readonly decisionEventIdsByConversation = new Map<string, string[]>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
   private preferences = DEFAULT_PREFERENCES;
@@ -203,10 +213,17 @@ export class WorkspaceStore {
       });
     }
     if (record.mutation?.kind === "decision") {
-      const isNew = !this.decisions.has(record.mutation.decision.id);
+      const previous = this.decisions.get(record.mutation.decision.id);
+      const isNew = !previous;
       this.decisions.set(record.mutation.decision.id, record.mutation.decision);
       this.decisionIdempotency.set(record.mutation.idempotencyKey, record.mutation.decision.id);
-      if (isNew) this.indexDecision(record.mutation.decision);
+      if (isNew) {
+        this.indexDecision(record.mutation.decision);
+        this.indexDecisionEvent(record.mutation.decision, "decision");
+      }
+      if (record.mutation.decision.response?.respondedAt && !previous?.response?.respondedAt) {
+        this.indexDecisionEvent(record.mutation.decision, "decision_response");
+      }
       for (const [id, notification] of this.notifications) {
         if (notification.decision?.id !== record.mutation.decision.id) continue;
         this.notifications.set(id, {
@@ -253,6 +270,50 @@ export class WorkspaceStore {
     const runIds = this.decisionIdsByRun.get(decision.runId) ?? new Set<string>();
     runIds.add(decision.id);
     this.decisionIdsByRun.set(decision.runId, runIds);
+  }
+
+  private decisionEventId(decisionId: string, kind: DecisionEventProjection["kind"]): string {
+    return kind === "decision" ? `decision:${decisionId}` : `decision-response:${decisionId}`;
+  }
+
+  private decisionEventForId(eventId: string): DecisionEventProjection | undefined {
+    const response = eventId.startsWith("decision-response:");
+    const decisionId = eventId.slice(response ? "decision-response:".length : "decision:".length);
+    const decision = this.decisions.get(decisionId);
+    if (!decision) return undefined;
+    const createdAt = response ? decision.response?.respondedAt : decision.createdAt;
+    if (!createdAt) return undefined;
+    return {
+      kind: response ? "decision_response" : "decision",
+      id: eventId,
+      createdAt,
+      decision,
+    };
+  }
+
+  private decisionEventOrder(leftId: string, rightId: string): number {
+    const left = this.decisionEventForId(leftId)!;
+    const right = this.decisionEventForId(rightId)!;
+    return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+  }
+
+  private insertDecisionEventId(index: string[], eventId: string): void {
+    if (index.includes(eventId)) return;
+    index.push(eventId);
+    index.sort((left, right) => this.decisionEventOrder(left, right));
+  }
+
+  private indexDecisionEvent(decision: DecisionDto, kind: DecisionEventProjection["kind"]): void {
+    const eventId = this.decisionEventId(decision.id, kind);
+    this.insertDecisionEventId(this.decisionEventIds, eventId);
+    const projectIds = this.decisionEventIdsByProject.get(decision.projectId) ?? [];
+    this.insertDecisionEventId(projectIds, eventId);
+    this.decisionEventIdsByProject.set(decision.projectId, projectIds);
+    if (decision.conversationId) {
+      const conversationIds = this.decisionEventIdsByConversation.get(decision.conversationId) ?? [];
+      this.insertDecisionEventId(conversationIds, eventId);
+      this.decisionEventIdsByConversation.set(decision.conversationId, conversationIds);
+    }
   }
 
   append(event: WorkspaceEvent, mutation?: CanonicalWorkspaceEvent["mutation"]): WorkspaceEventEnvelope {
@@ -421,7 +482,7 @@ export class WorkspaceStore {
   readConversationMessages(conversationId: string): void {
     const notificationIds = this.listNotifications()
       .filter((item) => item.conversationId === conversationId && !item.readAt &&
-        ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(item.kind))
+        ["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts"].includes(item.kind))
       .map((item) => item.id);
     if (!notificationIds.length) return;
     const readAt = new Date().toISOString();
@@ -444,11 +505,12 @@ export class WorkspaceStore {
   }
 
   readAllNotifications(): number {
-    const unread = this.listNotifications().filter((item) => !item.readAt);
+    const unread = this.listNotifications().filter((item) => !item.readAt &&
+      ["direct_responses", "project_responses", "mentions", "all_messages", "everyone", "broadcasts"].includes(item.kind));
     if (unread.length === 0) return 0;
     this.append(
       { type: "notification_changed", action: "read" },
-      { kind: "notifications_read_all", readAt: new Date().toISOString() },
+      { kind: "notifications_read_ids", notificationIds: unread.map((item) => item.id), readAt: new Date().toISOString() },
     );
     return unread.length;
   }
@@ -576,6 +638,50 @@ export class WorkspaceStore {
       selected.push(decision);
     }
     return { decisions: selected, hasMore };
+  }
+
+  listDecisionEventPage(input: {
+    projectId?: string;
+    conversationId?: string;
+    limit: number;
+    before?: { createdAt: string; id: string };
+  }): { events: DecisionEventProjection[]; hasMore: boolean } {
+    const limit = Math.max(1, Math.min(input.limit, 500));
+    const ids = input.conversationId
+      ? this.decisionEventIdsByConversation.get(input.conversationId) ?? []
+      : input.projectId
+        ? this.decisionEventIdsByProject.get(input.projectId) ?? []
+        : this.decisionEventIds;
+    let start = 0;
+    if (input.before) {
+      let low = 0;
+      let high = ids.length;
+      while (low < high) {
+        const middle = low + Math.floor((high - low) / 2);
+        const event = this.decisionEventForId(ids[middle]!);
+        const isOlder = Boolean(event && (
+          event.createdAt < input.before.createdAt ||
+          (event.createdAt === input.before.createdAt && event.id < input.before.id)
+        ));
+        if (isOlder) high = middle;
+        else low = middle + 1;
+      }
+      start = low;
+    }
+    const selected: DecisionEventProjection[] = [];
+    let hasMore = false;
+    for (let index = start; index < ids.length; index += 1) {
+      const event = this.decisionEventForId(ids[index]!);
+      if (!event ||
+          (input.projectId && event.decision.projectId !== input.projectId) ||
+          (input.conversationId && event.decision.conversationId !== input.conversationId)) continue;
+      if (selected.length === limit) {
+        hasMore = true;
+        break;
+      }
+      selected.push(event);
+    }
+    return { events: selected, hasMore };
   }
 
   decisionsForRuns(runIds: ReadonlySet<string>): DecisionDto[] {

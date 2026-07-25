@@ -4165,13 +4165,56 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const conversation = store.getConversation(conversationId);
     if (!conversation) return undefined;
     const limit = input.limit ?? 100;
-    const page = store.getProjectedConversationMessagePage(conversationId, "main", { limit, cursor: input.cursor, focusId: input.focusId });
+    type CombinedCursor = {
+      v: 1;
+      messages?: string;
+      messagesDone?: boolean;
+      decisions?: { createdAt: string; id: string };
+      decisionsDone?: boolean;
+    };
+    let combined: CombinedCursor | undefined;
+    if (input.cursor) {
+      try {
+        const parsed = JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+        if (parsed.v === 1) combined = parsed as CombinedCursor;
+      } catch {
+        // A pre-composite cursor remains a valid message cursor.
+      }
+    }
+    const page = combined?.messagesDone
+      ? { messages: [], hasMore: false as const }
+      : store.getProjectedConversationMessagePage(conversationId, "main", {
+        limit,
+        cursor: combined ? combined.messages : input.cursor,
+        focusId: input.focusId,
+      });
+    const decisionPage = combined?.decisionsDone
+      ? { events: [], hasMore: false as const }
+      : workspace.listDecisionEventPage({
+      projectId: conversation.projectId,
+      conversationId,
+      limit,
+        before: combined?.decisions,
+      });
+    const oldestDecisionEvent = decisionPage.events.at(-1);
+    const hasMore = page.hasMore || decisionPage.hasMore;
+    const nextCursor: CombinedCursor = {
+      v: 1,
+      ...(page.hasMore && page.cursor ? { messages: page.cursor } : { messagesDone: true }),
+      ...(decisionPage.hasMore && oldestDecisionEvent
+        ? { decisions: { createdAt: oldestDecisionEvent.createdAt, id: oldestDecisionEvent.id } }
+        : { decisionsDone: true }),
+    };
     return {
       conversation,
       agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
       messages: withMessagePresentation(conversation.projectId, page.messages),
-      decisions: workspace.listDecisions({ conversationId }),
-      history: { limit, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) },
+      decisionEvents: decisionPage.events,
+      history: {
+        limit,
+        hasMore,
+        ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}),
+      },
     };
   }
 
@@ -11051,7 +11094,63 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(400).send({ error: "cursor must be a non-empty opaque string of at most 4096 characters" });
     }
     try {
-      return store.getAllChatPage({ limit, cursor: request.query.cursor }) satisfies AllChatPageDto;
+      type CombinedCursor = {
+        v: 1;
+        messages?: string;
+        messagesDone?: boolean;
+        decisions?: { createdAt: string; id: string };
+        decisionsDone?: boolean;
+      };
+      let combined: CombinedCursor | undefined;
+      if (request.query.cursor) {
+        try {
+          const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
+          if (parsed.v === 1) combined = parsed as CombinedCursor;
+        } catch {
+          // A pre-composite cursor remains a valid message cursor.
+        }
+      }
+      const messagePage = combined?.messagesDone
+        ? { items: [], history: { limit, hasMore: false } }
+        : store.getAllChatPage({ limit, cursor: combined ? combined.messages : request.query.cursor });
+      const decisionPage = combined?.decisionsDone
+        ? { events: [], hasMore: false as const }
+        : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
+      const decisions = decisionPage.events
+        .flatMap((event) => {
+          const decision = event.decision;
+          const project = store.getProject(decision.projectId);
+          const conversation = decision.conversationId ? store.getConversation(decision.conversationId) : undefined;
+          if (!project || !conversation) return [];
+          return [{
+            kind: event.kind,
+            id: event.id,
+            createdAt: event.createdAt,
+            decision,
+            project: { id: project.id, label: project.label },
+            source: { kind: "project" as const, conversationId: conversation.id, title: conversation.title },
+          }];
+        });
+      const oldestDecisionEvent = decisionPage.events.at(-1);
+      const hasMore = messagePage.history.hasMore || decisionPage.hasMore;
+      const nextCursor: CombinedCursor = {
+        v: 1,
+        ...(messagePage.history.hasMore && messagePage.history.cursor
+          ? { messages: messagePage.history.cursor }
+          : { messagesDone: true }),
+        ...(decisionPage.hasMore && oldestDecisionEvent
+          ? { decisions: { createdAt: oldestDecisionEvent.createdAt, id: oldestDecisionEvent.id } }
+          : { decisionsDone: true }),
+      };
+      return {
+        items: messagePage.items,
+        decisions,
+        history: {
+          limit,
+          hasMore,
+          ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}),
+        },
+      } satisfies AllChatPageDto;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
     }

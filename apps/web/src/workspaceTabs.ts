@@ -34,11 +34,18 @@ export function initializeWorkspaceTabSession(
     const home = createWorkspaceTab({ kind: "home" }, now);
     return { tabs: [home, ...restored.tabs], activeKey: home.key };
   }
-  if (restored.tabs.length > 0) {
-    return { tabs: restored.tabs, activeKey: restored.activeKey ?? restored.tabs[0]!.key };
+  const routeKey = workspaceTabKey(initialRoute);
+  const existing = restored.tabs.find((tab) => workspaceTabKey(tab.route) === routeKey);
+  if (existing) {
+    return {
+      tabs: restored.tabs.map((tab) => tab.key === existing.key
+        ? { ...tab, route: initialRoute, lastActivatedAt: now }
+        : tab),
+      activeKey: existing.key,
+    };
   }
-  const first = createWorkspaceTab(initialRoute, now);
-  return { tabs: [first], activeKey: first.key };
+  const linked = createWorkspaceTab(initialRoute, now);
+  return { tabs: [linked, ...restored.tabs], activeKey: linked.key };
 }
 
 interface PersistedWorkspaceTabs {
