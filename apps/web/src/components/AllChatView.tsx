@@ -725,7 +725,7 @@ export function AllChatView({
             return;
           mobileComposer.finishTransition();
         }}
-        sx={{ minWidth: 0 }}
+        sx={{ minWidth: 0, bgcolor: "transparent" }}
       >
         {notice ? (
           <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>

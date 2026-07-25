@@ -298,6 +298,8 @@ export function ProjectShell({
         onRefreshCapabilities={refreshCapabilities}
         projectedStatus={statusByAgentId.get(route.agentId)}
         projectedHealth={healthByAgentId.get(route.agentId)}
+        statusByAgentId={statusByAgentId}
+        healthByAgentId={healthByAgentId}
         agents={agents}
         conversations={conversations}
         onOpenProject={() => navigate({ kind: "project", projectId })}

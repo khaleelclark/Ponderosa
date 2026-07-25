@@ -89,6 +89,10 @@ function GeneralSettingsSection({
   onPreferences,
   onInstructions,
   onLimit,
+  onSaveAgentDefaults,
+  agentDefaultsSaving,
+  agentDefaultsSaved,
+  agentDefaultsSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
@@ -98,6 +102,10 @@ function GeneralSettingsSection({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onInstructions(value: string): void;
   onLimit(value: string): void;
+  onSaveAgentDefaults(): void;
+  agentDefaultsSaving: boolean;
+  agentDefaultsSaved: boolean;
+  agentDefaultsSaveError?: string;
 }): JSX.Element {
   return (
     <Stack spacing={2.5}>
@@ -150,16 +158,24 @@ function GeneralSettingsSection({
           <Button
             variant="contained"
             sx={{ alignSelf: "flex-start" }}
-            disabled={parseAgentRunConcurrencyLimit(limit) === undefined}
-            onClick={() =>
-              onPreferences({
-                globalInstructions: instructions,
-                maxConcurrentAgentRuns: parseAgentRunConcurrencyLimit(limit)!,
-              })
+            disabled={
+              agentDefaultsSaving ||
+              parseAgentRunConcurrencyLimit(limit) === undefined
             }
+            onClick={onSaveAgentDefaults}
           >
-            Save Agent Defaults
+            {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
           </Button>
+          {agentDefaultsSaved ? (
+            <Alert severity="success" role="status">
+              Agent defaults saved successfully.
+            </Alert>
+          ) : null}
+          {agentDefaultsSaveError ? (
+            <Alert severity="error" role="alert">
+              {agentDefaultsSaveError}
+            </Alert>
+          ) : null}
         </Stack>
       </Paper>
     </Stack>
@@ -423,6 +439,18 @@ export function WorkspaceSettingsView({
       );
     },
   });
+  const saveAgentDefaults = useMutation({
+    mutationFn: (patch: {
+      globalInstructions: string;
+      maxConcurrentAgentRuns: number;
+    }) => api.updateWorkspacePreferences(patch),
+    onSuccess: updated => {
+      queryClient.setQueryData<WorkspacePreferencesDto>(
+        queryKeys.workspacePreferences.all,
+        updated,
+      );
+    },
+  });
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
@@ -441,8 +469,30 @@ export function WorkspaceSettingsView({
             limit={limit}
             onToggleColorMode={onToggleColorMode}
             onPreferences={onPreferences}
-            onInstructions={setInstructions}
-            onLimit={setLimit}
+            onInstructions={value => {
+              saveAgentDefaults.reset();
+              setInstructions(value);
+            }}
+            onLimit={value => {
+              saveAgentDefaults.reset();
+              setLimit(value);
+            }}
+            onSaveAgentDefaults={() =>
+              saveAgentDefaults.mutate({
+                globalInstructions: instructions,
+                maxConcurrentAgentRuns:
+                  parseAgentRunConcurrencyLimit(limit)!,
+              })
+            }
+            agentDefaultsSaving={saveAgentDefaults.isPending}
+            agentDefaultsSaved={saveAgentDefaults.isSuccess}
+            agentDefaultsSaveError={
+              saveAgentDefaults.isError
+                ? saveAgentDefaults.error instanceof Error
+                  ? saveAgentDefaults.error.message
+                  : "Agent defaults could not be saved."
+                : undefined
+            }
           />
         ) : null}
         {section === "notifications" ? (

@@ -1953,6 +1953,7 @@ export function ConversationView({
             return;
           mobileComposer.finishTransition();
         }}
+        sx={{ bgcolor: "transparent" }}
       >
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>

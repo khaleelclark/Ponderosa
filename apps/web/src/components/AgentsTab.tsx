@@ -195,13 +195,14 @@ export function AgentsTab({
   toolbarControls,
   scopeLabel,
   collection,
+  organizationRootAgentId,
 }: {
   agents: AgentDto[];
   projectId?: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
-  statusByAgentId: Map<string, AgentStatus>;
-  healthByAgentId: Map<string, AgentHealthDto>;
+  statusByAgentId: ReadonlyMap<string, AgentStatus>;
+  healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
@@ -219,6 +220,9 @@ export function AgentsTab({
     totalCount?: number;
     variant?: "page" | "embedded";
   };
+  /** Limit the roster to descendants of this Agent while retaining the full
+   * Project organization for parent labels and hierarchy validation. */
+  organizationRootAgentId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [statusFilters, setStatusFilters] = useState<StatusFilter[]>([]);
@@ -250,21 +254,7 @@ export function AgentsTab({
     id ? (conversations.find((master) => master.id === id)?.title ?? "Unknown Project chat") : "Unassigned";
 
   const organizationRows = orderedAgentOrganization(agents);
-  const orderRank = new Map(displayOrder?.map((id, index) => [id, index]));
-  const matchingAgentIds = new Set(organizationRows.filter(({ agent }) => {
-    const status = statusByAgentId.get(agent.id) ?? "idle";
-    if (!matchesAgentStatusFilters(agent, status, statusFilters)) return false;
-    if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
-      return false;
-    }
-    if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
-    return true;
-  }).map(({ agent }) => agent.id));
-  const filtersActive = Boolean(search.trim() || statusFilters.length || masterFilter !== "all");
   const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
-  const contextAgentIds = organizationView === "hierarchy"
-    ? agentHierarchyContextIds(agents, matchingAgentIds)
-    : new Set(matchingAgentIds);
   const childrenByManager = new Map<string, AgentDto[]>();
   for (const agent of agents) {
     if (!agent.managerAgentId || !agentsById.has(agent.managerAgentId)) continue;
@@ -284,14 +274,46 @@ export function AgentsTab({
     visit(agentId);
     return result;
   };
+  const scopedAgentIds = organizationRootAgentId
+    ? new Set(descendantIds(organizationRootAgentId))
+    : new Set(organizationRows.map(({ agent }) => agent.id));
+  const rootDepth = organizationRootAgentId
+    ? (organizationRows.find(({ agent }) => agent.id === organizationRootAgentId)?.depth ?? -1)
+    : -1;
+  const scopedOrganizationRows = organizationRows
+    .filter(({ agent }) => scopedAgentIds.has(agent.id))
+    .map(({ agent, depth }) => ({
+      agent,
+      depth: organizationRootAgentId
+        ? Math.max(0, depth - rootDepth - 1)
+        : depth,
+    }));
+  const scopedAgents = scopedOrganizationRows.map(({ agent }) => agent);
+  const orderRank = new Map(displayOrder?.map((id, index) => [id, index]));
+  const matchingAgentIds = new Set(scopedOrganizationRows.filter(({ agent }) => {
+    const status = statusByAgentId.get(agent.id) ?? "idle";
+    if (!matchesAgentStatusFilters(agent, status, statusFilters)) return false;
+    if (masterFilter !== "all" && !agentBelongsToConversation(agent, masterFilter)) {
+      return false;
+    }
+    if (search.trim() && !agent.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
+    return true;
+  }).map(({ agent }) => agent.id));
+  const filtersActive = Boolean(search.trim() || statusFilters.length || masterFilter !== "all");
+  const contextAgentIds = organizationView === "hierarchy"
+    ? new Set(
+        [...agentHierarchyContextIds(agents, matchingAgentIds)]
+          .filter((id) => scopedAgentIds.has(id)),
+      )
+    : new Set(matchingAgentIds);
   const filtered = (organizationView === "flat"
-    ? organizationRows.filter(({ agent }) => matchingAgentIds.has(agent.id)).map(({ agent }) => ({ agent, depth: 0 }))
-    : organizationRows.filter(({ agent }) => contextAgentIds.has(agent.id) && (filtersActive || !agentHasCollapsedAncestor(agent, agentsById, collapsedAgentIds))))
+    ? scopedOrganizationRows.filter(({ agent }) => matchingAgentIds.has(agent.id)).map(({ agent }) => ({ agent, depth: 0 }))
+    : scopedOrganizationRows.filter(({ agent }) => contextAgentIds.has(agent.id) && (filtersActive || !agentHasCollapsedAncestor(agent, agentsById, collapsedAgentIds))))
     .sort((left, right) => organizationView === "flat" && displayOrder
       ? (orderRank.get(left.agent.id) ?? Number.MAX_SAFE_INTEGER) - (orderRank.get(right.agent.id) ?? Number.MAX_SAFE_INTEGER)
       : 0);
-  const statusOptions = agentStatusFilterOptions(agents, statusByAgentId);
-  const activeRunTargets = agents.flatMap((agent) => {
+  const statusOptions = agentStatusFilterOptions(scopedAgents, statusByAgentId);
+  const activeRunTargets = scopedAgents.flatMap((agent) => {
     const runId = healthByAgentId.get(agent.id)?.runtimeActivity?.executionId;
     return runId ? [{ agentId: agent.id, runId }] : [];
   });
@@ -325,7 +347,7 @@ export function AgentsTab({
       : collection.detail,
   } : undefined;
   const headerActions = <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-    {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()}>New Agent</Button> : null}
+    {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent(organizationRootAgentId)}>New Agent</Button> : null}
     {selectionMode ? <>
       <Button color="inherit" size="small" onClick={() => {
         const visibleIds = filtered.map(({ agent }) => agent.id);
@@ -343,7 +365,7 @@ export function AgentsTab({
       <MenuItem disabled={activeRunTargets.length === 0 || stoppingAll} onClick={() => { setActionsAnchor(undefined); void stopAll(); }}>Stop All</MenuItem>
       <MenuItem disabled={agents.length === 0 || !selectionAllowed} onClick={() => { setActionsAnchor(undefined); setSelectionMode(true); }}>Select Agents</MenuItem>
       <MenuItem disabled={!projectId} onClick={() => { setActionsAnchor(undefined); setImportOpen(true); }}><FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />Import Agent or Organization</MenuItem>
-      <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
+      <MenuItem onClick={() => { setActionsAnchor(undefined); onNewAgent(organizationRootAgentId); }}><AddIcon fontSize="small" sx={{ mr: 1 }} />New Agent</MenuItem>
     </Menu> : null}
   </Stack>;
   return (
@@ -370,7 +392,7 @@ export function AgentsTab({
         {statusAnchor ? <Menu anchorEl={statusAnchor} open onClose={() => setStatusAnchor(undefined)}>
           <MenuItem onClick={() => setStatusFilters([])}>
             <Checkbox checked={statusFilters.length === 0} />
-            All ({agents.length})
+            All ({scopedAgents.length})
           </MenuItem>
           {statusOptions.filter((option) => option.value !== "all").map((option) => <MenuItem key={option.value} onClick={() => setStatusFilters((current) => current.includes(option.value as StatusFilter) ? current.filter((value) => value !== option.value) : [...current, option.value as StatusFilter])}>
             <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />
@@ -411,8 +433,14 @@ export function AgentsTab({
       <Box sx={{ minHeight: 0, minWidth: 0, overflowY: collection ? "visible" : "auto", overflowX: "hidden", p: collection ? 0 : { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
         {filtered.length === 0 ? (
           <CollectionEmptyState
-            title={agents.length === 0 ? "No Agents yet" : "No Agents match these filters"}
-            detail={agents.length === 0 ? "Create an Agent to get started." : "Try a different search, status, Project, or Chat filter."}
+            title={scopedAgents.length === 0
+              ? organizationRootAgentId ? "No delegated Agents yet" : "No Agents yet"
+              : "No Agents match these filters"}
+            detail={scopedAgents.length === 0
+              ? organizationRootAgentId
+                ? "Create a delegated Agent to build this organization."
+                : "Create an Agent to get started."
+              : "Try a different search, status, Project, or Chat filter."}
             action={statusFilters.length > 0 || masterFilter !== "all" || search ? {
               label: "Clear Filters",
               onClick: () => {
@@ -437,7 +465,34 @@ export function AgentsTab({
               const contextOnly = !matchingAgentIds.has(agent.id);
               const activeDescendants = descendants.filter((id) => ["running", "waiting", "blocked", "stalled", "interrupted", "compacting"].includes(statusByAgentId.get(id) ?? "idle")).length;
               return (
-                <Stack key={agent.id} role="treeitem" aria-level={depth + 1} aria-expanded={childAgents.length ? expanded : undefined} spacing={0.25} sx={{ ml: organizationView === "hierarchy" ? `${Math.min(depth, 8) * 22}px` : 0, borderLeft: organizationView === "hierarchy" && depth ? 1 : 0, borderColor: "divider", pl: organizationView === "hierarchy" && depth ? 0.75 : 0, opacity: contextOnly ? 0.62 : 1 }}>
+                <Stack
+                  key={agent.id}
+                  role="treeitem"
+                  aria-level={depth + 1}
+                  aria-expanded={childAgents.length ? expanded : undefined}
+                  spacing={0.25}
+                  sx={{
+                    ml:
+                      organizationView === "hierarchy"
+                        ? `${Math.min(depth, 8) * 22}px`
+                        : 0,
+                    pl:
+                      organizationView === "hierarchy" && depth ? 0.75 : 0,
+                    opacity: contextOnly ? 0.62 : 1,
+                    "& > .MuiPaper-root": {
+                      borderLeftWidth:
+                        organizationView === "hierarchy" && depth ? 3 : 1,
+                      borderLeftColor:
+                        organizationView === "hierarchy" && depth
+                          ? "primary.main"
+                          : "divider",
+                      bgcolor:
+                        organizationView === "hierarchy" && depth
+                          ? "action.hover"
+                          : "background.paper",
+                    },
+                  }}
+                >
                   <ResourceRow
                     label={agent.title}
                     description={<>{orphaned ? "Unlinked Agent" : organizationParent ? `Delegated under ${organizationParent.title}` : profile.role}{!expanded && descendants.length ? ` · ${descendants.length} children${activeDescendants ? `, ${activeDescendants} active` : ""}` : ""}</>}
