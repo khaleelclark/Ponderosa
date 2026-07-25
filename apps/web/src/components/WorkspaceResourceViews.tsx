@@ -26,14 +26,15 @@ import type { Route } from "../routing";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
-import { CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import { CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 
-function ResourceToolbar({ search, onSearch, sort, onSort, projectId, projects, onProject }: {
+function ResourceToolbar({ search, onSearch, searchLabel, sort, onSort, projectId, projects, onProject }: {
   search: string; onSearch(value: string): void; sort: ProjectSort; onSort(value: ProjectSort): void;
+  searchLabel: string;
   projectId: string; projects: ProjectDto[]; onProject(value: string): void;
 }): JSX.Element {
-  return <CollectionToolbar search={search} onSearch={onSearch} searchLabel="Search workspace resources">
+  return <CollectionToolbar search={search} onSearch={onSearch} searchLabel={searchLabel}>
     <FormControl size="small" sx={{ minWidth: 190 }}><InputLabel id="resource-project-filter">Project</InputLabel><Select labelId="resource-project-filter" label="Project" value={projectId} onChange={(event) => onProject(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}</Select></FormControl>
     <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="resource-sort">Sort</InputLabel><Select labelId="resource-sort" label="Sort" value={sort} onChange={(event) => onSort(event.target.value as ProjectSort)}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
   </CollectionToolbar>;
@@ -45,16 +46,18 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
 }): JSX.Element {
   const queries = useProjectConversations(projects);
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
+  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
   const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
   const filtered = rows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
+  const filtersActive = Boolean(projectId || search.trim());
   return <CollectionWorkspace
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
-    detail={`${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
+    detail={filtersActive ? `${ordered.length} of ${rows.length} Project Chats` : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
     listLabel="All Chats"
   >
     {ordered.map(({ project, conversation }) => {
@@ -79,7 +82,10 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         }}
       />;
     })}
-    {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <Alert severity="info">No Chats match these filters.</Alert> : null}
+    {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <CollectionEmptyState
+      title={rows.length === 0 && !filtersActive ? "No Chats yet" : "No Chats match these filters"}
+      detail={rows.length === 0 && !filtersActive ? "Create a Chat to get started." : "Try a different search or Project filter."}
+    /> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </CollectionWorkspace>;
 }
@@ -109,6 +115,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
     <AgentsTab collection={{
       title: "All Agents",
       detail: `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
+      totalCount: rows.length,
     }} toolbarControls={<>
       <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
       <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
@@ -128,12 +135,13 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   const rows = (triggers.data ?? []).flatMap((trigger) => { const destination = destinations.get(trigger.agentId); return destination ? [{ trigger, ...destination }] : []; });
   const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
+  const filtersActive = Boolean(projectId || search.trim());
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
     title="All Triggers"
-    detail={`${rows.length} configured automation${rows.length === 1 ? "" : "s"}`}
+    detail={filtersActive ? `${ordered.length} of ${rows.length} configured automations` : `${rows.length} configured automation${rows.length === 1 ? "" : "s"}`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
     listLabel="All Triggers"
   >
     {ordered.map(({ project, agent, trigger }) => {
@@ -158,7 +166,10 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
         }}
       />;
     })}
-    {!triggers.isLoading && ordered.length === 0 ? <Alert severity="info">No Triggers match these filters.</Alert> : null}
+    {!triggers.isLoading && ordered.length === 0 ? <CollectionEmptyState
+      title={rows.length === 0 && !filtersActive ? "No Triggers yet" : "No Triggers match these filters"}
+      detail={rows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : "Try a different search or Project filter."}
+    /> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </CollectionWorkspace>;
 }

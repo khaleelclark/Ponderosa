@@ -1,6 +1,7 @@
 import SearchIcon from "@mui/icons-material/Search";
 import {
   Box,
+  Button,
   InputAdornment,
   Paper,
   Stack,
@@ -123,6 +124,25 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
   </Stack>;
 }
 
+export function CollectionEmptyState({
+  title,
+  detail,
+  action,
+}: {
+  title: string;
+  detail?: string;
+  action?: { label: string; onClick(): void };
+}): JSX.Element {
+  return <Stack
+    sx={{ py: 6, px: 2, alignItems: "center", textAlign: "center" }}
+    spacing={0.5}
+  >
+    <Typography fontWeight={750}>{title}</Typography>
+    {detail ? <Typography variant="body2" color="text.secondary">{detail}</Typography> : null}
+    {action ? <Button size="small" onClick={action.onClick} sx={{ mt: 0.5 }}>{action.label}</Button> : null}
+  </Stack>;
+}
+
 export interface ResourceRowProps {
   label: string;
   description?: ReactNode;
@@ -201,8 +221,8 @@ export function ResourceRow({
         bgcolor: "transparent",
         color: "inherit",
         font: "inherit",
-      minWidth: 0,
-      flex: 1,
+        minWidth: 0,
+        flex: 1,
         px: 1.5,
         py: 1.25,
         display: "flex",

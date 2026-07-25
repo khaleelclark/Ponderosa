@@ -26,7 +26,7 @@ import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import { CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -253,7 +253,10 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           }
         />;
       })}
-    {filteredSnapshots.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography fontWeight={750}>No projects match “{filter.trim()}”</Typography><Typography variant="body2" color="text.secondary">Try a project name, folder, or chat title.</Typography></Box> : null}
+    {filteredSnapshots.length === 0 ? <CollectionEmptyState
+      title={projects.length === 0 && !filter.trim() ? "No Projects yet" : `No Projects match “${filter.trim()}”`}
+      detail={projects.length === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
+    /> : null}
     <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
   </CollectionWorkspace>;
 }
