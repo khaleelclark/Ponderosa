@@ -72,7 +72,7 @@ function formatContextUsage(
 }
 
 const USAGE_METRICS: Array<[TokenUsageMetric, string]> = [
-  ["inputTokens", "Input tokens"],
+  ["inputTokens", "Input tokens (incl. cached)"],
   ["cachedInputTokens", "Cached input tokens"],
   ["cacheWriteInputTokens", "Cache-write input tokens"],
   ["outputTokens", "Output tokens"],
