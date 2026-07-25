@@ -23,10 +23,10 @@ export interface AgentTelemetryFocus {
   id: string;
 }
 
-export type AgentDetailView = "chat" | "activity" | "triggers" | "artifacts" | "settings" | "technical";
+export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
 export type NewWorkspaceKind = "project" | "chat" | "agent" | "trigger";
 
-const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "triggers", "artifacts", "settings", "technical"];
+const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "triggers", "artifacts", "settings", "technical"];
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);

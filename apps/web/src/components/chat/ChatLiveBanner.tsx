@@ -14,6 +14,8 @@ export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Elem
         width: "fit-content",
         maxWidth: "min(1180px, calc(100% - 24px))",
         mx: "auto",
+        bgcolor: "transparent",
+        boxShadow: "none",
         "& .MuiAlert-message": { py: 0.5, textAlign: "center" },
       }}
     >

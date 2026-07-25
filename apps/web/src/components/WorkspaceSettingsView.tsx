@@ -163,16 +163,24 @@ function GeneralSettingsSection({
           <Button
             variant="contained"
             sx={{ alignSelf: "flex-start" }}
-            disabled={parseAgentRunConcurrencyLimit(limit) === undefined}
-            onClick={() =>
-              onPreferences({
-                globalInstructions: instructions,
-                maxConcurrentAgentRuns: parseAgentRunConcurrencyLimit(limit)!,
-              })
+            disabled={
+              agentDefaultsSaving ||
+              parseAgentRunConcurrencyLimit(limit) === undefined
             }
+            onClick={onSaveAgentDefaults}
           >
-            Save Agent Defaults
+            {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
           </Button>
+          {agentDefaultsSaved ? (
+            <Alert severity="success" role="status">
+              Agent defaults saved successfully.
+            </Alert>
+          ) : null}
+          {agentDefaultsSaveError ? (
+            <Alert severity="error" role="alert">
+              {agentDefaultsSaveError}
+            </Alert>
+          ) : null}
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -629,6 +637,18 @@ export function WorkspaceSettingsView({
       );
     },
   });
+  const saveAgentDefaults = useMutation({
+    mutationFn: (patch: {
+      globalInstructions: string;
+      maxConcurrentAgentRuns: number;
+    }) => api.updateWorkspacePreferences(patch),
+    onSuccess: updated => {
+      queryClient.setQueryData<WorkspacePreferencesDto>(
+        queryKeys.workspacePreferences.all,
+        updated,
+      );
+    },
+  });
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
@@ -649,10 +669,30 @@ export function WorkspaceSettingsView({
             rolloverFraction={rolloverFraction}
             onToggleColorMode={onToggleColorMode}
             onPreferences={onPreferences}
-            onInstructions={setInstructions}
-            onLimit={setLimit}
-            onRolloverTokens={setRolloverTokens}
-            onRolloverFraction={setRolloverFraction}
+            onInstructions={value => {
+              saveAgentDefaults.reset();
+              setInstructions(value);
+            }}
+            onLimit={value => {
+              saveAgentDefaults.reset();
+              setLimit(value);
+            }}
+            onSaveAgentDefaults={() =>
+              saveAgentDefaults.mutate({
+                globalInstructions: instructions,
+                maxConcurrentAgentRuns:
+                  parseAgentRunConcurrencyLimit(limit)!,
+              })
+            }
+            agentDefaultsSaving={saveAgentDefaults.isPending}
+            agentDefaultsSaved={saveAgentDefaults.isSuccess}
+            agentDefaultsSaveError={
+              saveAgentDefaults.isError
+                ? saveAgentDefaults.error instanceof Error
+                  ? saveAgentDefaults.error.message
+                  : "Agent defaults could not be saved."
+                : undefined
+            }
           />
         ) : null}
         {section === "notifications" ? (
