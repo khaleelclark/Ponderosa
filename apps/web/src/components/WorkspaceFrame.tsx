@@ -56,13 +56,27 @@ export function TabbedWorkspaceFrame<T extends string>({
 }: TabbedWorkspaceFrameProps<T>): JSX.Element {
   return <Box className="mobile-chat-chrome mobile-chat-header" sx={{ minWidth: 0, bgcolor: "background.default" }}>
     <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
-      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", minWidth: 0 }}>
+      <Stack
+        direction={{ xs: "column", sm: "row" }}
+        spacing={1}
+        useFlexGap
+        sx={{ alignItems: { xs: "stretch", sm: "center" }, minWidth: 0 }}
+      >
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <IconTitle icon={icon} title={title} component="h1" />
           {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
           {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}
         </Box>
-        {status || actions ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", justifyContent: "flex-end" }}>{status}{actions}</Stack> : null}
+        {status || actions ? <Stack
+          direction="row"
+          spacing={1}
+          useFlexGap
+          flexWrap="wrap"
+          sx={{
+            alignItems: "center",
+            justifyContent: { xs: "flex-start", sm: "flex-end" },
+          }}
+        >{status}{actions}</Stack> : null}
       </Stack>
     </Box>
     <WorkspaceTabBar {...tabs} />

@@ -28,12 +28,6 @@ export function initializeWorkspaceTabSession(
   initialRoute: Route,
   now = Date.now(),
 ): Required<WorkspaceTabSession> {
-  if (initialRoute.kind === "home") {
-    const existingHome = restored.tabs.find((tab) => tab.route.kind === "home");
-    if (existingHome) return { tabs: restored.tabs, activeKey: existingHome.key };
-    const home = createWorkspaceTab({ kind: "home" }, now);
-    return { tabs: [home, ...restored.tabs], activeKey: home.key };
-  }
   const routeKey = workspaceTabKey(initialRoute);
   const existing = restored.tabs.find((tab) => workspaceTabKey(tab.route) === routeKey);
   if (existing) {
@@ -43,6 +37,16 @@ export function initializeWorkspaceTabSession(
         : tab),
       activeKey: existing.key,
     };
+  }
+  if (restored.tabs.length > 0) {
+    const activeKey = restored.activeKey ?? restored.tabs[0]!.key;
+    const reusable = reusableWorkspaceTab(restored.tabs, activeKey, initialRoute);
+    if (reusable?.key === activeKey) {
+      return {
+        tabs: navigateWorkspaceTab(restored.tabs, activeKey, initialRoute, now),
+        activeKey,
+      };
+    }
   }
   const linked = createWorkspaceTab(initialRoute, now);
   return { tabs: [linked, ...restored.tabs], activeKey: linked.key };
