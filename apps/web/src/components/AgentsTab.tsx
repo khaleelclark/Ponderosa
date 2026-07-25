@@ -40,7 +40,7 @@ import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import { CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import {
   agentBelongsToConversation,
   agentStatusColor,
@@ -138,7 +138,7 @@ function AgentRosterShell({
   toolbar,
   children,
 }: {
-  collection?: { title: string; detail: string; variant?: "page" | "embedded" };
+  collection?: { title: string; detail: string; totalCount?: number; variant?: "page" | "embedded" };
   scopeLabel?: string;
   headerActions: ReactNode;
   toolbar: ReactNode;
@@ -216,6 +216,7 @@ export function AgentsTab({
   collection?: {
     title: string;
     detail: string;
+    totalCount?: number;
     variant?: "page" | "embedded";
   };
 }): JSX.Element {
@@ -317,6 +318,12 @@ export function AgentsTab({
     setStoppingAll(false);
   };
   const embeddedCollection = collection?.variant === "embedded";
+  const collectionPresentation = collection ? {
+    ...collection,
+    detail: collection.totalCount !== undefined && filtered.length !== collection.totalCount
+      ? `${filtered.length} of ${collection.totalCount} Agents`
+      : collection.detail,
+  } : undefined;
   const headerActions = <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
     {collection && !selectionMode ? <Button variant="contained" startIcon={<AddIcon />} onClick={() => onNewAgent()}>New Agent</Button> : null}
     {selectionMode ? <>
@@ -341,7 +348,7 @@ export function AgentsTab({
   </Stack>;
   return (
     <AgentRosterShell
-      collection={collection}
+      collection={collectionPresentation}
       scopeLabel={scopeLabel}
       headerActions={headerActions}
       toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Agents">
@@ -403,26 +410,18 @@ export function AgentsTab({
 
       <Box sx={{ minHeight: 0, minWidth: 0, overflowY: collection ? "visible" : "auto", overflowX: "hidden", p: collection ? 0 : { xs: 1, sm: 1.5, md: 2 }, pt: 0 }}>
         {filtered.length === 0 ? (
-          <Alert
-            severity="info"
-            action={
-              statusFilters.length > 0 || masterFilter !== "all" || search ? (
-                <Button
-                  color="inherit"
-                  size="small"
-                  onClick={() => {
-                    setStatusFilters([]);
-                    setMasterFilter("all");
-                    setSearch("");
-                  }}
-                >
-                  Clear Filters
-                </Button>
-              ) : undefined
-            }
-          >
-            {agents.length === 0 ? "No agents yet. Create one to get started." : "No agents match these filters."}
-          </Alert>
+          <CollectionEmptyState
+            title={agents.length === 0 ? "No Agents yet" : "No Agents match these filters"}
+            detail={agents.length === 0 ? "Create an Agent to get started." : "Try a different search, status, Project, or Chat filter."}
+            action={statusFilters.length > 0 || masterFilter !== "all" || search ? {
+              label: "Clear Filters",
+              onClick: () => {
+                setStatusFilters([]);
+                setMasterFilter("all");
+                setSearch("");
+              },
+            } : undefined}
+          />
         ) : (
           <Stack spacing={0.5} role="tree" aria-label="Agent organization">
             {filtered.map(({ agent, depth }) => {

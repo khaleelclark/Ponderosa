@@ -35,7 +35,13 @@ export function initializeWorkspaceTabSession(
     return { tabs: [home, ...restored.tabs], activeKey: home.key };
   }
   if (restored.tabs.length > 0) {
-    return { tabs: restored.tabs, activeKey: restored.activeKey ?? restored.tabs[0]!.key };
+    const activeKey = restored.activeKey ?? restored.tabs[0]!.key;
+    const reusable = reusableWorkspaceTab(restored.tabs, activeKey, initialRoute);
+    if (reusable) return { tabs: restored.tabs, activeKey: reusable.key };
+    return {
+      tabs: navigateWorkspaceTab(restored.tabs, activeKey, initialRoute, now),
+      activeKey,
+    };
   }
   const first = createWorkspaceTab(initialRoute, now);
   return { tabs: [first], activeKey: first.key };
