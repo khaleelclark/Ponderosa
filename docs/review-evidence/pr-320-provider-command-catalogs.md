@@ -1,7 +1,10 @@
 # PR 320 live provider-command evidence
 
 This transcript was captured from live subscription-backed Codex and Claude
-sessions on Pine after Ponderosa's terminal-control filter ran.
+sessions on Pine after Ponderosa assembled the operator-facing catalogs. Claude's
+built-ins are provider-advertised and provider-rendered. Codex's `status` and
+`compact` entries are inserted and dispatched by the adapter over provider RPC;
+their underlying session, context, and rate-limit data comes from Codex app-server.
 
 ```text
 verified_at_utc=2026-07-25T23:22:01Z
@@ -24,7 +27,7 @@ Preserved files:
 833ee7e69bb22fd3e16e56e2be440fdbf417fe305558b593a671070b0749d375  live-provider-command-output.txt
 ```
 
-## Codex filtered command catalog
+## Codex adapter command catalog
 
 ```text
 name	source	status	invocation
@@ -82,8 +85,11 @@ compact	built-in	available	runtime
 status	built-in	available	runtime
 ```
 
-Codex does advertise `status` in Ponderosa's live filtered operator catalog.
-It is provider-owned, available, and dispatched as a structured runtime command.
+Codex app-server does not advertise an invokable `status` slash command.
+Ponderosa's Codex adapter inserts this catalog entry, validates it through the
+same adapter catalog in `invokeCommand()`, and renders provider RPC data through
+`formatCodexStatus()`. The `compact` entry is likewise adapter-implemented and
+passes through to `thread/compact/start`.
 
 ## Codex `/status` rendered output
 
@@ -91,7 +97,7 @@ It is provider-owned, available, and dispatched as a structured runtime command.
 Codex session 019f9b95-eeaf-7110-9621-380ea9048bdc · Model gpt-5.6-sol · Context usage not yet reported · GPT-5.3-Codex-Spark: 7d limit 0% used · codex: 7d limit 4% used
 ```
 
-## Claude filtered command catalog
+## Claude filtered provider-advertised command catalog
 
 ```text
 name	source	status	invocation
