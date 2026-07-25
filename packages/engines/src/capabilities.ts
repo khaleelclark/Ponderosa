@@ -274,6 +274,20 @@ function array(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+// Claude includes terminal-client controls in system/init.slash_commands even
+// for stream-json sessions. Only project provider commands that produce useful
+// headless output or perform a session action; advertised skills and plugin
+// commands are retained separately below.
+const CLAUDE_HEADLESS_BUILT_IN_COMMANDS = new Set([
+  "compact",
+  "context",
+  "doctor",
+  "insights",
+  "mcp",
+  "recap",
+  "usage",
+]);
+
 export interface CodexProviderDiscovery {
   cwd: string;
   selectedModel?: string;
@@ -450,6 +464,7 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     const pluginName = string(advertised?.plugin_name) ?? [...pluginNames].find((plugin) => name.startsWith(`${plugin}:`));
     const source: EngineCommand["source"] = declaredSource === "plugin" || pluginName
       ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "built-in";
+    if (source === "built-in" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
     commands.set(name, {
       name,
       description: string(advertised?.description) ?? "Claude-advertised command",
