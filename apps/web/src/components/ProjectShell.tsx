@@ -105,17 +105,6 @@ export function ProjectShell({
     queryClient.setQueryData(queryKeys.engines.capabilities(projectId), discovered);
     return discovered;
   }, [projectId, queryClient]);
-  const routedAgent = route.kind === "agent"
-    ? agents.find((agent) => agent.id === route.agentId)
-    : undefined;
-  useEffect(() => {
-    if (!routedAgent) return;
-    void refreshCapabilities({
-      agentId: routedAgent.id,
-      engineId: routedAgent.activeEngine,
-      model: routedAgent.model,
-    });
-  }, [refreshCapabilities, routedAgent?.activeEngine, routedAgent?.id, routedAgent?.model]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
