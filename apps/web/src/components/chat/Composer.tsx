@@ -13,6 +13,7 @@ import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
 import { createClientId } from "../../clientId";
+import { managerBroadcastText } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { ComposerAttachment } from "./ComposerAttachment";
@@ -44,6 +45,8 @@ export interface ComposerProps extends ChatComposerContract {
   placeholder?: string;
   projectId?: string;
   mentionHandles?: string[];
+  mentionSuggestionHandles?: string[];
+  ambiguousMentionHandles?: string[];
   onCapabilitiesOpen?(): Promise<unknown> | unknown;
   attachmentsEnabled?: boolean;
   attachmentsUnavailableReason?: string;
@@ -74,6 +77,8 @@ export function Composer({
   placeholder,
   projectId,
   mentionHandles,
+  mentionSuggestionHandles,
+  ambiguousMentionHandles,
   commands,
   capabilities,
   onCapabilitiesOpen,
@@ -168,8 +173,16 @@ export function Composer({
     handle,
     title: destinationTitleForHandle?.(handle) ?? handle,
   }));
+  const ambiguousTargetRequiredHandles = destinationMode === "target-required"
+    ? findMentionedHandles(submissionText, ambiguousMentionHandles ?? [])
+    : [];
+  const unresolvedAmbiguousTarget = ambiguousTargetRequiredHandles.find(
+    (handle) =>
+      !requiredRecipient ||
+      requiredRecipient.handle.toLocaleLowerCase() !== handle.toLocaleLowerCase(),
+  );
   const hasBroadcastDestination = hasBroadcastMention(submissionText);
-  const hasLeadingBroadcastDestination = /^\s*#broadcast(?=$|\s|[.,!?;:])/iu.test(submissionText);
+  const hasLeadingBroadcastDestination = managerBroadcastText(submissionText) !== undefined;
   const hasEveryoneDestination = destinationMode === "project-chat" &&
     mentionedHandles.some((handle) => handle.toLocaleLowerCase() === "everyone");
   const destinationError = destinationMode === "project-chat" && hasBroadcastDestination &&
@@ -183,6 +196,8 @@ export function Composer({
           : "#broadcast is not available in All Messages. Choose an Agent."
         : destinationMode === "target-required" && targetRequiredDestinations.length > 1
           ? "Choose one Agent at a time in All Messages."
+          : destinationMode === "target-required" && unresolvedAmbiguousTarget
+            ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
         : undefined;
   const replaceDestination = (value: string, nextHandle?: string) => value.replace(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu, (match, handle: string) => {
     if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) return match;
@@ -444,9 +459,10 @@ export function Composer({
 
   // Agent routing uses #; @ is reserved for project file/folder references.
   const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(text.slice(0, caret));
+  const autocompleteHandles = mentionSuggestionHandles ?? mentionHandles;
   const suggestions =
-    mentionMatch && mentionHandles && mentionHandles.length > 0
-      ? mentionHandles
+    mentionMatch && autocompleteHandles && autocompleteHandles.length > 0
+      ? autocompleteHandles
           .filter((handle) => handle.toLowerCase().startsWith(mentionMatch[1]!.toLowerCase()))
       : [];
   const fileMatch = /(?:^|\s)@([^\s@#]*)$/u.exec(text.slice(0, caret));
@@ -596,16 +612,16 @@ export function Composer({
   });
   const projectDestinationHelper = destinationError ??
     (hasBroadcastDestination
-      ? "Adds durable shared Project context; starts no Agent · @ references a file."
+      ? "Adds durable shared Project context; starts no Agent."
       : hasEveryoneDestination
-        ? "Every active Agent in this Chat will receive this · @ references a file."
+        ? "Every active Agent in this Chat will receive this."
         : projectDestinations.length === 1
-          ? `${projectDestinations[0]!.title} will receive this · @ references a file.`
+          ? `${projectDestinations[0]!.title} will receive this.`
           : projectDestinations.length === 2
-            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this · @ references a file.`
+            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
             : projectDestinations.length > 2
-              ? `${projectDestinations.length} Agents will receive this · @ references a file.`
-              : "Starts a fresh Agent · use #Agent or #broadcast to change destination · @ references a file.");
+              ? `${projectDestinations.length} Agents will receive this.`
+              : "Starts a fresh Agent · use #Agent or #broadcast.");
   const targetRequiredHelper = destinationError ??
     (targetRequiredDestinations.length === 1
       ? `${targetRequiredDestinations[0]!.title} will receive this.`
@@ -672,6 +688,13 @@ export function Composer({
           <Typography variant="caption" color={destinationError ? "error.main" : "text.secondary"}>
             {projectDestinationHelper}
           </Typography>
+          {!destinationError ? (
+            <Tooltip title="Use @ to reference a Project file.">
+              <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                · @ file
+              </Typography>
+            </Tooltip>
+          ) : null}
         </Stack>
       ) : destinationMode === "target-required" ? (
         <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}>

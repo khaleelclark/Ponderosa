@@ -162,6 +162,12 @@ export function AllChatView({
     }
     return {
       handles: [...groups.values()].map((group) => group[0]!.handle),
+      suggestionHandles: [...groups.values()]
+        .filter((group) => group.length === 1)
+        .map((group) => group[0]!.handle),
+      ambiguousHandles: [...groups.values()]
+        .filter((group) => group.length > 1)
+        .map((group) => group[0]!.handle),
       targetByHandle,
     };
   }, [items]);
@@ -746,6 +752,8 @@ export function AllChatView({
               : "Tag an Agent with # to choose a recipient."
           }
           mentionHandles={composerTargets.handles}
+          mentionSuggestionHandles={composerTargets.suggestionHandles}
+          ambiguousMentionHandles={composerTargets.ambiguousHandles}
           destinationTitleForHandle={destinationTitleForHandle}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
           commands={selectedCommands}
