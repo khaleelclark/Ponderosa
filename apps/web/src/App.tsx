@@ -573,9 +573,7 @@ export default function App({
           resetKey={`${activeWorkspaceTabKey}:${JSON.stringify(route)}`}
         >
         <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
-        {route.kind === "wiki" ? (
-          <WikiView articleId={route.articleId} navigate={navigateWorkspace} />
-        ) : projectsQuery.isError || enginesQuery.isError ? (
+        {projectsQuery.isError || enginesQuery.isError ? (
           <Box sx={{ p: 2 }}>
             <Alert
               severity="error"
@@ -595,6 +593,8 @@ export default function App({
               Ponderosa could not load its workspace data. Check the server connection and try again.
             </Alert>
           </Box>
+        ) : route.kind === "wiki" ? (
+          <WikiView articleId={route.articleId} navigate={navigateWorkspace} />
         ) : route.kind === "new" ? (
           <NewWorkspace
             initialKind={route.createKind}
