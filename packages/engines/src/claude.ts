@@ -59,11 +59,11 @@ const CONFIGURED_MODEL_ENVIRONMENT = [
   ["ANTHROPIC_CUSTOM_MODEL_OPTION", "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"],
 ] as const;
 
-function configuredClaudeModels(
+function environmentConfiguredClaudeModels(
   environment: Readonly<Record<string, string | undefined>>,
 ): ModelOption[] {
-  const models = [...DEFAULT_MODELS];
-  const seen = new Set(models.map((model) => model.id));
+  const models: ModelOption[] = [];
+  const seen = new Set<string>();
   for (const [idKey, nameKey] of CONFIGURED_MODEL_ENVIRONMENT) {
     const id = environment[idKey]?.trim();
     if (!id || seen.has(id)) continue;
@@ -72,6 +72,30 @@ function configuredClaudeModels(
       id,
       label: environment[nameKey]?.trim() || id,
     });
+  }
+  return models;
+}
+
+function configuredClaudeModels(
+  environment: Readonly<Record<string, string | undefined>>,
+  operatorModels: ModelOption[],
+): ModelOption[] {
+  const models = DEFAULT_MODELS.map((model) => ({ ...model }));
+  const indexById = new Map(models.map((model, index) => [model.id, index]));
+  for (const model of operatorModels) {
+    const id = model.id.trim();
+    if (!id || indexById.has(id)) continue;
+    indexById.set(id, models.length);
+    models.push({ id, label: model.label.trim() || id });
+  }
+  for (const model of environmentConfiguredClaudeModels(environment)) {
+    const index = indexById.get(model.id);
+    if (index === undefined) {
+      indexById.set(model.id, models.length);
+      models.push(model);
+    } else {
+      models[index] = model;
+    }
   }
   return models;
 }
@@ -90,6 +114,7 @@ export class ClaudeAdapter implements Adapter {
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
   private readonly modelEnvironment: Readonly<Record<string, string | undefined>>;
+  private operatorModels: ModelOption[] = [];
   private readonly permissionMode: string;
   private readonly killGraceMs: number;
 
@@ -105,7 +130,15 @@ export class ClaudeAdapter implements Adapter {
   }
 
   listModels(): ModelOption[] {
-    return configuredClaudeModels(this.modelEnvironment);
+    return configuredClaudeModels(this.modelEnvironment, this.operatorModels);
+  }
+
+  configuredModelOptions(): ModelOption[] {
+    return environmentConfiguredClaudeModels(this.modelEnvironment);
+  }
+
+  setOperatorModelOptions(models: ModelOption[]): void {
+    this.operatorModels = models.map((model) => ({ ...model }));
   }
 
   listEfforts(): EffortOption[] {

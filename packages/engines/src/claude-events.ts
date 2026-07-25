@@ -81,6 +81,17 @@ function mapUsage(u: RawClaudeEvent["usage"]): TokenUsage | undefined {
   return Object.keys(usage).length > 0 ? usage : undefined;
 }
 
+/**
+ * Claude's result-event usage is the aggregate for the whole CLI turn. Context
+ * occupancy instead comes from the most recent assistant message, whose usage
+ * describes the single provider request that produced that message.
+ */
+export function mapClaudeAssistantUsage(raw: unknown): TokenUsage | undefined {
+  if (raw === null || typeof raw !== "object") return undefined;
+  const event = raw as RawClaudeEvent;
+  return event.type === "assistant" ? mapUsage(event.message?.usage) : undefined;
+}
+
 /** Coerce a tool_result `content` (string | block[] | unknown) to plain text. */
 function toolResultText(content: unknown): string {
   if (typeof content === "string") return content;

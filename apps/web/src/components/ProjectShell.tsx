@@ -90,9 +90,33 @@ export function ProjectShell({
   const agents = agentsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
+  const routedAgent = route.kind === "agent"
+    ? agents.find((agent) => agent.id === route.agentId)
+    : undefined;
+  const routedAgentHasLiveSession = route.kind === "agent" && Boolean(
+    healthQuery.data?.agents.find((agent) => agent.agentId === route.agentId)
+      ?.providerSessionLive,
+  );
+  const capabilityAgent = routedAgentHasLiveSession ? routedAgent : undefined;
+  const capabilityQueryKey = useMemo(
+    () => route.kind === "agent" && capabilityAgent
+      ? queryKeys.engines.capabilitySelection(
+        projectId,
+        capabilityAgent.id,
+        capabilityAgent.activeEngine,
+        capabilityAgent.model,
+      )
+      : queryKeys.engines.capabilities(projectId),
+    [capabilityAgent, projectId, route.kind],
+  );
   const capabilitiesQuery = useQuery({
-    queryKey: queryKeys.engines.capabilities(projectId),
-    queryFn: () => api.getEngineCapabilities(projectId),
+    queryKey: capabilityQueryKey,
+    queryFn: () => api.getEngineCapabilities(projectId, capabilityAgent ? {
+      agentId: capabilityAgent.id,
+      engineId: capabilityAgent.activeEngine,
+      model: capabilityAgent.model,
+    } : undefined),
+    enabled: route.kind !== "agent" || Boolean(routedAgent && healthQuery.data),
     staleTime: 60_000,
   });
   // The review surface needs changed-file and Run detail for one Agent. Fetch
@@ -102,9 +126,9 @@ export function ProjectShell({
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
     const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
-    queryClient.setQueryData(queryKeys.engines.capabilities(projectId), discovered);
+    queryClient.setQueryData(capabilityQueryKey, discovered);
     return discovered;
-  }, [projectId, queryClient]);
+  }, [capabilityQueryKey, projectId, queryClient]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });

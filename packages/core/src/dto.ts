@@ -102,10 +102,18 @@ export interface WorkspacePreferencesDto {
   providerAvailability: Record<string, boolean>;
   /** Concrete model/effort defaults chosen independently for each engine. */
   engineDefaults?: Record<string, { model: string; effort?: string }>;
+  /** Operator-managed versioned Claude model choices. Environment pins take precedence. */
+  claudeModelOptions: Array<{ id: string; label?: string }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
   /** Workspace-wide admission limit for concurrently active Agent Runs. */
   maxConcurrentAgentRuns: number;
+  /** Proactively roll a provider session over once its context grows past these limits. */
+  contextRolloverEnabled: boolean;
+  /** Absolute context-token ceiling, counting cached tokens. */
+  contextRolloverTokens: number;
+  /** Also roll over at this fraction of the window, for providers that report one. */
+  contextRolloverWindowFraction: number;
   /** Durable, cross-device completion marker for the operator's welcome flow. */
   onboardingCompletedAt: string | null;
   profile: OperatorProfileDto;
@@ -1447,10 +1455,17 @@ export interface WorkItemDto {
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
 export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document" | "screenshot" | "generated_file";
 
+export interface ContextRolloverTriggeredEvent {
+  type: "context_rollover_triggered";
+  executionId: string;
+  usedTokens: number;
+  threshold: number;
+}
+
 export type AgentActivityEvent = Extract<AgentEvent, {
   type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
     "browser_session" | "browser_action" | "browser_console" | "browser_screenshot";
-}>;
+}> | ContextRolloverTriggeredEvent;
 
 /** Canonical, refresh-safe execution activity projected from the agent event log. */
 export interface AgentActivityDto {
@@ -1723,6 +1738,8 @@ export interface EngineDto {
   id: EngineId;
   displayName: string;
   models: ModelOption[];
+  /** Model pins configured by the provider environment, excluding built-in aliases. */
+  configuredModels?: ModelOption[];
   efforts: EffortOption[];
   /** Concrete adapter-owned fallback; never the provider's opaque "default" alias. */
   defaultModel?: string;
@@ -1746,6 +1763,10 @@ export interface ProjectEngineCapabilitiesDto {
   engineId: EngineId;
   steering: boolean;
   persistentSessions: boolean;
+  sessionId?: string;
+  selectedModel?: string;
+  model?: string;
+  catalogVersion?: string;
   commands: import("./adapter.js").EngineCommand[];
   mcpServers: import("./adapter.js").EngineMcpServer[];
   composerCapabilities: import("./adapter.js").EngineComposerCapability[];
@@ -1812,6 +1833,8 @@ export interface AgentHealthDto {
     executionId: string;
     startedAt: string;
   };
+  /** A provider process currently owns this Agent's resumable session. */
+  providerSessionLive?: boolean;
 }
 
 export interface AgentHealthProjectionDto {

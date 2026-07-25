@@ -85,20 +85,33 @@ function GeneralSettingsSection({
   colorMode,
   instructions,
   limit,
+  rolloverTokens,
+  rolloverFraction,
   onToggleColorMode,
   onPreferences,
   onInstructions,
   onLimit,
+  onRolloverTokens,
+  onRolloverFraction,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
   instructions: string;
   limit: string;
+  rolloverTokens: string;
+  rolloverFraction: string;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onInstructions(value: string): void;
   onLimit(value: string): void;
+  onRolloverTokens(value: string): void;
+  onRolloverFraction(value: string): void;
 }): JSX.Element {
+  const parsedRolloverTokens = Number(rolloverTokens);
+  const parsedRolloverFraction = Number(rolloverFraction);
+  const rolloverValuesValid =
+    Number.isFinite(parsedRolloverTokens) &&
+    Number.isFinite(parsedRolloverFraction);
   return (
     <Stack spacing={2.5}>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -159,6 +172,58 @@ function GeneralSettingsSection({
             }
           >
             Save Agent Defaults
+          </Button>
+        </Stack>
+      </Paper>
+      <Paper variant="outlined" sx={{ p: 2.5 }}>
+        <Typography variant="h6" fontWeight={800}>
+          Provider Session Rollover
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          When a session passes either limit, Ponderosa asks the Agent to write
+          a short handoff, then starts a fresh provider session at the next safe
+          boundary. The provider&apos;s own compaction remains the fallback.
+        </Typography>
+        <Stack spacing={2}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={preferences.contextRolloverEnabled}
+                onChange={(_, checked) =>
+                  onPreferences({ contextRolloverEnabled: checked })
+                }
+              />
+            }
+            label="Proactive context rollover"
+          />
+          <TextField
+            type="number"
+            label="Roll over above (context tokens)"
+            value={rolloverTokens}
+            onChange={event => onRolloverTokens(event.target.value)}
+            inputProps={{ min: 20_000, max: 2_000_000, step: 10_000 }}
+            helperText="Counts everything occupying the provider's context window, including cached tokens — not just new input. Default 150,000."
+          />
+          <TextField
+            type="number"
+            label="Or at this share of the provider's context window"
+            value={rolloverFraction}
+            onChange={event => onRolloverFraction(event.target.value)}
+            inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}
+            helperText="Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+          />
+          <Button
+            variant="contained"
+            sx={{ alignSelf: "flex-start" }}
+            disabled={!rolloverValuesValid}
+            onClick={() =>
+              onPreferences({
+                contextRolloverTokens: parsedRolloverTokens,
+                contextRolloverWindowFraction: parsedRolloverFraction,
+              })
+            }
+          >
+            Save Rollover Limits
           </Button>
         </Stack>
       </Paper>
@@ -250,6 +315,129 @@ function NotificationSettingsSection({
   );
 }
 
+function ClaudeModelOptionsSettings({
+  engine,
+  preferences,
+  onPreferences,
+}: {
+  engine: EngineDto;
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+}): JSX.Element {
+  const [modelId, setModelId] = useState("");
+  const [modelLabel, setModelLabel] = useState("");
+  const normalizedId = modelId.trim();
+  const configured = engine.configuredModels ?? [];
+  const idAlreadyExists = Boolean(normalizedId) &&
+    engine.models.some(model => model.id === normalizedId);
+  const addModel = () => {
+    if (!normalizedId || idAlreadyExists) return;
+    onPreferences({
+      claudeModelOptions: [
+        ...preferences.claudeModelOptions,
+        {
+          id: normalizedId,
+          ...(modelLabel.trim() ? { label: modelLabel.trim() } : {}),
+        },
+      ],
+    });
+    setModelId("");
+    setModelLabel("");
+  };
+  return (
+    <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
+      <Typography fontWeight={700}>Pinned Claude model versions</Typography>
+      {configured.length ? (
+        <Stack spacing={0.75} sx={{ mt: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            Environment-configured models
+          </Typography>
+          {configured.map(model => (
+            <Box key={model.id}>
+              <Typography variant="body2">{model.label}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {model.id}
+              </Typography>
+            </Box>
+          ))}
+        </Stack>
+      ) : (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          No specific versions are pinned by the environment. Set
+          {" "}ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_FABLE_MODEL, or
+          ANTHROPIC_CUSTOM_MODEL_OPTION to add host-managed choices.
+        </Typography>
+      )}
+      <Stack spacing={1} sx={{ mt: 2 }}>
+        <Typography variant="caption" color="text.secondary">
+          Workspace-managed models
+        </Typography>
+        {preferences.claudeModelOptions.map(model => (
+          <Stack
+            key={model.id}
+            direction="row"
+            spacing={1}
+            sx={{ alignItems: "center" }}
+          >
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="body2">{model.label || model.id}</Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ overflowWrap: "anywhere" }}
+              >
+                {model.id}
+              </Typography>
+            </Box>
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() =>
+                onPreferences({
+                  claudeModelOptions: preferences.claudeModelOptions.filter(
+                    candidate => candidate.id !== model.id,
+                  ),
+                })
+              }
+            >
+              Remove
+            </Button>
+          </Stack>
+        ))}
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <TextField
+            fullWidth
+            label="Model id"
+            value={modelId}
+            onChange={event => setModelId(event.target.value)}
+            helperText={
+              idAlreadyExists
+                ? "This model id is already available."
+                : "Use the exact versioned id accepted by Claude Code."
+            }
+            error={Boolean(normalizedId && idAlreadyExists)}
+          />
+          <TextField
+            fullWidth
+            label="Label (optional)"
+            value={modelLabel}
+            onChange={event => setModelLabel(event.target.value)}
+          />
+          <Button
+            variant="outlined"
+            disabled={!normalizedId || idAlreadyExists}
+            onClick={addModel}
+            sx={{ alignSelf: { xs: "stretch", sm: "flex-start" }, minHeight: 56 }}
+          >
+            Add
+          </Button>
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
 function ProviderSettingsSection({
   preferences,
   engines,
@@ -324,13 +512,11 @@ function ProviderSettingsSection({
                     });
                   }}
                 >
-                  {engine.models
-                    .filter(option => option.id)
-                    .map(option => (
-                      <MenuItem key={option.id} value={option.id}>
-                        {option.label}
-                      </MenuItem>
-                    ))}
+                  {engine.models.map(option => (
+                    <MenuItem key={option.id || "provider-default"} value={option.id}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
               <FormControl fullWidth>
@@ -361,6 +547,13 @@ function ProviderSettingsSection({
                 </Select>
               </FormControl>
             </Stack>
+            {engine.configuredModels !== undefined ? (
+              <ClaudeModelOptionsSettings
+                engine={engine}
+                preferences={preferences}
+                onPreferences={onPreferences}
+              />
+            ) : null}
             {!engineIsAvailable(engine) ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 This provider needs attention before it can start new work.
@@ -395,6 +588,12 @@ export function WorkspaceSettingsView({
   const [limit, setLimit] = useState(
     String(preferences.maxConcurrentAgentRuns),
   );
+  const [rolloverTokens, setRolloverTokens] = useState(
+    String(preferences.contextRolloverTokens),
+  );
+  const [rolloverFraction, setRolloverFraction] = useState(
+    String(preferences.contextRolloverWindowFraction),
+  );
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -406,7 +605,14 @@ export function WorkspaceSettingsView({
   useEffect(() => {
     setInstructions(preferences.globalInstructions);
     setLimit(String(preferences.maxConcurrentAgentRuns));
-  }, [preferences.globalInstructions, preferences.maxConcurrentAgentRuns]);
+    setRolloverTokens(String(preferences.contextRolloverTokens));
+    setRolloverFraction(String(preferences.contextRolloverWindowFraction));
+  }, [
+    preferences.contextRolloverTokens,
+    preferences.contextRolloverWindowFraction,
+    preferences.globalInstructions,
+    preferences.maxConcurrentAgentRuns,
+  ]);
   const updateEngine = useMutation({
     mutationFn: ({
       engineId,
@@ -439,10 +645,14 @@ export function WorkspaceSettingsView({
             colorMode={colorMode}
             instructions={instructions}
             limit={limit}
+            rolloverTokens={rolloverTokens}
+            rolloverFraction={rolloverFraction}
             onToggleColorMode={onToggleColorMode}
             onPreferences={onPreferences}
             onInstructions={setInstructions}
             onLimit={setLimit}
+            onRolloverTokens={setRolloverTokens}
+            onRolloverFraction={setRolloverFraction}
           />
         ) : null}
         {section === "notifications" ? (

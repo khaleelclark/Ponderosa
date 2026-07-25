@@ -9,7 +9,7 @@ import type {
   RuntimeSteerResult,
   RuntimeTurnInput,
 } from "@ponderosa/core";
-import { mapClaudeEvent } from "./claude-events.js";
+import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
@@ -33,6 +33,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
   private capabilitiesSnapshot?: EngineCapabilities;
+  private latestContextOccupancy?: number;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     if (!opts.onRuntimeSpawned) {
@@ -110,11 +111,20 @@ export class ClaudeStreamSession implements RuntimeSession {
       steering: true,
       persistentSessions: true,
       sessionId: this.engineAgentId,
-      ...(this.opts.model ? { model: this.opts.model } : {}),
+      ...(this.opts.model ? {
+        selectedModel: this.opts.model,
+        model: this.opts.model,
+      } : {}),
       commands: [],
       mcpServers: [],
       composerCapabilities: [],
     };
+  }
+
+  contextUsage(): { usedTokens: number } | undefined {
+    return this.latestContextOccupancy === undefined
+      ? undefined
+      : { usedTokens: this.latestContextOccupancy };
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
@@ -176,6 +186,13 @@ export class ClaudeStreamSession implements RuntimeSession {
         if (capabilities) {
           this.capabilitiesSnapshot = capabilities;
           this.opts.onCapabilitiesChanged?.();
+        }
+        const assistantUsage = mapClaudeAssistantUsage(raw);
+        // Claude's local slash commands emit a synthetic assistant message with
+        // an all-zero usage object even though no model request occurred. Keep
+        // the last real request occupancy instead of resetting it to zero.
+        if (assistantUsage?.inputTokens !== undefined && assistantUsage.inputTokens > 0) {
+          this.latestContextOccupancy = assistantUsage.inputTokens;
         }
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
           if (event.type === "turn_done" || event.type === "error") this.active = false;

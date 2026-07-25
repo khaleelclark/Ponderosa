@@ -274,6 +274,20 @@ function array(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+// Claude includes terminal-client controls in system/init.slash_commands even
+// for stream-json sessions. Only project provider commands that produce useful
+// headless output or perform a session action; advertised skills and plugin
+// commands are retained separately below.
+const CLAUDE_HEADLESS_BUILT_IN_COMMANDS = new Set([
+  "compact",
+  "context",
+  "doctor",
+  "insights",
+  "mcp",
+  "recap",
+  "usage",
+]);
+
 export interface CodexProviderDiscovery {
   cwd: string;
   selectedModel?: string;
@@ -289,8 +303,8 @@ export interface CodexProviderDiscovery {
 }
 
 /** Normalize only provider-owned app-server responses. No docs/TUI command
- * catalog is copied into Ponderosa. The one semantic structured action is
- * explicit and gated by a live thread plus the provider's model catalog. */
+ * catalog is copied into Ponderosa. Structured actions are limited to Codex
+ * operations that the app-server can execute without terminal UI state. */
 export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): EngineCapabilities {
   const installedPlugins = new Map<string, { label: string; description: string }>();
   for (const marketplace of array(record(input.plugins)?.marketplaces)) {
@@ -373,6 +387,15 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     ...(compactUnavailable ? { unavailableReason: compactUnavailable } : {}),
     invocation: "runtime",
   });
+  commands.set("status", {
+    name: "status",
+    description: "Show Codex session configuration, context usage, and subscription limits",
+    source: "built-in",
+    acceptsArguments: false,
+    insertText: "/status",
+    status: "available",
+    invocation: "runtime",
+  });
 
   const mcpByName = new Map((input.configuredMcps ?? []).map((server) => [server.name, { ...server }]));
   for (const candidate of array(record(input.mcpStatuses)?.data)) {
@@ -405,15 +428,6 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
   }
 
   const mcpServers = [...mcpByName.values()].sort((a, b) => a.name.localeCompare(b.name));
-  commands.set("status", {
-    name: "status",
-    description: "Show Codex session, context, and rate-limit status",
-    source: "built-in",
-    acceptsArguments: false,
-    insertText: "/status",
-    status: "available",
-    invocation: "runtime",
-  });
   const plugins: DiscoveredEnginePlugin[] = [...installedPlugins].map(([name, meta]) => ({
     capability: { id: `plugin:${name}`, kind: "plugin", label: meta.label, description: meta.description, status: "available" },
     commands: [],
@@ -450,6 +464,7 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     const pluginName = string(advertised?.plugin_name) ?? [...pluginNames].find((plugin) => name.startsWith(`${plugin}:`));
     const source: EngineCommand["source"] = declaredSource === "plugin" || pluginName
       ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "built-in";
+    if (source === "built-in" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
     commands.set(name, {
       name,
       description: string(advertised?.description) ?? "Claude-advertised command",
@@ -489,7 +504,8 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     steering: true,
     persistentSessions: true,
     ...(string(raw.session_id) ? { sessionId: string(raw.session_id)! } : {}),
-    ...(selectedModel ?? string(raw.model) ? { model: selectedModel ?? string(raw.model)! } : {}),
+    ...(selectedModel ? { selectedModel } : {}),
+    ...(string(raw.model) ?? selectedModel ? { model: string(raw.model) ?? selectedModel! } : {}),
     ...(string(raw.claude_code_version) ? { catalogVersion: string(raw.claude_code_version)! } : {}),
     commands: commandList,
     mcpServers,

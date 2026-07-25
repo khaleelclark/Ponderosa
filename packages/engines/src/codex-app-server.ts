@@ -295,16 +295,37 @@ export function formatCodexStatus(input: {
   } else {
     parts.push("Context usage not yet reported");
   }
-  const response = object(input.rateLimits);
-  const byId = object(response?.rateLimitsByLimitId);
-  const snapshot = object(byId?.codex) ?? object(response?.rateLimits);
-  for (const candidate of [object(snapshot?.primary), object(snapshot?.secondary)]) {
-    if (!candidate) continue;
-    const label = rateWindowLabel(candidate);
-    if (label) parts.push(label);
-  }
-  if (snapshot?.rateLimitReachedType) parts.push("Provider limit reached");
+  parts.push(...formatCodexRateLimits(input.rateLimits));
   return parts.join(" · ");
+}
+
+export function formatCodexRateLimits(rateLimits: unknown): string[] {
+  const parts: string[] = [];
+  const response = object(rateLimits);
+  const byId = object(response?.rateLimitsByLimitId);
+  const snapshots = Object.entries(byId ?? {}).flatMap(([id, value]) => {
+    const snapshot = object(value);
+    return snapshot ? [{ id: id as string | undefined, snapshot }] : [];
+  });
+  const legacySnapshot = object(response?.rateLimits);
+  if (snapshots.length === 0 && legacySnapshot) {
+    snapshots.push({ id: undefined, snapshot: legacySnapshot });
+  }
+  const qualify = snapshots.length > 1;
+  for (const { id, snapshot } of snapshots) {
+    const name = typeof snapshot.limitName === "string" && snapshot.limitName.trim()
+      ? snapshot.limitName.trim()
+      : id;
+    for (const candidate of [object(snapshot.primary), object(snapshot.secondary)]) {
+      if (!candidate) continue;
+      const label = rateWindowLabel(candidate);
+      if (label) parts.push(qualify && name ? `${name}: ${label}` : label);
+    }
+    if (snapshot.rateLimitReachedType) {
+      parts.push(qualify && name ? `${name}: Provider limit reached` : "Provider limit reached");
+    }
+  }
+  return parts;
 }
 
 
@@ -472,6 +493,22 @@ export class CodexAppServerSession implements RuntimeSession {
       return { message: formatCodexStatus({ sessionId: this.engineAgentId, model: this.activeModel, context: this.latestContextUsage, rateLimits }) };
     }
     throw new Error(`unsupported Codex runtime command: ${name}`);
+  }
+
+  contextUsage(): { usedTokens: number; windowTokens?: number } | undefined {
+    if (!this.latestContextUsage) return undefined;
+    return {
+      usedTokens: this.latestContextUsage.totalTokens,
+      ...(this.latestContextUsage.modelContextWindow
+        ? { windowTokens: this.latestContextUsage.modelContextWindow }
+        : {}),
+    };
+  }
+
+  async rateLimitStatus(): Promise<string[]> {
+    return formatCodexRateLimits(
+      await optionalRequest(this.rpc, "account/rateLimits/read", undefined),
+    );
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {

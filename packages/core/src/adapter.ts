@@ -142,6 +142,13 @@ export interface RuntimeProcessHandle {
 export interface RuntimeSession extends RuntimeProcessHandle {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
+  /** Best-effort current context occupancy for this provider session.
+   * `usedTokens` counts everything occupying the provider's context window.
+   * `windowTokens` is present only when the provider reports it. */
+  contextUsage?(): { usedTokens: number; windowTokens?: number } | undefined;
+  /** Provider rate-limit lines already available through this authenticated
+   * runtime transport. Implementations must not add an out-of-band API call. */
+  rateLimitStatus?(): Promise<string[]>;
   /** Live provider-owned catalog for this exact authenticated session. */
   capabilities?(): Promise<EngineCapabilities>;
   /** Invoke a provider command that is represented by a structured runtime
@@ -234,6 +241,9 @@ export interface EngineCapabilities {
   persistentSessions: boolean;
   /** Provider session/catalog boundary represented by this snapshot. */
   sessionId?: string;
+  /** Operator-selected alias or exact id used to open this session. */
+  selectedModel?: string;
+  /** Provider-resolved active model when reported. */
   model?: string;
   catalogVersion?: string;
   commands: EngineCommand[];
@@ -259,6 +269,10 @@ export interface Adapter {
   /** True when effort compatibility varies by model and missing metadata means unknown. */
   readonly modelSpecificEfforts?: boolean;
   listModels(): ModelOption[];
+  /** Host-configured provider model pins, excluding built-in aliases. */
+  configuredModelOptions?(): ModelOption[];
+  /** Replace operator-managed model options without rebuilding the adapter. */
+  setOperatorModelOptions?(models: ModelOption[]): void;
   listEfforts(model?: string): EffortOption[];
   /** Concrete adapter-owned fallback used when no operator or Project override exists. */
   defaultModel?(): string | undefined;
