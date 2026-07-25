@@ -161,6 +161,11 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
+import {
+  invokeNativeCommand,
+  isNativeCommand,
+  mergeNativeCommands,
+} from "./native-commands.js";
 import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
 import {
   descriptorRelativeFilesystemCapability,
@@ -13752,10 +13757,29 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         onCapabilitiesChanged: () => reportRuntimeCapabilitiesChanged(project.id, engineId),
         signal: authority.controller.signal,
       });
+      const catalog = session.capabilities
+        ? await session.capabilities()
+        : {
+            steering: false,
+            persistentSessions: false,
+            commands: [],
+            mcpServers: [],
+            composerCapabilities: [],
+          };
+      if (isNativeCommand(name)) {
+        const result = await invokeNativeCommand(name, {
+          providerName: engine.adapter.displayName,
+          session,
+          model: catalog.model ?? selection.model,
+          usage: tokenUsage({ type: "project", id: project.id }),
+          usageSubject: `Project ${project.label}`,
+        }, argumentsText);
+        invocation = { catalog, ...(result.message ? { message: result.message } : {}) };
+        return catalog;
+      }
       if (!session.capabilities || !session.invokeCommand) {
         throw new Error("this provider does not support structured runtime commands");
       }
-      const catalog = await session.capabilities();
       const command = catalog.commands.find((candidate) => candidate.name === name);
       if (!command || command.invocation !== "runtime" || command.status !== "available") {
         const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
@@ -13803,19 +13827,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!project) return reply.code(404).send({ error: "project not found" });
       const engine = engines.get(agent.activeEngine);
       if (!engine) return reply.code(400).send({ error: "unknown engine" });
-      if (activeRuns.has(agent.id)) {
-        return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
-      }
       const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
       const argumentsText = request.body?.argumentsText?.trim();
       if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
         return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
       }
+      if (activeRuns.has(agent.id) && !isNativeCommand(name)) {
+        return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
+      }
       const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
+        const catalog = session.capabilities
+          ? await session.capabilities()
+          : {
+              steering: false,
+              persistentSessions: false,
+              commands: [],
+              mcpServers: [],
+              composerCapabilities: [],
+            };
+        if (isNativeCommand(name)) {
+          const result = await invokeNativeCommand(name, {
+            providerName: engine.adapter.displayName,
+            session,
+            model: catalog.model,
+            usage: tokenUsage({ type: "agent", id: agent.id }),
+            usageSubject: `Agent ${agent.title}`,
+          }, argumentsText);
+          return { catalog, ...(result.message ? { message: result.message } : {}) };
+        }
         if (!session.capabilities || !session.invokeCommand) {
           throw new Error("this provider does not support structured runtime commands");
         }
-        const catalog = await session.capabilities();
         const command = catalog.commands.find((candidate) => candidate.name === name);
         if (!command || command.invocation !== "runtime" || command.status !== "available") {
           const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
@@ -13825,10 +13867,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const result = await session.invokeCommand(name, argumentsText);
         return { catalog, ...(result?.message ? { message: result.message } : {}) };
       };
-      const liveRuntime = reusableRuntime(agent.id);
-      if (liveRuntime) {
+      const liveSession = activeRuns.get(agent.id)?.runtimeSession ??
+        reusableRuntime(agent.id)?.session;
+      if (liveSession) {
         try {
-          const result = await invoke(liveRuntime.session);
+          const result = await invoke(liveSession);
           reportRuntimeCapabilitiesChanged(agent.projectId, agent.activeEngine);
           return {
             invoked: true,
@@ -13841,6 +13884,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             ? (error as { catalogVersion?: string }).catalogVersion : undefined;
           return reply.code(409).send({ error: error instanceof Error ? error.message : "provider command failed", ...(catalogVersion ? { catalogVersion } : {}) });
         }
+      }
+      if (activeRuns.has(agent.id)) {
+        return reply.code(409).send({ error: "the active provider session is still opening", retryable: true });
       }
       if (!engine.adapter.openSession) {
         return reply.code(409).send({ error: "this provider cannot open a command-only session" });
@@ -14719,7 +14765,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             selectedModel,
             forceRefresh,
           );
-        return { engineId: adapter.id, ...capabilities };
+        return {
+          engineId: adapter.id,
+          ...capabilities,
+          commands: adapter.openSession
+            ? mergeNativeCommands(capabilities.commands)
+            : capabilities.commands,
+        };
       }));
     },
   );

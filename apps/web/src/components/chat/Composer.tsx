@@ -969,7 +969,7 @@ export function Composer({
                         ? `#${suggestion.handle}`
                         : suggestion.kind === "file"
                           ? <Box><Typography variant="body2">@{suggestion.entry.path}{suggestion.entry.kind === "dir" ? "/" : ""}</Typography><Typography variant="caption" color="text.secondary">{suggestion.entry.kind === "dir" ? "Folder" : "File"}</Typography></Box>
-                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">{suggestion.command.insertText.trimEnd()}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.source} · {commandReason ?? suggestion.command.description}</Typography></Box>}
+                          : <Box sx={{ minWidth: 0 }}><Typography variant="body2">{suggestion.command.insertText.trimEnd()}</Typography><Typography variant="caption" color="text.secondary" sx={{ display: "block", overflowWrap: "anywhere" }}>{suggestion.command.source === "ponderosa" ? "Ponderosa" : suggestion.command.source} · {commandReason ?? suggestion.command.description}</Typography></Box>}
                     </MenuItem>
                       );
                     })()

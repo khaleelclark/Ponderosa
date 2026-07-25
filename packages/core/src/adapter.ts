@@ -146,6 +146,9 @@ export interface RuntimeSession extends RuntimeProcessHandle {
    * `usedTokens` counts everything occupying the provider's context window.
    * `windowTokens` is present only when the provider reports it. */
   contextUsage?(): { usedTokens: number; windowTokens?: number } | undefined;
+  /** Provider rate-limit lines already available through this authenticated
+   * runtime transport. Implementations must not add an out-of-band API call. */
+  rateLimitStatus?(): Promise<string[]>;
   /** Live provider-owned catalog for this exact authenticated session. */
   capabilities?(): Promise<EngineCapabilities>;
   /** Invoke a provider command that is represented by a structured runtime
@@ -188,7 +191,7 @@ export interface OpenRuntimeSessionOptions {
 export interface EngineCommand {
   name: string;
   description: string;
-  source: "built-in" | "skill" | "plugin";
+  source: "built-in" | "skill" | "plugin" | "ponderosa";
   acceptsArguments: boolean;
   /** Exact provider syntax inserted when this item is selected from the slash
    * discovery menu. Codex skills, for example, use `$name` even though `/`

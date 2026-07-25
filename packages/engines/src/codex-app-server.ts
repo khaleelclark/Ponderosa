@@ -295,7 +295,13 @@ export function formatCodexStatus(input: {
   } else {
     parts.push("Context usage not yet reported");
   }
-  const response = object(input.rateLimits);
+  parts.push(...formatCodexRateLimits(input.rateLimits));
+  return parts.join(" · ");
+}
+
+export function formatCodexRateLimits(rateLimits: unknown): string[] {
+  const parts: string[] = [];
+  const response = object(rateLimits);
   const byId = object(response?.rateLimitsByLimitId);
   const snapshot = object(byId?.codex) ?? object(response?.rateLimits);
   for (const candidate of [object(snapshot?.primary), object(snapshot?.secondary)]) {
@@ -304,7 +310,7 @@ export function formatCodexStatus(input: {
     if (label) parts.push(label);
   }
   if (snapshot?.rateLimitReachedType) parts.push("Provider limit reached");
-  return parts.join(" · ");
+  return parts;
 }
 
 
@@ -482,6 +488,12 @@ export class CodexAppServerSession implements RuntimeSession {
         ? { windowTokens: this.latestContextUsage.modelContextWindow }
         : {}),
     };
+  }
+
+  async rateLimitStatus(): Promise<string[]> {
+    return formatCodexRateLimits(
+      await optionalRequest(this.rpc, "account/rateLimits/read", undefined),
+    );
   }
 
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
