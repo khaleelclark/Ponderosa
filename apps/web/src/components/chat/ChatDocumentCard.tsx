@@ -19,6 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { api } from "../../api";
+import { queryKeys } from "../../queryKeys";
 
 export interface ChatDocumentContract {
   document: CommunicationDocumentReference;
@@ -28,7 +29,7 @@ export interface ChatDocumentContract {
 export function ChatDocumentCard({ document, renderMarkdown }: ChatDocumentContract): JSX.Element {
   const [open, setOpen] = useState(false);
   const query = useQuery({
-    queryKey: ["communication-document", document.id],
+    queryKey: queryKeys.communicationDocument.detail(document.id),
     queryFn: () => api.getCommunicationDocument(document.previewUrl),
     enabled: open,
   });

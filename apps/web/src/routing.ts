@@ -16,6 +16,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
+import { routeToPath } from "./routeRegistry";
 
 export interface AgentTelemetryFocus {
   stream: AgentTelemetryStream;
@@ -137,77 +138,6 @@ export function parseRoute(pathname: string, search = ""): Route {
     };
   }
   return { kind: "project", projectId };
-}
-
-function routeToPath(route: Route): string {
-  switch (route.kind) {
-    case "home":
-      return "/";
-    case "new":
-      return `/new${route.createKind ? `?kind=${route.createKind}` : ""}`;
-    case "projects":
-      return "/projects";
-    case "allChat":
-      return "/messages";
-    case "allChats":
-      return `/chats${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`;
-    case "allAgents":
-      return `/agents${route.filterProjectId ? `?project=${encodeURIComponent(route.filterProjectId)}` : ""}`;
-    case "allTriggers":
-      return "/triggers";
-    case "settings":
-      return `/settings${route.section ? `/${route.section}` : ""}`;
-    case "profile":
-      return "/profile";
-    case "usage":
-      return `/usage${route.projectId ? `?project=${encodeURIComponent(route.projectId)}` : ""}`;
-    case "wiki":
-      return `/wiki${route.articleId ? `/${encodeURIComponent(route.articleId)}` : ""}`;
-    case "project":
-      return `/projects/${encodeURIComponent(route.projectId)}`;
-    case "workspaceFile":
-      return `/projects/${encodeURIComponent(route.projectId)}/files/view?path=${encodeURIComponent(route.path)}`;
-    case "projectWork": {
-      const query = new URLSearchParams();
-      if (route.conversationId) query.set("chat", route.conversationId);
-      if (route.focusId) query.set("focus", route.focusId);
-      return `/projects/${encodeURIComponent(route.projectId)}/work${query.size ? `?${query.toString()}` : ""}`;
-    }
-    case "browser":
-      return route.agentId && route.runId
-        ? `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}/runs/${encodeURIComponent(route.runId)}/browser`
-        : `/projects/${encodeURIComponent(route.projectId)}/browser`;
-    case "conversation": {
-      const query = new URLSearchParams();
-      if (route.focusMessageId) query.set("message", route.focusMessageId);
-      if (route.channel === "collaboration") query.set("view", "team");
-      const suffix = query.size ? `?${query.toString()}` : "";
-      return `/projects/${encodeURIComponent(route.projectId)}/chats/${encodeURIComponent(route.conversationId)}${suffix}`;
-    }
-    case "agents":
-      return `/projects/${encodeURIComponent(route.projectId)}/agents${route.create || route.managerAgentId || route.continueToTrigger
-        ? `?${new URLSearchParams({
-          ...(route.create ? { create: "1" } : {}),
-          ...(route.managerAgentId ? { manager: route.managerAgentId } : {}),
-          ...(route.continueToTrigger ? { continue: "trigger" } : {}),
-        }).toString()}`
-        : ""}`;
-    case "agent": {
-      const query = new URLSearchParams();
-      if (route.focusMessageId) query.set("message", route.focusMessageId);
-      else if (route.focusTelemetry) {
-        query.set("stream", route.focusTelemetry.stream);
-        query.set("item", route.focusTelemetry.id);
-      } else if (route.view) query.set("view", route.view);
-      if (route.view === "technical" && route.technicalFocusId) query.set("focus", route.technicalFocusId);
-      if (route.view === "triggers" && route.createTrigger) query.set("create", "1");
-      return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
-    }
-    case "review":
-      return `/projects/${encodeURIComponent(route.projectId)}/reviews/${encodeURIComponent(route.agentId)}${route.path ? `?path=${encodeURIComponent(route.path)}` : ""}`;
-    default:
-      return "/";
-  }
 }
 
 export function routeProjectId(route: Route): string | undefined {

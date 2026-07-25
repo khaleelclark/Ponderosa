@@ -1,5 +1,6 @@
 import { isAgentDetailView, type Route } from "./routing";
 import { createClientId } from "./clientId";
+import { isRouteKind, workspaceTabKey } from "./routeRegistry";
 
 type WorkspaceTabRoute = Route;
 
@@ -51,57 +52,89 @@ export const WORKSPACE_TABS_STORAGE_KEY = "ponderosa.workspaceTabs.v2";
 function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
   if (!route || typeof route !== "object") return false;
   const candidate = route as Record<string, unknown>;
-  if (candidate.kind === "home" || candidate.kind === "projects" || candidate.kind === "allChat" || candidate.kind === "allTriggers" || candidate.kind === "profile") return true;
-  if (candidate.kind === "new") return candidate.createKind === undefined || ["project", "chat", "agent", "trigger"].includes(String(candidate.createKind));
-  if (candidate.kind === "allChats") return candidate.filterProjectId === undefined || typeof candidate.filterProjectId === "string";
-  if (candidate.kind === "allAgents") return candidate.filterProjectId === undefined || typeof candidate.filterProjectId === "string";
-  if (candidate.kind === "settings") return candidate.section === undefined || ["general", "providers", "notifications"].includes(String(candidate.section));
-  if (candidate.kind === "usage") return candidate.projectId === undefined || typeof candidate.projectId === "string";
-  if (candidate.kind === "wiki") return candidate.articleId === undefined || typeof candidate.articleId === "string";
-  if (typeof candidate.projectId !== "string" || !candidate.projectId) return false;
-  if (candidate.kind === "project") return true;
-  if (candidate.kind === "workspaceFile") return typeof candidate.path === "string" && Boolean(candidate.path);
-  if (candidate.kind === "agents") {
-    return (candidate.create === undefined || typeof candidate.create === "boolean")
-      && (candidate.managerAgentId === undefined || typeof candidate.managerAgentId === "string")
-      && (candidate.continueToTrigger === undefined || typeof candidate.continueToTrigger === "boolean");
+  if (!isRouteKind(candidate.kind)) return false;
+  const kind = candidate.kind;
+  switch (kind) {
+    case "home":
+    case "projects":
+    case "allChat":
+    case "allTriggers":
+    case "profile":
+      return true;
+    case "new":
+      return candidate.createKind === undefined ||
+        ["project", "chat", "agent", "trigger"].includes(
+          String(candidate.createKind),
+        );
+    case "allChats":
+    case "allAgents":
+      return candidate.filterProjectId === undefined ||
+        typeof candidate.filterProjectId === "string";
+    case "settings":
+      return candidate.section === undefined ||
+        ["general", "providers", "notifications"].includes(
+          String(candidate.section),
+        );
+    case "usage":
+      return candidate.projectId === undefined ||
+        typeof candidate.projectId === "string";
+    case "wiki":
+      return candidate.articleId === undefined ||
+        typeof candidate.articleId === "string";
+    case "project":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId);
+    case "workspaceFile":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        typeof candidate.path === "string" &&
+        Boolean(candidate.path);
+    case "agents":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        (candidate.create === undefined ||
+          typeof candidate.create === "boolean") &&
+        (candidate.managerAgentId === undefined ||
+          typeof candidate.managerAgentId === "string") &&
+        (candidate.continueToTrigger === undefined ||
+          typeof candidate.continueToTrigger === "boolean");
+    case "projectWork":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        (candidate.conversationId === undefined ||
+          typeof candidate.conversationId === "string") &&
+        (candidate.focusId === undefined ||
+          typeof candidate.focusId === "string");
+    case "browser":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        ((candidate.agentId === undefined && candidate.runId === undefined) ||
+          (typeof candidate.agentId === "string" &&
+            Boolean(candidate.agentId) &&
+            typeof candidate.runId === "string" &&
+            Boolean(candidate.runId)));
+    case "conversation":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        typeof candidate.conversationId === "string" &&
+        Boolean(candidate.conversationId);
+    case "agent":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        typeof candidate.agentId === "string" &&
+        Boolean(candidate.agentId) &&
+        (candidate.view === undefined || isAgentDetailView(candidate.view)) &&
+        (candidate.createTrigger === undefined ||
+          typeof candidate.createTrigger === "boolean");
+    case "review":
+      return typeof candidate.projectId === "string" &&
+        Boolean(candidate.projectId) &&
+        typeof candidate.agentId === "string" &&
+        Boolean(candidate.agentId) &&
+        (candidate.path === undefined || typeof candidate.path === "string");
   }
-  if (candidate.kind === "projectWork") return (candidate.conversationId === undefined || typeof candidate.conversationId === "string")
-    && (candidate.focusId === undefined || typeof candidate.focusId === "string");
-  if (candidate.kind === "browser") return (candidate.agentId === undefined && candidate.runId === undefined)
-    || (typeof candidate.agentId === "string" && Boolean(candidate.agentId) && typeof candidate.runId === "string" && Boolean(candidate.runId));
-  if (candidate.kind === "conversation") return typeof candidate.conversationId === "string" && Boolean(candidate.conversationId);
-  if (candidate.kind === "agent") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
-    && (candidate.view === undefined || isAgentDetailView(candidate.view))
-    && (candidate.createTrigger === undefined || typeof candidate.createTrigger === "boolean");
-  if (candidate.kind === "review") return typeof candidate.agentId === "string" && Boolean(candidate.agentId)
-    && (candidate.path === undefined || typeof candidate.path === "string");
-  return false;
-}
-
-/** Stable resource identity, used only when a deleted resource must be removed. */
-function workspaceTabKey(route: Route): string {
-  switch (route.kind) {
-    case "home": return "home";
-    case "new": return "new";
-    case "projects": return "projects";
-    case "allChat": return "all-chat";
-    case "allChats": return "all-chats";
-    case "allAgents": return "all-agents";
-    case "allTriggers": return "all-triggers";
-    case "settings": return "settings";
-    case "profile": return "profile";
-    case "usage": return `usage:${route.projectId ?? "overall"}`;
-    case "wiki": return `wiki:${route.articleId ?? "home"}`;
-    case "project": return `project:${route.projectId}`;
-    case "workspaceFile": return `workspace-file:${route.projectId}:${route.path}`;
-    case "projectWork": return `project-work:${route.projectId}:${route.conversationId ?? "project"}`;
-    case "browser": return `browser:${route.projectId}:${route.agentId ?? "project"}:${route.runId ?? "persistent"}`;
-    case "conversation": return `conversation:${route.projectId}:${route.conversationId}`;
-    case "agents": return `agents:${route.projectId}`;
-    case "agent": return `agent:${route.projectId}:${route.agentId}`;
-    case "review": return `review:${route.projectId}:${route.agentId}:${route.path ?? "all"}`;
-  }
+  const unhandled: never = kind;
+  return unhandled;
 }
 
 function generatedTabKey(): string {

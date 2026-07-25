@@ -9,6 +9,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 export function HostFolderPicker({ open, initialPath, onClose, onChoose }: {
   open: boolean;
@@ -31,7 +32,7 @@ export function HostFolderPicker({ open, initialPath, onClose, onChoose }: {
     setFolderName("");
   }, [initialPath, open]);
   const query = useQuery({
-    queryKey: ["host-folder-browser", path],
+    queryKey: queryKeys.hostFolderBrowser.path(path),
     queryFn: () => api.browseProjectFolders(path),
     enabled: open,
   });
@@ -48,7 +49,9 @@ export function HostFolderPicker({ open, initialPath, onClose, onChoose }: {
       setPath(folder.hostPath);
       setPathInput(folder.hostPath);
       setSelectedPath(folder.hostPath);
-      void queryClient.invalidateQueries({ queryKey: ["host-folder-browser"] });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.hostFolderBrowser.all,
+      });
     },
   });
   const navigateTo = (hostPath: string) => {

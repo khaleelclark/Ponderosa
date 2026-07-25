@@ -33,7 +33,7 @@ export function AgentDeletionDialog({
   const rootsKey = roots.join(",");
   const [confirmation, setConfirmation] = useState("");
   const preview = useQuery({
-    queryKey: ["agent-deletion-preview", projectId, rootsKey],
+    queryKey: queryKeys.agentDeletionPreview.detail(projectId, rootsKey),
     queryFn: () => api.previewAgentDeletion(projectId, { rootAgentIds: roots }),
     enabled: open && roots.length > 0,
     retry: false,

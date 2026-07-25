@@ -58,6 +58,7 @@ import {
   useRoute,
   type Route,
 } from "./routing";
+import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import { nextProjectAfterDelete } from "./projectLifecycle";
 import { closeReadPushNotifications, inspectWebPush, subscribeWebPushChanges, syncWebPush } from "./pushNotifications";
@@ -151,7 +152,7 @@ export default function App({
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden");
   const projectBrowserRequestId = useRef(0);
   const readinessQuery = useQuery({
-    queryKey: ["readiness"],
+    queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
     enabled: engineStatusOpen,
     staleTime: 30_000,
@@ -242,12 +243,12 @@ export default function App({
     if (projects.length === 0) {
       return;
     }
-    if (["home", "new", "projects", "allChat", "allChats", "allAgents", "allTriggers", "settings", "profile", "usage", "wiki"].includes(route.kind)) return;
+    if (!isProjectRoute(route)) return;
     // Every project-scoped route is already a concrete destination. In
     // particular, Project overview intentionally uses the bare project route;
     // treating it like an unresolved landing page caused it to flash and then
     // redirect back to the most recent chat.
-    if (["project", "workspaceFile", "projectWork", "conversation", "agents", "agent", "review", "browser"].includes(route.kind) && selectedProjectId) return;
+    if (selectedProjectId) return;
     const preferred = selectedProjectId ?? loadLastProjectId();
     const target = projects.find((project) => project.id === preferred) ?? projects[0];
     if (!target) return;
@@ -674,27 +675,31 @@ export default function App({
           <OperatorProfileWorkspace preferences={preferences} onPreferences={savePreferences} />
         ) : route.kind === "usage" ? (
           <ProviderActivityWorkspace projects={projects} projectId={route.projectId} />
-        ) : selectedProjectId ? (
-          <ProjectShell
-            projectId={selectedProjectId}
-            project={projects.find((project) => project.id === selectedProjectId)!}
-            route={route}
-            engines={engines}
-            notifications={notificationsQuery.data ?? []}
-            preferences={preferences}
-            onPreferences={savePreferences}
-            onManageProject={openProjectSettings}
-            onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
-            onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
-            onOpenEngineStatus={() => setEngineStatusOpen(true)}
-            navigate={navigateWorkspace}
-            browserRequest={projectBrowserRequest}
-            onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
-            openInNewTab={openWorkspaceRouteInBackground}
-            onResourceDeleted={removeWorkspaceView}
-          />
+        ) : isProjectRoute(route) ? (
+          selectedProjectId ? (
+            <ProjectShell
+              projectId={selectedProjectId}
+              project={projects.find((project) => project.id === selectedProjectId)!}
+              route={route}
+              engines={engines}
+              notifications={notificationsQuery.data ?? []}
+              preferences={preferences}
+              onPreferences={savePreferences}
+              onManageProject={openProjectSettings}
+              onRenameConversation={(conversation) => openSidebarConversationAction("rename", conversation)}
+              onDeleteConversation={(conversation) => openSidebarConversationAction("delete", conversation)}
+              onOpenEngineStatus={() => setEngineStatusOpen(true)}
+              navigate={navigateWorkspace}
+              browserRequest={projectBrowserRequest}
+              onBrowserRequestHandled={(requestId) => setProjectBrowserRequest((current) => consumeProjectBrowserRequest(current, requestId))}
+              openInNewTab={openWorkspaceRouteInBackground}
+              onResourceDeleted={removeWorkspaceView}
+            />
+          ) : (
+            <Box />
+          )
         ) : (
-          <Box />
+          assertNeverRoute(route)
         )}
         </Box>
         </WorkspaceErrorBoundary>

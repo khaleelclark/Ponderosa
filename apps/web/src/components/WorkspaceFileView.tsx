@@ -1,11 +1,12 @@
 import { Alert, Box, Button, Stack, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import { FilePreview } from "./filePreview/FilePreview";
 
 export function WorkspaceFileView({ projectId, path }: { projectId: string; path: string }): JSX.Element {
   const query = useQuery({
-    queryKey: ["workspace-file-view", projectId, path],
+    queryKey: queryKeys.workspaceFileView.detail(projectId, path),
     queryFn: () => api.getWorkspaceFileView(projectId, path),
     retry: false,
   });

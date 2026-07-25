@@ -12,6 +12,7 @@ import { useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { IconTitle } from "./IconTitle";
 
@@ -25,15 +26,15 @@ function articleIdFromRef(ref: string): string {
 
 export function WikiView({ articleId, navigate }: { articleId?: string; navigate(route: Route): void }): JSX.Element {
   const [search, setSearch] = useState("");
-  const index = useQuery({ queryKey: ["wiki", "index"], queryFn: () => api.getWikiIndex(), staleTime: 60_000 });
+  const index = useQuery({ queryKey: queryKeys.wiki.index, queryFn: () => api.getWikiIndex(), staleTime: 60_000 });
   const articles = useMemo(() => index.data?.sections.flatMap((section) => section.articles) ?? [], [index.data]);
   const activeId = articleId ?? articles[0]?.id;
   const article = useQuery({
-    queryKey: ["wiki", "article", activeId], queryFn: () => api.getWikiArticle(activeId!), enabled: Boolean(activeId), staleTime: 60_000,
+    queryKey: queryKeys.wiki.article(activeId), queryFn: () => api.getWikiArticle(activeId!), enabled: Boolean(activeId), staleTime: 60_000,
   });
   const normalizedSearch = search.trim();
   const results = useQuery({
-    queryKey: ["wiki", "search", normalizedSearch], queryFn: () => api.searchWiki(normalizedSearch, 20),
+    queryKey: queryKeys.wiki.search(normalizedSearch), queryFn: () => api.searchWiki(normalizedSearch, 20),
     enabled: normalizedSearch.length >= 2, staleTime: 30_000,
   });
   const open = (candidate: WikiArticleSummaryDto) => {

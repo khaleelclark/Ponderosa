@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { api } from "../../api";
+import { queryKeys } from "../../queryKeys";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
 import { UnifiedDiffViewer } from "../filePreview/FilePreview";
@@ -31,7 +32,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   onOpenInNewTab?(path: string): void;
 }): JSX.Element {
   const workspace = useQuery({
-    queryKey: ["workspace", projectId],
+    queryKey: queryKeys.workspaceChanges.project(projectId),
     queryFn: () => api.getWorkspaceStatus(projectId),
     refetchInterval: running ? 1_500 : 10_000,
   });
@@ -52,7 +53,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   }, [changes, initialPath]);
 
   const review = useQuery({
-    queryKey: ["workspace-file", projectId, activePath],
+    queryKey: queryKeys.workspaceFile.detail(projectId, activePath),
     queryFn: () => api.getWorkspaceFile(projectId, activePath ?? ""),
     enabled: Boolean(activePath),
     refetchInterval: running ? 1_500 : false,
@@ -60,7 +61,11 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
   const selectedChange = changes.find((change) => change.path === activePath);
   const selectedProvenanceSummary = activePath ? provenance.get(activePath) : undefined;
   const selectedProvenanceQuery = useQuery({
-    queryKey: ["changed-file", agentId, activePath, selectedProvenanceSummary?.lastSeq],
+    queryKey: queryKeys.workspaceChanges.file(
+      agentId,
+      activePath,
+      selectedProvenanceSummary?.lastSeq,
+    ),
     queryFn: () => api.getChangedFileDetail(agentId!, activePath!),
     enabled: Boolean(agentId && activePath),
     staleTime: Infinity,

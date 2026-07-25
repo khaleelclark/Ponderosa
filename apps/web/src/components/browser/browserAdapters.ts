@@ -4,6 +4,7 @@ import type {
   ProjectBrowserSessionDto,
 } from "@ponderosa/core";
 import { api } from "../../api";
+import { queryKeys } from "../../queryKeys";
 
 export type BrowserSession = BrowserSessionDto | ProjectBrowserSessionDto;
 export type UnfencedBrowserInput = BrowserOperatorInputRequest extends infer Input
@@ -30,7 +31,7 @@ export interface BrowserEndpointAdapter<Session extends BrowserSession> {
 
 export function projectBrowserAdapter(projectId: string): BrowserEndpointAdapter<ProjectBrowserSessionDto> {
   return {
-    queryKey: ["project-browser", projectId],
+    queryKey: queryKeys.projectBrowser.project(projectId),
     get: () => api.getProjectBrowser(projectId),
     open: (url) => api.openProjectBrowser(projectId, url),
     navigate: (url) => api.navigateProjectBrowser(projectId, url),

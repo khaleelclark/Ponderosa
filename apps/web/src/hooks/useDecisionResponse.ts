@@ -1,12 +1,13 @@
 import type { ResolveDecisionRequest } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
+import { queryKeys } from "../queryKeys";
 
 const DECISION_REFRESH_KEYS = [
-  ["notifications"],
-  ["decisions"],
-  ["agent-work"],
-  ["collaboration-chat"],
+  queryKeys.notifications.all,
+  queryKeys.decisions.all,
+  queryKeys.agentWork.all,
+  queryKeys.collaborationAll,
 ] as const;
 
 export function useDecisionResponse(onSuccess?: () => void) {

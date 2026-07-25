@@ -6,6 +6,7 @@ import { useState } from "react";
 import { scopedAttention } from "../attention";
 import { api } from "../api";
 import { notificationDecision } from "../decisions";
+import { queryKeys } from "../queryKeys";
 import { DecisionCard } from "./decisions/DecisionCard";
 
 function outcomeLabel(outcome: NonNullable<WorkspaceNotificationDto["resolution"]>["outcome"]): string {
@@ -37,9 +38,9 @@ export function AttentionSurface({
   });
   const refresh = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["notifications"] }),
-      queryClient.invalidateQueries({ queryKey: ["decisions"] }),
-      queryClient.invalidateQueries({ queryKey: ["agent-work"] }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.decisions.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all }),
     ]);
   };
   const resolve = useMutation({
