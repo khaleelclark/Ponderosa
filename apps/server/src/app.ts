@@ -12280,7 +12280,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           prompt: exactProviderInput,
           sourceManifest: providerInputManifest,
         });
-        if (rolloverInstructionPrompt) contextRolloverPending.delete(agent.id);
         publishCoordinationV3Changed(agent.id);
         durableClaim = { generation: v3FencingToken! };
       } catch {
@@ -12699,6 +12698,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                   fencingToken: activeRun.v3FencingToken,
                   providerSessionId: sessionId ?? persistentRuntime?.session.engineAgentId,
                 });
+                if (rolloverInstructionPrompt) contextRolloverPending.delete(agent.id);
                 v3PromptInjected = true;
                 if (continuationHandoff && !continuationHandoffConsumed) {
                   continuationHandoffConsumed = store.consumeContinuationHandoff(
