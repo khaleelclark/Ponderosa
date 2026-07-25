@@ -289,8 +289,8 @@ export interface CodexProviderDiscovery {
 }
 
 /** Normalize only provider-owned app-server responses. No docs/TUI command
- * catalog is copied into Ponderosa. The one semantic structured action is
- * explicit and gated by a live thread plus the provider's model catalog. */
+ * catalog is copied into Ponderosa. Structured actions are limited to Codex
+ * operations that the app-server can execute without terminal UI state. */
 export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): EngineCapabilities {
   const installedPlugins = new Map<string, { label: string; description: string }>();
   for (const marketplace of array(record(input.plugins)?.marketplaces)) {
@@ -371,6 +371,15 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
     insertText: "/compact",
     status: compactUnavailable ? "unavailable" : "available",
     ...(compactUnavailable ? { unavailableReason: compactUnavailable } : {}),
+    invocation: "runtime",
+  });
+  commands.set("status", {
+    name: "status",
+    description: "Show Codex session configuration, context usage, and subscription limits",
+    source: "built-in",
+    acceptsArguments: false,
+    insertText: "/status",
+    status: "available",
     invocation: "runtime",
   });
 

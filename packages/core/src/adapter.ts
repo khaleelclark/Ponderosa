@@ -191,7 +191,7 @@ export interface OpenRuntimeSessionOptions {
 export interface EngineCommand {
   name: string;
   description: string;
-  source: "built-in" | "skill" | "plugin" | "ponderosa";
+  source: "built-in" | "skill" | "plugin";
   acceptsArguments: boolean;
   /** Exact provider syntax inserted when this item is selected from the slash
    * discovery menu. Codex skills, for example, use `$name` even though `/`

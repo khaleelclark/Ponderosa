@@ -303,13 +303,28 @@ export function formatCodexRateLimits(rateLimits: unknown): string[] {
   const parts: string[] = [];
   const response = object(rateLimits);
   const byId = object(response?.rateLimitsByLimitId);
-  const snapshot = object(byId?.codex) ?? object(response?.rateLimits);
-  for (const candidate of [object(snapshot?.primary), object(snapshot?.secondary)]) {
-    if (!candidate) continue;
-    const label = rateWindowLabel(candidate);
-    if (label) parts.push(label);
+  const snapshots = Object.entries(byId ?? {}).flatMap(([id, value]) => {
+    const snapshot = object(value);
+    return snapshot ? [{ id: id as string | undefined, snapshot }] : [];
+  });
+  const legacySnapshot = object(response?.rateLimits);
+  if (snapshots.length === 0 && legacySnapshot) {
+    snapshots.push({ id: undefined, snapshot: legacySnapshot });
   }
-  if (snapshot?.rateLimitReachedType) parts.push("Provider limit reached");
+  const qualify = snapshots.length > 1;
+  for (const { id, snapshot } of snapshots) {
+    const name = typeof snapshot.limitName === "string" && snapshot.limitName.trim()
+      ? snapshot.limitName.trim()
+      : id;
+    for (const candidate of [object(snapshot.primary), object(snapshot.secondary)]) {
+      if (!candidate) continue;
+      const label = rateWindowLabel(candidate);
+      if (label) parts.push(qualify && name ? `${name}: ${label}` : label);
+    }
+    if (snapshot.rateLimitReachedType) {
+      parts.push(qualify && name ? `${name}: Provider limit reached` : "Provider limit reached");
+    }
+  }
   return parts;
 }
 

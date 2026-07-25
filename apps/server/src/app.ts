@@ -161,10 +161,6 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
-import {
-  invokeNativeCommand,
-  mergeNativeCommands,
-} from "./native-commands.js";
 import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
 import {
   descriptorRelativeFilesystemCapability,
@@ -13829,19 +13825,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             mcpServers: [],
             composerCapabilities: [],
           };
-      const command = mergeNativeCommands(catalog.commands)
-        .find((candidate) => candidate.name === name);
-      if (command?.source === "ponderosa") {
-        const result = await invokeNativeCommand(name, {
-          providerName: engine.adapter.displayName,
-          session,
-          model: catalog.model ?? selection.model,
-          usage: tokenUsage({ type: "project", id: project.id }),
-          usageSubject: `Project ${project.label}`,
-        }, argumentsText);
-        invocation = { catalog, ...(result.message ? { message: result.message } : {}) };
-        return catalog;
-      }
+      const command = catalog.commands.find((candidate) => candidate.name === name);
       if (!session.capabilities || !session.invokeCommand) {
         throw new Error("this provider does not support structured runtime commands");
       }
@@ -13906,18 +13890,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               mcpServers: [],
               composerCapabilities: [],
             };
-        const command = mergeNativeCommands(catalog.commands)
-          .find((candidate) => candidate.name === name);
-        if (command?.source === "ponderosa") {
-          const result = await invokeNativeCommand(name, {
-            providerName: engine.adapter.displayName,
-            session,
-            model: catalog.model,
-            usage: tokenUsage({ type: "agent", id: agent.id }),
-            usageSubject: `Agent ${agent.title}`,
-          }, argumentsText);
-          return { catalog, ...(result.message ? { message: result.message } : {}) };
-        }
+        const command = catalog.commands.find((candidate) => candidate.name === name);
         if (activeRuns.has(agent.id)) {
           throw new Error("structured provider commands require an idle runtime");
         }
@@ -14833,9 +14806,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return {
           engineId: adapter.id,
           ...capabilities,
-          commands: adapter.openSession
-            ? mergeNativeCommands(capabilities.commands)
-            : capabilities.commands,
+          commands: capabilities.commands,
         };
       }));
     },
