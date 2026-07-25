@@ -219,6 +219,7 @@ export function WorkspaceTabs({
               )?.title,
             agentTitle: agentId =>
               resources?.agents.find(agent => agent.id === agentId)?.title,
+            projectLabel: project?.label,
           });
           const label = tab.title ?? generatedLabel;
           const accessibleLabel =

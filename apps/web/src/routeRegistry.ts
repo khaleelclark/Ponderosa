@@ -29,6 +29,7 @@ export type RouteSidebarSection =
 export interface RouteTabLabelContext {
   conversationTitle(conversationId: string): string | undefined;
   agentTitle(agentId: string): string | undefined;
+  projectLabel?: string;
 }
 
 interface RouteRegistryEntry<Kind extends RouteKind> {
@@ -148,7 +149,7 @@ const ROUTE_REGISTRY = {
   project: {
     toPath: route => `/projects/${encodeURIComponent(route.projectId)}`,
     workspaceTabKey: route => `project:${route.projectId}`,
-    tabLabel: () => "Project Overview",
+    tabLabel: (_route, context) => context.projectLabel ?? "Project Overview",
     tabIcon: "folder",
     scope: "project",
     initialSidebarSection: "home",

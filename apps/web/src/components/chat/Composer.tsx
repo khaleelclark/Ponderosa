@@ -55,6 +55,10 @@ export interface ComposerProps extends ChatComposerContract {
   draftStorageKey?: string;
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };
+  /** Project Chat exposes its deliberate fresh-agent default as a destination. */
+  destinationMode?: "project-chat" | "fixed";
+  fixedRecipientTitle?: string;
+  continueWith?: { handle: string; title: string };
 }
 
 export function Composer({
@@ -83,6 +87,9 @@ export function Composer({
   controls,
   guidance,
   insertTextRequest,
+  destinationMode,
+  fixedRecipientTitle,
+  continueWith,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() => draftStorageKey ? readChatState(draftStorageKey) ?? "" : "");
   const [draftOwnerId] = useState(() => {
@@ -132,6 +139,13 @@ export function Composer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = findMentionedHandles(submissionText, mentionHandles ?? []);
+  const destinationHandle = destinationMode === "project-chat" ? mentionedHandles.find((handle) => !["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) : undefined;
+  const replaceDestination = (value: string, nextHandle?: string) => value.replace(/(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu, (match, handle: string) => {
+    if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase())) return match;
+    return nextHandle ? ` #${nextHandle}` : " ";
+  });
+  const setDestination = (handle: string) => update(`#${handle} ${replaceDestination(text, undefined).trimStart()}`.trimEnd());
+  const clearDestination = () => update(destinationHandle ? text.replace(new RegExp(`(?:^|\\s)#${destinationHandle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`, "u"), " ").replace(/^\\s+/u, "") : text);
   const queuedHandles = new Set((queuedMentionHandles ?? []).map((handle) => handle.toLocaleLowerCase()));
   const mentionedAgentsWithQueues = mentionedHandles.filter((handle) => queuedHandles.has(handle.toLocaleLowerCase()));
   const defaultsToQueue = Boolean(onQueue) && (preferQueue || (
@@ -535,6 +549,11 @@ export function Composer({
           {typeof guidance === "string" ? <Typography variant="body2" sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}>{guidance}</Typography> : guidance}
         </Box>
       ) : null}
+      {destinationMode === "project-chat" ? <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ px: 0.25, pb: 0.9, alignItems: "center" }}>
+        <Chip size="small" color={destinationHandle ? "primary" : "default"} variant={destinationHandle ? "filled" : "outlined"} label={destinationHandle ? `#${destinationHandle}` : "New Agent"} onDelete={destinationHandle ? clearDestination : undefined} />
+        {!destinationHandle && continueWith ? <Button size="small" onClick={() => setDestination(continueWith.handle)}>Continue with {continueWith.title}</Button> : null}
+        <Typography variant="caption" color="text.secondary">{destinationHandle ? `${destinationHandle} will receive this.` : "A new Agent will respond."}</Typography>
+      </Stack> : destinationMode === "fixed" && fixedRecipientTitle ? <Typography variant="caption" color="text.secondary" sx={{ display: "block", px: 0.25, pb: 0.9 }}>{fixedRecipientTitle} will receive this.</Typography> : null}
       {files.length > 0 ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mb: 1 }}>
         {files.map((file, index) => {
           const upload = draftUploadStates.get(file);

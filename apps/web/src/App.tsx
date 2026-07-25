@@ -825,7 +825,7 @@ export default function App({
         projects={projects}
         notifications={notificationsQuery.data ?? []}
         onClose={() => setNotificationPanelOpen(false)}
-        onNavigate={navigate}
+        onNavigate={openWorkspaceRoute}
         onOpenSettings={openSettings}
       />
       <ProviderStatusFlow

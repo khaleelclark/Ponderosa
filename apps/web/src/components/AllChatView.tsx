@@ -620,6 +620,8 @@ export function AllChatView({
               </Alert>
             ) : null}
             <Composer
+              destinationMode="fixed"
+              fixedRecipientTitle={selected.directMessageAgent.title}
               commands={selectedCommands}
               capabilities={
                 selectedEngineCapabilities?.composerCapabilities ?? []

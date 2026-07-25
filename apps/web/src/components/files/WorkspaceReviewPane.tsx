@@ -83,7 +83,17 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
     </Stack>
     {workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Workspace status could not be loaded. {String(workspace.error)}</Alert>
-        : workspace.data && !workspace.data.isGitRepository ? <Alert severity="info" sx={{ m: 1.5 }}>This working folder is not a Git repository. Run-related file events remain available in Activity and Changed Files.</Alert>
+        : workspace.data && !workspace.data.isGitRepository ? <Box sx={{ minHeight: 0, overflow: "auto", p: 1.5 }}>
+          <Alert severity="info" sx={{ mb: 1.5 }}>Showing recorded agent file changes. This working folder is not a Git repository, so no Git diff is available.</Alert>
+          {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Stack spacing={0.75}>
+            {files.map((file) => <Paper key={`${file.path}:${file.lastSeq}`} variant="outlined" sx={{ p: 1.25 }}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                <Typography variant="body2" sx={{ flex: 1, overflowWrap: "anywhere" }}>{file.path}</Typography>
+                <Chip size="small" label={`${file.executionCount} run${file.executionCount === 1 ? "" : "s"}`} />
+              </Stack>
+            </Paper>)}
+          </Stack>}
+        </Box>
           : changes.length === 0 ? <Alert severity="success" sx={{ m: 1.5 }}>Working tree clean. Files previously touched by this agent remain recorded in Activity and Artifacts.</Alert>
             : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(220px, 32%) minmax(0, 1fr)" }, minHeight: 0 }}>
               <Stack sx={{ overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", maxHeight: { xs: 220, lg: "none" } }}>

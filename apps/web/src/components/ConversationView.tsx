@@ -1121,6 +1121,10 @@ export function ConversationView({
     },
     [agentTitle],
   );
+  const lastRespondingAgent = useMemo(() => {
+    const message = [...messages].reverse().find(candidate => Boolean(candidate.authorAgentId));
+    return message?.authorAgentId ? agents.find(agent => agent.id === message.authorAgentId) : undefined;
+  }, [agents, messages]);
   const editConversationMessage = useCallback(
     (selected: ConversationMessageDto) => {
       setEditingMessage(selected);
@@ -1848,6 +1852,8 @@ export function ConversationView({
               `conversation.${conversationId}.${activeView}`,
             )}
             conversationDraftId={conversationId}
+            destinationMode="project-chat"
+            continueWith={lastRespondingAgent ? { handle: agentMentionHandle(lastRespondingAgent.title), title: lastRespondingAgent.title } : undefined}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             guidance={

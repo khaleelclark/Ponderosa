@@ -1164,6 +1164,8 @@ export function AgentDetail({
           onDelete={(message) => cancelQueuedMessage.mutateAsync(message.deliveryId)}
         />
         <Composer
+          destinationMode="fixed"
+          fixedRecipientTitle={detail.agent.title}
           commands={commands}
           capabilities={engineIsAvailable(engine) ? engineCapability?.composerCapabilities : []}
           onCapabilitiesOpen={() => onRefreshCapabilities({ engineId: engine?.id, model, agentId })}
