@@ -188,7 +188,10 @@ export class ClaudeStreamSession implements RuntimeSession {
           this.opts.onCapabilitiesChanged?.();
         }
         const assistantUsage = mapClaudeAssistantUsage(raw);
-        if (assistantUsage?.inputTokens !== undefined) {
+        // Claude's local slash commands emit a synthetic assistant message with
+        // an all-zero usage object even though no model request occurred. Keep
+        // the last real request occupancy instead of resetting it to zero.
+        if (assistantUsage?.inputTokens !== undefined && assistantUsage.inputTokens > 0) {
           this.latestContextOccupancy = assistantUsage.inputTokens;
         }
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
