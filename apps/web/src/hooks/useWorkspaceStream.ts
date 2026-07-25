@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import { reconcileCursor } from "./streamCursor";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
@@ -14,12 +15,6 @@ function initialCursor(): number {
 
 function initialInstanceId(): string | null {
   return window.sessionStorage.getItem(INSTANCE_KEY);
-}
-
-interface WorkspaceCursorReconciliation {
-  cursor: number;
-  duplicate: boolean;
-  gap: boolean;
 }
 
 type WorkspaceCapabilityBoundary =
@@ -44,12 +39,6 @@ function fileActivityConversationQueryKeys(event: WorkspaceEvent): Array<readonl
     || (event.category !== "file" && event.category !== "artifact" && event.category !== "lifecycle")
   ) return [];
   return event.conversationIds.map((conversationId) => queryKeys.conversations.detailPrefix(conversationId));
-}
-
-/** Pure ordered-cursor reducer shared by every tab's stream consumer. */
-function reconcileWorkspaceCursor(current: number, envelope: Pick<WorkspaceEventEnvelope, "id">): WorkspaceCursorReconciliation {
-  if (envelope.id <= current) return { cursor: current, duplicate: true, gap: false };
-  return { cursor: envelope.id, duplicate: false, gap: envelope.id !== current + 1 };
 }
 
 /** Every tab invalidates both chat projections from the same canonical change. */
@@ -219,7 +208,11 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all });
     };
     const apply = (envelope: WorkspaceEventEnvelope) => {
-      const reconciliation = reconcileWorkspaceCursor(cursor.current, envelope);
+      const reconciliation = reconcileCursor(
+        cursor.current,
+        envelope,
+        item => item.id,
+      );
       if (reconciliation.duplicate) return;
       if (reconciliation.gap) invalidateAll();
       cursor.current = reconciliation.cursor;

@@ -71,6 +71,7 @@ import {
 } from "../mentions";
 import {
   managerBroadcastText,
+  stripBroadcastPrefix,
   uploadFilesForRecipients,
 } from "../conversationRouting";
 import { ResponseFileActivity } from "./activity/ActivityPane";
@@ -78,6 +79,7 @@ import {
   ChatMessageBody,
   CommunicationDocumentCard,
   chatMessageLayoutKey,
+  stripDocumentPrefixText,
 } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
@@ -218,14 +220,12 @@ function ConversationMessageComponent({
   // Agent-authored Project-chat messages already carry that scope structurally.
   const routedText =
     conversation === "main" && message.authorAgentId
-      ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
+      ? stripBroadcastPrefix(message.text)
       : message.text;
-  const visibleText = message.document
-    ? routedText.replace(
-        /^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu,
-        "",
-      )
-    : routedText;
+  const visibleText = stripDocumentPrefixText(
+    routedText,
+    Boolean(message.document),
+  );
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
@@ -1132,7 +1132,7 @@ export function ConversationView({
                   ? "System"
                   : "You",
               text: message.authorAgentId
-                ? message.text.replace(/^#broadcast(?:\s+|$)/i, "")
+                ? stripBroadcastPrefix(message.text)
                 : message.text,
               createdAt: message.createdAt,
               attachments: message.attachments,

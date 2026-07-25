@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { reconcileCursor } from "./streamCursor";
 
 export interface ExecutionItem {
   id: string;
@@ -48,19 +49,6 @@ function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event
 
 const MAX_CACHED_AGENT_CURSORS = 100;
 const streamCursors = new Map<string, { lastSeq?: number; instanceId?: string }>();
-
-interface AgentCursorReconciliation {
-  cursor: number;
-  duplicate: boolean;
-  gap: boolean;
-}
-
-/** Agent events are strictly ordered, so one cursor replaces an unbounded set
- * of every sequence number ever observed. */
-function reconcileAgentCursor(current: number, envelope: Pick<SseEventEnvelope, "seq">): AgentCursorReconciliation {
-  if (envelope.seq <= current) return { cursor: current, duplicate: true, gap: false };
-  return { cursor: envelope.seq, duplicate: false, gap: envelope.seq !== current + 1 };
-}
 
 function rememberCursor(agentId: string, cursor: { lastSeq?: number; instanceId?: string }): void {
   streamCursors.delete(agentId);
@@ -382,7 +370,11 @@ export function useAgentStream(agentId: string | undefined): StreamState {
         rememberCursor(agentId, cursor);
       },
       onEvent(envelope) {
-        const reconciliation = reconcileAgentCursor(lastSeqRef.current ?? 0, envelope);
+        const reconciliation = reconcileCursor(
+          lastSeqRef.current ?? 0,
+          envelope,
+          item => item.seq,
+        );
         if (reconciliation.duplicate) return;
         if (reconciliation.gap) invalidateAgent();
         lastSeqRef.current = reconciliation.cursor;

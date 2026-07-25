@@ -30,6 +30,16 @@ function linkPresentation(href: string): { url: URL; hostname: string; destinati
 
 export interface LinkPreviewScope { projectId: string; agentId: string; runId: string; conversationId?: string }
 
+/** Hide the artifact pointer that is superseded by a structured document card. */
+export function stripDocumentPrefixText(text: string, hasDocument: boolean): string {
+  return hasDocument
+    ? text.replace(
+        /^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu,
+        "",
+      )
+    : text;
+}
+
 function projectFileHref(projectId: string | undefined, href: string | undefined, mode: "preview" | "download"): string | undefined {
   if (!projectId || !href) return undefined;
   if (/^(?:https?:|data:|blob:|ponderosa:|mailto:|#)/iu.test(href) || href.startsWith("/api/")) return undefined;

@@ -1,7 +1,15 @@
+/** Remove a leading #broadcast scope directive without matching longer tags. */
+export function stripBroadcastPrefix(text: string): string {
+  const stripped = text.replace(/^#broadcast(?=$|\s)/iu, "");
+  return stripped === text ? text : stripped.trimStart();
+}
+
 /** A leading #broadcast is a scope directive, not an agent tag. */
 export function managerBroadcastText(text: string): string | undefined {
-  if (!/^#broadcast(?=$|\s)/iu.test(text.trimStart())) return undefined;
-  return text.trimStart().replace(/^#broadcast(?=$|\s)\s*/iu, "").trim();
+  const normalized = text.trimStart();
+  const stripped = stripBroadcastPrefix(normalized);
+  if (stripped === normalized) return undefined;
+  return stripped.trim();
 }
 
 /** Upload one safe copy per recipient and clean every staged copy on failure. */
