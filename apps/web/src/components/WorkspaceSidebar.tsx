@@ -442,7 +442,7 @@ export function WorkspaceSidebar({
   const rail = (
     <Box
       component="nav"
-      aria-label="Primary navigation"
+      aria-label={drawer ? "Primary navigation drawer" : "Primary navigation"}
       sx={{
         width: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
         minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,

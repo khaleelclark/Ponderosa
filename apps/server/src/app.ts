@@ -1713,31 +1713,17 @@ export function conciseConversationTitle(text: string): string | undefined {
     .replace(/\s+/g, " ")
     .trim();
   if (!normalized) return undefined;
-  const words = normalized.split(" ").filter(Boolean).slice(0, 6);
+  const words = normalized.split(" ").filter(Boolean).slice(0, 5);
   if (words.length < 2) return undefined;
   return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 48).trim() || undefined;
 }
 
-const TITLE_STOP_WORDS = new Set("a an and are as at be by can could for from get give have how i if in into is it me my of on or please request should that the this to update we what when with you your".split(" "));
-
-/** Deterministic semantic title used when no provider title service is
- * available. It combines the first operator intent and first agent outcome,
- * extracts distinctive terms, and title-cases them without copying a query. */
+/** Deterministic title used when no provider title service is available.
+ * The conversation belongs to the operator's request, not a keyword mash of
+ * an agent's response. */
 export function semanticConversationTitle(operatorText: string, agentText: string): string | undefined {
-  // Deliberately title the outcome rather than copying/truncating the
-  // operator's request. Keep the intent parameter in the contract for a
-  // future local summarizer without changing the route shape.
-  void operatorText;
-  const words = agentText
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[^A-Za-z0-9]+/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter((word) => word.length > 2 && !TITLE_STOP_WORDS.has(word.toLowerCase()));
-  const unique: string[] = [];
-  for (const word of words) if (!unique.some((item) => item.toLowerCase() === word.toLowerCase())) unique.push(word);
-  if (unique.length === 0) return undefined;
-  return unique.slice(0, 5).map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()).join(" ").slice(0, 48);
+  void agentText;
+  return conciseConversationTitle(operatorText);
 }
 
 export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {

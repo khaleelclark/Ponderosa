@@ -170,7 +170,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
         return <ResourceRow
           key={snapshot.project.id}
           label={snapshot.project.label}
-          description={`${snapshot.project.hostPath}${recent ? ` · Recent: ${recent.title}` : " · No Project chats"}`}
+          description={`${snapshot.project.hostPath}${recent ? " · Recent chat" : " · No Project chats"}`}
           icon={<FolderOutlinedIcon />}
           meta={running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
           onOpen={() => onNavigate(openProjectRoute(snapshot))}

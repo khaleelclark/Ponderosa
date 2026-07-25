@@ -1,5 +1,5 @@
 import { Avatar, Box, ButtonBase, IconButton, Stack, Tooltip } from "@mui/material";
-import { useState } from "react";
+import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
@@ -26,6 +26,12 @@ export function ChatMessageFrame({
     setMobileTimestampRevealed((current) => !current);
     message.onSelect?.();
   };
+  const toggleTimestamp = (event: ReactMouseEvent<HTMLElement>) => {
+    // Interactive descendants own their clicks; tapping message content on a
+    // phone is the timestamp affordance.
+    if ((event.target as HTMLElement).closest("button,a,input,textarea,[role='button']")) return;
+    setMobileTimestampRevealed((current) => !current);
+  };
   const avatar = (
     <Avatar
       aria-label={`${senderName} avatar`}
@@ -50,7 +56,7 @@ export function ChatMessageFrame({
       aria-label={message.ariaLabel ?? `${senderName} message`}
       role={selectable ? "button" : undefined}
       tabIndex={selectable ? 0 : -1}
-      onClick={selectMessage}
+      onClick={selectable ? selectMessage : toggleTimestamp}
       onKeyDown={(event) => {
         if (!selectable || event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
         event.preventDefault();

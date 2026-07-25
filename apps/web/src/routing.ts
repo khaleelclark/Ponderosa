@@ -48,7 +48,7 @@ export type Route =
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
-  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel }
+  | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
   | { kind: "agents"; projectId: string; create?: boolean; managerAgentId?: string; continueToTrigger?: boolean }
   | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; createTrigger?: boolean }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
@@ -111,6 +111,10 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts[2] === "chats" && parts[3]) {
     return {
       kind: "conversation", projectId, conversationId: decodeURIComponent(parts[3]),
+      // A URL is an explicit request to open this conversation. Keep this
+      // transient marker out of route serialization so ordinary in-app
+      // navigation can continue to restore the user's remembered subtab.
+      urlDriven: true,
       ...(focusMessageId ? { focusMessageId } : {}),
       ...(channel ? { channel } : {}),
     };

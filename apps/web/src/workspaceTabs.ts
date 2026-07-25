@@ -228,7 +228,14 @@ export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], project
 }
 
 export function serializeWorkspaceTabs(tabs: WorkspaceTabState[], activeKey?: string): string {
-  return JSON.stringify({ version: 2, tabs, ...(activeKey ? { activeKey } : {}) } satisfies PersistedWorkspaceTabs);
+  // URL provenance controls only the first render of an externally opened
+  // chat. Persisting it would turn later in-app tab restores into deep links.
+  const persistentTabs = tabs.map((tab) => {
+    if (tab.route.kind !== "conversation" || !tab.route.urlDriven) return tab;
+    const { urlDriven: _urlDriven, ...route } = tab.route;
+    return { ...tab, route };
+  });
+  return JSON.stringify({ version: 2, tabs: persistentTabs, ...(activeKey ? { activeKey } : {}) } satisfies PersistedWorkspaceTabs);
 }
 
 export function restoreWorkspaceTabSession(value: string | null): WorkspaceTabSession {

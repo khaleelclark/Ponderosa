@@ -126,6 +126,34 @@ function mergeOperationalEvents(
   );
 }
 
+interface OperationalEventGroup {
+  id: string;
+  representative: TeamOperationalEventDto;
+  events: TeamOperationalEventDto[];
+}
+
+/**
+ * Team Chat is an audit projection, so only collapse consecutive rows that
+ * are indistinguishable to the reader. The source events stay available in a
+ * disclosure and are never removed from the canonical response.
+ */
+function groupAdjacentOperationalEvents(
+  events: TeamOperationalEventDto[],
+): OperationalEventGroup[] {
+  const groups: OperationalEventGroup[] = [];
+  for (const event of events) {
+    const previous = groups.at(-1);
+    const sameAsPrevious = previous &&
+      previous.representative.kind === event.kind &&
+      previous.representative.state === event.state &&
+      previous.representative.text === event.text &&
+      previous.representative.agentIds.join("\u0000") === event.agentIds.join("\u0000");
+    if (sameAsPrevious) previous.events.push(event);
+    else groups.push({ id: event.id, representative: event, events: [event] });
+  }
+  return groups;
+}
+
 function conversationComposerRuntime(
   engine:
     | (Pick<EngineDto, "id" | "authenticated" | "available"> & {
@@ -217,12 +245,9 @@ function ConversationMessageComponent({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  // Older projections stored the structured broadcast scope as visible prose.
-  // Agent-authored Project-chat messages already carry that scope structurally.
-  const routedText =
-    conversation === "main" && message.authorAgentId
-      ? stripBroadcastPrefix(message.text)
-      : message.text;
+  // Routing prefixes are presentation chips, but remain in canonical/copyable
+  // text. Do not hide a prefix merely because the scope is also structured.
+  const routedText = message.text;
   const visibleText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
@@ -574,6 +599,11 @@ export function ConversationView({
       ),
     [collaborationQuery.data?.operations, olderCollaboration?.operations],
   );
+  const operationalEventGroups = useMemo(
+    () => groupAdjacentOperationalEvents(operationalEvents),
+    [operationalEvents],
+  );
+  const [expandedOperationalEventGroups, setExpandedOperationalEventGroups] = useState<Set<string>>(() => new Set());
   const messageLayoutKey = chatMessageLayoutKey(messages);
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
   const operationalLayoutKey = operationalEvents.length
@@ -1639,9 +1669,10 @@ export function ConversationView({
               }
             >
               <Stack spacing={0} sx={{ mb: 2 }}>
-                {operationalEvents.length ? (
+                {operationalEventGroups.length ? (
                   <Stack spacing={0.5} aria-label="Team operational activity">
-                    {operationalEvents.map(event => {
+                    {operationalEventGroups.map(group => {
+                      const event = group.representative;
                       const content = (
                         <>
                           <Chip
@@ -1704,7 +1735,7 @@ export function ConversationView({
                         bgcolor: "action.hover",
                         textAlign: "left",
                       } as const;
-                      return event.kind === "organization" ? (
+                      const row = event.kind === "organization" ? (
                         <Box key={event.id} sx={sx}>
                           {content}
                         </Box>
@@ -1718,6 +1749,33 @@ export function ConversationView({
                           {content}
                         </ButtonBase>
                       );
+                      if (group.events.length === 1) return row;
+                      const expanded = expandedOperationalEventGroups.has(group.id);
+                      return <Stack key={group.id} spacing={0.5}>
+                        <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
+                          <Box sx={{ flex: 1, minWidth: 0 }}>{row}</Box>
+                          <Button
+                            size="small"
+                            aria-expanded={expanded}
+                            onClick={() => setExpandedOperationalEventGroups(current => {
+                              const next = new Set(current);
+                              if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
+                              return next;
+                            })}
+                          >{expanded ? "Hide duplicates" : `×${group.events.length}`}</Button>
+                        </Box>
+                        {expanded ? <Stack spacing={0.5} sx={{ pl: 1.5 }} aria-label={`${group.events.length} duplicate operational events`}>
+                          {group.events.map(raw => <ButtonBase
+                            key={raw.id}
+                            onClick={() => onOpenAgentWork(raw.id)}
+                            aria-label={`${raw.text}. Open Work details`}
+                            sx={sx}
+                          >
+                            <Typography variant="body2" sx={{ flex: 1, textAlign: "left" }}>{raw.text}</Typography>
+                            <Typography variant="caption" color="text.secondary">{new Date(raw.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
+                          </ButtonBase>)}
+                        </Stack> : null}
+                      </Stack>;
                     })}
                   </Stack>
                 ) : null}

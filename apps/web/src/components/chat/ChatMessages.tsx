@@ -335,9 +335,15 @@ function ChatMarkdown({
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);
+            // #pto is the stable internal operator route handle. It predates
+            // configurable profile handles, so render it as the same inert
+            // route chip rather than leaking it as unstyled prose.
             const operatorMention = handle.toLocaleLowerCase() === "user"
+              || handle.toLocaleLowerCase() === "pto"
               || Boolean(operatorHandle && handle.toLocaleLowerCase() === operatorHandle.toLocaleLowerCase());
-            const visibleLabel = operatorMention && operatorHandle ? `#${operatorHandle}` : boundMention ? `#${boundMention.label}` : label;
+            const visibleLabel = operatorMention && handle.toLocaleLowerCase() !== "pto" && operatorHandle
+              ? `#${operatorHandle}`
+              : boundMention ? `#${boundMention.label}` : label;
             const mentionSx = { display: "inline", px: 0.45, py: 0.1, borderRadius: 0.75, bgcolor: "action.selected", color: "primary.light", fontWeight: 700, textDecoration: "none", boxShadow: "inset 0 0 0 1px rgba(127, 196, 142, .18)" } as const;
             if (operatorMention) return <Box component="span" data-message-tag={handle.toLocaleLowerCase()} sx={mentionSx}>{visibleLabel}</Box>;
             if (!agentId) {

@@ -256,7 +256,7 @@ export function ProjectShell({
         key={route.conversationId}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
-        initialView={route.channel}
+        initialView={route.urlDriven ? (route.channel ?? "main") : route.channel}
         engines={engines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
