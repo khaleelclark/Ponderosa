@@ -102,6 +102,8 @@ export interface WorkspacePreferencesDto {
   providerAvailability: Record<string, boolean>;
   /** Concrete model/effort defaults chosen independently for each engine. */
   engineDefaults?: Record<string, { model: string; effort?: string }>;
+  /** Operator-managed versioned Claude model choices. Environment pins take precedence. */
+  claudeModelOptions: Array<{ id: string; label?: string }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
   /** Workspace-wide admission limit for concurrently active Agent Runs. */
@@ -1736,6 +1738,8 @@ export interface EngineDto {
   id: EngineId;
   displayName: string;
   models: ModelOption[];
+  /** Model pins configured by the provider environment, excluding built-in aliases. */
+  configuredModels?: ModelOption[];
   efforts: EffortOption[];
   /** Concrete adapter-owned fallback; never the provider's opaque "default" alias. */
   defaultModel?: string;
@@ -1759,6 +1763,10 @@ export interface ProjectEngineCapabilitiesDto {
   engineId: EngineId;
   steering: boolean;
   persistentSessions: boolean;
+  sessionId?: string;
+  selectedModel?: string;
+  model?: string;
+  catalogVersion?: string;
   commands: import("./adapter.js").EngineCommand[];
   mcpServers: import("./adapter.js").EngineMcpServer[];
   composerCapabilities: import("./adapter.js").EngineComposerCapability[];

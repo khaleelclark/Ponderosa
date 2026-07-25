@@ -831,6 +831,11 @@ export function AgentDetail({
     engineLocked
     model={model}
     models={models}
+    resolvedModel={
+      engineCapability?.selectedModel === model
+        ? engineCapability.model
+        : undefined
+    }
     effort={effort}
     efforts={efforts}
     onModelChange={(nextModel) => {

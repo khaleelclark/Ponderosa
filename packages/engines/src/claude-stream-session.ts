@@ -111,7 +111,10 @@ export class ClaudeStreamSession implements RuntimeSession {
       steering: true,
       persistentSessions: true,
       sessionId: this.engineAgentId,
-      ...(this.opts.model ? { model: this.opts.model } : {}),
+      ...(this.opts.model ? {
+        selectedModel: this.opts.model,
+        model: this.opts.model,
+      } : {}),
       commands: [],
       mcpServers: [],
       composerCapabilities: [],

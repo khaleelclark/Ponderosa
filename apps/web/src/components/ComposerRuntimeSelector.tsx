@@ -31,6 +31,7 @@ export function ComposerRuntimeSelector({
   engines,
   model,
   models,
+  resolvedModel,
   effort,
   efforts,
   engineLocked = false,
@@ -42,6 +43,7 @@ export function ComposerRuntimeSelector({
   engines: ComposerRuntimeOption[];
   model: string;
   models: ComposerRuntimeOption[];
+  resolvedModel?: string;
   effort: string;
   efforts: ComposerRuntimeOption[];
   engineLocked?: boolean;
@@ -57,6 +59,10 @@ export function ComposerRuntimeSelector({
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
+  const selectedModelLabel = selectedModel?.label ?? "Model unavailable";
+  const displayedModel = resolvedModel && resolvedModel !== model
+    ? `${selectedModelLabel} → ${resolvedModel}`
+    : selectedModelLabel;
   const close = () => { setAnchor(null); setSection(null); };
   const sections: Array<{
     id: RuntimeSection;
@@ -66,7 +72,7 @@ export function ComposerRuntimeSelector({
     locked?: boolean;
   }> = [
     { id: "engine", label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines, locked: engineLocked || !onEngineChange },
-    { id: "model", label: "Model", value: selectedModel?.label ?? "Model unavailable", options: models },
+    { id: "model", label: "Model", value: displayedModel, options: models },
     { id: "effort", label: "Effort", value: selectedEffort?.label ?? "Effort unavailable", options: efforts },
   ];
   const active = sections.find((item) => item.id === section);
@@ -96,7 +102,7 @@ export function ComposerRuntimeSelector({
     >
       <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedEngine?.label ?? "Engine"}</Typography>
-        <Typography variant="body2" noWrap>{selectedModel?.label ?? "Model unavailable"}</Typography>
+        <Typography variant="body2" noWrap>{displayedModel}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>{selectedEffort?.label ?? "Effort unavailable"}</Typography>
         <KeyboardArrowDownIcon sx={{ alignSelf: "center", color: "text.secondary", fontSize: 20 }} />
       </Stack>

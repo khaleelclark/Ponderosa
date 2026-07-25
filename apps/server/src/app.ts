@@ -2013,6 +2013,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   }) : undefined;
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
+  const applyOperatorModelOptions = (): void => {
+    const models = workspace.getPreferences().claudeModelOptions.map((model) => ({
+      id: model.id,
+      label: model.label ?? model.id,
+    }));
+    for (const { adapter } of engines.values()) {
+      adapter.setOperatorModelOptions?.(models);
+    }
+  };
+  applyOperatorModelOptions();
   const tokenUsage = (
     scope: { type: "overall" } | { type: "project" | "agent"; id: string },
     range: TokenUsageRangeDto = {},
@@ -2663,6 +2673,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             ? { efforts: adapter.listEfforts(model.id || undefined) }
             : {}),
       })),
+      ...(adapter.configuredModelOptions
+        ? { configuredModels: adapter.configuredModelOptions() }
+        : {}),
       efforts: adapter.listEfforts(),
       ...(defaultModel ? { defaultModel } : {}),
       ...(defaultEffort ? { defaultEffort } : {}),
@@ -13036,6 +13049,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (selectionError) return reply.code(400).send({ error: selectionError });
       }
     }
+    if (patch.claudeModelOptions !== undefined) {
+      if (!Array.isArray(patch.claudeModelOptions) ||
+          patch.claudeModelOptions.length > 100 ||
+          patch.claudeModelOptions.some((model) =>
+            !model || typeof model !== "object" ||
+            typeof model.id !== "string" || !model.id.trim() || model.id.length > 200 ||
+            (model.label !== undefined && (typeof model.label !== "string" || model.label.length > 200))) ||
+          new Set(patch.claudeModelOptions.map((model) => model.id.trim())).size !== patch.claudeModelOptions.length) {
+        return reply.code(400).send({ error: "Claude model options require unique non-empty ids and optional labels of at most 200 characters" });
+      }
+    }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
     if (patch.maxConcurrentAgentRuns !== undefined && (!Number.isSafeInteger(patch.maxConcurrentAgentRuns) ||
         patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
@@ -13071,6 +13095,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
+    if (patch.claudeModelOptions !== undefined) applyOperatorModelOptions();
     if (preferences.maxConcurrentAgentRuns !== previousPreferences.maxConcurrentAgentRuns) {
       coordinationV3Scheduler.setMaxConcurrentRuns(preferences.maxConcurrentAgentRuns);
     }

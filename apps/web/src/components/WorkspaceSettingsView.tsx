@@ -315,6 +315,129 @@ function NotificationSettingsSection({
   );
 }
 
+function ClaudeModelOptionsSettings({
+  engine,
+  preferences,
+  onPreferences,
+}: {
+  engine: EngineDto;
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+}): JSX.Element {
+  const [modelId, setModelId] = useState("");
+  const [modelLabel, setModelLabel] = useState("");
+  const normalizedId = modelId.trim();
+  const configured = engine.configuredModels ?? [];
+  const idAlreadyExists = Boolean(normalizedId) &&
+    engine.models.some(model => model.id === normalizedId);
+  const addModel = () => {
+    if (!normalizedId || idAlreadyExists) return;
+    onPreferences({
+      claudeModelOptions: [
+        ...preferences.claudeModelOptions,
+        {
+          id: normalizedId,
+          ...(modelLabel.trim() ? { label: modelLabel.trim() } : {}),
+        },
+      ],
+    });
+    setModelId("");
+    setModelLabel("");
+  };
+  return (
+    <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
+      <Typography fontWeight={700}>Pinned Claude model versions</Typography>
+      {configured.length ? (
+        <Stack spacing={0.75} sx={{ mt: 1 }}>
+          <Typography variant="caption" color="text.secondary">
+            Environment-configured models
+          </Typography>
+          {configured.map(model => (
+            <Box key={model.id}>
+              <Typography variant="body2">{model.label}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                {model.id}
+              </Typography>
+            </Box>
+          ))}
+        </Stack>
+      ) : (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          No specific versions are pinned by the environment. Set
+          {" "}ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_FABLE_MODEL, or
+          ANTHROPIC_CUSTOM_MODEL_OPTION to add host-managed choices.
+        </Typography>
+      )}
+      <Stack spacing={1} sx={{ mt: 2 }}>
+        <Typography variant="caption" color="text.secondary">
+          Workspace-managed models
+        </Typography>
+        {preferences.claudeModelOptions.map(model => (
+          <Stack
+            key={model.id}
+            direction="row"
+            spacing={1}
+            sx={{ alignItems: "center" }}
+          >
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography variant="body2">{model.label || model.id}</Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ overflowWrap: "anywhere" }}
+              >
+                {model.id}
+              </Typography>
+            </Box>
+            <Button
+              size="small"
+              color="inherit"
+              onClick={() =>
+                onPreferences({
+                  claudeModelOptions: preferences.claudeModelOptions.filter(
+                    candidate => candidate.id !== model.id,
+                  ),
+                })
+              }
+            >
+              Remove
+            </Button>
+          </Stack>
+        ))}
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
+          <TextField
+            fullWidth
+            label="Model id"
+            value={modelId}
+            onChange={event => setModelId(event.target.value)}
+            helperText={
+              idAlreadyExists
+                ? "This model id is already available."
+                : "Use the exact versioned id accepted by Claude Code."
+            }
+            error={Boolean(normalizedId && idAlreadyExists)}
+          />
+          <TextField
+            fullWidth
+            label="Label (optional)"
+            value={modelLabel}
+            onChange={event => setModelLabel(event.target.value)}
+          />
+          <Button
+            variant="outlined"
+            disabled={!normalizedId || idAlreadyExists}
+            onClick={addModel}
+            sx={{ alignSelf: { xs: "stretch", sm: "flex-start" }, minHeight: 56 }}
+          >
+            Add
+          </Button>
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
 function ProviderSettingsSection({
   preferences,
   engines,
@@ -389,13 +512,11 @@ function ProviderSettingsSection({
                     });
                   }}
                 >
-                  {engine.models
-                    .filter(option => option.id)
-                    .map(option => (
-                      <MenuItem key={option.id} value={option.id}>
-                        {option.label}
-                      </MenuItem>
-                    ))}
+                  {engine.models.map(option => (
+                    <MenuItem key={option.id || "provider-default"} value={option.id}>
+                      {option.label}
+                    </MenuItem>
+                  ))}
                 </Select>
               </FormControl>
               <FormControl fullWidth>
@@ -426,6 +547,13 @@ function ProviderSettingsSection({
                 </Select>
               </FormControl>
             </Stack>
+            {engine.configuredModels !== undefined ? (
+              <ClaudeModelOptionsSettings
+                engine={engine}
+                preferences={preferences}
+                onPreferences={onPreferences}
+              />
+            ) : null}
             {!engineIsAvailable(engine) ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 This provider needs attention before it can start new work.

@@ -71,6 +71,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   fontFamily: "inter",
   providerAvailability: {},
   engineDefaults: {},
+  claudeModelOptions: [],
   globalInstructions: "",
   maxConcurrentAgentRuns: 8,
   contextRolloverEnabled: false,
@@ -138,6 +139,7 @@ export class WorkspaceStore {
       starredProjectIds: record.event.preferences.starredProjectIds ?? [],
       providerAvailability: record.event.preferences.providerAvailability ?? {},
       engineDefaults: record.event.preferences.engineDefaults ?? {},
+      claudeModelOptions: normalizeClaudeModelOptions(record.event.preferences.claudeModelOptions),
       globalInstructions: record.event.preferences.globalInstructions ?? "",
       maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
       contextRolloverEnabled: record.event.preferences.contextRolloverEnabled ?? DEFAULT_PREFERENCES.contextRolloverEnabled,
@@ -377,6 +379,9 @@ export class WorkspaceStore {
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
       engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
+      claudeModelOptions: patch.claudeModelOptions === undefined
+        ? this.preferences.claudeModelOptions
+        : normalizeClaudeModelOptions(patch.claudeModelOptions),
       globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
       maxConcurrentAgentRuns: patch.maxConcurrentAgentRuns ?? this.preferences.maxConcurrentAgentRuns,
       contextRolloverEnabled: patch.contextRolloverEnabled ?? this.preferences.contextRolloverEnabled,
@@ -833,6 +838,25 @@ function clampContextRolloverTokens(value: number): number {
 
 function clampContextRolloverWindowFraction(value: number): number {
   return Math.max(0.3, Math.min(0.95, value));
+}
+
+function normalizeClaudeModelOptions(
+  input: unknown,
+): WorkspacePreferencesDto["claudeModelOptions"] {
+  if (!Array.isArray(input)) return [];
+  const models = new Map<string, { id: string; label?: string }>();
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const raw = candidate as { id?: unknown; label?: unknown };
+    const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 200) : "";
+    if (!id) continue;
+    const label = typeof raw.label === "string"
+      ? raw.label.trim().slice(0, 200)
+      : "";
+    models.set(id, { id, ...(label ? { label } : {}) });
+    if (models.size >= 100) break;
+  }
+  return [...models.values()];
 }
 
 function normalizeProfile(input: unknown): WorkspacePreferencesDto["profile"] {
