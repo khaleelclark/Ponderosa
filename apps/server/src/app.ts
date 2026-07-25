@@ -163,7 +163,6 @@ import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-se
 import { documentationReferences } from "./documentation-reference/index.js";
 import {
   invokeNativeCommand,
-  isNativeCommand,
   mergeNativeCommands,
 } from "./native-commands.js";
 import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
@@ -2489,6 +2488,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       try {
         subscribers.delete(agentId);
         scheduledSessionRollovers.delete(agentId);
+        contextRolloverPending.delete(agentId);
       } catch (error) {
         errors.push(`${agentId}: ${error instanceof Error ? error.message : "runtime cleanup failed"}`);
       }
@@ -2958,7 +2958,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const scheduledSessionRollovers = new Map<string, string>();
   // Crossing a context threshold at the end of one Run schedules a handoff
   // instruction for the next Run that continues the same provider session.
-  const contextRolloverPending = new Map<string, { usedTokens: number; at: string }>();
+  const contextRolloverPending = new Map<string, {
+    sessionId: string;
+    usedTokens: number;
+    at: string;
+  }>();
+  const clearAgentResumeSession = (
+    agentId: string,
+    reason: Parameters<typeof store.clearResumeSession>[1],
+  ): boolean => {
+    contextRolloverPending.delete(agentId);
+    return store.clearResumeSession(agentId, reason);
+  };
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct agent request.
   // Prevent an internal dequeue from being appended to the tail if another
@@ -3375,7 +3386,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // affect the current session generation.
     if (matchedReusable || matchedOpening || matchedRun) {
       scheduledSessionRollovers.delete(agentId);
-      store.clearResumeSession(agentId, "provider_root_exit");
+      clearAgentResumeSession(agentId, "provider_root_exit");
       organizationEnvelopeStates.delete(agentId);
     }
 
@@ -4702,7 +4713,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (received > persisted && now - received >= runtimeStallAfterMs) transitionRun(agentId, run, "stalled");
     }
     const ownership = new Map<string, ActiveRunObservation>(activeRuns);
-    return projectAgentHealth({
+    const projection = projectAgentHealth({
       scope,
       agents,
       activeRuns: ownership,
@@ -4710,6 +4721,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
       latestEvent: (agentId) => store.latestHealthObservation(agentId),
     });
+    return {
+      ...projection,
+      agents: projection.agents.map((agent) => ({
+        ...agent,
+        providerSessionLive: Boolean(
+          activeRuns.get(agent.agentId)?.runtimeSession ??
+          reusableRuntime(agent.agentId)?.session
+        ),
+      })),
+    };
   }
 
   function teamDirectory(projectId: string, conversationId?: string, fallbackAgentId?: string): TeamDirectoryDto {
@@ -8594,7 +8615,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       organizationEnvelopeStates.delete(agent.id);
       if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
       else {
-        store.clearResumeSession(agent.id, "request_context_rollover");
+        clearAgentResumeSession(agent.id, "request_context_rollover");
         const runtime = persistentRuntimeForTermination(agent.id);
         if (runtime) await teardownPersistentRuntime(agent.id, runtime, "Project instruction update", project.id);
       }
@@ -11697,7 +11718,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         // retire the opaque cache before constructing the fresh target prompt.
         const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
-        store.clearResumeSession(agent.id, "explicit_compaction");
+        clearAgentResumeSession(agent.id, "explicit_compaction");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
         if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
@@ -11709,7 +11730,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         // durable coordination records remain intact.
         const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
-        store.clearResumeSession(agent.id, "request_context_rollover");
+        clearAgentResumeSession(agent.id, "request_context_rollover");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
         if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
@@ -11720,7 +11741,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         // the opaque provider cache is reseeded.
         const staleRuntime = reusableRuntime(agent.id);
         scheduledSessionRollovers.delete(agent.id);
-        store.clearResumeSession(agent.id, "tool_contract_changed");
+        clearAgentResumeSession(agent.id, "tool_contract_changed");
         organizationEnvelopeStates.delete(agent.id);
         resumeSessionState = undefined;
         if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
@@ -12025,7 +12046,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const continuationHandoffPrompt = continuationHandoff
         ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
         : "";
-      const rolloverInstructionPrompt = contextRolloverPending.has(agent.id) &&
+      const pendingContextRollover = contextRolloverPending.get(agent.id);
+      if (pendingContextRollover && pendingContextRollover.sessionId !== resumeSessionId) {
+        contextRolloverPending.delete(agent.id);
+      }
+      const rolloverInstructionPrompt = pendingContextRollover?.sessionId === resumeSessionId &&
         workspacePreferences.contextRolloverEnabled &&
         resumeSessionId &&
         !store.continuationHandoffForRun(agent.id, runId)
@@ -12638,6 +12663,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
             const artifactIds = [...manifestArtifactIds].sort();
             const current = store.resumeSessionState(agent.id);
+            const pendingRollover = contextRolloverPending.get(agent.id);
+            if (pendingRollover && pendingRollover.sessionId !== acceptedSessionId) {
+              contextRolloverPending.delete(agent.id);
+            }
             if (
               current?.sessionId === acceptedSessionId
               && current.toolContractHash === runtimeSessionContractHash
@@ -12690,7 +12719,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 // The provider confirmed the resumed session failed before
                 // sampling. Discard its buffered session event and retry once
                 // with the separately persisted canonical fresh-seed packet.
-                store.clearResumeSession(agent.id, "resume_compaction_failed");
+                clearAgentResumeSession(agent.id, "resume_compaction_failed");
                 coordinationV3.setRunContextDisposition(runId, v3FencingToken!, "reseeded");
                 coordinationV3.recordProviderInput({
                   executionId: runId,
@@ -12763,22 +12792,27 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                     const threshold = absoluteThresholdReached
                       ? preferences.contextRolloverTokens
                       : windowThreshold!;
-                    contextRolloverPending.set(agent.id, {
-                      usedTokens: usage.usedTokens,
-                      at: new Date().toISOString(),
-                    });
-                    persistRuntimeEvent(agent.id, activeRun, {
-                      type: "context_rollover_triggered",
-                      executionId: runId,
-                      usedTokens: usage.usedTokens,
-                      threshold,
-                    });
-                    app.log.info({
-                      agentId: agent.id,
-                      runId,
-                      usedTokens: usage.usedTokens,
-                      threshold,
-                    }, "provider context rollover marked for the next Run");
+                    const providerSessionId = store.resumeSessionId(agent.id);
+                    if (providerSessionId) {
+                      contextRolloverPending.set(agent.id, {
+                        sessionId: providerSessionId,
+                        usedTokens: usage.usedTokens,
+                        at: new Date().toISOString(),
+                      });
+                      persistRuntimeEvent(agent.id, activeRun, {
+                        type: "context_rollover_triggered",
+                        executionId: runId,
+                        usedTokens: usage.usedTokens,
+                        threshold,
+                      });
+                      app.log.info({
+                        agentId: agent.id,
+                        runId,
+                        providerSessionId,
+                        usedTokens: usage.usedTokens,
+                        threshold,
+                      }, "provider context rollover marked for the next Run");
+                    }
                   }
                 }
               }
@@ -12831,7 +12865,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             });
             publish(agent.id, terminal);
             if (rolloverSucceeded) {
-              store.clearResumeSession(agent.id, "explicit_compaction");
+              clearAgentResumeSession(agent.id, "explicit_compaction");
               organizationEnvelopeStates.delete(agent.id);
               const staleRuntime = reusableRuntime(agent.id);
               if (staleRuntime) {
@@ -13108,7 +13142,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       organizationEnvelopeStates.delete(agent.id);
       if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
       else {
-        store.clearResumeSession(agent.id, "request_context_rollover");
+        clearAgentResumeSession(agent.id, "request_context_rollover");
         const runtime = persistentRuntimeForTermination(agent.id);
         if (runtime) await teardownPersistentRuntime(agent.id, runtime, "workspace policy update", project.id);
       }
@@ -13795,7 +13829,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             mcpServers: [],
             composerCapabilities: [],
           };
-      if (isNativeCommand(name)) {
+      const command = mergeNativeCommands(catalog.commands)
+        .find((candidate) => candidate.name === name);
+      if (command?.source === "ponderosa") {
         const result = await invokeNativeCommand(name, {
           providerName: engine.adapter.displayName,
           session,
@@ -13809,7 +13845,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!session.capabilities || !session.invokeCommand) {
         throw new Error("this provider does not support structured runtime commands");
       }
-      const command = catalog.commands.find((candidate) => candidate.name === name);
       if (!command || command.invocation !== "runtime" || command.status !== "available") {
         const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
@@ -13861,9 +13896,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
         return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
       }
-      if (activeRuns.has(agent.id) && !isNativeCommand(name)) {
-        return reply.code(409).send({ error: "structured provider commands require an idle runtime", retryable: true });
-      }
       const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
         const catalog = session.capabilities
           ? await session.capabilities()
@@ -13874,7 +13906,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               mcpServers: [],
               composerCapabilities: [],
             };
-        if (isNativeCommand(name)) {
+        const command = mergeNativeCommands(catalog.commands)
+          .find((candidate) => candidate.name === name);
+        if (command?.source === "ponderosa") {
           const result = await invokeNativeCommand(name, {
             providerName: engine.adapter.displayName,
             session,
@@ -13884,10 +13918,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           }, argumentsText);
           return { catalog, ...(result.message ? { message: result.message } : {}) };
         }
+        if (activeRuns.has(agent.id)) {
+          throw new Error("structured provider commands require an idle runtime");
+        }
         if (!session.capabilities || !session.invokeCommand) {
           throw new Error("this provider does not support structured runtime commands");
         }
-        const command = catalog.commands.find((candidate) => candidate.name === name);
         if (!command || command.invocation !== "runtime" || command.status !== "available") {
           const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
           Object.assign(error, { catalogVersion: catalog.catalogVersion });
@@ -14008,7 +14044,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (runtime) {
       await teardownPersistentRuntime(request.params.id, runtime, "explicit compaction");
     }
-    return { compacted: store.clearResumeSession(request.params.id, "explicit_compaction") };
+    return { compacted: clearAgentResumeSession(request.params.id, "explicit_compaction") };
   });
 
   app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string } }>("/api/agents/:id/runs", async (request, reply) => {

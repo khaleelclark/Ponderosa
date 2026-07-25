@@ -1833,6 +1833,8 @@ export interface AgentHealthDto {
     executionId: string;
     startedAt: string;
   };
+  /** A provider process currently owns this Agent's resumable session. */
+  providerSessionLive?: boolean;
 }
 
 export interface AgentHealthProjectionDto {

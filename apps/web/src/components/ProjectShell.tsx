@@ -93,25 +93,30 @@ export function ProjectShell({
   const routedAgent = route.kind === "agent"
     ? agents.find((agent) => agent.id === route.agentId)
     : undefined;
+  const routedAgentHasLiveSession = route.kind === "agent" && Boolean(
+    healthQuery.data?.agents.find((agent) => agent.agentId === route.agentId)
+      ?.providerSessionLive,
+  );
+  const capabilityAgent = routedAgentHasLiveSession ? routedAgent : undefined;
   const capabilityQueryKey = useMemo(
-    () => route.kind === "agent"
+    () => route.kind === "agent" && capabilityAgent
       ? queryKeys.engines.capabilitySelection(
         projectId,
-        routedAgent?.id,
-        routedAgent?.activeEngine,
-        routedAgent?.model,
+        capabilityAgent.id,
+        capabilityAgent.activeEngine,
+        capabilityAgent.model,
       )
       : queryKeys.engines.capabilities(projectId),
-    [projectId, route.kind, routedAgent?.activeEngine, routedAgent?.id, routedAgent?.model],
+    [capabilityAgent, projectId, route.kind],
   );
   const capabilitiesQuery = useQuery({
     queryKey: capabilityQueryKey,
-    queryFn: () => api.getEngineCapabilities(projectId, routedAgent ? {
-      agentId: routedAgent.id,
-      engineId: routedAgent.activeEngine,
-      model: routedAgent.model,
+    queryFn: () => api.getEngineCapabilities(projectId, capabilityAgent ? {
+      agentId: capabilityAgent.id,
+      engineId: capabilityAgent.activeEngine,
+      model: capabilityAgent.model,
     } : undefined),
-    enabled: route.kind !== "agent" || Boolean(routedAgent),
+    enabled: route.kind !== "agent" || Boolean(routedAgent && healthQuery.data),
     staleTime: 60_000,
   });
   // The review surface needs changed-file and Run detail for one Agent. Fetch

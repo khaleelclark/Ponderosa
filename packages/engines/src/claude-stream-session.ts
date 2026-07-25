@@ -9,7 +9,7 @@ import type {
   RuntimeSteerResult,
   RuntimeTurnInput,
 } from "@ponderosa/core";
-import { mapClaudeEvent } from "./claude-events.js";
+import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
@@ -187,10 +187,11 @@ export class ClaudeStreamSession implements RuntimeSession {
           this.capabilitiesSnapshot = capabilities;
           this.opts.onCapabilitiesChanged?.();
         }
+        const assistantUsage = mapClaudeAssistantUsage(raw);
+        if (assistantUsage?.inputTokens !== undefined) {
+          this.latestContextOccupancy = assistantUsage.inputTokens;
+        }
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
-          if (event.type === "turn_done" && event.usage?.inputTokens !== undefined) {
-            this.latestContextOccupancy = event.usage.inputTokens;
-          }
           if (event.type === "turn_done" || event.type === "error") this.active = false;
           yield event;
         }
