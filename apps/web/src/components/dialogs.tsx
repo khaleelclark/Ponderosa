@@ -22,8 +22,9 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useEffect, useState } from "react";
-import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible, runtimeControlState } from "../conversationEngine";
+import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
 import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
+import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 
 const UNSET = "";
 
@@ -66,14 +67,11 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
   };
   useEffect(() => { if (open && !editing && !engine && engines[0]) setEngine(engines[0].id); }, [editing, engine, engines, open]);
   const selected = engines.find((item) => item.id === engine);
-  const runtime = runtimeControlState(selected, { model, effort });
-  const models = runtime.models;
-  const efforts = runtime.efforts;
-  const modelValue = models.some((option) => option.id === model) ? model : UNSET;
-  const effortValue = efforts.some((option) => option.id === effort) ? effort : UNSET;
   const engineValue = selected?.id ?? UNSET;
   const save = async () => {
     if (!selected) return;
+    const modelValue = modelSelectionIsCompatible(selected, model) ? model : UNSET;
+    const effortValue = effortSelectionIsCompatible(selected, modelValue, effort) ? effort : UNSET;
     setActionError(undefined);
     setPendingAction("save");
     try {
@@ -139,30 +137,28 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
             <TextField required label="Role / system guidance" helperText="At least 10 characters" multiline minRows={5} value={guidance} onChange={(event) => setGuidance(event.target.value)} inputProps={{ maxLength: 8000 }} />
             <FormControl required>
               <InputLabel>Engine</InputLabel>
-              <Select label="Engine" value={engineValue} onChange={(event) => { setEngine(event.target.value); setModel(UNSET); setEffort(UNSET); }}>
+              <Select label="Engine" value={engineValue} onChange={(event) => {
+                setEngine(event.target.value);
+                setModel(UNSET);
+                setEffort(UNSET);
+              }}>
                 {engines.map((item) => <MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}
               </Select>
             </FormControl>
-            <Stack direction="row" spacing={1}>
-              <FormControl fullWidth>
-                <InputLabel>Model</InputLabel>
-                <Select label="Model" value={modelValue} onChange={(event) => {
-                  const next = event.target.value;
-                  setModel(next);
-                  if (!effortSelectionIsCompatible(selected, next, effort)) setEffort(UNSET);
-                }}>
-                  <MenuItem value={UNSET}>Default</MenuItem>
-                  {models.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-              <FormControl fullWidth>
-                <InputLabel>Effort</InputLabel>
-                <Select label="Effort" value={effortValue} onChange={(event) => setEffort(event.target.value)}>
-                  <MenuItem value={UNSET}>Default</MenuItem>
-                  {efforts.map((option) => <MenuItem key={option.id} value={option.id}>{option.label}</MenuItem>)}
-                </Select>
-              </FormControl>
-            </Stack>
+            <EngineModelEffortFields
+              engine={selected}
+              selection={{ model, effort }}
+              onChange={(selection) => {
+                setModel(selection.model);
+                setEffort(selection.effort);
+              }}
+              modelLabel="Model"
+              effortLabel="Effort"
+              modelEmptyLabel="Default"
+              effortEmptyLabel="Default"
+              runtimeDirection="row"
+              runtimeSpacing={1}
+            />
             <FormControlLabel control={<Checkbox checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />} label="Enabled" />
             {actionError?.action === "save" ? <Alert severity="error">{actionError.message}</Alert> : null}
             <Button
@@ -374,9 +370,6 @@ export function CreateAgentDialog({
   }, [open, defaultEngine, defaultModel, defaultEffort, defaultName, defaultManagerAgentId, fixedConversationId, engines]);
 
   const activeEngine = engines.find((candidate) => candidate.id === engine);
-  const runtime = runtimeControlState(activeEngine, { model, effort });
-  const models = runtime.models;
-  const efforts = runtime.efforts;
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
@@ -420,46 +413,24 @@ export function CreateAgentDialog({
               ))}
             </Select>
           </FormControl>
-          {models.length > 0 ? (
-            <FormControl fullWidth size="small">
-              <InputLabel id="agent-model-label">Model</InputLabel>
-              <Select
-                labelId="agent-model-label"
-                label="Model"
-                value={models.some((option) => option.id === model) ? model : UNSET}
-                onChange={(event: SelectChangeEvent) => {
-                  const nextModel = event.target.value;
-                  setModel(nextModel);
-                  if (!effortSelectionIsCompatible(activeEngine, nextModel, effort)) setEffort(UNSET);
-                }}
-              >
-                <MenuItem value={UNSET}>Engine Default</MenuItem>
-                {models.map((option) => (
-                  <MenuItem key={option.id} value={option.id}>
-                    {option.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          ) : null}
-          {efforts.length > 0 ? (
-            <FormControl fullWidth size="small">
-              <InputLabel id="agent-effort-label">Effort</InputLabel>
-              <Select
-                labelId="agent-effort-label"
-                label="Effort"
-                value={efforts.some((option) => option.id === effort) ? effort : UNSET}
-                onChange={(event: SelectChangeEvent) => setEffort(event.target.value)}
-              >
-                <MenuItem value={UNSET}>Engine Default</MenuItem>
-                {efforts.map((option) => (
-                  <MenuItem key={option.id} value={option.id}>
-                    {option.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          ) : null}
+          <EngineModelEffortFields
+            engine={activeEngine}
+            selection={{ model, effort }}
+            onChange={(selection) => {
+              setModel(selection.model);
+              setEffort(selection.effort);
+            }}
+            modelLabel="Model"
+            effortLabel="Effort"
+            modelLabelId="agent-model-label"
+            effortLabelId="agent-effort-label"
+            modelEmptyLabel="Engine Default"
+            effortEmptyLabel="Engine Default"
+            size="small"
+            runtimeSpacing={2}
+            hideModelWhenEmpty
+            hideEffortWhenEmpty
+          />
           {!fixedConversationId ? (
             <FormControl fullWidth size="small">
               <InputLabel id="agent-master-label">Project chat (optional)</InputLabel>

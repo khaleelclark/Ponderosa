@@ -14,6 +14,7 @@ import {
   chatMessageLayoutKey,
   individualChatSenderLabel,
   linkPreviewScopeForMessage,
+  stripDocumentPrefixText,
 } from "./ChatMessages";
 import type { LinkPreviewScope } from "./ChatMessages";
 
@@ -143,14 +144,10 @@ function ChatPaneComponent({
               createdAt: message.createdAt,
               body: (
                 <ChatMessageBody
-                  text={
-                    message.document
-                      ? message.text.replace(
-                          /^(?:Full response|Full message):\s*ponderosa:\/\/artifact\/\S+\s*$/iu,
-                          "",
-                        )
-                      : message.text
-                  }
+                  text={stripDocumentPrefixText(
+                    message.text,
+                    Boolean(message.document),
+                  )}
                   citations={message.citations}
                   collapseLongMessage={fromUser}
                   compactMarkdown
