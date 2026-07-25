@@ -11,8 +11,7 @@ export interface ExecutionItem {
   id: string;
   seq: number;
   ts: string;
-  event: Extract<AgentEvent, { type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
-    "browser_session" | "browser_action" | "browser_console" | "browser_screenshot" }>;
+  event: AgentActivityDto["event"];
 }
 
 export interface StreamState {
@@ -39,6 +38,7 @@ const executionTypes: ReadonlySet<string> = new Set([
   "browser_action",
   "browser_console",
   "browser_screenshot",
+  "context_rollover_triggered",
 ]);
 
 function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event"]): boolean {

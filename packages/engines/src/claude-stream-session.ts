@@ -33,6 +33,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
   private capabilitiesSnapshot?: EngineCapabilities;
+  private latestContextOccupancy?: number;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     if (!opts.onRuntimeSpawned) {
@@ -117,6 +118,12 @@ export class ClaudeStreamSession implements RuntimeSession {
     };
   }
 
+  contextUsage(): { usedTokens: number } | undefined {
+    return this.latestContextOccupancy === undefined
+      ? undefined
+      : { usedTokens: this.latestContextOccupancy };
+  }
+
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
     if (!this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
@@ -178,6 +185,9 @@ export class ClaudeStreamSession implements RuntimeSession {
           this.opts.onCapabilitiesChanged?.();
         }
         for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
+          if (event.type === "turn_done" && event.usage?.inputTokens !== undefined) {
+            this.latestContextOccupancy = event.usage.inputTokens;
+          }
           if (event.type === "turn_done" || event.type === "error") this.active = false;
           yield event;
         }

@@ -106,6 +106,12 @@ export interface WorkspacePreferencesDto {
   globalInstructions: string;
   /** Workspace-wide admission limit for concurrently active Agent Runs. */
   maxConcurrentAgentRuns: number;
+  /** Proactively roll a provider session over once its context grows past these limits. */
+  contextRolloverEnabled: boolean;
+  /** Absolute context-token ceiling, counting cached tokens. */
+  contextRolloverTokens: number;
+  /** Also roll over at this fraction of the window, for providers that report one. */
+  contextRolloverWindowFraction: number;
   /** Durable, cross-device completion marker for the operator's welcome flow. */
   onboardingCompletedAt: string | null;
   profile: OperatorProfileDto;
@@ -1447,10 +1453,17 @@ export interface WorkItemDto {
 /** Kind of artifact (SPEC §2/§12): the "what changed". */
 export type ArtifactKind = "diff" | "test_report" | "pr_summary" | "log" | "document" | "screenshot" | "generated_file";
 
+export interface ContextRolloverTriggeredEvent {
+  type: "context_rollover_triggered";
+  executionId: string;
+  usedTokens: number;
+  threshold: number;
+}
+
 export type AgentActivityEvent = Extract<AgentEvent, {
   type: "command" | "file_change" | "test_result" | "tool_call" | "tool_result" | "error" |
     "browser_session" | "browser_action" | "browser_console" | "browser_screenshot";
-}>;
+}> | ContextRolloverTriggeredEvent;
 
 /** Canonical, refresh-safe execution activity projected from the agent event log. */
 export interface AgentActivityDto {

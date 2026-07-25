@@ -54,6 +54,9 @@ function EventLine({ item }: { item: ExecutionItem }): JSX.Element {
   } else if (event.type === "browser_screenshot") {
     title = "Browser screenshot";
     body = `${event.path} · ${event.width}×${event.height}`;
+  } else if (event.type === "context_rollover_triggered") {
+    title = "Context rollover scheduled";
+    body = `${event.usedTokens.toLocaleString()} context tokens used · threshold ${event.threshold.toLocaleString()}`;
   }
 
   const copyCommand = event.type === "command" ? async () => {

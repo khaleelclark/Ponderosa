@@ -7,7 +7,7 @@
 // core stays untouched (no SPEC edit needed — this is an additive superset, not a
 // redefinition of a core type).
 
-import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentCoordinationV3Dto, ImageAttachmentDto } from "@ponderosa/core";
+import type { AgentEvent, AgentExecutionDeltaEvent, AgentOutputEvent, AgentCoordinationV3Dto, ContextRolloverTriggeredEvent, ImageAttachmentDto } from "@ponderosa/core";
 import type { AgentLifecycleReason, AgentRunStatus, AgentRunWakeCause } from "@ponderosa/core";
 
 /** A human turn appended to the log when the user sends a message (SPEC §4). */
@@ -110,7 +110,7 @@ export type TurnDoneLogEvent = Extract<AgentEvent, { type: "turn_done" }> & { ex
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
 export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
-  AgentOutputEvent | TurnDoneLogEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
+  AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

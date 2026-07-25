@@ -73,6 +73,9 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   engineDefaults: {},
   globalInstructions: "",
   maxConcurrentAgentRuns: 8,
+  contextRolloverEnabled: false,
+  contextRolloverTokens: 150_000,
+  contextRolloverWindowFraction: 0.7,
   onboardingCompletedAt: null,
   profile: { displayName: "User", handle: "operator", avatarId: "default-user" },
   updatedAt: new Date(0).toISOString(),
@@ -137,6 +140,13 @@ export class WorkspaceStore {
       engineDefaults: record.event.preferences.engineDefaults ?? {},
       globalInstructions: record.event.preferences.globalInstructions ?? "",
       maxConcurrentAgentRuns: record.event.preferences.maxConcurrentAgentRuns ?? DEFAULT_PREFERENCES.maxConcurrentAgentRuns,
+      contextRolloverEnabled: record.event.preferences.contextRolloverEnabled ?? DEFAULT_PREFERENCES.contextRolloverEnabled,
+      contextRolloverTokens: clampContextRolloverTokens(
+        record.event.preferences.contextRolloverTokens ?? DEFAULT_PREFERENCES.contextRolloverTokens,
+      ),
+      contextRolloverWindowFraction: clampContextRolloverWindowFraction(
+        record.event.preferences.contextRolloverWindowFraction ?? DEFAULT_PREFERENCES.contextRolloverWindowFraction,
+      ),
       onboardingCompletedAt: record.event.preferences.onboardingCompletedAt ?? null,
       profile: normalizeProfile(record.event.preferences.profile),
     };
@@ -369,6 +379,13 @@ export class WorkspaceStore {
       engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
       globalInstructions: (patch.globalInstructions ?? this.preferences.globalInstructions).slice(0, 100_000),
       maxConcurrentAgentRuns: patch.maxConcurrentAgentRuns ?? this.preferences.maxConcurrentAgentRuns,
+      contextRolloverEnabled: patch.contextRolloverEnabled ?? this.preferences.contextRolloverEnabled,
+      contextRolloverTokens: clampContextRolloverTokens(
+        patch.contextRolloverTokens ?? this.preferences.contextRolloverTokens,
+      ),
+      contextRolloverWindowFraction: clampContextRolloverWindowFraction(
+        patch.contextRolloverWindowFraction ?? this.preferences.contextRolloverWindowFraction,
+      ),
       onboardingCompletedAt: patch.onboardingCompletedAt === undefined ? this.preferences.onboardingCompletedAt : patch.onboardingCompletedAt,
       profile: patch.profile ? normalizeProfile(patch.profile) : this.preferences.profile,
       sidebarWidth: Math.max(220, Math.min(520, Math.round(patch.sidebarWidth ?? this.preferences.sidebarWidth))),
@@ -808,6 +825,14 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
     broadcasts: legacy === "broadcasts" || legacy === "all_messages",
     allMessages: legacy === "all_messages",
   };
+}
+
+function clampContextRolloverTokens(value: number): number {
+  return Math.max(20_000, Math.min(2_000_000, Math.round(value)));
+}
+
+function clampContextRolloverWindowFraction(value: number): number {
+  return Math.max(0.3, Math.min(0.95, value));
 }
 
 function normalizeProfile(input: unknown): WorkspacePreferencesDto["profile"] {

@@ -474,6 +474,16 @@ export class CodexAppServerSession implements RuntimeSession {
     throw new Error(`unsupported Codex runtime command: ${name}`);
   }
 
+  contextUsage(): { usedTokens: number; windowTokens?: number } | undefined {
+    if (!this.latestContextUsage) return undefined;
+    return {
+      usedTokens: this.latestContextUsage.totalTokens,
+      ...(this.latestContextUsage.modelContextWindow
+        ? { windowTokens: this.latestContextUsage.modelContextWindow }
+        : {}),
+    };
+  }
+
   private observeCapabilityNotification(notification: JsonRpcNotification): void {
     if (notification.method === "model/rerouted") {
       if (!isModelReroutedNotification(notification.params) ||

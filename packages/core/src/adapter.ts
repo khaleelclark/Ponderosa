@@ -142,6 +142,10 @@ export interface RuntimeProcessHandle {
 export interface RuntimeSession extends RuntimeProcessHandle {
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
+  /** Best-effort current context occupancy for this provider session.
+   * `usedTokens` counts everything occupying the provider's context window.
+   * `windowTokens` is present only when the provider reports it. */
+  contextUsage?(): { usedTokens: number; windowTokens?: number } | undefined;
   /** Live provider-owned catalog for this exact authenticated session. */
   capabilities?(): Promise<EngineCapabilities>;
   /** Invoke a provider command that is represented by a structured runtime

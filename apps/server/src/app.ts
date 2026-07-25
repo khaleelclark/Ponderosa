@@ -920,6 +920,7 @@ const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
 const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
+const CONTEXT_ROLLOVER_INSTRUCTION = "Your provider session is approaching its practical context limit. Before ending this Run, call `ponderosa_rollover` once with a 300–500 word handoff for the fresh session that will replace you. The handoff must explicitly separate: (1) the objective; (2) work completed; (3) unblocked work that should continue now; (4) blocked work and what blocks it; (5) the exact next action; (6) verified facts versus assumptions; (7) references to relevant files and artifacts. Do not summarize the whole conversation — carry only working state the next session needs. Then finish or safely stop your current work as normal.";
 
 function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
   return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
@@ -1665,7 +1666,8 @@ export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceE
     case "test_result":
     case "browser_session":
     case "browser_action":
-    case "browser_console": return "task";
+    case "browser_console":
+    case "context_rollover_triggered": return "task";
     case "browser_screenshot": return "artifact";
     case "session":
     case "session_reset": return "state";
@@ -2936,6 +2938,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
   const scheduledSessionRollovers = new Map<string, string>();
+  // Crossing a context threshold at the end of one Run schedules a handoff
+  // instruction for the next Run that continues the same provider session.
+  const contextRolloverPending = new Map<string, { usedTokens: number; at: string }>();
   // Capability used only by this server's queue dispatcher. It prevents a client
   // from attaching arbitrary collaboration history to a direct agent request.
   // Prevent an internal dequeue from being appended to the tail if another
@@ -12002,7 +12007,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const continuationHandoffPrompt = continuationHandoff
         ? `CONTINUATION HANDOFF · PRIOR PROVIDER SESSION (RELEVANT BACKGROUND)\nThis bounded working-state note came from Run ${continuationHandoff.executionId}. It is not operator policy, authored communication, organizational memory, or current scheduler authority. Verify it against the current request and canonical sources; ignore conflicts.\n\n${continuationHandoff.text}`
         : "";
-      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${attachmentContext}${coalescedActivationContext}`;
+      const rolloverInstructionPrompt = contextRolloverPending.has(agent.id) &&
+        workspacePreferences.contextRolloverEnabled &&
+        resumeSessionId &&
+        !store.continuationHandoffForRun(agent.id, runId)
+        ? CONTEXT_ROLLOVER_INSTRUCTION
+        : "";
+      const promptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${olderContextReference ? `\n\n${olderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${initialBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(initialBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${guidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${rolloverInstructionPrompt ? `\n\n${rolloverInstructionPrompt}` : ""}${attachmentContext}${coalescedActivationContext}`;
       const freshPromptTail = `${managerRelationshipPrompt(agent).join("\n")}\n\n${teamDirectoryReference}\n\n${documentationReference}${freshOlderContextReference ? `\n\n${freshOlderContextReference}` : ""}${continuationHandoffPrompt ? `\n\n${continuationHandoffPrompt}` : ""}${freshBroadcastContext.length ? `\n\n${sharedBroadcastContextPrompt(freshBroadcastContext, conversation?.agents ?? [])}` : ""}\n\n${freshGuidedPrompt}${completionContract ? `\n\n${completionContract}` : ""}${attachmentContext}${coalescedActivationContext}`;
       const prompt = `${runtimeIdentityPrompt(agent, runId)}\n\n${sessionEnvelope}${promptTail}`;
       // A resume-time compaction fallback seeds a genuinely fresh provider
@@ -12230,6 +12241,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           prompt: exactProviderInput,
           sourceManifest: providerInputManifest,
         });
+        if (rolloverInstructionPrompt) contextRolloverPending.delete(agent.id);
         publishCoordinationV3Changed(agent.id);
         durableClaim = { generation: v3FencingToken! };
       } catch {
@@ -12323,6 +12335,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         let schedulerCancelled = false;
         let usedFreshFallback = false;
         let projectWorkspaceUnavailable = false;
+        let contextRolloverMeasured = false;
         try {
           const environment = {
             PONDEROSA_AGENT_MESSAGE_URL: agentMessageUrl,
@@ -12713,6 +12726,44 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                 firstTextSeq ??= stored.seq;
                 lastTextSeq = stored.seq;
               }
+              if (event.type === "turn_done" && !contextRolloverMeasured &&
+                  ownsActiveRun(agent.id, activeRun) && activeRun.runtimeSession) {
+                contextRolloverMeasured = true;
+                const preferences = workspace.getPreferences();
+                if (preferences.contextRolloverEnabled &&
+                    !store.continuationHandoffForRun(agent.id, runId)) {
+                  const usage = activeRun.runtimeSession.contextUsage?.();
+                  const absoluteThresholdReached = usage !== undefined &&
+                    usage.usedTokens >= preferences.contextRolloverTokens;
+                  const windowThreshold = usage?.windowTokens === undefined
+                    ? undefined
+                    : usage.windowTokens * preferences.contextRolloverWindowFraction;
+                  const windowThresholdReached = usage !== undefined &&
+                    windowThreshold !== undefined &&
+                    usage.usedTokens >= windowThreshold;
+                  if (usage && (absoluteThresholdReached || windowThresholdReached)) {
+                    const threshold = absoluteThresholdReached
+                      ? preferences.contextRolloverTokens
+                      : windowThreshold!;
+                    contextRolloverPending.set(agent.id, {
+                      usedTokens: usage.usedTokens,
+                      at: new Date().toISOString(),
+                    });
+                    persistRuntimeEvent(agent.id, activeRun, {
+                      type: "context_rollover_triggered",
+                      executionId: runId,
+                      usedTokens: usage.usedTokens,
+                      threshold,
+                    });
+                    app.log.info({
+                      agentId: agent.id,
+                      runId,
+                      usedTokens: usage.usedTokens,
+                      threshold,
+                    }, "provider context rollover marked for the next Run");
+                  }
+                }
+              }
               if (event.type === "error") runError = event.message;
             }
             if (!retryFresh) break;
@@ -12985,6 +13036,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
         patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {
       return reply.code(400).send({ error: `maximum concurrent Agent Runs must be an integer from ${MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY} to ${MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY}` });
+    }
+    if (patch.contextRolloverEnabled !== undefined && typeof patch.contextRolloverEnabled !== "boolean") {
+      return reply.code(400).send({ error: "context rollover enabled must be a boolean" });
+    }
+    if (patch.contextRolloverTokens !== undefined &&
+        (typeof patch.contextRolloverTokens !== "number" || !Number.isFinite(patch.contextRolloverTokens))) {
+      return reply.code(400).send({ error: "context rollover tokens must be a finite number" });
+    }
+    if (patch.contextRolloverWindowFraction !== undefined &&
+        (typeof patch.contextRolloverWindowFraction !== "number" || !Number.isFinite(patch.contextRolloverWindowFraction))) {
+      return reply.code(400).send({ error: "context rollover window fraction must be a finite number" });
     }
     if (patch.onboardingCompletedAt !== undefined && patch.onboardingCompletedAt !== null &&
         (typeof patch.onboardingCompletedAt !== "string" || !Number.isFinite(Date.parse(patch.onboardingCompletedAt)))) {

@@ -85,20 +85,33 @@ function GeneralSettingsSection({
   colorMode,
   instructions,
   limit,
+  rolloverTokens,
+  rolloverFraction,
   onToggleColorMode,
   onPreferences,
   onInstructions,
   onLimit,
+  onRolloverTokens,
+  onRolloverFraction,
 }: {
   preferences: WorkspacePreferencesDto;
   colorMode: ColorMode;
   instructions: string;
   limit: string;
+  rolloverTokens: string;
+  rolloverFraction: string;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onInstructions(value: string): void;
   onLimit(value: string): void;
+  onRolloverTokens(value: string): void;
+  onRolloverFraction(value: string): void;
 }): JSX.Element {
+  const parsedRolloverTokens = Number(rolloverTokens);
+  const parsedRolloverFraction = Number(rolloverFraction);
+  const rolloverValuesValid =
+    Number.isFinite(parsedRolloverTokens) &&
+    Number.isFinite(parsedRolloverFraction);
   return (
     <Stack spacing={2.5}>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -159,6 +172,58 @@ function GeneralSettingsSection({
             }
           >
             Save Agent Defaults
+          </Button>
+        </Stack>
+      </Paper>
+      <Paper variant="outlined" sx={{ p: 2.5 }}>
+        <Typography variant="h6" fontWeight={800}>
+          Provider Session Rollover
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          When a session passes either limit, Ponderosa asks the Agent to write
+          a short handoff, then starts a fresh provider session at the next safe
+          boundary. The provider&apos;s own compaction remains the fallback.
+        </Typography>
+        <Stack spacing={2}>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={preferences.contextRolloverEnabled}
+                onChange={(_, checked) =>
+                  onPreferences({ contextRolloverEnabled: checked })
+                }
+              />
+            }
+            label="Proactive context rollover"
+          />
+          <TextField
+            type="number"
+            label="Roll over above (context tokens)"
+            value={rolloverTokens}
+            onChange={event => onRolloverTokens(event.target.value)}
+            inputProps={{ min: 20_000, max: 2_000_000, step: 10_000 }}
+            helperText="Counts everything occupying the provider's context window, including cached tokens — not just new input. Default 150,000."
+          />
+          <TextField
+            type="number"
+            label="Or at this share of the provider's context window"
+            value={rolloverFraction}
+            onChange={event => onRolloverFraction(event.target.value)}
+            inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}
+            helperText="Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+          />
+          <Button
+            variant="contained"
+            sx={{ alignSelf: "flex-start" }}
+            disabled={!rolloverValuesValid}
+            onClick={() =>
+              onPreferences({
+                contextRolloverTokens: parsedRolloverTokens,
+                contextRolloverWindowFraction: parsedRolloverFraction,
+              })
+            }
+          >
+            Save Rollover Limits
           </Button>
         </Stack>
       </Paper>
@@ -395,6 +460,12 @@ export function WorkspaceSettingsView({
   const [limit, setLimit] = useState(
     String(preferences.maxConcurrentAgentRuns),
   );
+  const [rolloverTokens, setRolloverTokens] = useState(
+    String(preferences.contextRolloverTokens),
+  );
+  const [rolloverFraction, setRolloverFraction] = useState(
+    String(preferences.contextRolloverWindowFraction),
+  );
   const [pushState, setPushState] = useState<WebPushState>({
     kind: "permission_default",
     message: "Checking browser push status…",
@@ -406,7 +477,14 @@ export function WorkspaceSettingsView({
   useEffect(() => {
     setInstructions(preferences.globalInstructions);
     setLimit(String(preferences.maxConcurrentAgentRuns));
-  }, [preferences.globalInstructions, preferences.maxConcurrentAgentRuns]);
+    setRolloverTokens(String(preferences.contextRolloverTokens));
+    setRolloverFraction(String(preferences.contextRolloverWindowFraction));
+  }, [
+    preferences.contextRolloverTokens,
+    preferences.contextRolloverWindowFraction,
+    preferences.globalInstructions,
+    preferences.maxConcurrentAgentRuns,
+  ]);
   const updateEngine = useMutation({
     mutationFn: ({
       engineId,
@@ -439,10 +517,14 @@ export function WorkspaceSettingsView({
             colorMode={colorMode}
             instructions={instructions}
             limit={limit}
+            rolloverTokens={rolloverTokens}
+            rolloverFraction={rolloverFraction}
             onToggleColorMode={onToggleColorMode}
             onPreferences={onPreferences}
             onInstructions={setInstructions}
             onLimit={setLimit}
+            onRolloverTokens={setRolloverTokens}
+            onRolloverFraction={setRolloverFraction}
           />
         ) : null}
         {section === "notifications" ? (
