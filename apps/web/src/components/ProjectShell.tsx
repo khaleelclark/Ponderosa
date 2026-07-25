@@ -110,7 +110,6 @@ export function ProjectShell({
       agentId: routedAgent.id,
       engineId: routedAgent.activeEngine,
       model: routedAgent.model,
-      refresh: true,
     } : undefined),
     enabled: route.kind !== "agent" || Boolean(routedAgent),
     staleTime: 60_000,
