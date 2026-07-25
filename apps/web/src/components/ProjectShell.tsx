@@ -90,9 +90,29 @@ export function ProjectShell({
   const agents = agentsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
+  const routedAgent = route.kind === "agent"
+    ? agents.find((agent) => agent.id === route.agentId)
+    : undefined;
+  const capabilityQueryKey = useMemo(
+    () => route.kind === "agent"
+      ? queryKeys.engines.capabilitySelection(
+        projectId,
+        routedAgent?.id,
+        routedAgent?.activeEngine,
+        routedAgent?.model,
+      )
+      : queryKeys.engines.capabilities(projectId),
+    [projectId, route.kind, routedAgent?.activeEngine, routedAgent?.id, routedAgent?.model],
+  );
   const capabilitiesQuery = useQuery({
-    queryKey: queryKeys.engines.capabilities(projectId),
-    queryFn: () => api.getEngineCapabilities(projectId),
+    queryKey: capabilityQueryKey,
+    queryFn: () => api.getEngineCapabilities(projectId, routedAgent ? {
+      agentId: routedAgent.id,
+      engineId: routedAgent.activeEngine,
+      model: routedAgent.model,
+      refresh: true,
+    } : undefined),
+    enabled: route.kind !== "agent" || Boolean(routedAgent),
     staleTime: 60_000,
   });
   // The review surface needs changed-file and Run detail for one Agent. Fetch
@@ -102,20 +122,9 @@ export function ProjectShell({
   const engineCapabilities = capabilitiesQuery.data ?? [] as ProjectEngineCapabilitiesDto[];
   const refreshCapabilities = useCallback(async (context?: { engineId?: string; model?: string; agentId?: string }) => {
     const discovered = await api.getEngineCapabilities(projectId, { ...context, refresh: true });
-    queryClient.setQueryData(queryKeys.engines.capabilities(projectId), discovered);
+    queryClient.setQueryData(capabilityQueryKey, discovered);
     return discovered;
-  }, [projectId, queryClient]);
-  const routedAgent = route.kind === "agent"
-    ? agents.find((agent) => agent.id === route.agentId)
-    : undefined;
-  useEffect(() => {
-    if (!routedAgent) return;
-    void refreshCapabilities({
-      agentId: routedAgent.id,
-      engineId: routedAgent.activeEngine,
-      model: routedAgent.model,
-    });
-  }, [refreshCapabilities, routedAgent?.activeEngine, routedAgent?.id, routedAgent?.model]);
+  }, [capabilityQueryKey, projectId, queryClient]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
   const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
