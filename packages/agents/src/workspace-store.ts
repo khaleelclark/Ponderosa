@@ -417,6 +417,20 @@ export class WorkspaceStore {
     this.append({ type: "notification_changed", conversationId, action: "read" }, { kind: "notifications_read", conversationId, readAt });
   }
 
+  /** Viewing a Chat acknowledges ordinary authored-message notices only. */
+  readConversationMessages(conversationId: string): void {
+    const notificationIds = this.listNotifications()
+      .filter((item) => item.conversationId === conversationId && !item.readAt &&
+        ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(item.kind))
+      .map((item) => item.id);
+    if (!notificationIds.length) return;
+    const readAt = new Date().toISOString();
+    this.append(
+      { type: "notification_changed", conversationId, action: "read" },
+      { kind: "notifications_read_ids", notificationIds, readAt },
+    );
+  }
+
   readNotification(notificationId: string): boolean {
     const current = this.notifications.get(notificationId);
     if (!current) return false;

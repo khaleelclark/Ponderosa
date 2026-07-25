@@ -312,7 +312,7 @@ export const realApi = {
   },
   listNotifications(): Promise<WorkspaceNotificationDto[]> { return requestJson<WorkspaceNotificationDto[]>("/api/notifications"); },
   async markNotificationRead(notificationId: string): Promise<void> { await requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST" }); },
-  async clearConversationNotifications(conversationId: string): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST" }); },
+  async clearConversationNotifications(conversationId: string, scope?: "messages"): Promise<void> { await requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/notifications/read`, { method: "POST", ...(scope ? { body: JSON.stringify({ scope }) } : {}) }); },
   async markAllNotificationsRead(): Promise<void> { await requestJson("/api/notifications/read", { method: "POST" }); },
   async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
   async clearProjectNotifications(projectId: string): Promise<void> { await requestJson(`/api/projects/${encodeURIComponent(projectId)}/notifications`, { method: "DELETE" }); },

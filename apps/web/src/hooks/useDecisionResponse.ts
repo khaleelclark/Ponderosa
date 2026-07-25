@@ -8,6 +8,8 @@ const DECISION_REFRESH_KEYS = [
   queryKeys.decisions.all,
   queryKeys.agentWork.all,
   queryKeys.collaborationAll,
+  queryKeys.conversations.detailAll,
+  queryKeys.allChatAll,
 ] as const;
 
 export function useDecisionResponse(onSuccess?: () => void) {

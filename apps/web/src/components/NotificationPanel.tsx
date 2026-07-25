@@ -123,6 +123,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   conversationQueries.forEach((query) => query.data?.forEach((conversation) => conversations.set(conversation.id, conversation)));
   const groups = groupNotificationsByProject(visibleNotifications);
   const unreadCount = notifications.filter((item) => !item.readAt && (item.status ?? "open") === "open").length;
+  const openAttentionCount = notifications.filter(isOpenAttention).length;
 
   const markRead = (item: WorkspaceNotificationDto) => {
     const readAt = new Date().toISOString();
@@ -135,7 +136,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     });
   };
   const navigateToNotification = (item: WorkspaceNotificationDto) => {
-    markRead(item);
+    if (!isOpenAttention(item)) markRead(item);
     if (item.action?.kind === "open_settings") {
       onClose();
       onOpenSettings?.();
@@ -228,7 +229,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <Typography variant="h6" component="span">Notifications</Typography>
-          <Typography variant="body2" color="text.secondary">{unreadCount ? `${unreadCount} unread` : "You’re all caught up"}</Typography>
+          <Typography variant="body2" color="text.secondary">{unreadCount ? `${unreadCount} unread` : openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention` : "You’re all caught up"}</Typography>
         </Box>
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>

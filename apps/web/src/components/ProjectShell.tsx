@@ -196,7 +196,7 @@ export function ProjectShell({
   };
   const openProjectConversation = (conversationId: string) => {
     void api.markProjectUsed(projectId, conversationId);
-    void api.clearConversationNotifications(conversationId);
+    void api.clearConversationNotifications(conversationId, "messages");
     navigate({ kind: "conversation", projectId, conversationId });
   };
 

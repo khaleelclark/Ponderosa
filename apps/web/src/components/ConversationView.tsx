@@ -94,6 +94,7 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
+import { DecisionCard } from "./decisions/DecisionCard";
 import { queryKeys } from "../queryKeys";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
@@ -549,6 +550,7 @@ export function ConversationView({
     () => compactDefined(detailQuery.data?.agents ?? []),
     [detailQuery.data?.agents],
   );
+  const decisions = detailQuery.data?.decisions ?? [];
   const conversationAgents = useMemo(
     () =>
       projectAgents.filter(agent =>
@@ -1575,6 +1577,15 @@ export function ConversationView({
                   }
                 />
               ))}
+              {decisions.map(decision => {
+                const choice = decision.response?.optionId
+                  ? decision.options.find(option => option.id === decision.response?.optionId)?.label
+                  : decision.response?.text;
+                return <Box key={`decision:${decision.id}`} sx={{ py: 1 }}>
+                  <DecisionCard decision={decision} title={decision.question} context={decision.context} />
+                  {decision.status === "resolved" && choice ? <Typography variant="body2" color="text.secondary" sx={{ mt: .75 }}>You chose {choice}.</Typography> : null}
+                </Box>;
+              })}
             </Stack>
           </ChatSurface>
         </Box>

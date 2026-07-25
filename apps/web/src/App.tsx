@@ -208,8 +208,8 @@ export default function App({
     if (!pageVisible || !hasUnreadConversationNotifications(notificationsQuery.data ?? [], conversationId)) return;
     const readAt = new Date().toISOString();
     queryClient.setQueryData<import("@ponderosa/core").WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => item.conversationId === conversationId && !item.readAt ? { ...item, readAt } : item));
-    void api.clearConversationNotifications(conversationId!).then(() => {
+      current.map((item) => item.conversationId === conversationId && !item.readAt && ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(item.kind) ? { ...item, readAt } : item));
+    void api.clearConversationNotifications(conversationId!, "messages").then(() => {
       return queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     }).catch(() => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });

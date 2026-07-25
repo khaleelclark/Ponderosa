@@ -734,6 +734,8 @@ export interface ConversationDetailDto {
   conversation: ConversationDto;
   messages: ConversationMessageDto[];
   agents: AgentDto[];
+  /** Canonical Decisions for this Chat; they are not authored messages. */
+  decisions?: DecisionDto[];
   history?: HistoryWindowDto;
 }
 

@@ -4184,6 +4184,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       conversation,
       agents: store.listAgents(conversation.projectId).filter((agent) => agent.conversationIds.includes(conversationId)),
       messages: withMessagePresentation(conversation.projectId, page.messages),
+      decisions: workspace.listDecisions({ conversationId }),
       history: { limit, hasMore: page.hasMore, ...(page.cursor ? { cursor: page.cursor } : {}) },
     };
   }
@@ -13107,10 +13108,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishWorkspaceSince(cursor);
     return { cleared };
   });
-  app.post<{ Params: { id: string } }>("/api/conversations/:id/notifications/read", async (request, reply) => {
+  app.post<{ Params: { id: string }; Body: { scope?: "messages" } }>("/api/conversations/:id/notifications/read", async (request, reply) => {
     if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
     const cursor = workspace.cursor();
-    workspace.readConversation(request.params.id);
+    if (request.body?.scope === "messages") workspace.readConversationMessages(request.params.id);
+    else workspace.readConversation(request.params.id);
     publishWorkspaceSince(cursor);
     return { read: true };
   });

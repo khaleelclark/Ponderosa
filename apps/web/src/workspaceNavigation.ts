@@ -36,7 +36,8 @@ export function hasUnreadConversationNotifications(
   conversationId: string | undefined,
 ): boolean {
   return Boolean(conversationId && notifications.some((notification) =>
-    notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open"));
+    notification.conversationId === conversationId && !notification.readAt && (notification.status ?? "open") === "open" &&
+    ["mentions", "directReplies", "projectChatMessages", "broadcasts"].includes(notification.kind)));
 }
 
 export function workspaceAgents(snapshots: WorkspaceProjectSnapshot[]): WorkspaceAgentRow[] {

@@ -431,7 +431,7 @@ export function WorkspaceSidebar({
   };
   const openChat = (project: ProjectDto, conversation: ConversationDto) => {
     void api.markProjectUsed(project.id, conversation.id);
-    void api.clearConversationNotifications(conversation.id);
+    void api.clearConversationNotifications(conversation.id, "messages");
     onNavigate({
       kind: "conversation",
       projectId: project.id,

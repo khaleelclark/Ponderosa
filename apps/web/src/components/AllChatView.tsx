@@ -3,6 +3,7 @@ import {
   Box,
   Button,
   ButtonBase,
+  Chip,
   CircularProgress,
   IconButton,
   Stack,
@@ -34,6 +35,7 @@ import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { ChatSurface } from "./chat/ChatSurface";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
+import CloseIcon from "@mui/icons-material/Close";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 
@@ -140,6 +142,7 @@ export function AllChatView({
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
+  const [replyTarget, setReplyTarget] = useState<{ id: string; title: string }>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
@@ -154,7 +157,7 @@ export function AllChatView({
   );
   const layoutKey = items.map(item => item.communicationEventId).join(":");
   const selected = items.find(item => item.communicationEventId === selectedId);
-  const selectedAgentId = selected?.directMessageAgent?.id;
+  const selectedAgentId = replyTarget?.id;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
     queryFn: () => api.getAgent(selectedAgentId!, 100),
@@ -230,7 +233,7 @@ export function AllChatView({
       draftAttachmentIds: string[];
       draftOwnerId?: string;
     }) => {
-      if (!selected?.directMessageAgent)
+      if (!replyTarget)
         throw new Error("Select a message tied to one exact Agent");
       if (!body.trim() && files.length === 0)
         throw new Error("Message text or an attachment is required");
@@ -238,17 +241,17 @@ export function AllChatView({
         ? []
         : await Promise.all(
             files.map(file =>
-              api.uploadAttachment(selected.directMessageAgent!.id, file),
+              api.uploadAttachment(replyTarget.id, file),
             ),
           );
       try {
-        return await api.sendMessage(selected.directMessageAgent.id, {
+        return await api.sendMessage(replyTarget.id, {
           text: body.trim(),
           attachmentIds: attachments.map(item => item.id),
           ...(draftAttachmentIds.length
             ? {
                 draftAttachmentIds,
-                draftId: `agent:${selected.directMessageAgent.id}`,
+                draftId: `agent:${replyTarget.id}`,
                 draftOwnerId,
               }
             : {}),
@@ -258,7 +261,7 @@ export function AllChatView({
       } catch (error) {
         await Promise.allSettled(
           attachments.map(item =>
-            api.deleteAttachment(selected.directMessageAgent!.id, item.id),
+            api.deleteAttachment(replyTarget.id, item.id),
           ),
         );
         throw error;
@@ -266,13 +269,13 @@ export function AllChatView({
     },
     onSuccess: () => {
       setNotice(
-        `Direct message sent to ${selected?.directMessageAgent?.title ?? "Agent"}.`,
+        `Direct message sent to ${replyTarget?.title ?? "Agent"}.`,
       );
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
-      if (selected?.directMessageAgent) {
+      if (replyTarget) {
         void queryClient.invalidateQueries({
           queryKey: queryKeys.agents.detailPrefix(
-            selected.directMessageAgent.id,
+            replyTarget.id,
           ),
         });
       }
@@ -287,6 +290,11 @@ export function AllChatView({
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
+    if (replyTarget?.id === item.directMessageAgent.id) {
+      setReplyTarget(undefined);
+      return;
+    }
+    setReplyTarget(item.directMessageAgent);
     setMentionInsertRequest({
       id: `${item.communicationEventId}:${Date.now()}`,
       text: `#${agentMentionHandle(item.directMessageAgent.title)}`,
@@ -569,6 +577,12 @@ export function AllChatView({
       </ChatSurface>
       <Box
         className="mobile-chat-chrome mobile-chat-composer"
+        onKeyDown={event => {
+          if (event.key === "Escape" && replyTarget) {
+            event.preventDefault();
+            setReplyTarget(undefined);
+          }
+        }}
         data-mobile-composer-hidden={mobileComposer.hidden ? "true" : "false"}
         onTransitionEnd={event => {
           if (
@@ -584,12 +598,15 @@ export function AllChatView({
           <Box sx={{ display: "flex", justifyContent: "center" }}>
             <AllChatInfoPill message="Select an Agent-authored message to mention that Agent." />
           </Box>
-        ) : !selected.directMessageAgent ? (
+        ) : !replyTarget ? (
           <Box sx={{ display: "flex", justifyContent: "center" }}>
             <AllChatInfoPill message="This message does not identify an active Agent you can message." />
           </Box>
         ) : (
           <>
+            <Stack direction="row" sx={{ px: 1.5, pt: 1 }}>
+              <Chip label={`Message ${replyTarget.title}`} onDelete={() => setReplyTarget(undefined)} deleteIcon={<CloseIcon />} />
+            </Stack>
             {notice ? (
               <Alert severity="success" sx={{ mx: 1.5, mt: 1 }}>
                 {notice}
@@ -613,10 +630,10 @@ export function AllChatView({
               running={false}
               attachmentsEnabled
               guidance="Message this Agent directly. Use @ to reference a project file."
-              placeholder={`Message ${selected.directMessageAgent.title}`}
+              placeholder={`Message ${replyTarget.title}`}
               insertTextRequest={mentionInsertRequest}
-              draftStorageKey={`messages:agent:${selected.directMessageAgent.id}`}
-              conversationDraftId={`agent:${selected.directMessageAgent.id}`}
+              draftStorageKey={`messages:agent:${replyTarget.id}`}
+              conversationDraftId={`agent:${replyTarget.id}`}
               onSend={(body, files, draftAttachmentIds = [], draftOwnerId) =>
                 send.mutateAsync({
                   body,
