@@ -19,6 +19,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { copyText } from "../clipboard";
+import { queryKeys } from "../queryKeys";
 
 export interface AgentWorkFocus {
   id: string;
@@ -55,7 +56,7 @@ function AgentWorkTechnicalDetails({
 }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const query = useQuery({
-    queryKey: ["agent-work", projectId, conversationId ?? "", "detail", item.id],
+    queryKey: queryKeys.agentWork.detail(projectId, conversationId, item.id),
     queryFn: () => api.getAgentWorkItemDetails(projectId, item.kind, item.recordId, { conversationId }),
     enabled: expanded && item.details === undefined,
     staleTime: 15_000,
@@ -132,7 +133,12 @@ export function AgentWorkInspector({
   onClose(): void;
 }): JSX.Element {
   const query = useQuery({
-    queryKey: ["agent-work", projectId, conversationId ?? "", agentId ?? "", focus?.id ?? ""],
+    queryKey: queryKeys.agentWork.list(
+      projectId,
+      conversationId,
+      agentId,
+      focus?.id,
+    ),
     queryFn: () => api.getAgentWork(projectId, { conversationId, agentId, focusId: focus?.id, limit: 200 }),
     enabled: open,
   });

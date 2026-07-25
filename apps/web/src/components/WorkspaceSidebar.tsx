@@ -45,6 +45,11 @@ import {
   useProjectConversations,
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
+import {
+  routeInitialSidebarSection,
+  routeSynchronizedSidebarSection,
+  type RouteSidebarSection,
+} from "../routeRegistry";
 import type { Route } from "../routing";
 import {
   reorderStableIds,
@@ -345,23 +350,8 @@ export function WorkspaceSidebar({
     healthQueries.map(query => query.data),
   );
   const counts = workspaceCounts(snapshots, notifications);
-  const [sidebarSection, setSidebarSection] = useState<
-    "home" | "projects" | "chats" | "agents" | "triggers" | "wiki" | "settings"
-  >(() =>
-    route.kind === "allChats"
-      ? "chats"
-      : route.kind === "allAgents"
-        ? "agents"
-        : route.kind === "allTriggers"
-          ? "triggers"
-          : route.kind === "projects"
-            ? "projects"
-            : route.kind === "wiki"
-              ? "wiki"
-              : route.kind === "settings" || route.kind === "usage"
-                ? "settings"
-                : "home",
-  );
+  const [sidebarSection, setSidebarSection] =
+    useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
   const [filter, setFilter] = useState("");
   const [draggedResource, setDraggedResource] = useState<{
     kind: "home" | "chat" | "agent" | "trigger";
@@ -382,12 +372,7 @@ export function WorkspaceSidebar({
   useEffect(() => {
     // Directory workplaces are destinations, not sidebar-section commands.
     // Keep the operator's current panel, filter, and scroll state when one opens.
-    const section =
-      route.kind === "wiki"
-        ? "wiki"
-        : route.kind === "settings" || route.kind === "usage"
-          ? "settings"
-          : undefined;
+    const section = routeSynchronizedSidebarSection(route);
     if (!section) return;
     setSidebarSection(section);
     setFilter("");
@@ -408,7 +393,7 @@ export function WorkspaceSidebar({
     staleTime: 5_000,
   });
   const wikiIndexQuery = useQuery({
-    queryKey: ["wiki", "index"],
+    queryKey: queryKeys.wiki.index,
     queryFn: () => api.getWikiIndex(),
     enabled: showingWiki,
     staleTime: 60_000,

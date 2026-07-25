@@ -20,6 +20,7 @@ import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
+import { assertNeverRoute, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
@@ -64,7 +65,7 @@ export function ProjectShell({
 }: {
   projectId: string;
   project: ProjectDto;
-  route: Route;
+  route: ProjectRoute;
   engines: EngineDto[];
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
@@ -379,13 +380,7 @@ export function ProjectShell({
         onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
   } else {
-    main = (
-      <Box sx={{ p: 3 }}>
-        <Alert severity="info">
-          Select a Project chat or open the Agents view to get started.
-        </Alert>
-      </Box>
-    );
+    main = assertNeverRoute(route);
   }
 
   const dialogs = (

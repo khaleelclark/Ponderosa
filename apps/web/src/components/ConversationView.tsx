@@ -524,7 +524,7 @@ export function ConversationView({
 
   const conversation = detailQuery.data?.conversation;
   const projectBrowser = useQuery({
-    queryKey: ["project-browser", conversation?.projectId],
+    queryKey: queryKeys.projectBrowser.project(conversation?.projectId),
     queryFn: () => api.getProjectBrowser(conversation!.projectId),
     enabled: Boolean(conversation?.projectId),
     retry: false,

@@ -6,6 +6,9 @@
  * refreshes one Project. Components should not spell these arrays themselves.
  */
 export const queryKeys = {
+  readiness: {
+    all: ["readiness"] as const,
+  },
   projects: {
     all: ["projects"] as const,
   },
@@ -14,6 +17,10 @@ export const queryKeys = {
   },
   notifications: {
     all: ["notifications"] as const,
+  },
+  decisions: {
+    all: ["decisions"] as const,
+    project: (projectId: string) => ["decisions", "project", projectId] as const,
   },
   engines: {
     all: ["engines"] as const,
@@ -67,17 +74,103 @@ export const queryKeys = {
   workspaceFile: {
     all: ["workspace-file"] as const,
     project: (projectId: string) => ["workspace-file", projectId] as const,
+    detail: (projectId: string, path: string | undefined) =>
+      ["workspace-file", projectId, path] as const,
+  },
+  workspaceChanges: {
+    project: (projectId: string) => ["workspace", projectId] as const,
+    file: (
+      agentId: string | undefined,
+      path: string | undefined,
+      lastSeq: number | undefined,
+    ) => ["changed-file", agentId, path, lastSeq] as const,
+  },
+  workspaceFileView: {
+    detail: (projectId: string, path: string) =>
+      ["workspace-file-view", projectId, path] as const,
   },
   agentWork: {
     all: ["agent-work"] as const,
     project: (projectId: string) => ["agent-work", projectId] as const,
+    overview: (projectId: string) =>
+      ["agent-work", projectId, "", "", "overview"] as const,
+    list: (
+      projectId: string,
+      conversationId: string | undefined,
+      agentId: string | undefined,
+      focusId: string | undefined,
+    ) => [
+      "agent-work",
+      projectId,
+      conversationId ?? "",
+      agentId ?? "",
+      focusId ?? "",
+    ] as const,
+    detail: (
+      projectId: string,
+      conversationId: string | undefined,
+      itemId: string,
+    ) => [
+      "agent-work",
+      projectId,
+      conversationId ?? "",
+      "detail",
+      itemId,
+    ] as const,
   },
   tokenUsage: {
     all: ["token-usage"] as const,
+    detail: (
+      scope: "overall" | "project" | "agent",
+      scopeId: string | undefined,
+      rangeKey: "24h" | "7d" | "30d" | "all",
+    ) => ["token-usage", scope, scopeId, rangeKey] as const,
   },
   globalSearch: {
     all: ["global-search"] as const,
     results: (query: string) => ["global-search", query] as const,
+  },
+  projectBrowser: {
+    all: ["project-browser"] as const,
+    project: (projectId: string | undefined) =>
+      ["project-browser", projectId] as const,
+  },
+  hostFolderBrowser: {
+    all: ["host-folder-browser"] as const,
+    path: (path: string | undefined) => ["host-folder-browser", path] as const,
+  },
+  wiki: {
+    index: ["wiki", "index"] as const,
+    article: (articleId: string | undefined) =>
+      ["wiki", "article", articleId] as const,
+    search: (query: string) => ["wiki", "search", query] as const,
+  },
+  projectArtifacts: {
+    project: (projectId: string) => ["project-artifacts", projectId] as const,
+    agentContent: (agentId: string, artifactId: string | undefined) =>
+      ["artifact", agentId, artifactId] as const,
+    recorded: (artifactId: string, agentId: string | undefined) =>
+      ["project-recorded-artifact", artifactId, agentId] as const,
+    textPreview: (artifactId: string, previewUrl: string | undefined) =>
+      ["project-artifact-text-preview", artifactId, previewUrl] as const,
+  },
+  communicationDocument: {
+    detail: (documentId: string) =>
+      ["communication-document", documentId] as const,
+  },
+  activityOutput: {
+    detail: (
+      agentId: string,
+      seq: number,
+      sha256: string | undefined,
+    ) => ["activity-output", agentId, seq, sha256] as const,
+  },
+  assetLimits: {
+    all: ["asset-limits"] as const,
+  },
+  agentDeletionPreview: {
+    detail: (projectId: string, rootsKey: string) =>
+      ["agent-deletion-preview", projectId, rootsKey] as const,
   },
   allChatAll: ["all-chat"] as const,
   allChat: (limit: number) => ["all-chat", limit] as const,

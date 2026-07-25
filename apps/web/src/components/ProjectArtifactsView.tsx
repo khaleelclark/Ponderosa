@@ -47,6 +47,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { uniqueBy } from "../collections";
+import { queryKeys } from "../queryKeys";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import {
   ProjectOverview,
@@ -263,7 +264,7 @@ export function ProjectArtifactsView({
   }, [projectId]);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
-    queryKey: ["project-artifacts", projectId],
+    queryKey: queryKeys.projectArtifacts.project(projectId),
     queryFn: () => api.listProjectArtifacts(projectId),
   });
   const updateArtifact = useMutation({
@@ -283,7 +284,7 @@ export function ProjectArtifactsView({
     onSuccess: artifact => {
       setPreviewArtifact(artifact);
       void queryClient.invalidateQueries({
-        queryKey: ["project-artifacts", projectId],
+        queryKey: queryKeys.projectArtifacts.project(projectId),
       });
     },
   });

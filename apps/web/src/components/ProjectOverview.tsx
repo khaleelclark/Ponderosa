@@ -46,6 +46,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { conversationDisplayTitle } from "../conversationLabels";
 import { engineAvailabilityPresentation, engineIsAvailable } from "../conversationEngine";
+import { queryKeys } from "../queryKeys";
 import {
   reorderStableIds,
   resourcePreferenceKey,
@@ -175,17 +176,17 @@ export function ProjectOverview({
   }, [project.id]);
 
   const work = useQuery({
-    queryKey: ["agent-work", project.id, "", "", "overview"],
+    queryKey: queryKeys.agentWork.overview(project.id),
     queryFn: () => api.getAgentWork(project.id, { limit: 120 }),
     staleTime: 10_000,
   });
   const decisions = useQuery({
-    queryKey: ["decisions", "project", project.id],
+    queryKey: queryKeys.decisions.project(project.id),
     queryFn: () => api.listDecisions({ projectId: project.id, status: "pending" }),
     staleTime: 10_000,
   });
   const browser = useQuery({
-    queryKey: ["project-browser", project.id],
+    queryKey: queryKeys.projectBrowser.project(project.id),
     queryFn: () => api.getProjectBrowser(project.id),
     retry: false,
     staleTime: 5_000,

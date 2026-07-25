@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { copyText } from "../../clipboard";
 import type { ExecutionItem } from "../../hooks/useAgentStream";
+import { queryKeys } from "../../queryKeys";
 import { telemetryElementId } from "../../telemetryFocus";
 import { ResourceContextMenu } from "../ResourceContextMenu";
 import type { ResourceContextMenuState } from "../ResourceContextMenu";
@@ -403,7 +404,11 @@ function ExactActivityOutput({ item }: { item: AgentActivityDto }): JSX.Element 
   const [loadMoreError, setLoadMoreError] = useState(false);
   const reference = item.outputPreview;
   const query = useQuery({
-    queryKey: ["activity-output", item.agentId, item.seq, reference?.sha256],
+    queryKey: queryKeys.activityOutput.detail(
+      item.agentId,
+      item.seq,
+      reference?.sha256,
+    ),
     queryFn: () => api.getActivityOutput(reference!.retrievalUrl),
     enabled: open && Boolean(reference),
   });

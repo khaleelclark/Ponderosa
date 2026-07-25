@@ -98,7 +98,7 @@ export function Composer({
   const [attachments, dispatchAttachments] = useReducer(composerAttachmentReducer, { files: [] });
   const files = attachments.files;
   const queryClient = useQueryClient();
-  const assetLimitsQuery = useQuery({ queryKey: ["asset-limits"], queryFn: () => api.getAssetLimits(), staleTime: 5 * 60_000 });
+  const assetLimitsQuery = useQuery({ queryKey: queryKeys.assetLimits.all, queryFn: () => api.getAssetLimits(), staleTime: 5 * 60_000 });
   const assetLimits = assetLimitsQuery.data;
   const [sendError, setSendError] = useState<string>();
   const [draftConflict, setDraftConflict] = useState<ConversationDraftConflictDto>();

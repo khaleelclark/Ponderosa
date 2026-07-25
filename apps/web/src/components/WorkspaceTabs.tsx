@@ -35,30 +35,36 @@ import { useQueries } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
+import {
+  routeTabIcon,
+  routeTabLabel,
+  type RouteTabIcon,
+} from "../routeRegistry";
 import type { WorkspaceTabState } from "../workspaceTabs";
 import { OperatorAvatar, operatorInitials } from "./OperatorAvatar";
 
+const TAB_ICONS = {
+  add: AddIcon,
+  agent: SmartToyOutlinedIcon,
+  bolt: BoltOutlinedIcon,
+  chat: ChatBubbleOutlineIcon,
+  dataUsage: DataUsageOutlinedIcon,
+  difference: DifferenceOutlinedIcon,
+  folder: FolderOutlinedIcon,
+  home: HomeOutlinedIcon,
+  language: LanguageIcon,
+  menuBook: MenuBookOutlinedIcon,
+  person: PersonOutlineIcon,
+  settings: SettingsOutlinedIcon,
+} satisfies Record<RouteTabIcon, typeof FolderOutlinedIcon>;
+
 function TabIcon({
-  kind,
+  route,
 }: {
-  kind: WorkspaceTabState["route"]["kind"];
+  route: WorkspaceTabState["route"];
 }): JSX.Element {
-  if (kind === "home") return <HomeOutlinedIcon fontSize="small" />;
-  if (kind === "new") return <AddIcon fontSize="small" />;
-  if (kind === "conversation" || kind === "allChat" || kind === "allChats")
-    return <ChatBubbleOutlineIcon fontSize="small" />;
-  if (kind === "agent") return <SmartToyOutlinedIcon fontSize="small" />;
-  if (kind === "agents" || kind === "allAgents")
-    return <SmartToyOutlinedIcon fontSize="small" />;
-  if (kind === "allTriggers") return <BoltOutlinedIcon fontSize="small" />;
-  if (kind === "settings") return <SettingsOutlinedIcon fontSize="small" />;
-  if (kind === "profile") return <PersonOutlineIcon fontSize="small" />;
-  if (kind === "usage") return <DataUsageOutlinedIcon fontSize="small" />;
-  if (kind === "review") return <DifferenceOutlinedIcon fontSize="small" />;
-  if (kind === "browser") return <LanguageIcon fontSize="small" />;
-  if (kind === "project") return <FolderOutlinedIcon fontSize="small" />;
-  if (kind === "wiki") return <MenuBookOutlinedIcon fontSize="small" />;
-  return <FolderOutlinedIcon fontSize="small" />;
+  const Icon = TAB_ICONS[routeTabIcon(route)];
+  return <Icon fontSize="small" />;
 }
 
 function newTabShortcutLabel(
@@ -206,51 +212,14 @@ export function WorkspaceTabs({
           const resources = projectId
             ? resourcesByProject.get(projectId)
             : undefined;
-          const generatedLabel =
-            tabRoute.kind === "conversation"
-              ? (resources?.conversations.find(
-                  conversation => conversation.id === tabRoute.conversationId,
-                )?.title ?? "Chat")
-              : tabRoute.kind === "agent"
-                ? (resources?.agents.find(
-                    agent => agent.id === tabRoute.agentId,
-                  )?.title ?? "Agent")
-                : tabRoute.kind === "review"
-                  ? (tabRoute.path?.split(/[\\/]/u).at(-1) ??
-                    `${resources?.agents.find(agent => agent.id === tabRoute.agentId)?.title ?? "Agent"} Review`)
-                  : tabRoute.kind === "agents"
-                    ? "Agents"
-                    : tabRoute.kind === "browser"
-                      ? "Interactive Browser"
-                      : tabRoute.kind === "workspaceFile"
-                        ? (tabRoute.path.split(/[\\/]/u).at(-1) ?? "File")
-                        : tabRoute.kind === "projectWork"
-                          ? "Work"
-                          : tabRoute.kind === "allAgents"
-                            ? "All Agents"
-                            : tabRoute.kind === "allChats"
-                              ? "All Chats"
-                              : tabRoute.kind === "allTriggers"
-                                ? "All Triggers"
-                                : tabRoute.kind === "projects"
-                                  ? "All Projects"
-                                  : tabRoute.kind === "settings"
-                                    ? "Settings"
-                                    : tabRoute.kind === "profile"
-                                      ? "Operator Profile"
-                                      : tabRoute.kind === "usage"
-                                        ? "Provider Activity"
-                                        : tabRoute.kind === "home"
-                                          ? "Home"
-                                          : tabRoute.kind === "new"
-                                            ? "Create New"
-                                            : tabRoute.kind === "allChat"
-                                              ? "All Messages"
-                                              : tabRoute.kind === "project"
-                                                ? "Project Overview"
-                                                : tabRoute.kind === "wiki"
-                                                  ? "Wiki"
-                                                  : "Projects";
+          const generatedLabel = routeTabLabel(tabRoute, {
+            conversationTitle: conversationId =>
+              resources?.conversations.find(
+                conversation => conversation.id === conversationId,
+              )?.title,
+            agentTitle: agentId =>
+              resources?.agents.find(agent => agent.id === agentId)?.title,
+          });
           const label = tab.title ?? generatedLabel;
           const accessibleLabel =
             tabRoute.kind === "conversation"
@@ -374,7 +343,7 @@ export function WorkspaceTabs({
                     "& > svg": { flex: "0 0 auto", fontSize: 18 },
                   }}
                 >
-                  <TabIcon kind={tabRoute.kind} />
+                  <TabIcon route={tabRoute} />
                   <Typography
                     className="workspace-tab-label"
                     variant="body2"

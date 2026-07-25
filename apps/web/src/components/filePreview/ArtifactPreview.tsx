@@ -2,6 +2,7 @@ import { Alert, Box, Button, Chip, Stack } from "@mui/material";
 import type { AgentDto, ArtifactContentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api";
+import { queryKeys } from "../../queryKeys";
 import { FilePreview } from "./FilePreview";
 import { createdFileUnifiedDiff, recordedArtifactDiff } from "./artifactDiff";
 import { previewCapability } from "./mimeCapabilities";
@@ -48,7 +49,7 @@ export function AgentArtifactPreview({
   liveContent?: string;
 }): JSX.Element {
   const contentQuery = useQuery({
-    queryKey: ["artifact", agentId, artifact?.id],
+    queryKey: queryKeys.projectArtifacts.agentContent(agentId, artifact?.id),
     queryFn: () => api.getArtifact(agentId, artifact!.id),
     enabled: Boolean(artifact && liveContent === undefined && !artifact.id.startsWith("live-artifact-")
       && !["image", "pdf"].includes(previewCapability({
@@ -94,12 +95,15 @@ export function ProjectArtifactPreview({
     artifactKind: artifact.kind,
   });
   const recorded = useQuery({
-    queryKey: ["project-recorded-artifact", artifact.id, agent?.id],
+    queryKey: queryKeys.projectArtifacts.recorded(artifact.id, agent?.id),
     queryFn: () => api.getArtifact(agent!.id, artifact.id),
     enabled: Boolean(agent && artifact.kind === "diff"),
   });
   const text = useQuery({
-    queryKey: ["project-artifact-text-preview", artifact.id, artifact.previewUrl],
+    queryKey: queryKeys.projectArtifacts.textPreview(
+      artifact.id,
+      artifact.previewUrl,
+    ),
     queryFn: async ({ signal }) => {
       const response = await fetch(artifact.previewUrl!, { cache: "no-store", credentials: "same-origin", signal });
       if (!response.ok) throw new Error(`Preview request failed (${response.status})`);
