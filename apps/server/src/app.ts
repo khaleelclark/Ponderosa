@@ -248,6 +248,7 @@ import { registerAgentCoordinationRoutes } from "./routes/agent-coordination.js"
 import { registerAgentRequestCommandRoutes } from "./routes/agent-request-commands.js";
 import { registerAgentCommunicationRoutes } from "./routes/agent-communications.js";
 import { createCommunicationDocumentAuthority } from "./communication-document-authority.js";
+import { registerProjectRoutes } from "./routes/projects.js";
 import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import { ProjectFileAuthority, registerProjectFileRoutes } from "./routes/project-files.js";
@@ -2631,140 +2632,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   registerLinkPreviewRoutes(app);
 
-  registerProjectFolderRoutes(app, {
-    managedWorkspacesRoot,
-    pathBoundary: projectFolderPathBoundary,
+  registerProjectRoutes(app, {
     store,
-  });
-
-  app.post<{ Body: CreateProjectRequest }>("/api/projects", async (request, reply) => {
-    const label = request.body?.label?.trim();
-    if (!label) return reply.code(400).send({ error: "label is required" });
-    const defaultEngine = request.body?.defaultEngine;
-    if (!defaultEngine || !engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
-    const creationAdapter = engines.get(defaultEngine)!.adapter;
-    const creationModelOptions = cachedModelOptions(creationAdapter);
-    const selectionError = runtimeSelectionError(
-      creationAdapter,
-      request.body.defaultModel,
-      request.body.defaultEffort,
-      creationModelOptions,
-    );
-    if (selectionError) return reply.code(400).send({ error: selectionError });
-    if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
-    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    let hostPath: string;
-    let createdManagedFolder = false;
-    if (request.body.hostPath) {
-      const candidate = path.resolve(request.body.hostPath);
-      try {
-        const stat = await fs.stat(candidate);
-        if (!stat.isDirectory()) return reply.code(400).send({ error: "hostPath must be a directory" });
-        const validated = await projectFolderPathBoundary.validatedBrowsePath(candidate);
-        hostPath = validated.candidate;
-      } catch {
-        return reply.code(400).send({ error: "hostPath does not exist" });
-      }
-    } else {
-      const requestedName = request.body.createFolderName?.trim() || `project-${randomUUID()}`;
-      if (!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(requestedName) || requestedName === "." || requestedName === "..") {
-        return reply.code(400).send({ error: "folder name must be a single safe name" });
-      }
-      hostPath = path.join(managedWorkspacesRoot, requestedName);
-      try {
-        await fs.mkdir(hostPath, { recursive: false });
-        createdManagedFolder = true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") return reply.code(409).send({ error: "folder already exists" });
-        throw error;
-      }
-    }
-    let project;
-    try {
-      project = store.createProject({
-        label,
-        hostPath,
-        defaultEngine,
-        ...(request.body.defaultModel ? { defaultModel: request.body.defaultModel } : {}),
-        ...(request.body.defaultEffort ? { defaultEffort: request.body.defaultEffort } : {}),
-      });
-      if (project.lastConversationId) {
-        const resolved = concreteRuntimeSelection(creationAdapter, [
-          { model: project.defaultModel, effort: project.defaultEffort },
-          workspace.getPreferences().engineDefaults?.[defaultEngine],
-        ], creationModelOptions);
-        store.updateConversation(project.lastConversationId, {
-          defaultEngine,
-          defaultModel: resolved.model ?? null,
-          defaultEffort: resolved.effort ?? null,
-        });
-      }
-    } catch (error) {
-      if (createdManagedFolder) await fs.rm(hostPath, { recursive: true, force: true });
-      throw error;
-    }
-    appendWorkspace({ type: "project_changed", projectId: project.id, action: "created" });
-    refreshCommunicationReconciliation(project.id);
-    if (project.lastConversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: project.lastConversationId, action: "created" });
-    return project;
-  });
-
-  app.post<{ Params: { id: string }; Body: { conversationId?: string } }>("/api/projects/:id/use", async (request, reply) => {
-    try {
-      const project = store.markProjectUsed(request.params.id, request.body?.conversationId);
-      if (!project) return reply.code(404).send({ error: "project not found" });
-      appendWorkspace({ type: "project_changed", projectId: project.id, action: "used" });
-      if (request.body?.conversationId) appendWorkspace({ type: "conversation_changed", projectId: project.id, conversationId: request.body.conversationId, action: "used" });
-      return project;
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "project could not be selected" });
-    }
-  });
-
-  app.get<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    return project ?? reply.code(404).send({ error: "project not found" });
-  });
-
-  app.patch<{ Params: { id: string }; Body: UpdateProjectRequest }>("/api/projects/:id", async (request, reply) => {
-    const current = store.getProject(request.params.id);
-    if (!current) return reply.code(404).send({ error: "project not found" });
-    const label = request.body?.label?.trim() ?? current.label;
-    if (!label) return reply.code(400).send({ error: "label is required" });
-    if (request.body.instructions !== undefined && typeof request.body.instructions !== "string") return reply.code(400).send({ error: "instructions must be a string" });
-    const defaultEngine = request.body.defaultEngine ?? current.defaultEngine;
-    const engineChanged = defaultEngine !== current.defaultEngine;
-    if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "unknown engine" });
-    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? (engineChanged ? undefined : current.defaultModel);
-    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? (engineChanged ? undefined : current.defaultEffort);
-    const projectAdapter = engines.get(defaultEngine)!.adapter;
-    const selectionError = runtimeSelectionError(
-      projectAdapter,
-      defaultModel,
-      defaultEffort,
-      cachedModelOptions(projectAdapter, current.id),
-    );
-    if (selectionError) return reply.code(400).send({ error: selectionError });
-    const instructionsChanged = request.body.instructions !== undefined && request.body.instructions !== (current.instructions ?? "");
-    const project = store.updateProject(request.params.id, {
-      label,
-      defaultEngine,
-      defaultModel: defaultModel ?? null,
-      defaultEffort: defaultEffort ?? null,
-      ...(request.body.instructions !== undefined ? { instructions: request.body.instructions } : {}),
-    });
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    if (instructionsChanged) for (const agent of store.listAgents(project.id)) {
-      organizationEnvelopeStates.delete(agent.id);
-      if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
-      else {
-        clearAgentResumeSession(agent.id, "request_context_rollover");
-        const runtime = persistentRuntimeForTermination(agent.id);
-        if (runtime) await teardownPersistentRuntime(agent.id, runtime, "Project instruction update", project.id);
-      }
-    }
-    appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
-    return project;
+    workspace,
+    engines,
+    managedWorkspacesRoot,
+    projectFolderPathBoundary,
+    activeRuns,
+    scheduledSessionRollovers,
+    organizationEnvelopeStates,
+    cachedModelOptions,
+    appendWorkspace,
+    refreshCommunicationReconciliation,
+    clearAgentResumeSession,
+    persistentRuntimeForTermination,
+    teardownPersistentRuntime,
   });
 
   app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
