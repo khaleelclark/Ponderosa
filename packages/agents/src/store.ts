@@ -81,6 +81,7 @@ import { AgentFileActivityReadModel } from "./store-file-activity-read-model.js"
 import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentEventProjectionStore } from "./store-event-projection.js";
+import { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
 import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
 import {
   communicationDocumentReference,
@@ -191,6 +192,7 @@ export class AgentStore {
   private readonly runUsage!: AgentRunUsageReadModel;
   private readonly artifactCatalog!: AgentArtifactCatalog;
   private readonly eventProjection!: AgentEventProjectionStore;
+  private readonly conversationProjection!: AgentConversationProjectionReadModel;
   private readonly deliverySequenceFile: string;
   private deliverySequence: number;
   private readonly communicationEventCache = new Map<string, {
@@ -261,6 +263,35 @@ export class AgentStore {
           this.decodeHistoryCursor(cursor, stream, scope),
         (projectId, eventId) =>
           this.getCommunicationEvent(projectId, eventId)?.conversationId,
+      );
+      this.conversationProjection = new AgentConversationProjectionReadModel(
+        this.client,
+        conversationId => this.getConversation(conversationId),
+        projectId => this.messageDispatches(projectId),
+        (projectId, surface, projectionKey, limit) =>
+          this.readProjectedCommunicationMessages(
+            projectId,
+            surface,
+            projectionKey,
+            limit,
+          ),
+        (projectId, surface, projectionKey, input) =>
+          this.readProjectedCommunicationMessagePage(
+            projectId,
+            surface,
+            projectionKey,
+            input,
+          ),
+        (projectId, eventId, surface, projectionKey) =>
+          this.projectionIndex(projectId).byTuple.get(
+            `${eventId}\u0000${surface}\u0000${projectionKey}`,
+          ),
+        (projectId, projections) =>
+          this.materializeProjectedCommunicationMessages(projectId, projections),
+        agentId => Boolean(this.getAgent(agentId)),
+        agentId => this.getRuns(agentId),
+        (agentId, status, executionIds) =>
+          this.fileActivity.byExecution(agentId, status, executionIds),
       );
       // Canonical files are written before their SQLite projections. Rebuilding
       // on startup closes the crash window where a durable append succeeded but
@@ -1637,168 +1668,50 @@ export class AgentStore {
     messageReceiptKey?: string;
     deliveryOrderKey: string;
   }> {
-    const conversation = this.getConversation(conversationId);
-    if (!conversation) return [];
-    return this.messageDispatches(conversation.projectId)
-      .filter((dispatch) => dispatch.conversationId === conversationId &&
-        (!createdAtOrAfter || dispatch.createdAt >= createdAtOrAfter))
-      .flatMap((dispatch) => (dispatch.deliveryIntents ?? []).map((intent) => ({
-      // Dispatch records are durable before projections and contain the complete
-      // immutable message snapshot. Reconstruct directly instead of repeatedly
-      // scanning the projected room timeline once per recipient intent.
-      message: {
-        id: dispatch.messageId,
-        communicationEventId: dispatch.eventId,
-        conversationId: dispatch.conversationId,
-        role: dispatch.role,
-        text: dispatch.renderedText,
-        createdAt: dispatch.createdAt,
-        authorAgentId: dispatch.authorAgentId,
-        attachments: dispatch.attachments,
-      },
-      intent,
-      messageReceiptKey: dispatch.messageReceiptKey,
-      deliveryOrderKey: dispatch.orderKey,
-    })));
+    return this.conversationProjection.getDeliveryIntents(conversationId, createdAtOrAfter);
   }
 
-  getConversationMessageByReceiptKey(conversationId: string, receiptKey: string): ConversationMessageDto | undefined {
-    const conversation = this.getConversation(conversationId);
-    if (!conversation) return undefined;
-    const dispatch = this.messageDispatches(conversation.projectId)
-      .find((candidate) => candidate.conversationId === conversationId && candidate.messageReceiptKey === receiptKey);
-    return dispatch
-      ? this.getConversationMessages(conversationId, dispatch.channel).find((message) => message.id === dispatch.messageId)
-      : undefined;
+  getConversationMessageByReceiptKey(
+    conversationId: string,
+    receiptKey: string,
+  ): ConversationMessageDto | undefined {
+    return this.conversationProjection.getMessageByReceiptKey(conversationId, receiptKey);
   }
 
-  getConversationMessages(conversationId: string, channel: ConversationChannel = "main"): ConversationMessageDto[] {
-    return this.getProjectedConversationMessages(conversationId, channel);
+  getConversationMessages(
+    conversationId: string,
+    channel: ConversationChannel = "main",
+  ): ConversationMessageDto[] {
+    return this.conversationProjection.getMessages(conversationId, channel);
   }
 
-  /**
-   * Materialize a project-chat timeline from canonical communication events
-   * and their projection ledger.
-   */
   getProjectedConversationMessages(
     conversationId: string,
     channel: ConversationChannel = "main",
     limit?: number,
   ): ConversationMessageDto[] {
-    const master = this.getConversation(conversationId);
-    if (!master) return [];
-    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId, limit);
-    return this.projectedConversationMessageDtos(conversationId, projected, channel !== "collaboration");
+    return this.conversationProjection.getProjectedMessages(conversationId, channel, limit);
   }
 
-  /** Full canonical room history for provider context, without UI-only file-activity hydration. */
   getCanonicalConversationContextMessages(
     conversationId: string,
     channel: ConversationChannel = "main",
   ): ConversationMessageDto[] {
-    const master = this.getConversation(conversationId);
-    if (!master) return [];
-    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    const projected = this.readProjectedCommunicationMessages(master.projectId, surface, conversationId);
-    return this.projectedConversationMessageDtos(conversationId, projected, false);
+    return this.conversationProjection.getCanonicalContextMessages(conversationId, channel);
   }
 
-  /** Newest canonical organizational messages for bounded provider/context
-   * selection. The keyset is the public `(createdAt, stable message ID)` order,
-   * independent of delivery timestamps used by the UI timeline. */
   getOrganizationalConversationContextSourcePage(
     conversationId: string,
     input: { limit: number; before?: ContextReadBoundary; excludeCommunicationEventId?: string },
   ): ContextSourcePage<ConversationMessageDto> {
-    const master = this.getConversation(conversationId);
-    if (!master) return { items: [], hasMore: false };
-    const limit = Math.max(1, Math.min(input.limit, 100));
-    const rows = this.client.prepare(`
-      SELECT communication_event_id AS eventId, timestamp AS createdAt, message_id AS messageId
-      FROM chat_search_messages
-      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
-        AND context_policy = 'organizational'
-        ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
-        ${input.before ? "AND (timestamp < ? OR (timestamp = ? AND message_id < ?))" : ""}
-      ORDER BY timestamp DESC, message_id DESC LIMIT ?
-    `).all(...[
-      master.projectId,
-      conversationId,
-      ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
-      ...(input.before ? [input.before.createdAt, input.before.createdAt, input.before.id] : []),
-      limit + 1,
-    ]) as Array<{ eventId: string; createdAt: string; messageId: string }>;
-    const selected = rows.slice(0, limit);
-    const index = this.projectionIndex(master.projectId);
-    const projected = selected.flatMap((row) => {
-      const projection = index.byTuple.get(`${row.eventId}\u0000conversation\u0000${conversationId}`);
-      return projection ? [projection] : [];
-    });
-    return {
-      hasMore: rows.length > limit,
-      items: this.projectedConversationMessageDtos(
-        conversationId,
-        this.materializeProjectedCommunicationMessages(master.projectId, projected),
-        false,
-      ).sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id)),
-    };
+    return this.conversationProjection.getOrganizationalContextSourcePage(conversationId, input);
   }
 
-  /** FIFO organizational delta after one previously accepted delivery cursor.
-   * The lookup and source page are both indexed; a missing cursor target is
-   * reported so the caller can deliberately reseed instead of skipping work. */
   getOrganizationalConversationDeltaPage(
     conversationId: string,
     input: { limit: number; afterMessageId?: string; excludeCommunicationEventId?: string },
   ): ContextSourcePage<ConversationMessageDto> & { cursorFound: boolean; latestMessageId?: string } {
-    const master = this.getConversation(conversationId);
-    if (!master) return { items: [], hasMore: false, cursorFound: false };
-    const limit = Math.max(1, Math.min(input.limit, 100));
-    const cursor = input.afterMessageId ? this.client.prepare(`
-      SELECT order_key AS orderKey, row_key AS rowKey FROM chat_search_messages
-      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
-        AND context_policy = 'organizational' AND message_id = ?
-      LIMIT 1
-    `).get(master.projectId, conversationId, input.afterMessageId) as { orderKey: string; rowKey: string } | undefined : undefined;
-    if (input.afterMessageId && !cursor) return { items: [], hasMore: false, cursorFound: false };
-    const latest = this.client.prepare(`
-      SELECT message_id AS messageId FROM chat_search_messages
-      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
-        AND context_policy = 'organizational'
-      ORDER BY order_key DESC, row_key DESC LIMIT 1
-    `).get(master.projectId, conversationId) as { messageId: string } | undefined;
-    const rows = this.client.prepare(`
-      SELECT communication_event_id AS eventId
-      FROM chat_search_messages
-      WHERE project_id = ? AND chat_kind = 'conversation' AND chat_id = ?
-        AND context_policy = 'organizational'
-        ${input.excludeCommunicationEventId ? "AND communication_event_id <> ?" : ""}
-        ${cursor ? "AND (order_key > ? OR (order_key = ? AND row_key > ?))" : ""}
-      ORDER BY order_key, row_key LIMIT ?
-    `).all(...[
-      master.projectId,
-      conversationId,
-      ...(input.excludeCommunicationEventId ? [input.excludeCommunicationEventId] : []),
-      ...(cursor ? [cursor.orderKey, cursor.orderKey, cursor.rowKey] : []),
-      limit + 1,
-    ]) as Array<{ eventId: string }>;
-    const selected = rows.slice(0, limit);
-    const index = this.projectionIndex(master.projectId);
-    const projected = selected.flatMap((row) => {
-      const projection = index.byTuple.get(`${row.eventId}\u0000conversation\u0000${conversationId}`);
-      return projection ? [projection] : [];
-    });
-    return {
-      cursorFound: true,
-      hasMore: rows.length > limit,
-      ...(latest ? { latestMessageId: latest.messageId } : {}),
-      items: this.projectedConversationMessageDtos(
-        conversationId,
-        this.materializeProjectedCommunicationMessages(master.projectId, projected),
-        false,
-      ),
-    };
+    return this.conversationProjection.getOrganizationalDeltaPage(conversationId, input);
   }
 
   getProjectedConversationMessagePage(
@@ -1806,17 +1719,7 @@ export class AgentStore {
     channel: ConversationChannel,
     input: { limit: number; cursor?: string; focusId?: string },
   ): { messages: ConversationMessageDto[]; hasMore: boolean; cursor?: string } {
-    const master = this.getConversation(conversationId);
-    if (!master) return { messages: [], hasMore: false };
-    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    const page = this.readProjectedCommunicationMessagePage(master.projectId, surface, conversationId, input);
-    return {
-      ...page,
-      // Team Chat renders communication and operational state, not per-Run file
-      // summaries. Hydrating every author's full file history made this page
-      // scale with organization size rather than its bounded message window.
-      messages: this.projectedConversationMessageDtos(conversationId, page.messages, channel !== "collaboration"),
-    };
+    return this.conversationProjection.getMessagePage(conversationId, channel, input);
   }
 
   getProjectedConversationMessageById(
@@ -1824,96 +1727,7 @@ export class AgentStore {
     channel: ConversationChannel,
     id: string,
   ): ConversationMessageDto | undefined {
-    const master = this.getConversation(conversationId);
-    if (!master) return undefined;
-    const chatKind = channel === "collaboration" ? "collaboration" : "conversation";
-    const surface = channel === "collaboration" ? "collaboration_view" : "conversation";
-    const row = this.client.prepare(`
-      SELECT communication_event_id AS eventId FROM chat_search_messages
-      WHERE project_id = ? AND chat_kind = ? AND chat_id = ?
-        AND (message_id = ? OR communication_event_id = ?)
-      ORDER BY order_key DESC, row_key DESC LIMIT 1
-    `).get(master.projectId, chatKind, conversationId, id, id) as { eventId: string } | undefined;
-    if (!row) return undefined;
-    const projection = this.projectionIndex(master.projectId).byTuple.get(
-      `${row.eventId}\u0000${surface}\u0000${conversationId}`,
-    );
-    if (!projection) return undefined;
-    return this.projectedConversationMessageDtos(
-      conversationId,
-      this.materializeProjectedCommunicationMessages(master.projectId, [projection]),
-    )[0];
-  }
-
-  private projectedConversationMessageDtos(
-    conversationId: string,
-    projected: ProjectedCommunicationMessage[],
-    includeFileActivity = true,
-  ): ConversationMessageDto[] {
-    const correctedBy = new Map(projected.flatMap((message) => message.correctionOfEventId ? [[message.correctionOfEventId, message.messageId] as const] : []));
-    const runsByAgent = new Map<string, AgentRunDto[]>();
-    const statusByAgentExecution = new Map<string, ResponseFileActivityDto["status"]>();
-    const executionScopeByAgentAndStatus = new Map<string, {
-      agentId: string;
-      status: ResponseFileActivityDto["status"];
-      executionIds: Set<string>;
-    }>();
-    if (includeFileActivity) for (const message of projected) {
-      if (!message.authorAgentId || !message.executionId || !this.getAgent(message.authorAgentId)) continue;
-      const runs = runsByAgent.get(message.authorAgentId) ?? this.getRuns(message.authorAgentId);
-      runsByAgent.set(message.authorAgentId, runs);
-      const status: ResponseFileActivityDto["status"] = runs.some((run) =>
-        run.id === message.executionId && (run.status === "running" || run.status === "compacting")
-      ) ? "in_progress" : "completed";
-      const agentExecutionKey = `${message.authorAgentId}\0${message.executionId}`;
-      statusByAgentExecution.set(agentExecutionKey, status);
-      const scopeKey = `${message.authorAgentId}:${status}`;
-      const scope = executionScopeByAgentAndStatus.get(scopeKey) ?? {
-        agentId: message.authorAgentId,
-        status,
-        executionIds: new Set<string>(),
-      };
-      scope.executionIds.add(message.executionId);
-      executionScopeByAgentAndStatus.set(scopeKey, scope);
-    }
-    const activityByAgentAndStatus = new Map(
-      [...executionScopeByAgentAndStatus].map(([scopeKey, scope]) => [
-        scopeKey,
-        this.fileActivity.byExecution(
-          scope.agentId,
-          scope.status,
-          scope.executionIds,
-        ),
-      ] as const),
-    );
-    return projected.map((message) => {
-      let fileActivity: ResponseFileActivityDto[] | undefined;
-      if (includeFileActivity && message.authorAgentId && message.executionId) {
-        const status = statusByAgentExecution.get(`${message.authorAgentId}\0${message.executionId}`);
-        if (status) {
-          const cacheKey = `${message.authorAgentId}:${status}`;
-          fileActivity = activityByAgentAndStatus.get(cacheKey)?.get(message.executionId);
-        }
-      }
-      return {
-        id: message.messageId,
-        communicationEventId: message.eventId,
-        conversationId,
-        role: message.role,
-        text: message.text,
-        createdAt: message.createdAt,
-        canonicalOrderKey: message.orderKey ?? message.createdAt,
-        ...(message.authorAgentId ? { authorAgentId: message.authorAgentId } : {}),
-        ...(message.attachments?.length ? { attachments: message.attachments } : {}),
-        ...(message.document ? { document: message.document } : {}),
-        ...(message.citations?.length ? { citations: message.citations } : {}),
-        ...(message.executionId ? { executionId: message.executionId } : {}),
-        ...(fileActivity?.length ? { fileActivity } : {}),
-        ...(message.correctionOfEventId ? { correctionOfMessageId: message.correctionOfEventId } : {}),
-        ...(correctedBy.has(message.eventId) ? { correctedByMessageId: correctedBy.get(message.eventId) } : {}),
-        ...(message.editedAt ? { editedAt: message.editedAt, editRevision: message.editRevision } : {}),
-      };
-    });
+    return this.conversationProjection.getMessageById(conversationId, channel, id);
   }
 
   // ─── Agents ───────────────────────────────────────────────────────────────
