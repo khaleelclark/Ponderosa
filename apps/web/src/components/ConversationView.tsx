@@ -76,7 +76,7 @@ import {
   managerBroadcastText,
   uploadFilesForRecipients,
 } from "../conversationRouting";
-import { ResponseFileActivity } from "./activity/ActivityPane";
+import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,

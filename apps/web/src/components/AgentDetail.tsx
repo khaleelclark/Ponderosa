@@ -94,7 +94,7 @@ import {
   resolveRuntimeSelection,
   runtimeControlState,
 } from "../conversationEngine";
-import { ActivityPane } from "./activity/ActivityPane";
+import { ActivityStreamPane } from "./activity/ActivityStreamPane";
 import { ArtifactsPane } from "./filePreview/ArtifactsPane";
 import { ChatPane } from "./chat/ChatPane";
 import { Composer } from "./chat/Composer";
@@ -1755,7 +1755,8 @@ export function AgentDetail({
       </Box>
     ),
     activity: (
-      <ActivityPane
+      <ActivityStreamPane
+        agentId={agentId}
         activity={detail.activity}
         runOutput={detail.runOutput}
         runs={detail.runs}
@@ -1769,6 +1770,10 @@ export function AgentDetail({
             : undefined
         }
         projectId={detail.agent.projectId}
+        projectRoot={project?.hostPath}
+        hasEarlier={hasOlderTelemetry}
+        loadingEarlier={loadingOlder}
+        onLoadEarlier={() => void loadOlderTelemetry()}
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
         onViewAll={() => onOpenReview()}
@@ -2066,12 +2071,12 @@ export function AgentDetail({
                 tab === "activity" || tab === "technical" ? "hidden" : "auto",
               outlineOffset: -2,
               display: "grid",
-              gridTemplateRows: hasOlderTelemetry
+              gridTemplateRows: hasOlderTelemetry && tab !== "activity"
                 ? "auto minmax(0, 1fr)"
                 : "minmax(0, 1fr)",
             }}
           >
-            {hasOlderTelemetry ? (
+            {hasOlderTelemetry && tab !== "activity" ? (
               <Button
                 size="small"
                 color="inherit"
@@ -2081,9 +2086,7 @@ export function AgentDetail({
               >
                 {loadingOlder
                   ? "Loading…"
-                  : tab === "activity"
-                    ? "Load Earlier Activity"
-                    : "Load Earlier Records"}
+                  : "Load Earlier Records"}
               </Button>
             ) : null}
             {tab === "settings" ? renderSettingsPane() : panes[tab]}

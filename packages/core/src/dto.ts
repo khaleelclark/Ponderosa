@@ -1311,6 +1311,13 @@ export interface AgentRunDto {
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
+  /** Whole-Run activity totals, independent of the loaded telemetry window. */
+  activityCounts?: {
+    commands: number;
+    tools: number;
+    files: number;
+    errors: number;
+  };
   /** Hash and sources of the exact text Ponderosa submitted to the provider. */
   providerInput?: {
     promptHash: string;
@@ -1615,8 +1622,23 @@ export interface RunOutputDto {
   sourceSeqStart: number;
   sourceSeqEnd: number;
   createdAt: string;
+  /** Present only when `text` is a bounded preview of a larger canonical segment. */
+  textPreview?: {
+    truncated: true;
+    previewUtf8Bytes: number;
+    totalUtf8Bytes: number;
+    retrievalUrl: string;
+  };
   /** Canonical file changes attributed to this exact Run, never a working-tree snapshot. */
   fileActivity?: ResponseFileActivityDto[];
+}
+
+export interface RunOutputTextDto {
+  agentId: string;
+  runOutputId: string;
+  seq: number;
+  text: string;
+  totalUtf8Bytes: number;
 }
 
 export interface AgentCoordinationV3Dto {

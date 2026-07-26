@@ -10891,6 +10891,28 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
+  app.get<{ Params: { id: string; seq: string } }>(
+    "/api/agents/:id/run-output/:seq/text",
+    async (request, reply) => {
+      if (!store.getAgentDetail(request.params.id, 1, false)) {
+        return reply.code(404).send({ error: "agent not found" });
+      }
+      const seq = Number(request.params.seq);
+      if (!Number.isSafeInteger(seq) || seq < 1) {
+        return reply.code(400).send({ error: "invalid run output sequence" });
+      }
+      try {
+        return store.getRunOutputText(request.params.id, seq)
+          ?? reply.code(404).send({ error: "run output segment not found" });
+      } catch (error) {
+        if (error instanceof RangeError) {
+          return reply.code(413).send({ error: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
     const root = store.getAgent(request.params.id);
     if (!root) return reply.code(404).send({ error: "agent not found" });

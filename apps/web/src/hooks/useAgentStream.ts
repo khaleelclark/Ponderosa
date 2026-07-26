@@ -95,6 +95,23 @@ function mergeLiveResponseFileActivity(
     : [...files, next];
 }
 
+function attachFileActivityToLastResponse(
+  runOutput: RunOutputDto[],
+  executionId: string,
+  files: ResponseFileActivityDto[],
+): RunOutputDto[] {
+  const lastResponse = [...runOutput].reverse().find(
+    (entry) => entry.executionId === executionId && entry.kind === "response",
+  );
+  if (!lastResponse || files.length === 0) return runOutput;
+  return runOutput.map((entry) => {
+    if (entry.executionId !== executionId || entry.kind !== "response") return entry;
+    if (entry.id === lastResponse.id) return { ...entry, fileActivity: files };
+    const { fileActivity: _fileActivity, ...withoutFileActivity } = entry;
+    return withoutFileActivity;
+  });
+}
+
 function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: AgentDetailDto): AgentDetailDto {
   const { event, seq, ts } = envelope;
 
@@ -139,6 +156,28 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
           : [...changedFiles, changed],
       };
     }
+    if (currentExecutionId) {
+      const runActivity = (detail.activity ?? []).filter(
+        (item) => item.executionId === currentExecutionId,
+      );
+      const activityCounts = {
+        commands: runActivity.filter((item) => item.event.type === "command").length,
+        tools: runActivity.filter((item) => item.event.type === "tool_call").length,
+        files: new Set(runActivity.flatMap((item) =>
+          item.event.type === "file_change" ? [item.event.path] : [])).size,
+        errors: runActivity.filter((item) => item.event.type === "error").length,
+      };
+      detail = {
+        ...detail,
+        runs: detail.runs.map((run) =>
+          run.id === currentExecutionId ? { ...run, activityCounts } : run),
+      };
+    }
+    detail = {
+      ...detail,
+      runOutput: compactDefined(detail.runOutput ?? []).map((entry) =>
+        entry.completed ? entry : { ...entry, completed: true }),
+    };
   }
 
   if (event.type === "text" || event.type === "reasoning") {
@@ -146,22 +185,13 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const runOutput = compactDefined(detail.runOutput ?? []);
     const executionId = event.executionId ?? `live:${seq}`;
     const kind = event.type === "reasoning" ? "reasoning" : "response";
-    const id = `live-runOutput:${executionId}:${kind}`;
-    const existing = runOutput.find((entry) => entry.id === id);
-    const canonicalFileActivity = (detail.activity ?? [])
-      .filter((item) => item.executionId === executionId && item.event.type === "file_change")
-      .reduce<ResponseFileActivityDto[]>((files, item) => mergeLiveResponseFileActivity(
-        files,
-        item.event as Extract<AgentEvent, { type: "file_change" }>,
-        item.seq,
-        projectedArtifactId(agentId, item.seq),
-      ), []);
+    const existing = [...runOutput].reverse().find((entry) =>
+      !entry.completed && entry.executionId === executionId && entry.kind === kind);
+    const id = existing?.id ?? `${agentId}:runOutput:${seq}`;
     const next: RunOutputDto = existing ? {
       ...existing,
       text: `${existing.text}${event.delta}`,
-      seq,
       sourceSeqEnd: seq,
-      ...(kind === "response" && canonicalFileActivity.length ? { fileActivity: canonicalFileActivity } : {}),
     } : {
       id,
       agentId,
@@ -173,21 +203,26 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
       sourceSeqStart: seq,
       sourceSeqEnd: seq,
       createdAt: ts,
-      ...(kind === "response" && canonicalFileActivity.length ? { fileActivity: canonicalFileActivity } : {}),
     };
+    const closed = runOutput.map((entry) =>
+      entry.completed || entry.id === existing?.id ? entry : { ...entry, completed: true });
+    const nextRunOutput = existing
+        ? closed.map((entry) => entry.id === id ? next : entry)
+        : [...closed, next];
+    const priorFileActivity = kind === "response"
+      ? [...runOutput].reverse().find((entry) =>
+          entry.executionId === executionId && entry.kind === "response")?.fileActivity
+      : undefined;
     return {
       ...detail,
-      runOutput: existing
-        ? runOutput.map((entry) => entry.id === id ? next : entry)
-        : [...runOutput, next],
+      runOutput: priorFileActivity?.length
+        ? attachFileActivityToLastResponse(nextRunOutput, executionId, priorFileActivity)
+        : nextRunOutput,
     };
   }
 
   if (event.type === "agent_output") {
     const runOutput = compactDefined(detail.runOutput ?? []);
-    const liveEntry = runOutput.find((item) =>
-      item.executionId === event.executionId && item.kind === "response" && !item.completed
-    );
     const canonicalFileActivity = (detail.activity ?? [])
       .filter((item) => item.executionId === event.executionId && item.event.type === "file_change")
       .reduce<ResponseFileActivityDto[]>((files, item) => mergeLiveResponseFileActivity(
@@ -197,28 +232,13 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
         projectedArtifactId(agentId, item.seq),
       ), [])
       .map((file) => ({ ...file, status: "completed" as const }));
-    const entry: RunOutputDto = {
-      id: `${agentId}:runOutput:${seq}`,
-      agentId,
-      executionId: event.executionId,
-      kind: "response",
-      text: event.text,
-      completed: true,
-      seq,
-      sourceSeqStart: event.sourceSeqStart,
-      sourceSeqEnd: event.sourceSeqEnd,
-      createdAt: ts,
-      ...(canonicalFileActivity.length
-        ? { fileActivity: canonicalFileActivity }
-        : liveEntry?.fileActivity?.length
-          ? { fileActivity: liveEntry.fileActivity.map((file) => ({ ...file, status: "completed" as const })) }
-          : {}),
-    };
-    if (runOutput.some((item) => item.id === entry.id)) return detail;
     return {
       ...detail,
-      runOutput: [...runOutput.filter((item) => !(item.executionId === event.executionId && item.kind === "response" && !item.completed)), entry]
-        .sort((a, b) => a.seq - b.seq),
+      runOutput: attachFileActivityToLastResponse(
+        runOutput,
+        event.executionId,
+        canonicalFileActivity,
+      ),
     };
   }
 
@@ -286,11 +306,17 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
       createdAt: ts,
       ...(isPdf ? { mediaType: "application/pdf" as const } : {}),
     };
-    const runOutput = compactDefined(detail.runOutput ?? []).map((entry) =>
-      entry.kind === "response" && !entry.completed && entry.executionId === artifact.executionId
-        ? { ...entry, fileActivity: mergeLiveResponseFileActivity(entry.fileActivity, event, seq, canonicalArtifactId) }
-        : entry
-    );
+    const currentRunOutput = compactDefined(detail.runOutput ?? []);
+    const existingFileActivity = [...currentRunOutput].reverse().find(
+      (entry) => entry.kind === "response" && entry.executionId === artifact.executionId,
+    )?.fileActivity;
+    const runOutput = artifact.executionId
+      ? attachFileActivityToLastResponse(
+          currentRunOutput,
+          artifact.executionId,
+          mergeLiveResponseFileActivity(existingFileActivity, event, seq, canonicalArtifactId),
+        )
+      : currentRunOutput;
     return { ...detail, artifacts: [...artifacts, artifact], runOutput };
   }
 

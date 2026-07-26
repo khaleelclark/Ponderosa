@@ -156,6 +156,19 @@ interface ActivityProjectionReadRow {
   output_sha256: string | null;
 }
 
+interface RunOutputEventRow {
+  seq: number;
+  payload_json: string;
+  created_at: string;
+}
+
+interface RunOutputSegmentRow {
+  first_seq: number;
+  last_seq: number;
+  event_type: "text" | "reasoning";
+  execution_id: string;
+}
+
 interface ArtifactProjectionReadRow {
   id: string;
   agent_id: string;
@@ -172,11 +185,18 @@ interface ArtifactProjectionReadRow {
 }
 
 const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
+const RUN_OUTPUT_TEXT_PREVIEW_BYTES = 32 * 1_024;
+const RUN_OUTPUT_TEXT_MAX_BYTES = 8 * 1_024 * 1_024;
 const ACTIVITY_EVENT_TYPES = new Set([
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
   "context_rollover_triggered",
 ]);
+const RUN_OUTPUT_BREAKING_TYPES = [
+  "command", "tool_call", "tool_result", "file_change", "test_result", "error",
+  "browser_session", "browser_action", "browser_console", "browser_screenshot",
+  "context_rollover_triggered",
+] as const;
 
 function healthObservation(event: LogEvent, timestamp: string): {
   status: AgentLifecycleStatus;
@@ -2971,30 +2991,162 @@ export class AgentStore {
       });
   }
 
-  /** Completed ordinary responses are read only from canonical agent_output records. */
-  getRunOutputs(agentId: string): RunOutputDto[] {
-    const entries: RunOutputDto[] = [];
-    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed");
-    for (const stored of this.readEvents(agentId)) {
-      const { event } = stored;
-      if (event.type === "agent_output" && event.text.trim()) {
-        const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
-        entries.push({
-          id: `${agentId}:runOutput:${stored.seq}`,
-          agentId,
-          executionId: event.executionId,
-          kind: "response",
-          text: event.text,
-          completed: true,
-          seq: stored.seq,
-          sourceSeqStart: event.sourceSeqStart,
-          sourceSeqEnd: event.sourceSeqEnd,
-          createdAt: stored.ts,
-          ...(fileActivity.length ? { fileActivity } : {}),
-        });
+  private runOutputSegmentRows(
+    agentId: string,
+    input?: { beforeSeq?: number; endingAtSeq?: number; limit?: number },
+  ): RunOutputSegmentRow[] {
+    const breakingTypes = RUN_OUTPUT_BREAKING_TYPES.map((type) => `'${type}'`).join(", ");
+    const limit = input?.limit === undefined ? "" : "LIMIT ?";
+    const rows = this.client.prepare(`
+      WITH visible AS (
+        SELECT seq, type, payload_json,
+          json_extract(payload_json, '$.executionId') AS execution_id
+        FROM events
+        WHERE agent_id = ?
+          AND type IN ('text', 'reasoning', ${breakingTypes})
+      ),
+      annotated AS (
+        SELECT *,
+          lag(type) OVER (ORDER BY seq) AS previous_type,
+          lag(execution_id) OVER (ORDER BY seq) AS previous_execution_id
+        FROM visible
+      ),
+      marked AS (
+        SELECT *,
+          CASE
+            WHEN type IN ('text', 'reasoning')
+              AND type = previous_type
+              AND execution_id IS previous_execution_id
+            THEN 0
+            WHEN type IN ('text', 'reasoning') THEN 1
+            ELSE 0
+          END AS starts_segment
+        FROM annotated
+      ),
+      grouped AS (
+        SELECT *,
+          sum(starts_segment) OVER (ORDER BY seq) AS segment_number
+        FROM marked
+      ),
+      segments AS (
+        SELECT
+          min(seq) AS first_seq,
+          max(seq) AS last_seq,
+          min(type) AS event_type,
+          min(execution_id) AS execution_id
+        FROM grouped
+        WHERE type IN ('text', 'reasoning') AND execution_id IS NOT NULL
+        GROUP BY segment_number
+      )
+      SELECT first_seq, last_seq, event_type, execution_id
+      FROM segments
+      WHERE 1 = 1
+        ${input?.beforeSeq === undefined ? "" : "AND first_seq < ?"}
+        ${input?.endingAtSeq === undefined ? "" : "AND first_seq <= ?"}
+      ORDER BY first_seq DESC
+      ${limit}
+    `);
+    const parameters: Array<string | number> = [agentId];
+    if (input?.beforeSeq !== undefined) parameters.push(input.beforeSeq);
+    if (input?.endingAtSeq !== undefined) parameters.push(input.endingAtSeq);
+    if (input?.limit !== undefined) parameters.push(input.limit);
+    return rows.all(...parameters) as RunOutputSegmentRow[];
+  }
+
+  private materializeRunOutputSegments(
+    agentId: string,
+    segmentRows: RunOutputSegmentRow[],
+  ): RunOutputDto[] {
+    if (segmentRows.length === 0) return [];
+    const orderedSegments = [...segmentRows].sort((a, b) => a.first_seq - b.first_seq);
+    const eventRows = this.client.prepare(`
+      SELECT seq, payload_json, created_at
+      FROM events
+      WHERE agent_id = ? AND type IN ('text', 'reasoning')
+        AND seq BETWEEN ? AND ?
+      ORDER BY seq
+    `);
+    const byStart = new Map<number, RunOutputDto>();
+    for (const segment of orderedSegments) {
+      const previewParts: string[] = [];
+      let previewUtf8Bytes = 0;
+      let rawUtf8Bytes = 0;
+      let canonicalUtf8Bytes = 0;
+      let createdAt = "";
+      for (const row of eventRows.iterate(
+        agentId,
+        segment.first_seq,
+        segment.last_seq,
+      ) as IterableIterator<RunOutputEventRow>) {
+        const event = JSON.parse(row.payload_json) as LogEvent;
+        if ((event.type === "text" || event.type === "reasoning") &&
+            event.executionId === segment.execution_id) {
+          createdAt ||= row.created_at;
+          const deltaUtf8Bytes = Buffer.byteLength(event.delta, "utf8");
+          const trimmedDelta = event.delta.trimEnd();
+          if (trimmedDelta) {
+            canonicalUtf8Bytes = rawUtf8Bytes + Buffer.byteLength(trimmedDelta, "utf8");
+          }
+          rawUtf8Bytes += deltaUtf8Bytes;
+          if (previewUtf8Bytes < RUN_OUTPUT_TEXT_PREVIEW_BYTES) {
+            const part = utf8Prefix(
+              event.delta,
+              RUN_OUTPUT_TEXT_PREVIEW_BYTES - previewUtf8Bytes,
+            );
+            previewParts.push(part);
+            previewUtf8Bytes += Buffer.byteLength(part, "utf8");
+          }
+        }
       }
+      if (canonicalUtf8Bytes === 0) continue;
+      const preview = previewParts.join("");
+      const text = canonicalUtf8Bytes <= previewUtf8Bytes
+        ? utf8Prefix(preview, canonicalUtf8Bytes).trimEnd()
+        : preview;
+      previewUtf8Bytes = Buffer.byteLength(text, "utf8");
+      byStart.set(segment.first_seq, {
+        id: `${agentId}:runOutput:${segment.first_seq}`,
+        agentId,
+        executionId: segment.execution_id,
+        kind: segment.event_type === "reasoning" ? "reasoning" : "response",
+        text,
+        completed: true,
+        seq: segment.first_seq,
+        sourceSeqStart: segment.first_seq,
+        sourceSeqEnd: segment.last_seq,
+        createdAt,
+        ...(previewUtf8Bytes < canonicalUtf8Bytes ? {
+          textPreview: {
+            truncated: true,
+            previewUtf8Bytes,
+            totalUtf8Bytes: canonicalUtf8Bytes,
+            retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/run-output/${segment.first_seq}/text`,
+          },
+        } : {}),
+      });
     }
-    return entries.sort((a, b) => a.seq - b.seq);
+    const items = [...byStart.values()];
+    const executionIds = new Set(items.map((item) => item.executionId));
+    const fileActivityByExecution = this.responseFileActivityByExecution(
+      agentId,
+      "completed",
+      executionIds,
+    );
+    const lastResponseByExecution = new Map<string, number>();
+    for (const segment of this.runOutputSegmentRows(agentId)) {
+      if (segment.event_type !== "text" || lastResponseByExecution.has(segment.execution_id)) continue;
+      lastResponseByExecution.set(segment.execution_id, segment.first_seq);
+    }
+    return items.map((item) => {
+      if (item.kind !== "response" || lastResponseByExecution.get(item.executionId) !== item.seq) return item;
+      const fileActivity = fileActivityByExecution.get(item.executionId) ?? [];
+      return fileActivity.length ? { ...item, fileActivity } : item;
+    });
+  }
+
+  /** Durable response/reasoning segments interleaved by canonical event sequence. */
+  getRunOutputs(agentId: string): RunOutputDto[] {
+    return this.materializeRunOutputSegments(agentId, this.runOutputSegmentRows(agentId));
   }
 
   private eventSeqBoundary(cursor: string | undefined, stream: string, agentId: string): number | undefined {
@@ -3021,43 +3173,39 @@ export class AgentStore {
     const limit = Math.max(1, Math.min(input.limit, 500));
     if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
     const focusSeq = this.eventSeqFocus(input.focusId, "runOutput", agentId);
-    const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
-    const rows = this.client.prepare(`
-      SELECT seq, payload_json, created_at
-      FROM events
-      WHERE agent_id = ? AND type = 'agent_output' ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
-      ORDER BY seq DESC LIMIT ?
-    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
-      seq: number; payload_json: string; created_at: string;
-    }>;
-    if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
-      return { items: [], history: { limit, hasMore: false } };
+    const boundary = this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
+    let endingAtSeq: number | undefined;
+    if (focusSeq !== undefined) {
+      const allSegments = this.runOutputSegmentRows(agentId);
+      let containing = allSegments.find(
+        (segment) => segment.first_seq <= focusSeq && segment.last_seq >= focusSeq,
+      );
+      if (!containing) {
+        const legacy = this.client.prepare(`
+          SELECT payload_json FROM events
+          WHERE agent_id = ? AND seq = ? AND type = 'agent_output'
+        `).get(agentId, focusSeq) as { payload_json: string } | undefined;
+        if (legacy) {
+          const event = JSON.parse(legacy.payload_json) as LogEvent;
+          if (event.type === "agent_output") {
+            containing = allSegments.find(
+              (segment) => segment.first_seq <= event.sourceSeqEnd &&
+                segment.last_seq >= event.sourceSeqEnd,
+            );
+          }
+        }
+      }
+      if (!containing) return { items: [], history: { limit, hasMore: false } };
+      endingAtSeq = containing.first_seq;
     }
+    const rows = this.runOutputSegmentRows(agentId, {
+      ...(boundary !== undefined ? { beforeSeq: boundary } : {}),
+      ...(endingAtSeq !== undefined ? { endingAtSeq } : {}),
+      limit: limit + 1,
+    });
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
-    const executionIds = new Set(selected.flatMap((row) => {
-      const event = JSON.parse(row.payload_json) as LogEvent;
-      return event.type === "agent_output" ? [event.executionId] : [];
-    }));
-    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed", executionIds);
-    const items = selected.flatMap((row) => {
-      const event = JSON.parse(row.payload_json) as LogEvent;
-      if (event.type !== "agent_output" || !event.text.trim()) return [];
-      const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
-      return [{
-        id: `${agentId}:runOutput:${row.seq}`,
-        agentId,
-        executionId: event.executionId,
-        kind: "response" as const,
-        text: event.text,
-        completed: true,
-        seq: row.seq,
-        sourceSeqStart: event.sourceSeqStart,
-        sourceSeqEnd: event.sourceSeqEnd,
-        createdAt: row.created_at,
-        ...(fileActivity.length ? { fileActivity } : {}),
-      }];
-    }).reverse();
+    const items = this.materializeRunOutputSegments(agentId, selected);
     const oldest = selected.at(-1);
     return {
       items,
@@ -3067,10 +3215,47 @@ export class AgentStore {
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
             stream: "agent:runOutput", scope: agentId,
-            orderKey: String(oldest.seq), rowKey: String(oldest.seq),
+            orderKey: String(oldest.first_seq), rowKey: String(oldest.first_seq),
           }),
         } : {}),
       },
+    };
+  }
+
+  getRunOutputText(agentId: string, seq: number): {
+    agentId: string;
+    runOutputId: string;
+    seq: number;
+    text: string;
+    totalUtf8Bytes: number;
+  } | undefined {
+    const segment = this.runOutputSegmentRows(agentId).find((row) => row.first_seq === seq);
+    if (!segment) return undefined;
+    const item = this.materializeRunOutputSegments(agentId, [segment])[0];
+    if (!item) return undefined;
+    const boundedTotal = item.textPreview?.totalUtf8Bytes ?? Buffer.byteLength(item.text, "utf8");
+    if (boundedTotal > RUN_OUTPUT_TEXT_MAX_BYTES) {
+      throw new RangeError("run output segment exceeds the 8 MiB retrieval limit");
+    }
+    const rows = this.client.prepare(`
+      SELECT payload_json
+      FROM events
+      WHERE agent_id = ? AND type IN ('text', 'reasoning')
+        AND seq BETWEEN ? AND ?
+      ORDER BY seq
+    `).all(agentId, segment.first_seq, segment.last_seq) as Array<{ payload_json: string }>;
+    const text = rows.flatMap((row) => {
+      const event = JSON.parse(row.payload_json) as LogEvent;
+      return (event.type === "text" || event.type === "reasoning") &&
+        event.executionId === segment.execution_id ? [event.delta] : [];
+    }).join("").trimEnd();
+    const totalUtf8Bytes = Buffer.byteLength(text, "utf8");
+    return {
+      agentId,
+      runOutputId: `${agentId}:runOutput:${seq}`,
+      seq,
+      text,
+      totalUtf8Bytes,
     };
   }
 
@@ -3755,7 +3940,38 @@ export class AgentStore {
     };
   }
 
+  private runActivityCounts(agentId: string): Map<string, NonNullable<AgentRunDto["activityCounts"]>> {
+    const rows = this.client.prepare(`
+      SELECT execution_id, event_type,
+        CASE
+          WHEN event_type = 'file_change'
+          THEN COUNT(DISTINCT json_extract(event_json, '$.path'))
+          ELSE COUNT(*)
+        END AS n
+      FROM activity_projection
+      WHERE agent_id = ? AND execution_id IS NOT NULL
+        AND event_type IN ('command', 'tool_call', 'file_change', 'error')
+      GROUP BY execution_id, event_type
+    `).all(agentId) as Array<{ execution_id: string; event_type: string; n: number }>;
+    const counts = new Map<string, NonNullable<AgentRunDto["activityCounts"]>>();
+    for (const row of rows) {
+      const current = counts.get(row.execution_id) ?? {
+        commands: 0,
+        tools: 0,
+        files: 0,
+        errors: 0,
+      };
+      if (row.event_type === "command") current.commands = row.n;
+      else if (row.event_type === "tool_call") current.tools = row.n;
+      else if (row.event_type === "file_change") current.files = row.n;
+      else if (row.event_type === "error") current.errors = row.n;
+      counts.set(row.execution_id, current);
+    }
+    return counts;
+  }
+
   getRuns(agentId: string): AgentRunDto[] {
+    const activityCounts = this.runActivityCounts(agentId);
     return this.db
       .select()
       .from(runs)
@@ -3790,6 +4006,7 @@ export class AgentStore {
         startedAt: r.startedAt,
         updatedAt: r.updatedAt,
         completedAt: r.completedAt ?? undefined,
+        ...(activityCounts.get(r.id) ? { activityCounts: activityCounts.get(r.id) } : {}),
         ...(providerInput ? { providerInput: {
           promptHash: providerInput.prompt_hash,
           sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,
@@ -3827,6 +4044,7 @@ export class AgentStore {
     }>;
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
+    const activityCounts = this.runActivityCounts(agentId);
     const items = selected.map((row): AgentRunDto => {
       const providerInput = this.client.prepare(`
         SELECT prompt_hash, source_manifest_json FROM provider_inputs WHERE execution_id = ? AND agent_id = ?
@@ -3851,6 +4069,7 @@ export class AgentStore {
           : {}),
         startedAt: row.started_at, updatedAt: row.updated_at,
         ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+        ...(activityCounts.get(row.id) ? { activityCounts: activityCounts.get(row.id) } : {}),
         ...(providerInput ? { providerInput: {
           promptHash: providerInput.prompt_hash,
           sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,

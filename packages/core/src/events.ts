@@ -50,8 +50,8 @@ export type AgentEvent =
   | { type: "reasoning"; delta: string } // transient reasoning → Work log
   | { type: "tool_call"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; output: string; isError?: boolean }
-  | { type: "command"; command: string; cwd: string } // → Run activity / Artifact
-  | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string } // → Artifact
+  | { type: "command"; command: string; cwd: string; callId?: string } // → Run activity / Artifact
+  | { type: "file_change"; path: string; kind: FileChangeKind; diff?: string; callId?: string } // → Artifact
   | { type: "test_result"; passed: boolean; summary: string } // → Artifact
   | {
       type: "browser_session";
