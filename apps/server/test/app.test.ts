@@ -212,6 +212,67 @@ describe("server public API behavior", () => {
     })).statusCode).toBe(404);
   });
 
+  it("bounds host-folder browsing and creation to configured roots", async () => {
+    const browseRoot = mkdtempSync(path.join(tmpdir(), "ponderosa-server-browse-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "ponderosa-server-browse-outside-"));
+    extraDirectories.push(browseRoot, outside);
+    mkdirSync(path.join(browseRoot, "existing"));
+    await import("node:fs").then(({ symlinkSync }) => {
+      symlinkSync(outside, path.join(browseRoot, "outside-link"));
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      allowedBrowseRoots: [browseRoot],
+    });
+
+    const defaultBrowse = await app.inject({
+      method: "GET",
+      url: "/api/project-folders/browse",
+    });
+    expect(defaultBrowse.statusCode).toBe(200);
+    expect(defaultBrowse.json()).toEqual({
+      path: realpathSync(browseRoot),
+      root: realpathSync(browseRoot),
+      folders: [{
+        name: "existing",
+        hostPath: realpathSync(path.join(browseRoot, "existing")),
+      }],
+    });
+
+    const outsideBrowse = await app.inject({
+      method: "GET",
+      url: `/api/project-folders/browse?path=${encodeURIComponent(outside)}`,
+    });
+    expect(outsideBrowse.statusCode).toBe(400);
+    expect(outsideBrowse.json()).toEqual({
+      error: "path is outside configured browse roots",
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "new project" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toEqual({
+      name: "new project",
+      hostPath: realpathSync(path.join(browseRoot, "new project")),
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "new project" },
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "../escape" },
+    })).statusCode).toBe(400);
+  });
+
   it("rejects cross-origin mutations while accepting the same origin", async () => {
     const app = server();
     const rejected = await app.inject({
