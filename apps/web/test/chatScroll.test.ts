@@ -1,0 +1,102 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import {
+  individualChatSenderLabel,
+  chatMessageLayoutKey,
+} from "../src/components/chat/ChatMessages";
+import {
+  isChatNearBottom,
+  revealChatScrollbar,
+  ScrollToLatestButton,
+  scrollChatToBottom,
+} from "../src/components/chat/scroll";
+
+afterEach(() => vi.useRealTimers());
+
+describe("scrollChatToBottom", () => {
+  it("positions a chat viewport at the end of its content", () => {
+    const viewport = { scrollHeight: 840, scrollTop: 125 };
+
+    scrollChatToBottom(viewport);
+
+    expect(viewport.scrollTop).toBe(840);
+  });
+
+  it("keeps following messages while the reader is near the bottom", () => {
+    expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 460 })).toBe(true);
+  });
+
+  it("stops following messages when the reader scrolls up", () => {
+    expect(isChatNearBottom({ clientHeight: 500, scrollHeight: 1_000, scrollTop: 400 })).toBe(false);
+  });
+
+  it("offers an explicit return to the latest message only after scrolling away", () => {
+    expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: true, onClick: vi.fn() }))).toContain('aria-label="Jump to latest message"');
+    expect(renderToStaticMarkup(createElement(ScrollToLatestButton, { visible: false, onClick: vi.fn() }))).toBe("");
+  });
+
+  it("keeps a stable layout key across cache-array refreshes and changes it only for rendered growth", () => {
+    const message = { id: "message-1", text: "Hello", createdAt: "2026-07-18T00:00:00.000Z" };
+    expect(chatMessageLayoutKey([message])).toBe(chatMessageLayoutKey([{ ...message }]));
+    expect(chatMessageLayoutKey([message, { ...message, id: "message-2" }])).not.toBe(chatMessageLayoutKey([message]));
+    expect(chatMessageLayoutKey([{ ...message, text: "Hello again" }])).not.toBe(chatMessageLayoutKey([message]));
+  });
+});
+
+describe("scrollbar activity", () => {
+  it("reveals the reserved scrollbar while scrolling and softens it after activity stops", () => {
+    vi.useFakeTimers();
+    const classes = new Set<string>();
+    const viewport = {
+      classList: {
+        add: (name: string) => classes.add(name),
+        remove: (name: string) => classes.delete(name),
+      },
+    } as unknown as HTMLElement;
+
+    revealChatScrollbar(viewport);
+    expect(classes.has("is-scrolling")).toBe(true);
+
+    vi.advanceTimersByTime(699);
+    expect(classes.has("is-scrolling")).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(classes.has("is-scrolling")).toBe(false);
+  });
+
+  it("extends scrollbar visibility when scrolling continues", () => {
+    vi.useFakeTimers();
+    const classes = new Set<string>();
+    const viewport = {
+      classList: {
+        add: (name: string) => classes.add(name),
+        remove: (name: string) => classes.delete(name),
+      },
+    } as unknown as HTMLElement;
+
+    revealChatScrollbar(viewport);
+    vi.advanceTimersByTime(500);
+    revealChatScrollbar(viewport);
+    vi.advanceTimersByTime(500);
+    expect(classes.has("is-scrolling")).toBe(true);
+    vi.advanceTimersByTime(200);
+    expect(classes.has("is-scrolling")).toBe(false);
+  });
+});
+
+describe("individualChatSenderLabel", () => {
+  it("identifies messages sent by the current user", () => {
+    expect(individualChatSenderLabel("user", "Great Smoky Mountains")).toBe("You");
+  });
+
+  it("uses the full agent title without truncating copyable identity", () => {
+    const longTitle = "Agent — accessibility review / проверка / 完了 status with a very long delegated name";
+
+    expect(individualChatSenderLabel("assistant", longTitle)).toBe(longTitle);
+  });
+
+  it("trims incidental whitespace and provides an accessible fallback", () => {
+    expect(individualChatSenderLabel("assistant", "  Yellowstone  ")).toBe("Yellowstone");
+    expect(individualChatSenderLabel("assistant", "   ")).toBe("Agent");
+  });
+});
