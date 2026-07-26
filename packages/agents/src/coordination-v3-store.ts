@@ -36,6 +36,7 @@ import {
   isCommunicationAudience,
   isCommunicationEvent,
 } from "@ponderosa/core";
+import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
 
@@ -48,27 +49,6 @@ function triggerBudgetEndsAt(period: TriggerRunBudgetDto["period"], startedAt: s
   }
   start.setUTCDate(start.getUTCDate() + (period === "week" ? 7 : 1));
   return start.toISOString();
-}
-
-function inspectorJson(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  let rendered: string;
-  try {
-    rendered = JSON.stringify(JSON.parse(value));
-  } catch {
-    rendered = value;
-  }
-  return rendered.length > 4_000 ? `${rendered.slice(0, 4_000)}… (truncated in inspector)` : rendered;
-}
-
-function inspectorDetails(...values: Array<[string, unknown]>): Array<{ label: string; value: string }> {
-  return values.flatMap(([label, value]) => value === undefined || value === null || value === ""
-    ? []
-    : [{ label, value: typeof value === "string" ? value : JSON.stringify(value) }]);
-}
-
-function inspectorWakePolicy(value: CoordinationJoinWakePolicy): string {
-  return value === "each_result" ? "Each result" : "Final only";
 }
 
 export interface RunAuthorizationV3 {
