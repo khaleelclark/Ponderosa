@@ -19,6 +19,7 @@ import type { ActivityStreamEntry } from "./activityStream";
 import { ResponseFileActivity } from "./ResponseFileActivity";
 
 const ACTIVITY_TITLE_COLOR = "success.main";
+type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
 
 export function ActivityElapsed({
   startedAt,
@@ -142,23 +143,31 @@ export function CommandRow({
   </Row>;
 }
 
-export function CommandGroupRow({
+export function ActionGroupRow({
   entries,
   focusId,
   projectRoot,
 }: {
-  entries: Array<Extract<ActivityStreamEntry, { kind: "command" }>>;
+  entries: GroupedActionEntry[];
   focusId?: string;
   projectRoot?: string;
 }): JSX.Element {
-  const hasErrors = entries.some((entry) => entry.result?.isError);
+  const hasErrors = entries.some((entry) =>
+    (entry.kind === "command" || entry.kind === "tool") && entry.result?.isError);
   const containsFocus = entries.some((entry) => entry.id === focusId);
   const [expanded, setExpanded] = useState(hasErrors || containsFocus);
   useEffect(() => {
     if (hasErrors || containsFocus) setExpanded(true);
   }, [containsFocus, hasErrors]);
-  const failureCount = entries.filter((entry) => entry.result?.isError).length;
-  return <Box data-activity-kind="command_group">
+  const failureCount = entries.filter((entry) =>
+    (entry.kind === "command" || entry.kind === "tool") && entry.result?.isError).length;
+  const commandCount = entries.filter((entry) => entry.kind === "command").length;
+  const toolCount = entries.filter((entry) => entry.kind === "tool").length;
+  const summary = [
+    ...(commandCount ? [`Ran ${commandCount} command${commandCount === 1 ? "" : "s"}`] : []),
+    ...(toolCount ? [`Used ${toolCount} tool${toolCount === 1 ? "" : "s"}`] : []),
+  ].join(" · ");
+  return <Box data-activity-kind="action_group">
     <Stack
       direction="row"
       spacing={1}
@@ -169,22 +178,26 @@ export function CommandGroupRow({
         color="inherit"
         startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} commands`}
+        aria-label={`${expanded ? "Collapse" : "Expand"} grouped activity`}
         onClick={() => setExpanded((value) => !value)}
         sx={{ color: ACTIVITY_TITLE_COLOR, fontWeight: 700, px: 0.5 }}
       >
-        Ran {entries.length} commands
+        {summary}
       </Button>
       {failureCount ? <Typography variant="caption" color="error.main">
         {failureCount} failed
       </Typography> : null}
     </Stack>
-    {expanded ? entries.map((entry) => <CommandRow
-      key={entry.id}
-      entry={entry}
-      focusId={focusId}
-      projectRoot={projectRoot}
-    />) : null}
+    {expanded ? entries.map((entry) => {
+      if (entry.kind === "command") return <CommandRow
+        key={entry.id}
+        entry={entry}
+        focusId={focusId}
+        projectRoot={projectRoot}
+      />;
+      if (entry.kind === "tool") return <ToolRow key={entry.id} entry={entry} focusId={focusId} />;
+      return <CompactActivityRow key={entry.id} entry={entry} focusId={focusId} />;
+    }) : null}
   </Box>;
 }
 
@@ -233,7 +246,7 @@ export function ToolRow({
     <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
       <CollapsibleCode value={formatted || "null"} maxLines={6} />
     </Box>
-    {entry.result ? <ActivityOutput result={entry.result} label="Tool output" /> : null}
+    {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={5} /> : null}
   </Row>;
 }
 

@@ -9,7 +9,7 @@ import { useMemo } from "react";
 import { chatStateKey } from "../../chatState";
 import { ChatSurface } from "../chat/ChatSurface";
 import {
-  CommandGroupRow,
+  ActionGroupRow,
   CommandRow,
   CompactActivityRow,
   FileRow,
@@ -21,29 +21,40 @@ import {
 import { buildActivityStream } from "./activityStream";
 import type { ActivityStreamEntry } from "./activityStream";
 
-type CommandEntry = Extract<ActivityStreamEntry, { kind: "command" }>;
+type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
 type ActivityDisplayEntry =
   | ActivityStreamEntry
-  | { kind: "command_group"; id: string; entries: CommandEntry[] };
+  | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
-function groupConsecutiveCommands(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
+function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
-  let commands: CommandEntry[] = [];
+  let actions: GroupedActionEntry[] = [];
   const flush = () => {
-    if (commands.length >= 3) {
+    const commandCount = actions.filter((entry) => entry.kind === "command").length;
+    const toolCount = actions.filter((entry) => entry.kind === "tool").length;
+    const shouldGroup = commandCount >= 3 || toolCount >= 2 || (commandCount >= 1 && toolCount >= 1);
+    if (shouldGroup) {
       grouped.push({
-        kind: "command_group",
-        id: `command-group:${commands[0]!.id}`,
-        entries: commands,
+        kind: "action_group",
+        id: `action-group:${actions[0]!.id}`,
+        entries: actions,
       });
     } else {
-      grouped.push(...commands);
+      grouped.push(...actions);
     }
-    commands = [];
+    actions = [];
   };
   for (const entry of entries) {
     if (entry.kind === "command" && !entry.internal && entry.result) {
-      commands.push(entry);
+      actions.push(entry);
+      continue;
+    }
+    if (entry.kind === "tool" && entry.result) {
+      actions.push(entry);
+      continue;
+    }
+    if (entry.kind === "browser") {
+      actions.push(entry);
       continue;
     }
     flush();
@@ -94,7 +105,7 @@ export function ActivityStreamPane({
     runs,
     ...(activeExecutionId ? { activeExecutionId } : {}),
   }), [activity, runOutput, runs, activeExecutionId]);
-  const displayEntries = useMemo(() => groupConsecutiveCommands(entries), [entries]);
+  const displayEntries = useMemo(() => groupConsecutiveActions(entries), [entries]);
   const last = entries.at(-1);
   const layoutKey = last ? `${entries.length}:${last.id}:${last.seq}` : "0";
   return <ChatSurface
@@ -118,7 +129,7 @@ export function ActivityStreamPane({
     scrollTestId="activity-scroll-region"
   >
     {displayEntries.map((entry) => {
-      if (entry.kind === "command_group") return <CommandGroupRow
+      if (entry.kind === "action_group") return <ActionGroupRow
         key={entry.id}
         entries={entry.entries}
         focusId={focusId}
