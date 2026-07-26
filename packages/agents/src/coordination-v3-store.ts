@@ -47,6 +47,7 @@ import { CoordinationV3DeletionAuthority } from "./coordination-v3-deletion-auth
 import { CoordinationV3CoordinateAuthority } from "./coordination-v3-coordinate-authority.js";
 import { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import { CoordinationV3TriggerOccurrenceAuthority } from "./coordination-v3-trigger-occurrence-authority.js";
+import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-authority.js";
 import { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
 import { terminalAt } from "./coordination-v3-request-state.js";
 import {
@@ -189,6 +190,7 @@ export class CoordinationV3Store {
   private readonly coordinateAuthority: CoordinationV3CoordinateAuthority;
   private readonly questionAuthority: CoordinationV3QuestionAuthority;
   private readonly triggerOccurrenceAuthority!: CoordinationV3TriggerOccurrenceAuthority;
+  private readonly steeringAuthority: CoordinationV3SteeringAuthority;
 
   constructor(
     private readonly sqlite: Database.Database,
@@ -306,6 +308,15 @@ export class CoordinationV3Store {
           now,
           resolve,
         ),
+    );
+    this.steeringAuthority = new CoordinationV3SteeringAuthority(
+      sqlite,
+      this.support,
+      this.runtimeScopeAuthority,
+      this.activationLifecycle,
+      this.questionAuthority,
+      input => this.createActivation(input),
+      input => this.cancelAgentRun(input),
     );
   }
 
@@ -1254,314 +1265,38 @@ export class CoordinationV3Store {
   }
 
   leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
-    const now = input.now ?? new Date().toISOString();
-    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
-    return this.sqlite.transaction(() => {
-      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-      const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id, a.scope_key, r.id AS run_id, r.fencing_token, r.provider_session_id
-        FROM agent_activations a
-        JOIN scheduler_runs r ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key AND r.status = 'running'
-        WHERE a.state IN ('pending', 'retry_pending') AND a.available_at <= ?
-          AND a.dispatch_policy = 'steer_or_run'
-          AND NOT EXISTS (
-            SELECT 1 FROM activation_outbox audit
-            WHERE audit.activation_id = a.id AND audit.event_kind = 'communication_revision'
-              AND audit.processed_at IS NULL
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM scheduler_prompt_injections injection
-            WHERE injection.run_id = r.id AND injection.kind = 'steer'
-              AND injection.state IN ('pending', 'submitted')
-          )
-        ORDER BY a.priority DESC, a.created_at, a.id
-        LIMIT 1
-      `).get(now) as {
-        agent_id: string; project_id: string; scope_key: string; run_id: string;
-        fencing_token: number; provider_session_id: string | null;
-      } | undefined;
-      if (!candidate) return undefined;
-      const activations = this.sqlite.prepare(`
-        SELECT * FROM agent_activations
-        WHERE agent_id = ? AND scope_key = ?
-          AND state IN ('pending', 'retry_pending') AND available_at <= ?
-          AND dispatch_policy = 'steer_or_run'
-          AND NOT EXISTS (
-            SELECT 1 FROM activation_outbox audit
-            WHERE audit.activation_id = agent_activations.id AND audit.event_kind = 'communication_revision'
-              AND audit.processed_at IS NULL
-          )
-        ORDER BY priority DESC, created_at, id LIMIT ?
-      `).all(candidate.agent_id, candidate.scope_key, now, limit) as ActivationRow[];
-      if (activations.length === 0) return undefined;
-      if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
-        candidate.project_id,
-        candidate.agent_id,
-        candidate.scope_key,
-      )) {
-        this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-        return undefined;
-      }
-      const injectionId = randomUUID();
-      const sequence = (this.sqlite.prepare(`
-        SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence
-        FROM scheduler_prompt_injections WHERE run_id = ?
-      `).get(candidate.run_id) as { sequence: number }).sequence;
-      const attach = this.sqlite.prepare(`
-        INSERT OR IGNORE INTO scheduler_run_activations (run_id, activation_id, attached_at)
-        VALUES (?, ?, ?)
-      `);
-      const setAttached = this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'attached', updated_at = ?
-        WHERE id = ? AND state IN ('pending', 'retry_pending')
-      `);
-      for (const activation of activations) {
-        if (setAttached.run(now, activation.id).changes !== 1) throw new Error("steering activation claim race");
-        attach.run(candidate.run_id, activation.id, now);
-      }
-      this.sqlite.prepare(`
-        INSERT INTO scheduler_prompt_injections (
-          id, run_id, kind, sequence, state, prompt_hash, activation_ids_json,
-          created_at, updated_at
-        ) VALUES (?, ?, 'steer', ?, 'pending', '', ?, ?, ?)
-      `).run(
-        injectionId, candidate.run_id, sequence,
-        stableJson(activations.map((activation) => activation.id)), now, now,
-      );
-      return {
-        runId: candidate.run_id,
-        projectId: candidate.project_id,
-        agentId: candidate.agent_id,
-        scopeKey: candidate.scope_key,
-        fencingToken: candidate.fencing_token,
-        injectionId,
-        ...(candidate.provider_session_id ? { providerSessionId: candidate.provider_session_id } : {}),
-        activationIds: activations.map((activation) => activation.id),
-        activations: activations.map((activation) => ({
-          id: activation.id,
-          kind: activation.kind,
-          priority: activation.priority,
-          dispatchPolicy: activation.dispatch_policy,
-          promptClass: activation.prompt_class,
-          payload: JSON.parse(activation.payload_json) as unknown,
-          deliveryFailures: activation.delivery_failures,
-          ...(activation.last_delivery_error ? { lastDeliveryError: activation.last_delivery_error } : {}),
-        })),
-      };
-    })();
+    return this.steeringAuthority.leaseNextSteering(input);
   }
 
   deferSteering(input: {
     injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number; now?: string;
   }): void {
-    const now = input.now ?? new Date().toISOString();
-    const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? 0)).toISOString();
-    this.sqlite.transaction(() => {
-      this.support.getFencedRun(input.runId, input.fencingToken);
-      const injection = this.sqlite.prepare(`
-        SELECT activation_ids_json FROM scheduler_prompt_injections
-        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
-      `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
-      if (!injection) throw new Error("pending steering injection not found");
-      const activationIds = JSON.parse(injection.activation_ids_json) as string[];
-      if (activationIds.length) {
-        const placeholders = activationIds.map(() => "?").join(", ");
-        this.sqlite.prepare(`
-          UPDATE agent_activations SET state = 'retry_pending', dispatch_policy = 'next_run',
-            available_at = ?, updated_at = ?
-          WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(availableAt, now, ...activationIds);
-      }
-      this.sqlite.prepare(`
-        UPDATE scheduler_prompt_injections SET state = 'cancelled', updated_at = ?, terminal_at = ?
-        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
-      `).run(now, now, input.injectionId, input.runId);
-    })();
+    this.steeringAuthority.deferSteering(input);
   }
 
   markSteeringOutcomeUnknown(input: {
     injectionId: string; runId: string; fencingToken: number; now?: string;
     recoveryGraceMs?: number; error?: string;
   }): void {
-    const now = input.now ?? new Date().toISOString();
-    this.sqlite.transaction(() => {
-      this.support.getFencedRun(input.runId, input.fencingToken);
-      const injection = this.sqlite.prepare(`
-        SELECT activation_ids_json FROM scheduler_prompt_injections
-        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
-      `).get(input.injectionId, input.runId) as { activation_ids_json: string } | undefined;
-      if (!injection) throw new Error("unsettled steering injection not found");
-      const activationIds = JSON.parse(injection.activation_ids_json) as string[];
-      this.questionAuthority.terminalizeUnansweredQuestionsForActivations(activationIds, input.runId, now, "steering_outcome_unknown");
-      if (activationIds.length) {
-        const placeholders = activationIds.map(() => "?").join(", ");
-        this.sqlite.prepare(`
-          UPDATE agent_activations SET state = 'outcome_unknown',
-            last_delivery_error = COALESCE(?, last_delivery_error), updated_at = ?
-          WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(input.error?.slice(0, 2_000) ?? null, now, ...activationIds);
-      }
-      this.sqlite.prepare(`
-        UPDATE scheduler_prompt_injections SET state = 'outcome_unknown', updated_at = ?, terminal_at = ?
-        WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
-      `).run(now, now, input.injectionId, input.runId);
-      const hasHumanActivation = activationIds.length > 0 && Boolean(this.sqlite.prepare(`
-        SELECT 1 FROM agent_activations
-        WHERE id IN (${activationIds.map(() => "?").join(", ")}) AND prompt_class = 'human' LIMIT 1
-      `).get(...activationIds));
-      if (hasHumanActivation) {
-        const run = this.sqlite.prepare(`SELECT agent_id FROM scheduler_runs WHERE id = ?`)
-          .get(input.runId) as { agent_id: string };
-        const graceMs = Math.max(0, Math.min(input.recoveryGraceMs ?? 10_000, 60_000));
-        this.sqlite.prepare(`
-          INSERT OR IGNORE INTO scheduler_steering_recoveries (
-            injection_id, run_id, agent_id, state, recover_at, created_at, updated_at
-          ) VALUES (?, ?, ?, 'grace_period', ?, ?, ?)
-        `).run(
-          input.injectionId, input.runId, run.agent_id,
-          new Date(Date.parse(now) + graceMs).toISOString(), now, now,
-        );
-      }
-    })();
+    this.steeringAuthority.markSteeringOutcomeUnknown(input);
   }
 
   letCurrentRunFinish(input: {
     injectionId: string; idempotencyKey: string; now?: string;
   }): SteeringRecoveryDecisionResult {
-    if (!input.idempotencyKey.trim()) throw new Error("steering recovery idempotency key is required");
-    return this.queueSteeringRecovery({
-      injectionId: input.injectionId,
-      interruptOriginalRun: false,
-      idempotencyKey: input.idempotencyKey,
-      now: input.now ?? new Date().toISOString(),
-    });
+    return this.steeringAuthority.letCurrentRunFinish(input);
   }
 
-  /** Latest provider-confirmed steering fence for host-side output publication. */
   latestAcknowledgedSteeringInjection(runId: string): string | undefined {
-    return (this.sqlite.prepare(`
-      SELECT id FROM scheduler_prompt_injections
-      WHERE run_id = ? AND kind = 'steer' AND state = 'acknowledged'
-      ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1
-    `).get(runId) as { id: string } | undefined)?.id;
+    return this.steeringAuthority.latestAcknowledgedSteeringInjection(runId);
   }
 
-  /** Every injection identifier associated with a Run, including stale and
-   * superseded steering attempts. These values are sanitation inputs only. */
   steeringInjectionIds(runId: string): string[] {
-    return (this.sqlite.prepare(`
-      SELECT id FROM scheduler_prompt_injections
-      WHERE run_id = ?
-      ORDER BY sequence, created_at, id
-    `).all(runId) as Array<{ id: string }>).map((row) => row.id);
+    return this.steeringAuthority.steeringInjectionIds(runId);
   }
 
-  /** Materialize due recovery work transactionally. The recovery Activation is
-   * created before the exact originating Run is fenced and interrupted. */
   processDueSteeringRecoveries(now = new Date().toISOString(), limit = 100): string[] {
-    const due = this.sqlite.prepare(`
-      SELECT injection_id FROM scheduler_steering_recoveries
-      WHERE state = 'grace_period' AND recover_at <= ?
-      ORDER BY recover_at, injection_id LIMIT ?
-    `).all(now, Math.max(1, Math.min(limit, 500))) as Array<{ injection_id: string }>;
-    const changed = new Set<string>();
-    for (const row of due) {
-      const result = this.queueSteeringRecovery({
-        injectionId: row.injection_id,
-        interruptOriginalRun: true,
-        idempotencyKey: `automatic:${row.injection_id}`,
-        now,
-      });
-      if (result.accepted && result.agentId) changed.add(result.agentId);
-    }
-    return [...changed];
-  }
-
-  private queueSteeringRecovery(input: {
-    injectionId: string; interruptOriginalRun: boolean; idempotencyKey: string; now: string;
-  }): SteeringRecoveryDecisionResult {
-    return this.sqlite.transaction((): SteeringRecoveryDecisionResult => {
-      const recovery = this.sqlite.prepare(`
-        SELECT run_id, agent_id, state FROM scheduler_steering_recoveries WHERE injection_id = ?
-      `).get(input.injectionId) as {
-        run_id: string; agent_id: string;
-        state: "grace_period" | "wait_for_run" | "recovery_queued";
-      } | undefined;
-      if (!recovery) return { accepted: false, replayed: false, state: "not_recoverable" };
-      if (recovery.state !== "grace_period") return {
-        accepted: true,
-        replayed: true,
-        state: recovery.state === "wait_for_run" ? "waiting_for_run" : "recovery_queued",
-        agentId: recovery.agent_id,
-      };
-      const sources = this.sqlite.prepare(`
-        SELECT activation.id, activation.project_id, activation.agent_id, activation.scope_key,
-          activation.priority, activation.payload_json
-        FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
-        JOIN agent_activations activation ON activation.id = member.value
-        WHERE injection.id = ?
-        ORDER BY activation.created_at, activation.id
-      `).all(input.injectionId) as Array<{
-        id: string; project_id: string; agent_id: string; scope_key: string;
-        priority: number; payload_json: string;
-      }>;
-      if (sources.length === 0) return { accepted: false, replayed: false, state: "not_recoverable" };
-      for (const source of sources) {
-        const originalPayload = JSON.parse(source.payload_json) as unknown;
-        const payloadRecord = originalPayload && typeof originalPayload === "object" && !Array.isArray(originalPayload)
-          ? originalPayload as Record<string, unknown>
-          : { originalPayload };
-        const recoveryActivationId = this.createActivation({
-          projectId: source.project_id,
-          agentId: source.agent_id,
-          scopeKey: source.scope_key,
-          kind: "steering_recovery",
-          priority: Math.max(PRIORITY.human, source.priority),
-          dispatchPolicy: "next_run",
-          promptClass: "human",
-          dedupeKey: `steering-recovery:${input.injectionId}:${source.id}`,
-          payload: {
-            ...payloadRecord,
-            steeringRecovery: {
-              sourceRunId: recovery.run_id,
-              sourceInjectionId: input.injectionId,
-              sourceActivationId: source.id,
-              reason: "provider_steering_acknowledgement_unconfirmed",
-              instruction: "Audit current project and runtime state before acting. Preserve completed results, then handle the original user message exactly once. Do not assume the prior Run either ignored or applied the uncertain steer.",
-            },
-          },
-          sourceKind: "steering_recovery",
-          sourceId: `${input.injectionId}:${source.id}`,
-          now: input.now,
-        });
-        this.sqlite.prepare(`
-          INSERT OR IGNORE INTO scheduler_steering_recovery_activations (
-            injection_id, source_activation_id, recovery_activation_id
-          ) VALUES (?, ?, ?)
-        `).run(input.injectionId, source.id, recoveryActivationId);
-      }
-      const originalStillActive = Boolean(this.sqlite.prepare(`
-        SELECT 1 FROM scheduler_runs WHERE id = ? AND agent_id = ? AND status IN ('leased', 'running')
-      `).get(recovery.run_id, recovery.agent_id));
-      const nextState = input.interruptOriginalRun || !originalStillActive ? "recovery_queued" : "wait_for_run";
-      this.sqlite.prepare(`
-        UPDATE scheduler_steering_recoveries
-        SET state = ?, decision_idempotency_key = ?, updated_at = ?
-        WHERE injection_id = ? AND state = 'grace_period'
-      `).run(nextState, input.idempotencyKey, input.now, input.injectionId);
-      if (input.interruptOriginalRun && originalStillActive) this.cancelAgentRun({
-        agentId: recovery.agent_id,
-        expectedRunId: recovery.run_id,
-        idempotencyKey: `steering-recovery:${input.injectionId}`,
-        now: input.now,
-      });
-      return {
-        accepted: true,
-        replayed: false,
-        state: nextState === "wait_for_run" ? "waiting_for_run" : "recovery_queued",
-        agentId: recovery.agent_id,
-      };
-    })();
+    return this.steeringAuthority.processDueSteeringRecoveries(now, limit);
   }
 
   markRunStarted(runId: string, fence: number, now = new Date().toISOString()): void {
