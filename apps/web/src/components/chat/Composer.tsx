@@ -39,6 +39,11 @@ import { createClientId } from "../../clientId";
 import { managerBroadcastText } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
+import {
+  compactPreviewText,
+  removeHandle,
+  replaceDestination,
+} from "./Composer.helpers";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ChatComposerContract } from "./composerContracts";
@@ -253,29 +258,10 @@ export function Composer({
             : destinationMode === "target-required" && unresolvedAmbiguousTarget
               ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
               : undefined;
-  const replaceDestination = (value: string, nextHandle?: string) =>
-    value.replace(
-      /(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu,
-      (match, handle: string) => {
-        if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase()))
-          return match;
-        return nextHandle ? ` #${nextHandle}` : " ";
-      },
-    );
   const setDestination = (handle: string) =>
     update(current =>
       `#${handle} ${replaceDestination(current, undefined).trimStart()}`.trimEnd(),
     );
-  const removeHandle = (value: string, handle: string) =>
-    value
-      .replace(
-        new RegExp(
-          `(?:^|\\s)#${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`,
-          "iu",
-        ),
-        " ",
-      )
-      .replace(/^\s+/u, "");
   const clearDestination = (handle: string) =>
     update(current => removeHandle(current, handle));
   const clearRequiredRecipient = () => {
@@ -1760,11 +1746,4 @@ export function Composer({
       </Stack>
     </Paper>
   );
-}
-
-function compactPreviewText(text: string, maxLength = 240): string {
-  const compact = text.trim().replace(/\s+/g, " ") || "Draft unavailable";
-  return compact.length <= maxLength
-    ? compact
-    : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }
