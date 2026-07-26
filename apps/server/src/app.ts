@@ -255,6 +255,7 @@ import { registerSearchRoutes } from "./routes/search.js";
 import { registerArtifactRoutes } from "./routes/artifacts.js";
 import { registerBrowserRoutes } from "./routes/browsers.js";
 import { registerEngineRoutes } from "./routes/engines.js";
+import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import { ProjectFileAuthority, registerProjectFileRoutes } from "./routes/project-files.js";
 import { registerTriggerRoutes } from "./routes/triggers.js";
@@ -296,11 +297,7 @@ export {
   boundedSeedHistory,
   runtimeIdentityPrompt,
 } from "./prompts.js";
-import {
-  isAgentStreamEvent,
-  envelope,
-  writeSse,
-} from "./sse.js";
+import { isAgentStreamEvent } from "./sse.js";
 import {
   communicationV3Prompt,
   PROVIDER_DYNAMIC_TOOLS,
@@ -12049,130 +12046,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   });
 
-  app.get<{ Querystring: { lastEventId?: string } }>("/api/workspace/stream", async (request, reply) => {
-    if (closed) return reply.code(503).send({ error: "server is shutting down" });
-    if (workspaceSubscribers.size >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
-      return reply.code(429).send({ error: "too many stream subscribers" });
-    }
-    const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
-    const parsed = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
-    const requestedCursor = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
-    const highWaterMark = workspace.cursor();
-    const reset = requestedCursor > highWaterMark;
-    const replayFrom = reset ? 0 : requestedCursor;
-    reply.hijack();
-    reply.raw.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
-    writeSse(reply.raw, "workspace_status", undefined, {
-      instanceId: workspace.instanceId(),
-      cursor: highWaterMark,
-      reset,
-    } satisfies import("@ponderosa/core").WorkspaceStreamStatusDto);
-    writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
-    let cursor = replayFrom;
-    let replaying = true;
-    const queued: WorkspaceEventEnvelope[] = [];
-    const writeEvent = (event: WorkspaceEventEnvelope, replayed = false) => {
-      if (event.id <= cursor) return;
-      cursor = event.id;
-      writeSse(reply.raw, "message", event.id, replayed ? { ...event, replayed: true } : event);
-    };
-    const subscriber = (event: WorkspaceEventEnvelope) => replaying ? queued.push(event) : writeEvent(event);
-    workspaceSubscribers.add(subscriber);
-    for (const event of workspace.readSince(replayFrom)) writeEvent(event, true);
-    replaying = false;
-    for (const event of queued) writeEvent(event);
-    const heartbeat = setInterval(() => writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() }), 15_000);
-    let streamClosed = false;
-    const cleanup = (): void => {
-      if (streamClosed) return;
-      streamClosed = true;
-      clearInterval(heartbeat);
-      workspaceSubscribers.delete(subscriber);
-      liveSseClosures.delete(closeStream);
-    };
-    const closeStream = (): void => {
-      cleanup();
-      if (!reply.raw.writableEnded) reply.raw.end();
-      if (!reply.raw.destroyed) reply.raw.destroy();
-    };
-    liveSseClosures.add(closeStream);
-    request.raw.on("close", cleanup);
+  registerStreamRoutes(app, {
+    store,
+    workspace,
+    serverClosed: () => closed,
+    maxSubscribersPerStream: MAX_SSE_SUBSCRIBERS_PER_STREAM,
+    workspaceSubscribers,
+    agentSubscriberCount: (agentId) => subscribers.get(agentId)?.size ?? 0,
+    subscribe,
+    liveSseClosures,
   });
-
-  app.get<{ Params: { id: string }; Querystring: { lastEventId?: string } }>(
-    "/api/agents/:id/stream",
-    async (request, reply) => {
-      if (closed) return reply.code(503).send({ error: "server is shutting down" });
-      if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-      if ((subscribers.get(request.params.id)?.size ?? 0) >= MAX_SSE_SUBSCRIBERS_PER_STREAM) {
-        return reply.code(429).send({ error: "too many stream subscribers" });
-      }
-      const lastEventId = request.headers["last-event-id"] ?? request.query.lastEventId ?? "0";
-      const sinceSeq = Number(Array.isArray(lastEventId) ? lastEventId[0] : lastEventId);
-      const requestedCursor = Number.isSafeInteger(sinceSeq) && sinceSeq >= 0 ? sinceSeq : 0;
-      const highWaterMark = store.lastSeqOf(request.params.id);
-      const reset = requestedCursor > highWaterMark;
-      const replayFrom = reset ? 0 : requestedCursor;
-
-      reply.hijack();
-      reply.raw.writeHead(200, {
-        "content-type": "text/event-stream; charset=utf-8",
-        "cache-control": "no-cache, no-transform",
-        connection: "keep-alive",
-        "x-accel-buffering": "no",
-      });
-      writeSse(reply.raw, "agent_status", undefined, {
-        agentId: request.params.id,
-        instanceId: workspace.instanceId(),
-        cursor: highWaterMark,
-        reset,
-      } satisfies import("@ponderosa/core").AgentStreamStatusDto);
-      writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
-
-      let lastWrittenSeq = replayFrom;
-      let replaying = true;
-      const queued: StoredLogEvent[] = [];
-      const writeStored = (stored: StoredLogEvent, replayed = false): void => {
-        if (stored.seq <= lastWrittenSeq) return;
-        const env = envelope(request.params.id, stored, replayed);
-        lastWrittenSeq = stored.seq;
-        if (env) writeSse(reply.raw, "message", stored.seq, env);
-      };
-      const unsubscribe = subscribe(request.params.id, (stored) => {
-        if (replaying) {
-          queued.push(stored);
-          return;
-        }
-        writeStored(stored);
-      });
-
-      for (const stored of store.readEventsSince(request.params.id, replayFrom)) {
-        writeStored(stored, true);
-      }
-      replaying = false;
-      for (const stored of queued) writeStored(stored);
-
-      const heartbeat = setInterval(() => {
-        writeSse(reply.raw, "heartbeat", undefined, { ts: new Date().toISOString() });
-      }, 15000);
-
-      let streamClosed = false;
-      const cleanup = (): void => {
-        if (streamClosed) return;
-        streamClosed = true;
-        clearInterval(heartbeat);
-        unsubscribe();
-        liveSseClosures.delete(closeStream);
-      };
-      const closeStream = (): void => {
-        cleanup();
-        if (!reply.raw.writableEnded) reply.raw.end();
-        if (!reply.raw.destroyed) reply.raw.destroy();
-      };
-      liveSseClosures.add(closeStream);
-      request.raw.on("close", cleanup);
-    },
-  );
 
   registerBrowserRoutes(app, {
     browserSessions,
