@@ -58,8 +58,6 @@ import type {
   SteerQueuedMessageResponse,
   CorrectConversationMessageRequest,
   CorrectConversationMessageResponse,
-  SseEventEnvelope,
-  AgentStreamEvent,
   SendAgentMessageRequest,
   AgentDto,
   MessageDto,
@@ -272,6 +270,11 @@ import {
   messageContextPrompt,
   type InboundMessageContext,
 } from "./agent-mentions.js";
+import {
+  isAgentStreamEvent,
+  envelope,
+  writeSse,
+} from "./sse.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -680,10 +683,6 @@ const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
 const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
 const CONTEXT_ROLLOVER_INSTRUCTION = "Your provider session is approaching its practical context limit. Before ending this Run, call `ponderosa_rollover` once with a 300–500 word handoff for the fresh session that will replace you. The handoff must explicitly separate: (1) the objective; (2) work completed; (3) unblocked work that should continue now; (4) blocked work and what blocks it; (5) the exact next action; (6) verified facts versus assumptions; (7) references to relevant files and artifacts. Do not summarize the whole conversation — carry only working state the next session needs. Then finish or safely stop your current work as normal.";
-
-function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStreamEvent {
-  return event.type !== "user_message";
-}
 
 const MAX_SEED_HISTORY_CHARS = 24_000;
 const MAX_SEED_HISTORY_MESSAGES = 40;
@@ -1105,17 +1104,6 @@ function continuationPrompt(currentRequest: string, context: InboundMessageConte
     "[CURRENT REQUEST | ACTION REQUIRED]",
     currentRequest,
   ].join("\n");
-}
-
-function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
-  if (!isAgentStreamEvent(stored.event)) return undefined;
-  return { agentId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
-}
-
-function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {
-  if (id !== undefined) res.write(`id: ${id}\n`);
-  res.write(`event: ${name}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 export interface PonderosaServer extends FastifyInstance {
