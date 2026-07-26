@@ -30,6 +30,7 @@ import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
+import { CoordinationV3RequestReadModel } from "./coordination-v3-request-read-model.js";
 import { CoordinationV3ActivationReadModel } from "./coordination-v3-activation-read-model.js";
 import { CoordinationV3ActivationCommandAuthority } from "./coordination-v3-activation-command-authority.js";
 import { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
@@ -37,6 +38,7 @@ import { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtim
 import { CoordinationV3RuntimeCommunicationReadModel } from "./coordination-v3-runtime-communication-read-model.js";
 import { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { CoordinationV3RunContextReadModel } from "./coordination-v3-run-context-read-model.js";
+import { CoordinationV3SchedulerStatusReadModel } from "./coordination-v3-scheduler-status-read-model.js";
 import {
   CoordinationV3TriggerRegistry,
   type TriggerDefinitionRow,
@@ -189,11 +191,13 @@ export class CoordinationV3Store {
   private readonly activationReadModel: CoordinationV3ActivationReadModel;
   private readonly activationCommandAuthority: CoordinationV3ActivationCommandAuthority;
   private readonly readModel: CoordinationV3ReadModel;
+  private readonly requestReadModel: CoordinationV3RequestReadModel;
   private readonly runtimeAttachmentAuthority: CoordinationV3RuntimeAttachmentAuthority;
   private readonly runtimeArtifactAuthority: CoordinationV3RuntimeArtifactAuthority;
   private readonly runtimeCommunicationReadModel: CoordinationV3RuntimeCommunicationReadModel;
   private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority;
   private readonly runContextReadModel: CoordinationV3RunContextReadModel;
+  private readonly schedulerStatusReadModel: CoordinationV3SchedulerStatusReadModel;
   private readonly triggerRegistry: CoordinationV3TriggerRegistry;
 
   constructor(
@@ -202,6 +206,7 @@ export class CoordinationV3Store {
   ) {
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.readModel = new CoordinationV3ReadModel(sqlite);
+    this.requestReadModel = new CoordinationV3RequestReadModel(sqlite);
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
     this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
@@ -214,6 +219,7 @@ export class CoordinationV3Store {
         this.settleRequestsForFailedActivations(activationIds, now),
     );
     this.runContextReadModel = new CoordinationV3RunContextReadModel(sqlite);
+    this.schedulerStatusReadModel = new CoordinationV3SchedulerStatusReadModel(sqlite);
     this.runtimeCommunicationReadModel = new CoordinationV3RuntimeCommunicationReadModel(
       sqlite,
       this.runtimeScopeAuthority,
@@ -457,12 +463,7 @@ export class CoordinationV3Store {
   }
 
   requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT request_id FROM coordination_request_updates WHERE id = ?
-      UNION ALL SELECT request_id FROM coordination_request_late_results WHERE id = ?
-      LIMIT 1
-    `).get(updateId, updateId) as { request_id: string } | undefined;
-    return row ? this.getRequest(row.request_id) : undefined;
+    return this.requestReadModel.requestForUpdate(updateId);
   }
 
   /** Project immutable authored messages onto mutable, per-recipient delivery
@@ -930,9 +931,7 @@ export class CoordinationV3Store {
   }
 
   isSchedulerRunCancelled(runId: string): boolean {
-    return Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM scheduler_runs WHERE id = ? AND status = 'cancelled'
-    `).get(runId));
+    return this.schedulerStatusReadModel.isSchedulerRunCancelled(runId);
   }
 
   listDueScheduleTriggers(now = new Date().toISOString(), limit = 100): TriggerDefinitionDto[] {
@@ -1092,59 +1091,23 @@ export class CoordinationV3Store {
   }
 
   getAgentAvailability(agentId: string): DerivedAgentAvailability {
-    const hasActiveRun = Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
-    `).get(agentId));
-    const hasActionableActivation = Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM agent_activations
-      WHERE agent_id = ? AND state IN ('pending', 'retry_pending') LIMIT 1
-    `).get(agentId));
-    const ownsOpenJoin = Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM coordination_joins WHERE owner_agent_id = ? AND state = 'open' LIMIT 1
-    `).get(agentId));
-    const hasSuspendedRecipientRequest = Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM coordination_requests
-      WHERE recipient_agent_id = ? AND state IN ('awaiting_answer', 'waiting_dependency') LIMIT 1
-    `).get(agentId));
-    return deriveAgentAvailability({ hasActiveRun, hasActionableActivation, ownsOpenJoin, hasSuspendedRecipientRequest });
+    return this.schedulerStatusReadModel.getAgentAvailability(agentId);
   }
 
   activeRunCount(): number {
-    return (this.sqlite.prepare(`
-      SELECT COUNT(*) AS count FROM scheduler_runs WHERE status IN ('leased', 'running')
-    `).get() as { count: number }).count;
+    return this.schedulerStatusReadModel.activeRunCount();
   }
 
   ownsRun(runId: string, fencingToken: number, workerId?: string): boolean {
-    const row = this.sqlite.prepare(`
-      SELECT 1 FROM scheduler_runs
-      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
-        AND side_effects_fenced_at IS NULL
-        AND (? IS NULL OR lease_owner = ?)
-    `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
-    return Boolean(row);
+    return this.schedulerStatusReadModel.ownsRun(runId, fencingToken, workerId);
   }
 
-  /** Host cleanup retains the original scheduler fence after provider-facing
-   * side effects close, so it can consume Activations and finish the Run. */
   ownsRunForCleanup(runId: string, fencingToken: number, workerId?: string): boolean {
-    const row = this.sqlite.prepare(`
-      SELECT 1 FROM scheduler_runs
-      WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
-        AND (? IS NULL OR lease_owner = ?)
-    `).get(runId, fencingToken, workerId ?? null, workerId ?? null);
-    return Boolean(row);
+    return this.schedulerStatusReadModel.ownsRunForCleanup(runId, fencingToken, workerId);
   }
 
-  /** A provider may deliver one terminal handoff after an injected Run became
-   * uncertain. This identifies that exact fenced generation; updateRequest
-   * still restricts the mutation to a recipient-authored late result. */
   ownsOutcomeUnknownRun(runId: string, fencingToken: number, workerId?: string): boolean {
-    return Boolean(this.sqlite.prepare(`
-      SELECT 1 FROM scheduler_runs
-      WHERE id = ? AND fencing_token = ? AND status = 'outcome_unknown'
-        AND (? IS NULL OR lease_owner = ?)
-    `).get(runId, fencingToken, workerId ?? null, workerId ?? null));
+    return this.schedulerStatusReadModel.ownsOutcomeUnknownRun(runId, fencingToken, workerId);
   }
 
   schedulerMetrics(): {
@@ -1221,71 +1184,7 @@ export class CoordinationV3Store {
   }
 
   agentSnapshot(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto {
-    const requests = this.sqlite.prepare(`
-      SELECT id, requester_agent_id, recipient_agent_id, state, version, deadline_at, updated_at
-      FROM coordination_requests
-      WHERE requester_agent_id = ? OR recipient_agent_id = ?
-      ORDER BY updated_at DESC, id DESC LIMIT 100
-    `).all(agentId, agentId) as Array<{
-      id: string; requester_agent_id: string | null; recipient_agent_id: string;
-      state: string; version: number; deadline_at: string | null; updated_at: string;
-    }>;
-    const joins = this.sqlite.prepare(`
-      SELECT j.id, j.mode, j.wake_policy, j.quorum, j.state, j.deadline_at, j.updated_at,
-        COUNT(m.request_id) AS total,
-        SUM(CASE WHEN r.state = 'completed' THEN 1 ELSE 0 END) AS completed
-      FROM coordination_joins j
-      JOIN coordination_join_members m ON m.join_id = j.id
-      JOIN coordination_requests r ON r.id = m.request_id
-      WHERE j.owner_agent_id = ?
-      GROUP BY j.id ORDER BY j.updated_at DESC, j.id DESC LIMIT 100
-    `).all(agentId) as Array<{
-      id: string; mode: CoordinationJoinMode; wake_policy: CoordinationJoinWakePolicy; quorum: number; state: CoordinationJoinState;
-      deadline_at: string | null; updated_at: string; total: number; completed: number;
-    }>;
-    const activations = this.sqlite.prepare(`
-      SELECT id, kind, priority, state, created_at
-      FROM agent_activations WHERE agent_id = ?
-      ORDER BY created_at DESC, id DESC LIMIT 100
-    `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
-    const activeRun = this.sqlite.prepare(`
-      SELECT id, status, fencing_token, prompt_injection_state, context_disposition, lease_expires_at
-      FROM scheduler_runs WHERE agent_id = ? AND status IN ('leased', 'running') LIMIT 1
-    `).get(agentId) as {
-      id: string; status: string; fencing_token: number;
-      prompt_injection_state: "not_injected" | "injecting" | "injected";
-      context_disposition: "fresh_task" | "continued_session" | "reseeded"; lease_expires_at: string;
-    } | undefined;
-    return {
-      availability: this.getAgentAvailability(agentId),
-      requests: requests.map((request) => ({
-        id: request.id,
-        direction: request.requester_agent_id === agentId ? "outbound" : "inbound",
-        ...(request.requester_agent_id === agentId
-          ? { counterpartyAgentId: request.recipient_agent_id }
-          : request.requester_agent_id ? { counterpartyAgentId: request.requester_agent_id } : {}),
-        state: request.state,
-        version: request.version,
-        ...(request.deadline_at ? { deadlineAt: request.deadline_at } : {}),
-        updatedAt: request.updated_at,
-      })),
-      joins: joins.map((join) => ({
-        id: join.id, mode: join.mode, wakePolicy: join.wake_policy, quorum: join.quorum, state: join.state,
-        completed: join.completed, total: join.total,
-        ...(join.deadline_at ? { deadlineAt: join.deadline_at } : {}),
-        updatedAt: join.updated_at,
-      })),
-      activations: activations.map((activation) => ({
-        id: activation.id, kind: activation.kind, priority: activation.priority,
-        state: activation.state, createdAt: activation.created_at,
-      })),
-      ...(activeRun ? { activeRun: {
-        id: activeRun.id, status: activeRun.status, fencingToken: activeRun.fencing_token,
-        promptInjectionState: activeRun.prompt_injection_state,
-        providerContextDisposition: activeRun.context_disposition,
-        leaseExpiresAt: activeRun.lease_expires_at,
-      } } : {}),
-    };
+    return this.schedulerStatusReadModel.agentSnapshot(agentId);
   }
 
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
@@ -1518,88 +1417,18 @@ export class CoordinationV3Store {
   }
 
   getRequest(requestId: string): CoordinationRequestV3View | undefined {
-    const row = this.sqlite.prepare(`SELECT * FROM coordination_requests WHERE id = ?`).get(requestId) as (RequestRow & { payload_json: string }) | undefined;
-    if (!row) return undefined;
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
-      ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
-      recipientAgentId: row.recipient_agent_id,
-      state: row.state,
-      version: row.version,
-      payload: JSON.parse(row.payload_json) as unknown,
-    };
+    return this.requestReadModel.getRequest(requestId);
   }
 
   requestDelivery(requestId: string): CoordinationRequestDeliveryView | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT request.state AS request_state, request.recipient_agent_id,
-        activation.state AS activation_state
-      FROM coordination_requests request
-      LEFT JOIN agent_activations activation
-        ON activation.id = (
-          SELECT source.activation_id
-          FROM activation_sources source
-          JOIN agent_activations candidate ON candidate.id = source.activation_id
-          WHERE source.source_kind = 'request' AND source.source_id = request.id
-            AND candidate.kind = 'coordination_request'
-            AND candidate.agent_id = request.recipient_agent_id
-          LIMIT 1
-        )
-      WHERE request.id = ?
-      LIMIT 1
-    `).get(requestId) as {
-      request_state: CoordinationRequestState;
-      recipient_agent_id: string;
-      activation_state: string | null;
-    } | undefined;
-    if (!row) return undefined;
-    let deliveryState: CoordinationRequestDeliveryView["deliveryState"];
-    if (TERMINAL_REQUEST_STATES.has(row.request_state)) {
-      deliveryState = "request_terminal";
-    } else if (row.activation_state === "attached") {
-      deliveryState = "attached_to_run";
-    } else if (row.activation_state === "consumed") {
-      deliveryState = "delivered_to_run";
-    } else if (row.activation_state === "failed") {
-      deliveryState = "delivery_failed";
-    } else if (row.activation_state === "outcome_unknown") {
-      deliveryState = "delivery_uncertain";
-    } else if (row.activation_state === "cancelled") {
-      deliveryState = "delivery_cancelled";
-    } else {
-      const recipientBusy = Boolean(this.sqlite.prepare(`
-        SELECT 1 FROM scheduler_runs
-        WHERE agent_id = ? AND status IN ('leased', 'running')
-        LIMIT 1
-      `).get(row.recipient_agent_id));
-      deliveryState = recipientBusy ? "queued_behind_active_run" : "queued_for_next_run";
-    }
-    return {
-      requestId,
-      recipientAgentId: row.recipient_agent_id,
-      requestState: row.request_state,
-      deliveryState,
-      interruptsActiveRun: false,
-    };
+    return this.requestReadModel.requestDelivery(requestId);
   }
 
   requestRetryStatus(requestId: string): {
     activeRequestId?: string;
     completedRequestId?: string;
   } {
-    const rows = this.sqlite.prepare(`
-      SELECT id, state FROM coordination_requests
-      WHERE CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.retryOfRequestId') END = ?
-      ORDER BY created_at DESC, id DESC
-    `).all(requestId) as Array<{ id: string; state: string }>;
-    const active = rows.find((row) => ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state));
-    const completed = rows.find((row) => row.state === "completed");
-    return {
-      ...(active ? { activeRequestId: active.id } : {}),
-      ...(completed ? { completedRequestId: completed.id } : {}),
-    };
+    return this.requestReadModel.requestRetryStatus(requestId);
   }
 
   attachRequestCommunication(requestId: string, communicationEventId: string, projectId: string): void {
