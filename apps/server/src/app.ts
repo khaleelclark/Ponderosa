@@ -25,7 +25,6 @@ import type {
   EngineModelValidationDto,
   ProjectEngineCapabilitiesDto,
   ProjectEngineModelCatalogDto,
-  WorkspaceFileViewDto,
   CreateProjectRequest,
   UpdateProjectRequest,
   ReadinessDto,
@@ -260,6 +259,12 @@ import {
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
+import {
+  PROJECT_FILE_DOWNLOAD_WEIGHT,
+  PROJECT_FILE_PREVIEW_WEIGHT,
+  ProjectFileAuthority,
+  registerProjectFileRoutes,
+} from "./routes/project-files.js";
 import type { ServerContext } from "./server-context.js";
 import {
   MAX_AGENT_MENTION_REPLAY_WINDOW,
@@ -13008,6 +13013,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   );
 
   registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
+  const projectFileAuthority = new ProjectFileAuthority(
+    store,
+    opts.projectFilePreviewFaults,
+  );
 
   async function generatedFile(
     projectId: string,
@@ -13111,7 +13120,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     request: { raw: NodeJS.EventEmitter },
     reply: { raw: NodeJS.EventEmitter },
   ): { signal: AbortSignal; finish: () => void } | undefined {
-    const release = acquireProjectFileTransfer(projectId, weight);
+    const release = projectFileAuthority.acquire(projectId, weight);
     if (!release) return undefined;
     const controller = new AbortController();
     let finished = false;
@@ -13148,7 +13157,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         return reply.code(404).send({ error: "generated artifact not found" });
       }
       const prepared = await sendGeneratedPreview(reply, file, transfer.signal);
-      if (prepared.body instanceof Readable) bindProjectFileTransferLifecycle(request, reply, prepared.body, transfer.finish);
+      if (prepared.body instanceof Readable) projectFileAuthority.bindLifecycle(request, reply, prepared.body, transfer.finish);
       else transfer.finish();
       return prepared.response.send(prepared.body);
     } catch (error) {
@@ -13184,7 +13193,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         .header("Content-Disposition", contentDisposition(file.name));
       if (file.managed) {
         const body = file.managed.createReadStream(transfer.signal);
-        bindProjectFileTransferLifecycle(request, reply, body, transfer.finish);
+        projectFileAuthority.bindLifecycle(request, reply, body, transfer.finish);
         return response.send(body);
       }
       transfer.finish();
@@ -13261,7 +13270,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (request.query.download === "1") response.header("Content-Disposition", contentDisposition(file.name));
         if (file.managed) {
           const body = file.managed.createReadStream(transfer.signal);
-          bindProjectFileTransferLifecycle(request, reply, body, transfer.finish);
+          projectFileAuthority.bindLifecycle(request, reply, body, transfer.finish);
           return response.send(body);
         }
         transfer.finish();
@@ -13316,274 +13325,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   registerLegacyFilesRoute(app, serverContext);
 
-  const PROJECT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
-  const PROJECT_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
-  const PROJECT_FILE_GLOBAL_CAPACITY = 12;
-  const PROJECT_FILE_PROJECT_CAPACITY = 4;
-  const PROJECT_FILE_PREVIEW_WEIGHT = 1;
-  const PROJECT_FILE_DOWNLOAD_WEIGHT = 2;
-  const PROJECT_FILE_RATE_WINDOW_MS = 60_000;
-  const PROJECT_FILE_RATE_CAPACITY = 60;
-  const PROJECT_FILE_RATE_BUCKET_LIMIT = 512;
-  let projectFileGlobalInFlight = 0;
-  const projectFileInFlight = new Map<string, number>();
-  const projectFileRequests = new Map<string, { requests: Array<{ at: number; weight: number }>; lastSeen: number }>();
-  const projectPreviewMediaTypes = new Set(["image/png", "image/jpeg", "image/webp", "application/pdf"]);
-
-  function acquireProjectFileTransfer(projectId: string, weight: number): (() => void) | undefined {
-    const now = Date.now();
-    for (const [key, bucket] of projectFileRequests) {
-      const requests = bucket.requests.filter((entry) => entry.at > now - PROJECT_FILE_RATE_WINDOW_MS);
-      if (requests.length === 0 && !projectFileInFlight.has(key)) projectFileRequests.delete(key);
-      else if (requests.length !== bucket.requests.length) projectFileRequests.set(key, { requests, lastSeen: bucket.lastSeen });
-    }
-    while (!projectFileRequests.has(projectId) && projectFileRequests.size >= PROJECT_FILE_RATE_BUCKET_LIMIT) {
-      const oldest = [...projectFileRequests.entries()]
-        .filter(([key]) => !projectFileInFlight.has(key))
-        .sort((left, right) => left[1].lastSeen - right[1].lastSeen)[0];
-      if (!oldest) return undefined;
-      projectFileRequests.delete(oldest[0]);
-    }
-    const bucket = projectFileRequests.get(projectId) ?? { requests: [], lastSeen: now };
-    const rateUsed = bucket.requests.reduce((total, entry) => total + entry.weight, 0);
-    if (rateUsed + weight > PROJECT_FILE_RATE_CAPACITY || projectFileGlobalInFlight + weight > PROJECT_FILE_GLOBAL_CAPACITY
-      || (projectFileInFlight.get(projectId) ?? 0) + weight > PROJECT_FILE_PROJECT_CAPACITY) {
-      projectFileRequests.set(projectId, { ...bucket, lastSeen: now });
-      return undefined;
-    }
-    bucket.requests.push({ at: now, weight });
-    projectFileRequests.set(projectId, { requests: bucket.requests, lastSeen: now });
-    projectFileGlobalInFlight += weight;
-    projectFileInFlight.set(projectId, (projectFileInFlight.get(projectId) ?? 0) + weight);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      projectFileGlobalInFlight = Math.max(0, projectFileGlobalInFlight - weight);
-      const next = Math.max(0, (projectFileInFlight.get(projectId) ?? weight) - weight);
-      if (next === 0) projectFileInFlight.delete(projectId);
-      else projectFileInFlight.set(projectId, next);
-    };
-  }
-
-  function bindProjectFileTransferLifecycle(
-    request: { raw: NodeJS.EventEmitter },
-    reply: { raw: NodeJS.EventEmitter },
-    body: Readable,
-    release: () => void,
-  ): void {
-    let settled = false;
-    const cleanup = (destroy: boolean) => {
-      if (settled) return;
-      settled = true;
-      request.raw.removeListener("aborted", aborted);
-      reply.raw.removeListener("close", closed);
-      if (destroy && !body.destroyed) body.destroy();
-      release();
-    };
-    const aborted = () => cleanup(true);
-    const closed = () => cleanup(!body.readableEnded);
-    request.raw.once("aborted", aborted);
-    reply.raw.once("close", closed);
-    body.once("end", () => cleanup(false)).once("close", () => cleanup(false)).once("error", () => cleanup(false));
-  }
-
-  function projectFileMediaType(input: string | undefined): string | undefined {
-    if (!input?.trim()) return undefined;
-    try {
-      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
-      return contentTypeForStatic(requested.toLowerCase());
-    } catch {
-      return undefined;
-    }
-  }
-
-  function workspaceFileContentType(file: string): string {
-    const extension = path.extname(file).toLowerCase();
-    return ({
-      ".md": "text/markdown", ".mdown": "text/markdown", ".txt": "text/plain",
-      ".csv": "text/csv", ".tsv": "text/tab-separated-values", ".xml": "application/xml",
-      ".yaml": "text/yaml", ".yml": "text/yaml", ".log": "text/plain",
-    } as Record<string, string>)[extension] ?? contentTypeForStatic(file.toLowerCase()).split(";", 1)[0]!;
-  }
-
-  function validProjectPreviewMagic(mediaType: string, header: Buffer): boolean {
-    if (mediaType === "image/png") return header.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex"));
-    if (mediaType === "image/jpeg") return header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
-    if (mediaType === "image/webp") return header.subarray(0, 4).toString("ascii") === "RIFF"
-      && header.subarray(8, 12).toString("ascii") === "WEBP";
-    if (mediaType === "application/pdf") return header.subarray(0, 5).toString("ascii") === "%PDF-";
-    return false;
-  }
-
-  async function projectFileForBrowser(
-    projectId: string,
-    input: string | undefined,
-    options: { maxBytes: number; previewMediaType?: string },
-  ): Promise<{ body: Readable; name: string; mediaType: string; size: number } | undefined> {
-    const project = store.getProject(projectId);
-    if (!project || !input?.trim()) return undefined;
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
-    try {
-      const root = await fs.realpath(project.hostPath);
-      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
-      const candidate = path.isAbsolute(requested)
-        ? requested
-        : path.resolve(root, safeRelativePath(requested));
-      const resolved = await fs.realpath(candidate);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
-      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
-      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
-      await opts.projectFilePreviewFaults?.afterResolve?.(resolved);
-      handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
-      if (openedPath !== root && !openedPath.startsWith(`${root}${path.sep}`)) return undefined;
-      const info = await handle.stat();
-      if (!info.isFile() || info.size > options.maxBytes) return undefined;
-      const mediaType = options.previewMediaType ?? contentTypeForStatic(resolved.toLowerCase());
-      if (options.previewMediaType) {
-        const header = Buffer.alloc(16);
-        const { bytesRead } = await handle.read(header, 0, header.length, 0);
-        if (!validProjectPreviewMagic(options.previewMediaType, header.subarray(0, bytesRead))) return undefined;
-      }
-      const openHandle = handle;
-      handle = undefined;
-      const body = Readable.from((async function* streamBoundedProjectFile() {
-        let position = 0;
-        try {
-          while (position < info.size) {
-            const requestedBytes = Math.min(64 * 1024, info.size - position);
-            const buffer = Buffer.allocUnsafe(requestedBytes);
-            const { bytesRead } = await openHandle.read(buffer, 0, requestedBytes, position);
-            if (bytesRead === 0) break;
-            position += bytesRead;
-            yield buffer.subarray(0, bytesRead);
-          }
-        } finally {
-          await openHandle.close().catch(() => undefined);
-        }
-      })());
-      return { body, name: path.basename(resolved), mediaType, size: info.size };
-    } catch {
-      return undefined;
-    } finally {
-      await handle?.close().catch(() => undefined);
-    }
-  }
-
-  async function projectFileView(projectId: string, input: string | undefined): Promise<WorkspaceFileViewDto | undefined> {
-    const project = store.getProject(projectId);
-    if (!project || !input?.trim()) return undefined;
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
-    try {
-      const root = await fs.realpath(project.hostPath);
-      const requested = input.startsWith("file://") ? decodeURIComponent(new URL(input).pathname) : input;
-      const candidate = path.isAbsolute(requested) ? requested : path.resolve(root, safeRelativePath(requested));
-      const resolved = await fs.realpath(candidate);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) return undefined;
-      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
-      if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
-      handle = await fs.open(resolved, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
-      if (openedPath !== root && !openedPath.startsWith(`${root}${path.sep}`)) return undefined;
-      const info = await handle.stat();
-      if (!info.isFile()) return undefined;
-      const mediaType = workspaceFileContentType(resolved);
-      let previewable = projectPreviewMediaTypes.has(mediaType) && info.size <= PROJECT_PREVIEW_MAX_BYTES;
-      if (previewable) {
-        const header = Buffer.alloc(16);
-        const { bytesRead } = await handle.read(header, 0, header.length, 0);
-        previewable = validProjectPreviewMagic(mediaType, header.subarray(0, bytesRead));
-      }
-      const textMedia = mediaType.startsWith("text/") || [
-        "application/json", "application/javascript", "application/xml",
-      ].includes(mediaType);
-      let text: string | undefined;
-      if (textMedia && info.size <= MAX_FILE_BYTES) {
-        const body = await handle.readFile();
-        if (isUtf8(body)) text = body.toString("utf8");
-      }
-      const encodedPath = encodeURIComponent(relative);
-      return {
-        projectId,
-        path: relative,
-        name: path.basename(resolved),
-        mediaType,
-        size: info.size,
-        previewable,
-        ...(text !== undefined ? { text } : {}),
-        truncated: (textMedia && text === undefined) || info.size > PROJECT_DOWNLOAD_MAX_BYTES,
-        ...(previewable ? { previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}` } : {}),
-        ...(info.size <= PROJECT_DOWNLOAD_MAX_BYTES ? { downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}` } : {}),
-      };
-    } catch {
-      return undefined;
-    } finally {
-      await handle?.close().catch(() => undefined);
-    }
-  }
-
-  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
-    "/api/projects/:projectId/workspace-files/view-info",
-    async (request, reply) => {
-      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      const file = await projectFileView(request.params.projectId, request.query.path);
-      if (!file) return reply.code(404).send({ error: "project file is missing or unavailable" });
-      return reply.header("Cache-Control", "private, no-store").send(file);
-    },
-  );
-
-  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
-    "/api/projects/:projectId/workspace-files/preview",
-    async (request, reply) => {
-      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      const mediaType = projectFileMediaType(request.query.path);
-      if (!mediaType || !projectPreviewMediaTypes.has(mediaType)) {
-        return reply.code(415).send({ error: "this project file does not support an inline preview" });
-      }
-      const release = acquireProjectFileTransfer(request.params.projectId, PROJECT_FILE_PREVIEW_WEIGHT);
-      if (!release) return reply.code(429).header("Retry-After", "1").send({ error: "project preview capacity exceeded" });
-      const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
-        maxBytes: PROJECT_PREVIEW_MAX_BYTES,
-        previewMediaType: mediaType,
-      });
-      if (!file) {
-        release();
-        return reply.code(404).send({ error: "project file not found" });
-      }
-      bindProjectFileTransferLifecycle(request, reply, file.body, release);
-      return reply.type(file.mediaType)
-        .header("Content-Length", String(file.size))
-        .header("Content-Disposition", contentDisposition(file.name).replace(/^attachment/, "inline"))
-        .header("Cache-Control", "private, no-store")
-        .header("X-Content-Type-Options", "nosniff")
-        .header("Content-Security-Policy", "default-src 'none'; sandbox")
-        .send(file.body);
-    },
-  );
-
-  app.get<{ Params: { projectId: string }; Querystring: { path?: string } }>(
-    "/api/projects/:projectId/workspace-files/download",
-    async (request, reply) => {
-      if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-      const release = acquireProjectFileTransfer(request.params.projectId, PROJECT_FILE_DOWNLOAD_WEIGHT);
-      if (!release) return reply.code(429).header("Retry-After", "1").send({ error: "project file capacity exceeded" });
-      const file = await projectFileForBrowser(request.params.projectId, request.query.path, {
-        maxBytes: PROJECT_DOWNLOAD_MAX_BYTES,
-      });
-      if (!file) {
-        release();
-        return reply.code(404).send({ error: "project file not found" });
-      }
-      bindProjectFileTransferLifecycle(request, reply, file.body, release);
-      return reply.type("application/octet-stream")
-        .header("Content-Length", String(file.size))
-        .header("Content-Disposition", contentDisposition(file.name))
-        .header("Cache-Control", "private, no-store")
-        .header("X-Content-Type-Options", "nosniff")
-        .send(file.body);
-    },
-  );
+  registerProjectFileRoutes(app, projectFileAuthority, store);
 
   registerLegacyWorkspaceRoutes(app, serverContext);
 
