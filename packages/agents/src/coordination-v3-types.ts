@@ -11,6 +11,7 @@ import type {
   CoordinationRequestUpdateKind,
   RequestLifetime,
   TriggerRunBudgetDto,
+  TriggerOccurrenceState,
   TriggerSourceConfig,
   TriggerSourceKind,
 } from "@ponderosa/core";
@@ -359,7 +360,7 @@ export interface EnqueueMessageActivationInput {
   now?: string;
 }
 
-export type TriggerOccurrenceState = "pending" | "activated" | "cancelled" | "dead_lettered";
+export type { TriggerOccurrenceState } from "@ponderosa/core";
 
 export interface TriggerFilesystemBurst {
   triggerId: string;

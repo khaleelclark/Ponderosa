@@ -98,6 +98,36 @@ import { artifactId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
+import type {
+  ContextReadBoundary,
+  ContextSourcePage,
+  ActivityProjectionReadRow,
+  RunOutputEventRow,
+  RunOutputSegmentRow,
+  ArtifactProjectionReadRow,
+  ProjectJson,
+  ManagedArtifactAccess,
+  ManagedArtifactEvent,
+  AgentJson,
+  AgentSpawnOrigin,
+  PresetEvent,
+  ConversationJson,
+  ConversationDeliveryIntent,
+  MessageDispatchRecord,
+  AgentDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store-types.js";
+export type {
+  ContextReadBoundary,
+  ContextSourcePage,
+  ManagedArtifactAccess,
+  AgentSpawnOrigin,
+  ConversationDeliveryIntent,
+  AgentDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store-types.js";
 import {
   initProjectionState,
   projectAll,
@@ -129,54 +159,6 @@ import {
   projectDeletionPending,
   projectDeletionReceipts,
 } from "./schema.js";
-
-export interface ContextReadBoundary {
-  createdAt: string;
-  id: string;
-}
-
-export interface ContextSourcePage<T> {
-  items: T[];
-  hasMore: boolean;
-}
-
-interface ActivityProjectionReadRow {
-  seq: number;
-  execution_id: string | null;
-  event_json: string;
-  created_at: string;
-  output_preview_utf8_bytes: number | null;
-  output_total_utf8_bytes: number | null;
-  output_sha256: string | null;
-}
-
-interface RunOutputEventRow {
-  seq: number;
-  payload_json: string;
-  created_at: string;
-}
-
-interface RunOutputSegmentRow {
-  first_seq: number;
-  last_seq: number;
-  event_type: "text" | "reasoning";
-  execution_id: string;
-}
-
-interface ArtifactProjectionReadRow {
-  id: string;
-  agent_id: string;
-  execution_id: string | null;
-  kind: string;
-  path: string;
-  summary: string | null;
-  created_at: string;
-  source_path: string | null;
-  media_type: string | null;
-  visibility: string | null;
-  pinned: number | null;
-  size: number | null;
-}
 
 const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
 const RUN_OUTPUT_TEXT_PREVIEW_BYTES = 32 * 1_024;
@@ -217,142 +199,12 @@ import {
   importedAgentHistoryPath,
   agentsDir,
 } from "./paths.js";
-
-interface ProjectJson {
-  id: string;
-  label: string;
-  hostPath: string;
-  createdAt: string;
-  lastUsedAt?: string;
-  defaultEngine: string;
-  defaultModel?: string;
-  defaultEffort?: string;
-  lastConversationId?: string;
-  instructions?: string;
-}
-
-export interface ManagedArtifactAccess {
-  ownerKind: "project" | "communication" | "request_update";
-  ownerId: string;
-  audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
-  senderAgentId?: string;
-}
-
-type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
-  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
-  | { type: "deleted"; artifactId: string; at: string; reason: string };
-
-interface AgentJson {
-  id: string;
-  projectId: string;
-  conversationId?: string;
-  conversationIds?: string[];
-  title: string;
-  activeEngine: string;
-  model?: string;
-  effort?: string;
-  createdAt: string;
-  updatedAt: string;
-  archived: boolean;
-  deletedAt?: string;
-  managementPermissions?: AgentDto["managementPermissions"];
-  spawnedByAgentId?: string;
-  spawnedByExecutionId?: string;
-  spawnPrompt?: string;
-  spawnIdempotencyKey?: string;
-  presetSnapshot?: AgentDto["presetSnapshot"];
-}
-
-export interface AgentSpawnOrigin {
-  agentId: string;
-  executionId: string;
-  idempotencyKey: string;
-  prompt?: string;
-}
-
-type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
 const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine: "codex" }> = [
   { name: "Frontend", description: "Accessible, polished product UI", guidance: "Act as a product-minded frontend engineer. Prioritize responsive UX, accessibility, and tested user flows.", engine: "codex" },
   { name: "Security", description: "Threat-model and harden changes", guidance: "Act as a security reviewer. Preserve trust boundaries, minimize authority, and test abuse cases.", engine: "codex" },
   { name: "QA", description: "Find regressions and verify behavior", guidance: "Act as a QA engineer. Build a risk-based test plan, reproduce failures, and report evidence precisely.", engine: "codex" },
   { name: "Documentation", description: "Create clear, accurate documentation", guidance: "Act as a technical writer. Verify behavior in the code and write concise task-oriented documentation.", engine: "codex" },
 ];
-
-interface ConversationJson {
-  id: string;
-  projectId: string;
-  title: string;
-  defaultEngine?: string;
-  defaultModel?: string;
-  defaultEffort?: string;
-  createdAt: string;
-  updatedAt: string;
-  archived: boolean;
-}
-
-export interface ConversationDeliveryIntent {
-  targetAgentId: string;
-  relayDepth: number;
-  mentionTrail: string[];
-  kind: "direct" | "tag";
-  /** The selector that authorized this recipient when the message was recorded. */
-  audience?: "mention" | "everyone";
-  /** Explicit behavior when the recipient has an active durable wait. */
-  /** Target-owned staged assets delivered with this recipient turn. */
-  attachmentIds?: string[];
-}
-
-interface MessageDispatchRecord {
-  schemaVersion: 1;
-  eventId: string;
-  messageId: string;
-  conversationId: string;
-  channel: ConversationChannel;
-  role: "user" | "assistant" | "system";
-  renderedText: string;
-  createdAt: string;
-  authorAgentId?: string;
-  deliveryIntents?: ConversationDeliveryIntent[];
-  messageReceiptKey?: string;
-  orderKey: string;
-  attachments?: import("@ponderosa/core").ImageAttachmentDto[];
-}
-
-export interface AgentDeletionReceipt {
-  id: string;
-  projectId: string;
-  previewHash: string;
-  rootAgentIds: string[];
-  deletedAgentIds: string[];
-  storageCleanupCompleted: boolean;
-  serverCleanupCompleted: boolean;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface ProjectDeletionReceipt {
-  projectId: string;
-  tombstoneName: string;
-  storageCleanupCompleted: boolean;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface AgentManagementAuthorization {
-  planId: string;
-  projectId: string;
-  conversationId: string;
-  ownerAgentId: string;
-  runId: string;
-  scopeHash: string;
-  permission: "deletion" | "reorganization";
-  approvalDecisionId?: string;
-}
 
 export class AgentStore {
   private readonly db: Db;
