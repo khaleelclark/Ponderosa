@@ -1,0 +1,481 @@
+import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
+import { TERMINAL_REQUEST_STATES } from "@ponderosa/core";
+import { PRIORITY } from "./coordination-v3-activation.js";
+import {
+  payloadHash,
+  stableJson,
+} from "./coordination-v3-canonical-json.js";
+import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
+import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import { isIso } from "./coordination-v3-runtime-validation.js";
+import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
+import type {
+  CoordinateV3Input,
+  CoordinateV3Result,
+  EnqueueMessageActivationInput,
+  UpdateRequestV3Input,
+} from "./coordination-v3-types.js";
+
+/** Creates correlated requests and aggregate joins in one idempotent intake. */
+export class CoordinationV3CoordinateAuthority {
+  constructor(
+    private readonly sqlite: Database.Database,
+    private readonly support: CoordinationV3StoreSupport,
+    private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority,
+    private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly insertQuestionSuspensions: (
+      requestIds: string[],
+      ownerAgentId: string,
+      dependencyKind: "decision" | "join",
+      dependencyId: string,
+      now: string,
+    ) => void,
+    private readonly updateRequest: (input: UpdateRequestV3Input) => unknown,
+    private readonly reevaluateRequestJoins: (
+      requestId: string,
+      now: string,
+    ) => void,
+    private readonly questionDependencyContinuations: (
+      dependencyKind: "decision" | "join",
+      dependencyId: string,
+    ) => Array<{ requestId: string; inReplyToUpdateId: string }>,
+    private readonly attachQuestionDependencyToActivation: (
+      activationId: string,
+      dependencyKind: "decision" | "join",
+      dependencyId: string,
+      now: string,
+      resolve: boolean,
+    ) => void,
+  ) {}
+
+  coordinate(
+    input: CoordinateV3Input,
+    now = new Date().toISOString(),
+  ): CoordinateV3Result {
+    if (!input.idempotencyKey.trim()) {
+      throw new Error("idempotencyKey is required");
+    }
+    if (input.requests.length === 0 && !input.join?.requestIds?.length) {
+      throw new Error("at least one new or existing request is required");
+    }
+    const normalized = {
+      projectId: input.projectId,
+      conversationId: input.conversationId ?? null,
+      requesterAgentId: input.requesterAgentId,
+      actorScope: input.actorScope,
+      idempotencyKey: input.idempotencyKey,
+      requests: input.requests.map((request) => ({
+        ...request,
+        requestId: request.requestId ?? null,
+      })),
+      join: input.join ? { ...input.join, id: input.join.id ?? null } : null,
+    };
+    const hash = payloadHash(normalized);
+
+    return this.sqlite.transaction(() => {
+      if (input.runAuthorization) {
+        this.support.requireAuthorizedRun(
+          input.runAuthorization,
+          input.conversationId
+            ? `conversation:${input.conversationId}`
+            : undefined,
+        );
+      }
+      const replay = this.support.idempotentReplay<CoordinateV3Result>(
+        input.projectId,
+        input.actorScope,
+        "coordinate",
+        input.idempotencyKey,
+        hash,
+      );
+      if (replay) return { ...replay, replayed: true };
+      this.support.requireProject(input.projectId);
+      if (input.requesterAgentId) {
+        this.support.requireAgent(
+          input.projectId,
+          input.requesterAgentId,
+        );
+      }
+      if (input.runAuthorization && !input.conversationId) {
+        throw new Error("provider coordination requires a Team Chat scope");
+      }
+      if (input.conversationId) {
+        this.support.requireConversation(
+          input.projectId,
+          input.conversationId,
+        );
+        if (input.requesterAgentId) {
+          this.support.requireConversationMember(
+            input.conversationId,
+            input.requesterAgentId,
+          );
+        }
+      }
+      const requestIds: string[] = [];
+      for (const request of input.requests) {
+        this.support.requireAgent(
+          input.projectId,
+          request.recipientAgentId,
+        );
+        if (input.conversationId) {
+          this.support.requireConversationMember(
+            input.conversationId,
+            request.recipientAgentId,
+          );
+        }
+        this.support.validateLifetime(request.lifetime, now);
+        const replyAuthority = request.replyAuthority
+          ? {
+            intent: request.replyAuthority.intent,
+            ...(request.replyAuthority.recipientAgentIds
+              ? {
+                recipientAgentIds: [
+                  ...request.replyAuthority.recipientAgentIds,
+                ].sort(),
+              }
+              : {}),
+          }
+          : undefined;
+        if (replyAuthority) {
+          const recipients = replyAuthority.recipientAgentIds ?? [];
+          if (
+            !(
+              replyAuthority.intent === "broadcast" ||
+              replyAuthority.intent === "direct_to_user" ||
+              replyAuthority.intent === "collaboration"
+            ) ||
+            (
+              replyAuthority.intent === "collaboration"
+                ? recipients.length === 0
+                : recipients.length > 0
+            ) ||
+            new Set(recipients).size !== recipients.length ||
+            recipients.some(
+              (agentId) =>
+                typeof agentId !== "string" || !agentId.trim(),
+            )
+          ) {
+            throw new Error("request reply authority is invalid");
+          }
+        }
+        const requestId = request.requestId ?? randomUUID();
+        this.sqlite.prepare(`
+          INSERT INTO coordination_requests (
+            id, project_id, conversation_id, requester_agent_id,
+            recipient_agent_id, communication_event_id, payload_json,
+            reply_authority_json, state, version, lifetime_kind, deadline_at,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?, ?, ?, ?)
+        `).run(
+          requestId,
+          input.projectId,
+          input.conversationId ?? null,
+          input.requesterAgentId ?? null,
+          request.recipientAgentId,
+          request.communicationEventId ?? null,
+          stableJson(request.payload ?? null),
+          replyAuthority ? stableJson(replyAuthority) : null,
+          request.lifetime.kind,
+          request.lifetime.kind === "deadline"
+            ? request.lifetime.at
+            : null,
+          now,
+          now,
+        );
+        requestIds.push(requestId);
+        this.createActivation({
+          projectId: input.projectId,
+          agentId: request.recipientAgentId,
+          scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(
+            input.conversationId ?? null,
+            request.recipientAgentId,
+          ),
+          kind: "coordination_request",
+          priority: PRIORITY.request,
+          dedupeKey: `request:${requestId}:created`,
+          payload: {
+            requestId,
+            requesterAgentId: input.requesterAgentId ?? null,
+            request: request.payload ?? null,
+          },
+          sourceKind: "request",
+          sourceId: requestId,
+          externalIntake: true,
+          now,
+        });
+      }
+
+      let joinId: string | undefined;
+      if (input.join) {
+        if (!input.requesterAgentId) {
+          throw new Error("a join requires an agent requester");
+        }
+        const existingMemberRequestIds: string[] = [];
+        const newRecipientIds = new Set(
+          input.requests.map((request) => request.recipientAgentId),
+        );
+        for (const requestId of input.join.requestIds ?? []) {
+          const existing = this.sqlite.prepare(`
+            SELECT project_id, conversation_id, requester_agent_id
+            FROM coordination_requests WHERE id = ?
+          `).get(requestId) as {
+            project_id: string;
+            conversation_id: string | null;
+            requester_agent_id: string | null;
+          } | undefined;
+          if (
+            existing?.project_id === input.projectId &&
+            existing.requester_agent_id === input.requesterAgentId &&
+            existing.conversation_id === (input.conversationId ?? null)
+          ) {
+            existingMemberRequestIds.push(requestId);
+            continue;
+          }
+          if (newRecipientIds.has(requestId)) continue;
+          throw new Error(
+            "every existing join request must be owned by the requester in this project",
+          );
+        }
+        const memberRequestIds = [
+          ...new Set([...requestIds, ...existingMemberRequestIds]),
+        ];
+        const continuationRequestIds = [
+          ...new Set(input.join.continuationRequestIds ?? []),
+        ];
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.support.getRequestRow(requestId);
+          const isInbound =
+            continuation.recipient_agent_id === input.requesterAgentId &&
+            !TERMINAL_REQUEST_STATES.has(continuation.state);
+          const isOutboundQuestion =
+            continuation.requester_agent_id === input.requesterAgentId &&
+            continuation.state === "awaiting_answer" &&
+            continuation.open_question_update_id !== null;
+          if (
+            continuation.project_id !== input.projectId ||
+            continuation.conversation_id !==
+              (input.conversationId ?? null) ||
+            (!isInbound && !isOutboundQuestion)
+          ) {
+            throw new Error(
+              "every join continuation must be nonterminal work assigned to the owner or an attached outbound question",
+            );
+          }
+        }
+        joinId = input.join.id ?? randomUUID();
+        const mode = input.join.mode;
+        const quorum = mode === "all"
+          ? memberRequestIds.length
+          : mode === "any"
+            ? 1
+            : input.join.quorum ?? 0;
+        if (quorum < 1 || quorum > memberRequestIds.length) {
+          throw new Error("join quorum is outside request membership");
+        }
+        const satisfying = input.join.satisfyingOutcomes ?? ["completed"];
+        const wakePolicy = input.join.wakePolicy ?? "final_only";
+        if (
+          satisfying.length === 0 ||
+          satisfying.some((state) => !TERMINAL_REQUEST_STATES.has(state))
+        ) {
+          throw new Error(
+            "join satisfying outcomes must be terminal request states",
+          );
+        }
+        if (
+          input.join.deadlineAt &&
+          (
+            !isIso(input.join.deadlineAt) ||
+            input.join.deadlineAt <= now
+          )
+        ) {
+          throw new Error("join deadline must be a future ISO timestamp");
+        }
+        const definitionHash = payloadHash({
+          conversationId: input.conversationId ?? null,
+          requestIds: [...memberRequestIds].sort(),
+          mode,
+          quorum,
+          satisfyingOutcomes: [...new Set(satisfying)].sort(),
+          wakePolicy,
+          deadlineAt: input.join.deadlineAt ?? null,
+          continuationRequestIds: [...continuationRequestIds].sort(),
+        });
+        const equivalent = this.sqlite.prepare(`
+          SELECT id FROM coordination_joins
+          WHERE project_id = ? AND owner_agent_id = ? AND definition_hash = ?
+            AND state IN ('open', 'satisfied', 'impossible')
+          ORDER BY created_at LIMIT 1
+        `).get(
+          input.projectId,
+          input.requesterAgentId,
+          definitionHash,
+        ) as { id: string } | undefined;
+        if (equivalent) {
+          joinId = equivalent.id;
+          const result: CoordinateV3Result = {
+            requestIds,
+            joinId,
+            replayed: false,
+          };
+          this.support.recordIdempotency(
+            input.projectId,
+            input.actorScope,
+            "coordinate",
+            input.idempotencyKey,
+            hash,
+            result,
+            now,
+          );
+          return result;
+        }
+        this.sqlite.prepare(`
+          INSERT INTO coordination_joins (
+            id, project_id, conversation_id, owner_agent_id, mode,
+            wake_policy, quorum, satisfying_outcomes_json, state, deadline_at,
+            definition_hash, continuation_request_ids_json,
+            created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
+        `).run(
+          joinId,
+          input.projectId,
+          input.conversationId ?? null,
+          input.requesterAgentId,
+          mode,
+          wakePolicy,
+          quorum,
+          stableJson([...new Set(satisfying)]),
+          input.join.deadlineAt ?? null,
+          definitionHash,
+          stableJson(continuationRequestIds),
+          now,
+          now,
+        );
+        const insertMember = this.sqlite.prepare(`
+          INSERT INTO coordination_join_members (
+            join_id, request_id, position
+          ) VALUES (?, ?, ?)
+        `);
+        memberRequestIds.forEach((requestId, position) =>
+          insertMember.run(joinId, requestId, position));
+        const outboundQuestionIds = continuationRequestIds.filter(
+          (requestId) => {
+            const continuation = this.support.getRequestRow(requestId);
+            return (
+              continuation.requester_agent_id === input.requesterAgentId &&
+              continuation.state === "awaiting_answer" &&
+              continuation.open_question_update_id !== null
+            );
+          },
+        );
+        this.insertQuestionSuspensions(
+          outboundQuestionIds,
+          input.requesterAgentId,
+          "join",
+          joinId,
+          now,
+        );
+        for (const requestId of continuationRequestIds) {
+          const continuation = this.support.getRequestRow(requestId);
+          if (
+            continuation.state === "open" ||
+            continuation.state === "in_progress"
+          ) {
+            this.updateRequest({
+              requestId,
+              updateId: `join:${joinId}:waiting:${requestId}`,
+              kind: "waiting_dependency",
+              actor: { kind: "agent", id: input.requesterAgentId },
+              payload: { joinId, reason: "waiting_for_join" },
+              now,
+            });
+          }
+        }
+        this.reevaluateRequestJoins(memberRequestIds[0]!, now);
+      }
+
+      const result: CoordinateV3Result = {
+        requestIds,
+        ...(joinId ? { joinId } : {}),
+        replayed: false,
+      };
+      this.support.recordIdempotency(
+        input.projectId,
+        input.actorScope,
+        "coordinate",
+        input.idempotencyKey,
+        hash,
+        result,
+        now,
+      );
+      return result;
+    })();
+  }
+
+  enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
+    const now = input.now ?? new Date().toISOString();
+    return this.sqlite.transaction(() => {
+      this.support.requireProject(input.projectId);
+      this.support.requireAgent(input.projectId, input.agentId);
+      const continuationQuestions = input.questionDependency
+        ? this.questionDependencyContinuations(
+          input.questionDependency.kind,
+          input.questionDependency.id,
+        )
+        : [];
+      const payload =
+        continuationQuestions.length &&
+        input.payload &&
+        typeof input.payload === "object" &&
+        !Array.isArray(input.payload)
+          ? {
+            ...input.payload,
+            continuationQuestions,
+            continuationInstruction:
+              "Answer each correlated question with its exact " +
+              "inReplyToUpdateId before ending this Run.",
+          }
+          : input.payload;
+      const activationId = this.createActivation({
+        projectId: input.projectId,
+        agentId: input.agentId,
+        scopeKey: input.scopeKey ?? `agent:${input.agentId}`,
+        kind: `${input.kind}_message`,
+        priority: input.kind === "human"
+          ? PRIORITY.human
+          : input.kind === "urgent"
+            ? PRIORITY.urgent
+            : PRIORITY.ordinary,
+        dispatchPolicy:
+          input.dispatchPolicy ??
+          (input.kind === "ordinary" ? "next_run" : "steer_or_run"),
+        promptClass:
+          input.promptClass ??
+          (
+            input.kind === "human"
+              ? "human"
+              : input.kind === "urgent"
+                ? "blocker"
+                : "ordinary"
+          ),
+        dedupeKey: `message:${input.messageId}`,
+        payload,
+        sourceKind: "message",
+        sourceId: input.messageId,
+        externalIntake: !input.bypassCapacity,
+        now,
+      });
+      if (input.questionDependency) {
+        this.attachQuestionDependencyToActivation(
+          activationId,
+          input.questionDependency.kind,
+          input.questionDependency.id,
+          now,
+          true,
+        );
+      }
+      return activationId;
+    })();
+  }
+}
