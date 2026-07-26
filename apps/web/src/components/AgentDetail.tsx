@@ -61,7 +61,7 @@ import type {
   HistoryWindowDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import {
@@ -1499,16 +1499,14 @@ export function AgentDetail({
               }}
             >
               <MenuItem value="">Engine Default</MenuItem>
-              {settingsModels.map((option, index) => (
-                <Fragment key={option.id}>
-                  {option.group && option.group !== settingsModels[index - 1]?.group ? (
-                    <ListSubheader>{option.group}</ListSubheader>
-                  ) : null}
-                  <MenuItem value={option.id} disabled={option.disabled}>
-                    <ListItemText primary={option.label} secondary={option.detail} />
-                  </MenuItem>
-                </Fragment>
-              ))}
+              {settingsModels.flatMap((option, index) => [
+                ...(option.group && option.group !== settingsModels[index - 1]?.group
+                  ? [<ListSubheader key={`group-${option.group}`}>{option.group}</ListSubheader>]
+                  : []),
+                <MenuItem key={option.id} value={option.id} disabled={option.disabled}>
+                  <ListItemText primary={option.label} secondary={option.detail} />
+                </MenuItem>,
+              ])}
             </Select>
           </FormControl>
           {settingsEngine === "claude" ? (

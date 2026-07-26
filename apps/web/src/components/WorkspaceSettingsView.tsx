@@ -20,7 +20,7 @@ import {
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectEngineModelCatalogDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
   effortOptionsForModel,
@@ -569,16 +569,14 @@ function ProviderSettingsSection({
                     });
                   }}
                 >
-                  {modelState.models.map((option, index) => (
-                    <Fragment key={option.id || "provider-default"}>
-                      {option.group && option.group !== modelState.models[index - 1]?.group ? (
-                        <ListSubheader>{option.group}</ListSubheader>
-                      ) : null}
-                      <MenuItem value={option.id} disabled={option.disabled}>
-                        <ListItemText primary={option.label} secondary={option.detail} />
-                      </MenuItem>
-                    </Fragment>
-                  ))}
+                  {modelState.models.flatMap((option, index) => [
+                    ...(option.group && option.group !== modelState.models[index - 1]?.group
+                      ? [<ListSubheader key={`group-${option.group}`}>{option.group}</ListSubheader>]
+                      : []),
+                    <MenuItem key={option.id || "provider-default"} value={option.id} disabled={option.disabled}>
+                      <ListItemText primary={option.label} secondary={option.detail} />
+                    </MenuItem>,
+                  ])}
                 </Select>
               </FormControl>
               <FormControl fullWidth>
