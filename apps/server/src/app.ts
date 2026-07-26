@@ -266,6 +266,7 @@ import {
   registerProjectFileRoutes,
 } from "./routes/project-files.js";
 import { registerTriggerRoutes } from "./routes/triggers.js";
+import { DraftService, registerDraftRoutes } from "./routes/drafts.js";
 import type { ServerContext } from "./server-context.js";
 import {
   MAX_AGENT_MENTION_REPLAY_WINDOW,
@@ -2076,46 +2077,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     managedWorkspacesRoot,
     allowedBrowseRoots: opts.allowedBrowseRoots,
   });
-  const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
-  const draftAttachmentId = /^[a-f0-9-]{36}$/i;
-  const draftOwnerId = /^[A-Za-z0-9_-]{1,128}$/;
-  const draftAttachmentTypes = new Set<string>(ASSET_LIMITS.acceptedMediaTypes);
-  const normalizedDraftOwner = (value: unknown): string | undefined => typeof value === "string" && draftOwnerId.test(value) ? value : undefined;
-  const draftAttachmentSurfaceDir = (draftId: string) => path.join(draftAttachmentsRoot, createHash("sha256").update(draftId).digest("hex"));
-  const draftAttachmentDir = (draftId: string, ownerId: string) => path.join(draftAttachmentSurfaceDir(draftId), createHash("sha256").update(ownerId).digest("hex"));
-  const draftAttachmentFiles = (conversationId: string, ownerId: string, id: string) => ({
-    body: path.join(draftAttachmentDir(conversationId, ownerId), `${id}.bin`),
-    metadata: path.join(draftAttachmentDir(conversationId, ownerId), `${id}.json`),
-  });
-  const readDraftAttachment = async (conversationId: string, ownerId: string, id: string): Promise<DraftAttachmentDto | undefined> => {
-    if (!draftAttachmentId.test(id)) return undefined;
-    const files = draftAttachmentFiles(conversationId, ownerId, id);
-    try {
-      const parsed = JSON.parse(await fs.readFile(files.metadata, "utf8")) as Omit<DraftAttachmentDto, "downloadUrl">;
-      const stat = await fs.stat(files.body);
-      if (!stat.isFile() || parsed.id !== id || parsed.conversationId !== conversationId || parsed.ownerId !== ownerId || parsed.size !== stat.size) return undefined;
-      return { ...parsed, downloadUrl: `/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}` };
-    } catch {
-      return undefined;
-    }
-  };
-  const hydrateDraft = async (conversationId: string, ownerId: string) => {
-    const draft = workspace.getDraft(conversationId, ownerId);
-    const attachments = (await Promise.all(draft.attachmentIds.map((id) => readDraftAttachment(conversationId, ownerId, id))))
-      .filter((item): item is DraftAttachmentDto => Boolean(item));
-    return { ...draft, attachments };
-  };
-  const validDraftId = (draftId: string): boolean => {
-    if (store.getConversation(draftId)) return true;
-    const separator = draftId.indexOf(":");
-    if (separator < 1) return false;
-    const kind = draftId.slice(0, separator);
-    const id = draftId.slice(separator + 1);
-    if (!id || id.includes(":")) return false;
-    if (kind === "collaboration") return Boolean(store.getConversation(id));
-    if (kind === "agent") return Boolean(store.getAgent(id));
-    return false;
-  };
+  const drafts = new DraftService(opts.dataDir, store, workspace);
+  const normalizedDraftOwner = (value: unknown) => drafts.normalizedOwner(value);
+  const draftAttachmentSurfaceDir = (draftId: string) => drafts.surfaceDir(draftId);
+  const draftAttachmentFiles = (draftId: string, ownerId: string, id: string) =>
+    drafts.files(draftId, ownerId, id);
+  const readDraftAttachment = (draftId: string, ownerId: string, id: string) =>
+    drafts.read(draftId, ownerId, id);
+  const validDraftId = (draftId: string) => drafts.validId(draftId);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -11970,93 +11939,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return preferences;
   });
 
-  app.get<{ Params: { id: string }; Querystring: { ownerId?: string } }>("/api/conversations/:id/draft", async (request, reply) => {
-    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
-    const ownerId = normalizedDraftOwner(request.query.ownerId);
-    if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
-    return hydrateDraft(request.params.id, ownerId);
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { ownerId?: string } }>("/api/conversations/:id/draft-conflicts", async (request, reply) => {
-    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
-    const ownerId = normalizedDraftOwner(request.query.ownerId);
-    if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
-    return workspace.listDraftConflicts(request.params.id, ownerId);
-  });
-
-  app.put<{ Params: { id: string }; Body: PutConversationDraftRequest }>("/api/conversations/:id/draft", async (request, reply) => {
-    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
-    const ownerId = normalizedDraftOwner(request.body?.ownerId);
-    if (!ownerId || !request.body?.clientId || !Number.isSafeInteger(request.body.expectedRevision) || !Array.isArray(request.body.attachmentIds)) return reply.code(400).send({ error: "invalid draft update" });
-    if (request.body.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(request.body.attachmentIds).size !== request.body.attachmentIds.length) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique draft attachments are allowed` });
-    const referenced = await Promise.all(request.body.attachmentIds.map((id) => readDraftAttachment(request.params.id, ownerId, id)));
-    if (referenced.some((item) => !item)) return reply.code(400).send({ error: "draft attachment is missing or belongs to another conversation" });
-    const cursor = workspace.cursor();
-    try {
-      workspace.putDraft(request.params.id, { ...request.body, ownerId });
-      publishWorkspaceSince(cursor);
-      return hydrateDraft(request.params.id, ownerId);
-    } catch (error) {
-      if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
-        return reply.code(409).send({
-          current: await hydrateDraft(request.params.id, ownerId),
-          displaced: (error as { displaced: unknown }).displaced,
-        });
-      }
-      throw error;
-    }
-  });
-
-  app.post<{ Params: { id: string }; Body: Buffer }>("/api/conversations/:id/draft-attachments", async (request, reply) => {
-    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft surface not found" });
-    if (!Buffer.isBuffer(request.body) || request.body.length === 0) return reply.code(400).send({ error: "attachment body is required" });
-    if (request.body.length > ASSET_LIMITS.maxFileBytes) return reply.code(413).send({ error: "draft attachment exceeds 8 MiB" });
-    const mediaType = String(request.headers["x-ponderosa-media-type"] ?? "").toLowerCase();
-    if (!draftAttachmentTypes.has(mediaType)) return reply.code(415).send({ error: "unsupported draft attachment type" });
-    const ownerId = normalizedDraftOwner(request.headers["x-ponderosa-draft-owner"]);
-    if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
-    const suppliedName = String(request.headers["x-ponderosa-filename"] ?? "attachment").replace(/[\u0000-\u001f\u007f]/g, "");
-    const name = path.basename(suppliedName).slice(0, 240) || "attachment";
-    const id = randomUUID();
-    const directory = draftAttachmentDir(request.params.id, ownerId);
-    const files = draftAttachmentFiles(request.params.id, ownerId, id);
-    const createdAt = new Date().toISOString();
-    const metadata: Omit<DraftAttachmentDto, "downloadUrl"> = { id, conversationId: request.params.id, ownerId, name, mediaType, size: request.body.length, createdAt };
-    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    const temp = `${files.body}.${randomUUID()}.tmp`;
-    try {
-      await fs.writeFile(temp, request.body, { mode: 0o600, flag: "wx" });
-      await fs.rename(temp, files.body);
-      await fs.writeFile(files.metadata, JSON.stringify(metadata), { mode: 0o600, flag: "wx" });
-    } catch (error) {
-      await Promise.allSettled([fs.rm(temp, { force: true }), fs.rm(files.body, { force: true }), fs.rm(files.metadata, { force: true })]);
-      throw error;
-    }
-    return reply.code(201).send({ ...metadata, downloadUrl: `/api/conversations/${encodeURIComponent(request.params.id)}/draft-attachments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}` });
-  });
-
-  app.get<{ Params: { id: string; attachmentId: string }; Querystring: { ownerId?: string } }>("/api/conversations/:id/draft-attachments/:attachmentId", async (request, reply) => {
-    if (!validDraftId(request.params.id)) return reply.code(404).send({ error: "draft attachment not found" });
-    const ownerId = normalizedDraftOwner(request.query.ownerId);
-    if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
-    const attachment = await readDraftAttachment(request.params.id, ownerId, request.params.attachmentId);
-    if (!attachment) return reply.code(404).send({ error: "draft attachment not found" });
-    const body = await fs.readFile(draftAttachmentFiles(request.params.id, ownerId, attachment.id).body);
-    return reply.header("content-type", "application/octet-stream")
-      .header("content-disposition", contentDisposition(attachment.name))
-      .header("cache-control", "private, no-store")
-      .header("x-content-type-options", "nosniff")
-      .send(body);
-  });
-
-  app.delete<{ Params: { id: string; attachmentId: string }; Querystring: { ownerId?: string } }>("/api/conversations/:id/draft-attachments/:attachmentId", async (request, reply) => {
-    const ownerId = normalizedDraftOwner(request.query.ownerId);
-    if (!ownerId) return reply.code(400).send({ error: "draft owner is required" });
-    if (!validDraftId(request.params.id) || !await readDraftAttachment(request.params.id, ownerId, request.params.attachmentId)) return reply.code(404).send({ error: "draft attachment not found" });
-    const files = draftAttachmentFiles(request.params.id, ownerId, request.params.attachmentId);
-    await Promise.all([fs.rm(files.body, { force: true }), fs.rm(files.metadata, { force: true })]);
-    return reply.code(204).send();
-  });
+  registerDraftRoutes(
+    app,
+    drafts,
+    workspace,
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    publishWorkspaceSince,
+  );
 
   const notificationRoutesOptions = {
     workspace,
