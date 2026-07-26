@@ -29,6 +29,7 @@ import {
   IconButton,
   InputLabel,
   Link,
+  ListSubheader,
   ListItemText,
   MenuItem,
   Paper,
@@ -339,6 +340,7 @@ export function AgentDetail({
   onViewChange,
   onOpenTechnicalDetails,
   engines,
+  modelCatalogLoading,
   engineCapabilities,
   onRefreshCapabilities,
   projectedStatus,
@@ -368,6 +370,7 @@ export function AgentDetail({
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
   engines: EngineDto[];
+  modelCatalogLoading?: boolean;
   engineCapabilities: ProjectEngineCapabilitiesDto[];
   onRefreshCapabilities(context?: {
     engineId?: string;
@@ -1464,6 +1467,11 @@ export function AgentDetail({
               </Button>
             </>
           ) : null}
+          {modelCatalogLoading && settingsEngine === "claude" ? (
+            <Typography variant="caption" color="text.secondary">
+              Refreshing Claude models…
+            </Typography>
+          ) : null}
           <FormControl size="small" fullWidth>
             <InputLabel id="agent-detail-model-label">
               Model · next Run
@@ -1491,13 +1499,21 @@ export function AgentDetail({
               }}
             >
               <MenuItem value="">Engine Default</MenuItem>
-              {settingsModels.map(option => (
-                <MenuItem key={option.id} value={option.id}>
-                  {option.label}
-                </MenuItem>
-              ))}
+              {settingsModels.flatMap((option, index) => [
+                ...(option.group && option.group !== settingsModels[index - 1]?.group
+                  ? [<ListSubheader key={`group-${option.group}`}>{option.group}</ListSubheader>]
+                  : []),
+                <MenuItem key={option.id} value={option.id} disabled={option.disabled}>
+                  <ListItemText primary={option.label} secondary={option.detail} />
+                </MenuItem>,
+              ])}
             </Select>
           </FormControl>
+          {settingsEngine === "claude" ? (
+            <Typography variant="caption" color="text.secondary">
+              Latest aliases follow future provider upgrades. Pinned exact IDs stay on the selected version.
+            </Typography>
+          ) : null}
           <FormControl size="small" fullWidth>
             <InputLabel id="agent-detail-effort-label">
               Reasoning · next Run

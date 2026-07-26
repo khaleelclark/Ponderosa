@@ -27,7 +27,10 @@ import type {
   EngineAvailabilityStatus,
   EngineCapabilities,
   EngineDto,
+  EngineModelOption,
+  EngineModelValidationDto,
   ProjectEngineCapabilitiesDto,
+  ProjectEngineModelCatalogDto,
   CreateHostFolderRequest,
   HostFolderCreateDto,
   ProjectFolderOptionsDto,
@@ -69,6 +72,7 @@ import type {
   SendAgentMessageRequest,
   AgentDto,
   MessageDto,
+  ModelOption,
   RuntimeProcessHandle,
   RuntimeSession,
   ProviderRootExitDetail,
@@ -802,6 +806,16 @@ interface CapabilityDiscoveryAuthority {
   settled: boolean;
 }
 
+interface ModelCatalogDiscoveryAuthority {
+  projectId: string;
+  engineId: string;
+  key: string;
+  controller: AbortController;
+  processes: Set<CapabilityDiscoveryProcess>;
+  operation?: Promise<unknown>;
+  settled: boolean;
+}
+
 /** One Agent-indexed registry owns every provider process handle. Scheduler Run
  * ownership remains separately fenced in SQLite; this registry is the local
  * admission barrier that prevents overlapping host authority. */
@@ -1159,10 +1173,19 @@ export function providerSessionContractHash(
   })).digest("hex");
 }
 
-function runtimeSelectionError(adapter: Adapter, model?: string, effort?: string): string | undefined {
+function runtimeSelectionError(
+  adapter: Adapter,
+  model?: string,
+  effort?: string,
+  additionalModels: ModelOption[] = [],
+): string | undefined {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
-  const models = adapter.listModels();
+  const models = [...adapter.listModels()];
+  const knownModelIds = new Set(models.map((option) => option.id));
+  for (const option of additionalModels) {
+    if (!knownModelIds.has(option.id)) models.push(option);
+  }
   const concreteModels = models.filter((option) => option.id);
   const matchedModel = selectedModel ? concreteModels.find((option) => option.id === selectedModel) : undefined;
   // A missing/unreadable provider cache is unknown availability, not evidence
@@ -1176,12 +1199,17 @@ function runtimeSelectionError(adapter: Adapter, model?: string, effort?: string
   }
 }
 
-function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: string): { model?: string; effort?: string } {
+function normalizedRuntimeSelection(
+  adapter: Adapter,
+  model?: string,
+  effort?: string,
+  additionalModels: ModelOption[] = [],
+): { model?: string; effort?: string } {
   const selectedModel = model?.trim() || undefined;
   const selectedEffort = effort?.trim() || undefined;
-  const modelIsStale = selectedModel && runtimeSelectionError(adapter, selectedModel, undefined)?.startsWith("model ");
+  const modelIsStale = selectedModel && runtimeSelectionError(adapter, selectedModel, undefined, additionalModels)?.startsWith("model ");
   const normalizedModel = modelIsStale ? undefined : selectedModel;
-  const effortIsStale = selectedEffort && runtimeSelectionError(adapter, normalizedModel, selectedEffort)?.startsWith("effort ");
+  const effortIsStale = selectedEffort && runtimeSelectionError(adapter, normalizedModel, selectedEffort, additionalModels)?.startsWith("effort ");
   return {
     ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(selectedEffort && !effortIsStale ? { effort: selectedEffort } : {}),
@@ -1191,9 +1219,14 @@ function normalizedRuntimeSelection(adapter: Adapter, model?: string, effort?: s
 function concreteRuntimeSelection(
   adapter: Adapter,
   layers: Array<{ model?: string; effort?: string } | undefined>,
+  additionalModels: ModelOption[] = [],
 ): { model?: string; effort?: string } {
-  const models = adapter.listModels();
-  const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined))
+  const models = [...adapter.listModels()];
+  const knownModelIds = new Set(models.map((option) => option.id));
+  for (const option of additionalModels) {
+    if (!knownModelIds.has(option.id)) models.push(option);
+  }
+  const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined, additionalModels))
     ?? adapter.defaultModel?.()
     ?? models.find((option) => option.id)?.id;
   const modelDefaultEffort = models.find((option) => option.id === model)?.defaultEffort;
@@ -1203,7 +1236,7 @@ function concreteRuntimeSelection(
     modelDefaultEffort,
     adapter.defaultEffort?.(model),
     adapter.listEfforts(model)[0]?.id,
-  ].find((candidate) => candidate && !runtimeSelectionError(adapter, model, candidate));
+  ].find((candidate) => candidate && !runtimeSelectionError(adapter, model, candidate, additionalModels));
   return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 }
 
@@ -2012,6 +2045,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const models = workspace.getPreferences().claudeModelOptions.map((model) => ({
       id: model.id,
       label: model.label ?? model.id,
+      ...(model.resolvedModel ? { resolvedModel: model.resolvedModel } : {}),
+      kind: "exact" as const,
+      source: "operator" as const,
+      ...(model.validatedAt ? { validatedAt: model.validatedAt } : {}),
+      availability: model.availability ?? "available" as const,
+      ...(model.unavailableReason ? { unavailableReason: model.unavailableReason } : {}),
     }));
     for (const { adapter } of engines.values()) {
       adapter.setOperatorModelOptions?.(models);
@@ -2838,6 +2877,225 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return Promise.resolve(cached.value);
     }
     return promise;
+  };
+  const engineModelCatalogCacheTtlMs = 5 * 60_000;
+  const engineModelCatalogCache = new Map<string, {
+    projectId: string;
+    engineId: string;
+    hostPath: string;
+    configurationKey: string;
+    expiresAt: number;
+    value: ProjectEngineModelCatalogDto;
+  }>();
+  const latestEngineModelCatalogKeys = new Map<string, string>();
+  const engineModelCatalogDiscoveries = new Map<string, ModelCatalogDiscoveryAuthority>();
+  const engineModelCatalogDiscoveryAuthorities = new Set<ModelCatalogDiscoveryAuthority>();
+  const engineModelCatalogKey = (
+    projectId: string,
+    hostPath: string,
+    adapter: Adapter,
+  ): string => [
+    projectId,
+    hostPath,
+    adapter.id,
+    adapter.modelCatalogConfigurationKey?.() ?? "default",
+  ].join("\0");
+  const closeModelCatalogDiscoveryAuthority = async (
+    authority: ModelCatalogDiscoveryAuthority,
+  ): Promise<void> => {
+    authority.controller.abort();
+    const processes = [...authority.processes].filter((state) => !state.terminationConfirmed);
+    const results = await Promise.allSettled(processes.map(closeCapabilityDiscoveryProcess));
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (failures.length) throw new AggregateError(failures, `${authority.engineId} model-catalog cleanup failed`);
+    for (const process of [...authority.processes]) {
+      if (process.terminationConfirmed) authority.processes.delete(process);
+    }
+    if (authority.settled && authority.processes.size === 0) {
+      engineModelCatalogDiscoveryAuthorities.delete(authority);
+      if (engineModelCatalogDiscoveries.get(authority.key) === authority) {
+        engineModelCatalogDiscoveries.delete(authority.key);
+      }
+    }
+  };
+  const drainEngineModelCatalogDiscoveries = async (projectId?: string): Promise<void> => {
+    for (let pass = 0; pass < 100; pass += 1) {
+      const entries = [...engineModelCatalogDiscoveryAuthorities]
+        .filter((authority) => !projectId || authority.projectId === projectId);
+      if (entries.length === 0) return;
+      for (const authority of entries) authority.controller.abort();
+      await Promise.allSettled(entries.flatMap((authority) => authority.operation ? [authority.operation] : []));
+      const cleanup = await Promise.allSettled(entries.map(closeModelCatalogDiscoveryAuthority));
+      const failures = cleanup.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, "Engine model-catalog authority did not drain");
+    }
+    throw new Error("Engine model-catalog authority did not reach a fixed point");
+  };
+  const liveProjectModelCatalog = async (
+    projectId: string,
+    adapter: Adapter,
+  ): Promise<{ models: EngineModelOption[]; cliVersion: string } | undefined> => {
+    for (const agent of store.listAgents(projectId)) {
+      if (agent.activeEngine !== adapter.id) continue;
+      const session = activeRuns.get(agent.id)?.runtimeSession ?? reusableRuntime(agent.id)?.session;
+      const live = session?.capabilities ? await session.capabilities() : undefined;
+      if (!live?.modelCatalog) continue;
+      return {
+        models: adapter.configuredModelCatalog
+          ? adapter.configuredModelCatalog(live.modelCatalog.models)
+          : live.modelCatalog.models,
+        cliVersion: live.modelCatalog.cliVersion,
+      };
+    }
+  };
+  const discoverEngineModelCatalog = (
+    project: { id: string; hostPath: string },
+    adapter: Adapter,
+    forceRefresh: boolean,
+  ): Promise<ProjectEngineModelCatalogDto> => {
+    if (closed || deletingProjectIds.has(project.id)) {
+      return Promise.reject(new Error("Project model discovery is unavailable during deletion or shutdown"));
+    }
+    if (!adapter.discoverModelCatalog) {
+      return Promise.reject(new Error("this engine does not provide model discovery"));
+    }
+    const key = engineModelCatalogKey(project.id, project.hostPath, adapter);
+    const cachedKey = latestEngineModelCatalogKeys.get(key);
+    const cached = cachedKey ? engineModelCatalogCache.get(cachedKey) : undefined;
+    const running = engineModelCatalogDiscoveries.get(key);
+    if (running) {
+      if (!forceRefresh && cached) {
+        return Promise.resolve({ ...cached.value, refreshing: true });
+      }
+      return running.operation as Promise<ProjectEngineModelCatalogDto>;
+    }
+    if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve(cached.value);
+    }
+
+    const authority: ModelCatalogDiscoveryAuthority = {
+      projectId: project.id,
+      engineId: adapter.id,
+      key,
+      controller: new AbortController(),
+      processes: new Set(),
+      settled: false,
+    };
+    engineModelCatalogDiscoveryAuthorities.add(authority);
+    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
+      if (closed || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
+        void closeCapabilityDiscoveryProcess(state).catch((error) => {
+          app.log.error({ err: error, projectId: project.id, engineId: adapter.id }, "late model-catalog process cleanup remains pending");
+        });
+      }
+    };
+    const operation = Promise.resolve()
+      .then(async () => {
+        const live = await liveProjectModelCatalog(project.id, adapter);
+        const catalog = live
+          ? {
+              models: live.models,
+              cliVersion: live.cliVersion,
+              configurationKey: adapter.modelCatalogConfigurationKey?.() ?? "default",
+            }
+          : await adapter.discoverModelCatalog!(project.hostPath, {
+              signal: authority.controller.signal,
+              onRuntimeSpawned: registerProcess,
+            });
+        const value: ProjectEngineModelCatalogDto = {
+          projectId: project.id,
+          engineId: adapter.id,
+          models: catalog.models,
+          cliVersion: catalog.cliVersion,
+          configurationKey: catalog.configurationKey,
+          fetchedAt: new Date().toISOString(),
+        };
+        const versionedKey = [key, catalog.cliVersion].join("\0");
+        engineModelCatalogCache.set(versionedKey, {
+          projectId: project.id,
+          engineId: adapter.id,
+          hostPath: project.hostPath,
+          configurationKey: catalog.configurationKey,
+          expiresAt: Date.now() + engineModelCatalogCacheTtlMs,
+          value,
+        });
+        latestEngineModelCatalogKeys.set(key, versionedKey);
+        return value;
+      })
+      .then(async (value) => {
+        authority.settled = true;
+        await closeModelCatalogDiscoveryAuthority(authority);
+        return value;
+      }, async (error: unknown) => {
+        authority.settled = true;
+        try {
+          await closeModelCatalogDiscoveryAuthority(authority);
+        } catch (closeError) {
+          throw new AggregateError([error, closeError], `${adapter.id} model discovery and cleanup failed`);
+        }
+        throw error;
+      });
+    authority.operation = operation;
+    engineModelCatalogDiscoveries.set(key, authority);
+    if (!forceRefresh && cached) {
+      void operation.catch((error) => {
+        app.log.warn({ err: error, projectId: project.id, engineId: adapter.id }, "background model refresh failed; serving last-known choices");
+      });
+      return Promise.resolve({ ...cached.value, refreshing: true });
+    }
+    return operation;
+  };
+  const markEngineModelUnavailable = (
+    project: { id: string; hostPath: string },
+    adapter: Adapter,
+    modelId: string,
+    reason: string,
+  ): void => {
+    const now = new Date().toISOString();
+    for (const [key, entry] of engineModelCatalogCache) {
+      if (entry.projectId !== project.id || entry.engineId !== adapter.id) continue;
+      const models = entry.value.models.map((model) => model.id === modelId
+        ? { ...model, availability: "unavailable" as const, unavailableReason: reason }
+        : model);
+      engineModelCatalogCache.set(key, {
+        ...entry,
+        expiresAt: 0,
+        value: { ...entry.value, models, fetchedAt: now },
+      });
+    }
+    const preferences = workspace.getPreferences();
+    if (!preferences.claudeModelOptions.some((model) => model.id === modelId)) return;
+    const cursor = workspace.cursor();
+    workspace.updatePreferences({
+      claudeModelOptions: preferences.claudeModelOptions.map((model) => model.id === modelId
+        ? { ...model, availability: "unavailable", unavailableReason: reason }
+        : model),
+    });
+    applyOperatorModelOptions();
+    publishWorkspaceSince(cursor);
+  };
+  const cachedModelOptions = (
+    adapter: Adapter,
+    projectId?: string,
+  ): ModelOption[] => {
+    const byId = new Map<string, ModelOption>();
+    for (const key of new Set(latestEngineModelCatalogKeys.values())) {
+      const entry = engineModelCatalogCache.get(key);
+      if (!entry) continue;
+      if (entry.engineId !== adapter.id || (projectId && entry.projectId !== projectId)) continue;
+      for (const model of entry.value.models) {
+        byId.set(model.id, {
+          id: model.id,
+          label: model.label,
+          ...(model.supportedEffortLevels
+            ? { efforts: model.supportedEffortLevels.map((effort) => ({ id: effort, label: effort })) }
+            : {}),
+        });
+      }
+    }
+    return [...byId.values()];
   };
   const contextCursors = new ContextCursorStore(opts.dataDir);
   const browserSessions = new BrowserSessionManager(
@@ -5718,12 +5976,15 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       const results = await Promise.allSettled([
         drainProviderRuntimeAuthority("server_shutdown"),
         drainEngineCapabilityDiscoveries(),
+        drainEngineModelCatalogDiscoveries(),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");
       runtimeAuthorities.clear();
       engineCapabilityDiscoveryAuthorities.clear();
       engineCapabilityDiscoveries.clear();
+      engineModelCatalogDiscoveryAuthorities.clear();
+      engineModelCatalogDiscoveries.clear();
       activeRuns.clear();
       providerRuntimeShutdownFinalized = true;
     }
@@ -6315,7 +6576,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             const engineId = operation.engine?.trim() || owner.activeEngine;
             const engine = engines.get(engineId);
             if (!engine) throw new Error(`unknown engine: ${engineId}`);
-            const selectionError = runtimeSelectionError(engine.adapter, operation.model, operation.effort);
+            const selectionError = runtimeSelectionError(
+              engine.adapter,
+              operation.model,
+              operation.effort,
+              cachedModelOptions(engine.adapter, owner.projectId),
+            );
             if (selectionError) throw new Error(selectionError);
             const created = store.createAgent(owner.projectId, {
               title: operation.title?.trim().slice(0, 80) || "Managed Agent",
@@ -6899,7 +7165,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
     const engine = engines.get(engineId);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
-    const selectionError = runtimeSelectionError(engine.adapter, request.body.model, request.body.effort);
+    const selectionError = runtimeSelectionError(
+      engine.adapter,
+      request.body.model,
+      request.body.effort,
+      cachedModelOptions(engine.adapter, manager.projectId),
+    );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     const replay = store.findAgentSpawn(manager.id, capability.runId, idempotencyKey);
     if (replay) return { agent: replay, replayed: true };
@@ -8508,7 +8779,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!label) return reply.code(400).send({ error: "label is required" });
     const defaultEngine = request.body?.defaultEngine;
     if (!defaultEngine || !engines.has(defaultEngine)) return reply.code(400).send({ error: "a configured default engine is required" });
-    const selectionError = runtimeSelectionError(engines.get(defaultEngine)!.adapter, request.body.defaultModel, request.body.defaultEffort);
+    const creationAdapter = engines.get(defaultEngine)!.adapter;
+    const creationModelOptions = cachedModelOptions(creationAdapter);
+    const selectionError = runtimeSelectionError(
+      creationAdapter,
+      request.body.defaultModel,
+      request.body.defaultEffort,
+      creationModelOptions,
+    );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     if (request.body.hostPath && request.body.createFolderName) return reply.code(400).send({ error: "choose an existing folder or create a new one, not both" });
     await fs.mkdir(managedWorkspacesRoot, { recursive: true });
@@ -8548,10 +8826,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ...(request.body.defaultEffort ? { defaultEffort: request.body.defaultEffort } : {}),
       });
       if (project.lastConversationId) {
-        const resolved = concreteRuntimeSelection(engines.get(defaultEngine)!.adapter, [
+        const resolved = concreteRuntimeSelection(creationAdapter, [
           { model: project.defaultModel, effort: project.defaultEffort },
           workspace.getPreferences().engineDefaults?.[defaultEngine],
-        ]);
+        ], creationModelOptions);
         store.updateConversation(project.lastConversationId, {
           defaultEngine,
           defaultModel: resolved.model ?? null,
@@ -8596,7 +8874,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!engines.has(defaultEngine)) return reply.code(400).send({ error: "unknown engine" });
     const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? (engineChanged ? undefined : current.defaultModel);
     const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? (engineChanged ? undefined : current.defaultEffort);
-    const selectionError = runtimeSelectionError(engines.get(defaultEngine)!.adapter, defaultModel, defaultEffort);
+    const projectAdapter = engines.get(defaultEngine)!.adapter;
+    const selectionError = runtimeSelectionError(
+      projectAdapter,
+      defaultModel,
+      defaultEffort,
+      cachedModelOptions(projectAdapter, current.id),
+    );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     const instructionsChanged = request.body.instructions !== undefined && request.body.instructions !== (current.instructions ?? "");
     const project = store.updateProject(request.params.id, {
@@ -8714,6 +8998,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         ...browserClosures,
         drainProviderRuntimeAuthority("Project deletion", agentIds),
         drainEngineCapabilityDiscoveries(project.id),
+        drainEngineModelCatalogDiscoveries(project.id),
       ]);
       const failures = barriers.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Project deletion is waiting for provider runtime cleanup");
@@ -8724,6 +9009,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         [...runtimeAuthorities].some(([agentId, authority]) => agentIds.has(agentId) &&
           Boolean(authority.opening || authority.reusable || authority.closing || authority.oneShots.size)) ||
         [...engineCapabilityDiscoveryAuthorities].some((authority) => authority.projectId === project.id)) {
+        throw new Error("Project deletion provider authority changed after draining");
+      }
+      if ([...engineModelCatalogDiscoveryAuthorities].some((authority) => authority.projectId === project.id)) {
         throw new Error("Project deletion provider authority changed after draining");
       }
 
@@ -8915,17 +9203,19 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const defaultEngine = request.body.defaultEngine ?? project.defaultEngine;
     const registration = engines.get(defaultEngine);
     if (!registration) return reply.code(400).send({ error: "unknown engine" });
+    const projectModelOptions = cachedModelOptions(registration.adapter, project.id);
     const selectionError = runtimeSelectionError(
       registration.adapter,
       request.body.defaultModel,
       request.body.defaultEffort,
+      projectModelOptions,
     );
     if (selectionError) return reply.code(400).send({ error: selectionError });
     const resolved = concreteRuntimeSelection(registration.adapter, [
       { model: request.body.defaultModel, effort: request.body.defaultEffort },
       project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[defaultEngine],
-    ]);
+    ], projectModelOptions);
     const conversation = store.createConversation(request.params.id, {
       title,
       defaultEngine,
@@ -8982,7 +9272,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (defaultEngine) {
       const configuredDefaultEngine = engines.get(defaultEngine);
       if (!configuredDefaultEngine) return reply.code(400).send({ error: "unknown engine" });
-      const selectionError = runtimeSelectionError(configuredDefaultEngine.adapter, defaultModel, defaultEffort);
+      const selectionError = runtimeSelectionError(
+        configuredDefaultEngine.adapter,
+        defaultModel,
+        defaultEffort,
+        cachedModelOptions(configuredDefaultEngine.adapter, current.projectId),
+      );
       if (selectionError) return reply.code(400).send({ error: selectionError });
     }
     const conversation = store.updateConversation(request.params.id, request.body ?? {});
@@ -9920,27 +10215,36 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return store.listAgents(request.params.id);
   });
 
-  const validatePreset = (input: { name?: string; description?: string; guidance?: string; engine?: string; model?: string | null; effort?: string | null }, partial = false): string | undefined => {
+  const validatePreset = (
+    input: { name?: string; description?: string; guidance?: string; engine?: string; model?: string | null; effort?: string | null },
+    partial = false,
+    projectId?: string,
+  ): string | undefined => {
     if (!partial && (!input.name?.trim() || !input.description?.trim() || !input.guidance?.trim() || !input.engine)) return "name, description, guidance, and engine are required";
     if (input.name !== undefined && (input.name.trim().length < 2 || input.name.trim().length > 60)) return "name must be 2-60 characters";
     if (input.description !== undefined && input.description.trim().length > 240) return "description must be at most 240 characters";
     if (input.guidance !== undefined && (input.guidance.trim().length < 10 || input.guidance.trim().length > 8000)) return "guidance must be 10-8000 characters";
     if (input.engine) {
       const configured = engines.get(input.engine); if (!configured) return "unknown engine";
-      return runtimeSelectionError(configured.adapter, input.model ?? undefined, input.effort ?? undefined);
+      return runtimeSelectionError(
+        configured.adapter,
+        input.model ?? undefined,
+        input.effort ?? undefined,
+        cachedModelOptions(configured.adapter, projectId),
+      );
     }
   };
   app.get<{ Params: { id: string } }>("/api/projects/:id/agent-presets", async (request, reply) => store.getProject(request.params.id) ? store.listAgentPresets(request.params.id) : reply.code(404).send({ error: "project not found" }));
   app.post<{ Params: { id: string }; Body: import("@ponderosa/core").CreateAgentPresetRequest }>("/api/projects/:id/agent-presets", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const error = validatePreset(request.body ?? {}); if (error) return reply.code(400).send({ error });
+    const error = validatePreset(request.body ?? {}, false, request.params.id); if (error) return reply.code(400).send({ error });
     return reply.code(201).send(store.createAgentPreset(request.params.id, request.body));
   });
   app.patch<{ Params: { id: string }; Body: import("@ponderosa/core").UpdateAgentPresetRequest }>("/api/agent-presets/:id", async (request, reply) => {
     const current = store.getAgentPreset(request.params.id); if (!current) return reply.code(404).send({ error: "preset not found" });
     const body = request.body ?? {};
     if (Object.keys(body).some((key) => !["name", "description", "guidance", "engine", "model", "effort", "enabled"].includes(key))) return reply.code(400).send({ error: "unknown preset field" });
-    const error = validatePreset({ ...current, ...body }, true); if (error) return reply.code(400).send({ error });
+    const error = validatePreset({ ...current, ...body }, true, current.projectId); if (error) return reply.code(400).send({ error });
     return store.updateAgentPreset(request.params.id, body)!;
   });
   app.delete<{ Params: { id: string } }>("/api/agent-presets/:id", async (request, reply) => store.deleteAgentPreset(request.params.id) ? { deleted: true } : reply.code(404).send({ error: "preset not found" }));
@@ -9963,7 +10267,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         request.body.engine = preset.engine; request.body.model = preset.model; request.body.effort = preset.effort;
       }
       if (!engines.has(request.body.engine)) return reply.code(400).send({ error: "unknown engine" });
-      const selectionError = runtimeSelectionError(engines.get(request.body.engine)!.adapter, request.body.model, request.body.effort);
+      const requestedAdapter = engines.get(request.body.engine)!.adapter;
+      const projectModelOptions = cachedModelOptions(requestedAdapter, project.id);
+      const selectionError = runtimeSelectionError(
+        requestedAdapter,
+        request.body.model,
+        request.body.effort,
+        projectModelOptions,
+      );
       if (selectionError) return reply.code(400).send({ error: selectionError });
       if (request.body.managerAgentId) {
         const manager = store.getAgent(request.body.managerAgentId);
@@ -9985,12 +10296,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         }
       }
       const conversationDefaults = request.body.conversationId ? store.getConversation(request.body.conversationId) : undefined;
-      const resolvedRuntime = concreteRuntimeSelection(engines.get(request.body.engine)!.adapter, [
+      const resolvedRuntime = concreteRuntimeSelection(requestedAdapter, [
         { model: request.body.model, effort: request.body.effort },
         conversationDefaults?.defaultEngine === request.body.engine ? { model: conversationDefaults.defaultModel, effort: conversationDefaults.defaultEffort } : undefined,
         project.defaultEngine === request.body.engine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
         workspace.getPreferences().engineDefaults?.[request.body.engine],
-      ]);
+      ], projectModelOptions);
       request.body.model = resolvedRuntime.model;
       request.body.effort = resolvedRuntime.effort;
       const initialMessage = request.body.initialMessage?.trim() ?? "";
@@ -10821,7 +11132,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const targetEngine = body.engineMapping[node.engine]!.trim();
         const model = node.model?.trim() || undefined;
         const effort = node.effort?.trim() || undefined;
-        const selectionError = runtimeSelectionError(engines.get(targetEngine)!.adapter, model, effort);
+        const importAdapter = engines.get(targetEngine)!.adapter;
+        const selectionError = runtimeSelectionError(
+          importAdapter,
+          model,
+          effort,
+          cachedModelOptions(importAdapter, project.id),
+        );
         if (selectionError) throw new Error(`${node.title}: ${selectionError}`);
         const history = [
           ...(node.initialInstructions ? [{ role: "system" as const, text: `Imported initial instructions:\n${node.initialInstructions}`, createdAt: new Date(portablePackage.exportedAt).toISOString() }] : []),
@@ -10986,7 +11303,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (!configured) return reply.code(400).send({ error: "unknown engine" });
         const model = body.model === undefined ? (engineChanged ? undefined : current.model) : body.model?.trim() || undefined;
         const effort = body.effort === undefined ? (engineChanged ? undefined : current.effort) : body.effort?.trim() || undefined;
-        const selectionError = runtimeSelectionError(configured.adapter, model, effort);
+        const selectionError = runtimeSelectionError(
+          configured.adapter,
+          model,
+          effort,
+          cachedModelOptions(configured.adapter, current.projectId),
+        );
         if (selectionError) return reply.code(400).send({ error: selectionError });
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null };
       }
@@ -11368,6 +11690,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
+      const projectModelOptions = cachedModelOptions(engine.adapter, project.id);
       const recovered = concreteRuntimeSelection(engine.adapter, [
         activeRunSnapshot
           ? { model: activeRunSnapshot.model, effort: activeRunSnapshot.effort }
@@ -11377,25 +11700,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
             },
         project.defaultEngine === runtimeEngineId ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
         workspace.getPreferences().engineDefaults?.[runtimeEngineId],
-      ]);
+      ], projectModelOptions);
       const hasModelOverride = !activeRunSnapshot && request.body.model !== undefined;
       const requestedModel = request.body.model?.trim() || undefined;
       if (hasModelOverride) {
-        const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined);
+        const modelError = runtimeSelectionError(engine.adapter, requestedModel, undefined, projectModelOptions);
         if (modelError) return reply.code(400).send({ error: modelError });
       }
       const effectiveModel = hasModelOverride ? requestedModel : recovered.model;
       const hasEffortOverride = !activeRunSnapshot && request.body.effort !== undefined;
       const requestedEffort = request.body.effort?.trim() || undefined;
       if (hasEffortOverride) {
-        const effortError = runtimeSelectionError(engine.adapter, effectiveModel, requestedEffort);
+        const effortError = runtimeSelectionError(engine.adapter, effectiveModel, requestedEffort, projectModelOptions);
         if (effortError) return reply.code(400).send({ error: effortError });
       }
       const effectiveEffort = hasEffortOverride
         ? requestedEffort
         : hasModelOverride
-          ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]]).effort
-          : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort).effort;
+          ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]], projectModelOptions).effort
+          : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort, projectModelOptions).effort;
       const runtimeSessionContractHash = providerSessionContractHash(
         runtimeEngineId,
         effectiveModel,
@@ -12690,6 +13013,24 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               });
             }
             for await (const event of startStream(sessionId)) {
+              if (event.type === "error" &&
+                  (event.code === "invalid_model" || event.code === "model_not_found") &&
+                  effectiveModel &&
+                  !providerWorkObserved) {
+                const isPinned = workspace.getPreferences().claudeModelOptions.some((model) => model.id === effectiveModel) ||
+                  [...engineModelCatalogCache.values()].some((entry) =>
+                    entry.projectId === project.id &&
+                    entry.engineId === runtimeEngineId &&
+                    entry.value.models.some((model) => model.id === effectiveModel && model.kind === "exact"));
+                if (isPinned) {
+                  const reason = `pinned model ${effectiveModel} is no longer available — update it in Workspace Settings.`;
+                  event.message = reason;
+                  markEngineModelUnavailable(project, engine.adapter, effectiveModel, reason);
+                }
+                void discoverEngineModelCatalog(project, engine.adapter, true).catch((error) => {
+                  app.log.warn({ err: error, projectId: project.id, engineId: runtimeEngineId }, "model-start rejection refresh failed");
+                });
+              }
               if (event.type !== "error" && event.type !== "session") providerWorkObserved = true;
               if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected && event.type !== "error") {
                 coordinationV3!.acknowledgePromptInjection({
@@ -13079,7 +13420,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         if (!registration || !selection || typeof selection !== "object" || typeof selection.model !== "string" || !selection.model.trim() || (selection.effort !== undefined && typeof selection.effort !== "string")) {
           return reply.code(400).send({ error: "engine defaults require a configured engine and concrete model" });
         }
-        const selectionError = runtimeSelectionError(registration.adapter, selection.model, selection.effort);
+        const selectionError = runtimeSelectionError(
+          registration.adapter,
+          selection.model,
+          selection.effort,
+          cachedModelOptions(registration.adapter),
+        );
         if (selectionError) return reply.code(400).send({ error: selectionError });
       }
     }
@@ -13089,9 +13435,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           patch.claudeModelOptions.some((model) =>
             !model || typeof model !== "object" ||
             typeof model.id !== "string" || !model.id.trim() || model.id.length > 200 ||
-            (model.label !== undefined && (typeof model.label !== "string" || model.label.length > 200))) ||
+            (model.label !== undefined && (typeof model.label !== "string" || model.label.length > 200)) ||
+            (model.resolvedModel !== undefined && (typeof model.resolvedModel !== "string" || model.resolvedModel.length > 200)) ||
+            (model.validatedAt !== undefined && (typeof model.validatedAt !== "string" || !Number.isFinite(Date.parse(model.validatedAt)))) ||
+            (model.availability !== undefined && model.availability !== "available" && model.availability !== "unavailable") ||
+            (model.unavailableReason !== undefined && (typeof model.unavailableReason !== "string" || model.unavailableReason.length > 1_000))) ||
           new Set(patch.claudeModelOptions.map((model) => model.id.trim())).size !== patch.claudeModelOptions.length) {
-        return reply.code(400).send({ error: "Claude model options require unique non-empty ids and optional labels of at most 200 characters" });
+        return reply.code(400).send({ error: "Claude model options require unique validated model records with bounded ids, labels, and availability details" });
       }
     }
     if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
@@ -13129,7 +13479,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
     const cursor = workspace.cursor();
     const preferences = workspace.updatePreferences(patch);
-    if (patch.claudeModelOptions !== undefined) applyOperatorModelOptions();
+    if (patch.claudeModelOptions !== undefined) {
+      applyOperatorModelOptions();
+      for (const entry of engineModelCatalogCache.values()) entry.expiresAt = 0;
+    }
     if (preferences.maxConcurrentAgentRuns !== previousPreferences.maxConcurrentAgentRuns) {
       coordinationV3Scheduler.setMaxConcurrentRuns(preferences.maxConcurrentAgentRuns);
     }
@@ -13785,7 +14138,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       { model: request.body?.model, effort: request.body?.effort },
       project.defaultEngine === engineId ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
       workspace.getPreferences().engineDefaults?.[engineId],
-    ]);
+    ], cachedModelOptions(engine.adapter, project.id));
     const authority: CapabilityDiscoveryAuthority = {
       projectId: project.id,
       engineId,
@@ -13940,7 +14293,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         { model: latestRun?.model ?? agent.model ?? agent.presetSnapshot?.model, effort: latestRun?.effort ?? agent.effort ?? agent.presetSnapshot?.effort },
         project.defaultEngine === agent.activeEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
         workspace.getPreferences().engineDefaults?.[agent.activeEngine],
-      ]);
+      ], cachedModelOptions(engine.adapter, project.id));
       const persisted = store.resumeSessionState(agent.id);
       const runtimeSessionContractHash = providerSessionContractHash(
         agent.activeEngine,
@@ -14771,6 +15124,84 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       action: { kind: "open_settings", targetId: request.params.id },
     });
     return engineDto(registration);
+  });
+
+  app.get<{
+    Params: { id: string; engineId: string };
+    Querystring: { refresh?: string };
+  }>("/api/projects/:id/engine-models/:engineId", async (request, reply) => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    const registration = engines.get(request.params.engineId);
+    if (!registration) return reply.code(404).send({ error: "unknown engine" });
+    if (!registration.adapter.discoverModelCatalog) {
+      return reply.code(404).send({ error: "this engine does not provide model discovery" });
+    }
+    try {
+      return await discoverEngineModelCatalog(
+        project,
+        registration.adapter,
+        request.query.refresh === "true" || request.query.refresh === "1",
+      );
+    } catch (error) {
+      return reply.code(503).send({
+        error: error instanceof Error ? error.message : "model discovery failed",
+      });
+    }
+  });
+
+  app.post<{
+    Params: { id: string; engineId: string };
+    Body: { modelId?: string };
+  }>("/api/projects/:id/engine-models/:engineId/validate", async (request, reply): Promise<EngineModelValidationDto | FastifyReply> => {
+    const project = store.getProject(request.params.id);
+    if (!project) return reply.code(404).send({ error: "project not found" });
+    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    const registration = engines.get(request.params.engineId);
+    if (!registration) return reply.code(404).send({ error: "unknown engine" });
+    if (!registration.adapter.validateModel) {
+      return reply.code(404).send({ error: "this engine does not provide model validation" });
+    }
+    const modelId = request.body?.modelId?.trim() ?? "";
+    if (!modelId || modelId.length > 200) {
+      return reply.code(400).send({ error: "modelId must be a non-empty string of at most 200 characters" });
+    }
+    const authority: ModelCatalogDiscoveryAuthority = {
+      projectId: project.id,
+      engineId: registration.adapter.id,
+      key: `validation\0${project.id}\0${registration.adapter.id}\0${randomUUID()}`,
+      controller: new AbortController(),
+      processes: new Set(),
+      settled: false,
+    };
+    engineModelCatalogDiscoveryAuthorities.add(authority);
+    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
+      if (closed || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
+        void closeCapabilityDiscoveryProcess(state).catch((error) => {
+          app.log.error({ err: error, projectId: project.id, engineId: registration.adapter.id }, "late model-validation cleanup remains pending");
+        });
+      }
+    };
+    const operation = registration.adapter.validateModel(project.hostPath, modelId, {
+      signal: authority.controller.signal,
+      onRuntimeSpawned: registerProcess,
+    });
+    authority.operation = operation;
+    try {
+      return await operation;
+    } catch (error) {
+      return {
+        valid: false,
+        errorCode: "provider_error",
+        error: error instanceof Error ? error.message : "Claude model validation failed",
+      };
+    } finally {
+      authority.settled = true;
+      await closeModelCatalogDiscoveryAuthority(authority);
+    }
   });
 
   app.get<{ Params: { id: string }; Querystring: { engineId?: string; model?: string; agentId?: string; refresh?: string } }>(

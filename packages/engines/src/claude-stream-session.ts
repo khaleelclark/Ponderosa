@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
   EngineCapabilities,
+  EngineModelOption,
   OpenRuntimeSessionOptions,
   RuntimeSession,
   RuntimeSteerResult,
@@ -15,6 +16,7 @@ import type { SpawnFn } from "./process.js";
 import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
+import { normalizeClaudeProviderModels } from "./claude-models.js";
 
 interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   bin: string;
@@ -33,6 +35,9 @@ export class ClaudeStreamSession implements RuntimeSession {
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
   private capabilitiesSnapshot?: EngineCapabilities;
+  private providerModels?: EngineModelOption[];
+  private claudeCodeVersion?: string;
+  private readonly modelInitializationRequestId = `ponderosa-models-${randomUUID()}`;
   private latestContextOccupancy?: number;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
@@ -92,6 +97,11 @@ export class ClaudeStreamSession implements RuntimeSession {
       this.stderrTail = (this.stderrTail + chunk).slice(-8192);
     });
     opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
+    this.child.stdin?.write(`${JSON.stringify({
+      type: "control_request",
+      request_id: this.modelInitializationRequestId,
+      request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
+    })}\n`);
     this.events = this.eventStream();
   }
 
@@ -182,9 +192,17 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
     try {
       for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+        this.captureModelInitialization(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
         if (capabilities) {
-          this.capabilitiesSnapshot = capabilities;
+          this.claudeCodeVersion = raw && typeof raw === "object" &&
+            typeof (raw as { claude_code_version?: unknown }).claude_code_version === "string"
+            ? (raw as { claude_code_version: string }).claude_code_version
+            : this.claudeCodeVersion;
+          this.capabilitiesSnapshot = {
+            ...capabilities,
+            ...(this.liveModelCatalog() ? { modelCatalog: this.liveModelCatalog() } : {}),
+          };
           this.opts.onCapabilitiesChanged?.();
         }
         const assistantUsage = mapClaudeAssistantUsage(raw);
@@ -212,5 +230,42 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (!this.closed) {
       yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };
     }
+  }
+
+  private captureModelInitialization(raw: unknown): void {
+    if (!raw || typeof raw !== "object") return;
+    const envelope = raw as {
+      type?: unknown;
+      response?: {
+        subtype?: unknown;
+        request_id?: unknown;
+        response?: { models?: unknown };
+      };
+    };
+    if (envelope.type !== "control_response" ||
+        envelope.response?.subtype !== "success" ||
+        envelope.response.request_id !== this.modelInitializationRequestId) return;
+    try {
+      this.providerModels = normalizeClaudeProviderModels(envelope.response.response?.models);
+    } catch {
+      // Catalog capture is best-effort on the live Run path. Discovery has its
+      // own strict probe and must not turn a provider shape change into a Run
+      // failure.
+      return;
+    }
+    const modelCatalog = this.liveModelCatalog();
+    if (this.capabilitiesSnapshot && modelCatalog) {
+      this.capabilitiesSnapshot = { ...this.capabilitiesSnapshot, modelCatalog };
+    }
+    this.opts.onCapabilitiesChanged?.();
+  }
+
+  private liveModelCatalog() {
+    if (!this.providerModels || !this.claudeCodeVersion) return undefined;
+    return {
+      models: this.providerModels,
+      cliVersion: this.claudeCodeVersion,
+      configurationKey: "live-session",
+    };
   }
 }

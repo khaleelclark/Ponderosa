@@ -26,6 +26,14 @@ export interface TokenUsage {
 export type BrowserControlOwner = "agent" | "operator";
 export type BrowserSessionStatus = "opening" | "ready" | "closed" | "failed";
 export type BrowserActionKind = "navigate" | "click" | "type" | "key" | "scroll" | "inspect" | "control";
+export type ProviderErrorCode =
+  | "invalid_model"
+  | "model_not_found"
+  | "authentication_failed"
+  | "organization_policy"
+  | "plan_entitlement"
+  | "network"
+  | "provider_error";
 
 /**
  * The normalized agent event union — SPEC §5, verbatim in shape.
@@ -90,7 +98,7 @@ export type AgentEvent =
       /** Individual provider requests, when reported, for request-tiered pricing. */
       providerRequestUsage?: TokenUsage[];
     }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; code?: ProviderErrorCode };
 
 /**
  * One line of an agent's append-only event log (`events.jsonl`, SPEC §4/§7).

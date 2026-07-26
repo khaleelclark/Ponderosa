@@ -2,7 +2,13 @@
 // MUST stay JSON-serializable and free of Node-only types — apps/web imports them
 // directly so the SSE/REST contract is typechecked end to end (SPEC §6, §1).
 
-import type { EngineId, EffortOption, ModelOption } from "./adapter.js";
+import type {
+  EngineId,
+  EffortOption,
+  EngineModelOption,
+  EngineModelValidationError,
+  ModelOption,
+} from "./adapter.js";
 import type { AgentEvent, BrowserControlOwner, BrowserSessionStatus, TokenUsage, WorkItemStatus } from "./events.js";
 import type { CommunicationDocumentReference, VerifiedCitationRecord } from "./communication.js";
 
@@ -103,7 +109,14 @@ export interface WorkspacePreferencesDto {
   /** Concrete model/effort defaults chosen independently for each engine. */
   engineDefaults?: Record<string, { model: string; effort?: string }>;
   /** Operator-managed versioned Claude model choices. Environment pins take precedence. */
-  claudeModelOptions: Array<{ id: string; label?: string }>;
+  claudeModelOptions: Array<{
+    id: string;
+    label?: string;
+    resolvedModel?: string;
+    validatedAt?: string;
+    availability?: "available" | "unavailable";
+    unavailableReason?: string;
+  }>;
   /** Ponderosa-managed rules supplied to every Agent. */
   globalInstructions: string;
   /** Workspace-wide admission limit for concurrently active Agent Runs. */
@@ -1771,6 +1784,22 @@ export interface ProjectEngineCapabilitiesDto {
   mcpServers: import("./adapter.js").EngineMcpServer[];
   composerCapabilities: import("./adapter.js").EngineComposerCapability[];
 }
+
+export interface ProjectEngineModelCatalogDto {
+  projectId: string;
+  engineId: string;
+  models: EngineModelOption[];
+  cliVersion: string;
+  configurationKey: string;
+  fetchedAt: string;
+  /** True only while a stale cached snapshot is being refreshed in the background. */
+  refreshing?: boolean;
+  error?: string;
+}
+
+export type EngineModelValidationDto =
+  | { valid: true; model: EngineModelOption }
+  | { valid: false; errorCode: EngineModelValidationError; error: string };
 
 // ─── Files (scoped file browser, SPEC §8/§11) ────────────────────────────────
 

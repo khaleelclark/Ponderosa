@@ -6,12 +6,17 @@
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import type {
   Adapter,
   AgentEvent,
   ContinueOptions,
   EngineCapabilities,
   EngineCapabilityDiscoveryOptions,
+  EngineModelCatalog,
+  EngineModelDiscoveryOptions,
+  EngineModelOption,
+  EngineModelValidationResult,
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
@@ -24,6 +29,7 @@ import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess, type SpawnFn } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
+import { ClaudeModelCatalogProbe } from "./claude-models.js";
 
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
@@ -61,8 +67,8 @@ const CONFIGURED_MODEL_ENVIRONMENT = [
 
 function environmentConfiguredClaudeModels(
   environment: Readonly<Record<string, string | undefined>>,
-): ModelOption[] {
-  const models: ModelOption[] = [];
+): EngineModelOption[] {
+  const models: EngineModelOption[] = [];
   const seen = new Set<string>();
   for (const [idKey, nameKey] of CONFIGURED_MODEL_ENVIRONMENT) {
     const id = environment[idKey]?.trim();
@@ -71,6 +77,9 @@ function environmentConfiguredClaudeModels(
     models.push({
       id,
       label: environment[nameKey]?.trim() || id,
+      kind: id.startsWith("claude-") ? "exact" : "alias",
+      source: "environment",
+      availability: "available",
     });
   }
   return models;
@@ -78,15 +87,23 @@ function environmentConfiguredClaudeModels(
 
 function configuredClaudeModels(
   environment: Readonly<Record<string, string | undefined>>,
-  operatorModels: ModelOption[],
+  operatorModels: EngineModelOption[],
 ): ModelOption[] {
+  // Invocation IDs ending in [1m] must retain that suffix even though Claude
+  // uses the suffix-free base ID for entitlement and cost accounting.
   const models = DEFAULT_MODELS.map((model) => ({ ...model }));
   const indexById = new Map(models.map((model, index) => [model.id, index]));
   for (const model of operatorModels) {
     const id = model.id.trim();
     if (!id || indexById.has(id)) continue;
     indexById.set(id, models.length);
-    models.push({ id, label: model.label.trim() || id });
+    models.push({
+      id,
+      label: model.label.trim() || id,
+      ...(model.supportedEffortLevels
+        ? { efforts: model.supportedEffortLevels.map((effort) => ({ id: effort, label: effort })) }
+        : {}),
+    });
   }
   for (const model of environmentConfiguredClaudeModels(environment)) {
     const index = indexById.get(model.id);
@@ -114,9 +131,10 @@ export class ClaudeAdapter implements Adapter {
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
   private readonly modelEnvironment: Readonly<Record<string, string | undefined>>;
-  private operatorModels: ModelOption[] = [];
+  private operatorModels: EngineModelOption[] = [];
   private readonly permissionMode: string;
   private readonly killGraceMs: number;
+  private readonly modelCatalogProbe: ClaudeModelCatalogProbe;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.bin = opts.bin ?? "claude";
@@ -127,6 +145,12 @@ export class ClaudeAdapter implements Adapter {
       process.env.PONDEROSA_CLAUDE_PERMISSION_MODE ??
       "bypassPermissions";
     this.killGraceMs = opts.killGraceMs ?? 3000;
+    this.modelCatalogProbe = new ClaudeModelCatalogProbe({
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      environment: this.modelEnvironment,
+      killGraceMs: this.killGraceMs,
+    });
   }
 
   listModels(): ModelOption[] {
@@ -137,8 +161,69 @@ export class ClaudeAdapter implements Adapter {
     return environmentConfiguredClaudeModels(this.modelEnvironment);
   }
 
-  setOperatorModelOptions(models: ModelOption[]): void {
+  setOperatorModelOptions(models: EngineModelOption[]): void {
     this.operatorModels = models.map((model) => ({ ...model }));
+  }
+
+  modelCatalogConfigurationKey(): string {
+    const configuredEnvironment = Object.fromEntries(
+      CONFIGURED_MODEL_ENVIRONMENT.flatMap(([idKey, nameKey]) => [
+        [idKey, this.modelEnvironment[idKey]?.trim() ?? ""],
+        [nameKey, this.modelEnvironment[nameKey]?.trim() ?? ""],
+      ]),
+    );
+    return createHash("sha256").update(JSON.stringify({
+      configuredEnvironment,
+      operatorModels: this.operatorModels,
+    })).digest("hex");
+  }
+
+  configuredModelCatalog(providerModels: EngineModelOption[]): EngineModelOption[] {
+    const models = providerModels.map((model) => ({ ...model }));
+    const indexById = new Map(models.map((model, index) => [model.id, index]));
+    for (const model of this.operatorModels) {
+      const id = model.id.trim();
+      if (!id || indexById.has(id)) continue;
+      indexById.set(id, models.length);
+      models.push({
+        ...model,
+        id,
+        label: model.label.trim() || id,
+        kind: "exact",
+        source: "operator",
+      });
+    }
+    // Host environment configuration remains authoritative on ID collision.
+    for (const model of environmentConfiguredClaudeModels(this.modelEnvironment)) {
+      const index = indexById.get(model.id);
+      if (index === undefined) {
+        indexById.set(model.id, models.length);
+        models.push(model);
+      } else {
+        models[index] = model;
+      }
+    }
+    return models;
+  }
+
+  async discoverModelCatalog(
+    cwd: string,
+    context: EngineModelDiscoveryOptions,
+  ): Promise<EngineModelCatalog> {
+    const result = await this.modelCatalogProbe.discover(cwd, context);
+    return {
+      models: this.configuredModelCatalog(result.models),
+      cliVersion: result.cliVersion,
+      configurationKey: this.modelCatalogConfigurationKey(),
+    };
+  }
+
+  validateModel(
+    cwd: string,
+    modelId: string,
+    context: EngineModelDiscoveryOptions,
+  ): Promise<EngineModelValidationResult> {
+    return this.modelCatalogProbe.validate(cwd, modelId, context);
   }
 
   listEfforts(): EffortOption[] {

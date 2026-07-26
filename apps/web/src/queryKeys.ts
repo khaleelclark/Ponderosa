@@ -24,6 +24,8 @@ export const queryKeys = {
   },
   engines: {
     all: ["engines"] as const,
+    models: (projectId: string | undefined, engineId: string) =>
+      ["engine-models", projectId, engineId] as const,
     capabilities: (projectId: string) => ["engine-capabilities", projectId] as const,
     capabilitySelection: (
       projectId: string | undefined,

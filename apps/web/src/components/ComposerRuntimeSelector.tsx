@@ -6,6 +6,7 @@ import {
   ButtonBase,
   ClickAwayListener,
   Divider,
+  ListSubheader,
   MenuItem,
   MenuList,
   Paper,
@@ -22,6 +23,7 @@ export interface ComposerRuntimeOption {
   label: string;
   disabled?: boolean;
   detail?: string;
+  group?: "Latest" | "Pinned";
 }
 
 type RuntimeSection = "engine" | "model" | "effort";
@@ -127,9 +129,10 @@ export function ComposerRuntimeSelector({
             sx={{ width: 270, maxWidth: "calc(100vw - 24px)", p: 0.75, border: 1, borderColor: "divider", borderRadius: 2.5, bgcolor: "background.paper" }}
           >
             <MenuList disablePadding aria-label="Runtime settings">
-              {sections.map((item, index) => <Box key={item.id}>
-                {index === 1 ? <Divider sx={{ my: 0.5 }} /> : null}
+              {sections.flatMap((item, index) => [
+                ...(index === 1 ? [<Divider key="runtime-divider" sx={{ my: 0.5 }} />] : []),
                 <MenuItem
+                  key={item.id}
                   disabled={item.options.length === 0 || item.locked}
                   selected={section === item.id}
                   onClick={() => setSection(item.id)}
@@ -138,8 +141,8 @@ export function ComposerRuntimeSelector({
                   <Typography sx={{ flex: 1 }}>{item.label}</Typography>
                   <Typography color="text.secondary" noWrap sx={{ maxWidth: 125 }}>{item.value}</Typography>
                   {!item.locked ? <ChevronRightIcon fontSize="small" sx={{ color: "text.secondary" }} /> : null}
-                </MenuItem>
-              </Box>)}
+                </MenuItem>,
+              ])}
             </MenuList>
           </Paper> : null}
           {active ? <Paper
@@ -151,21 +154,29 @@ export function ComposerRuntimeSelector({
             </Box>
             <MenuList aria-label={`${active.label} options`} sx={{ maxHeight: "min(48vh, 410px)", overflowY: "auto", px: 0.75, pb: 0.75 }}>
               {compact ? <MenuItem onClick={() => setSection(null)} sx={{ borderRadius: 1.5 }}>Back</MenuItem> : null}
-              {active.options.map((option) => {
+              {active.options.flatMap((option, index) => {
                 const current = active.id === "engine" ? engine : active.id === "model" ? model : effort;
-                return <MenuItem
-                  key={option.id || "default"}
-                  disabled={option.disabled}
-                  selected={option.id === current}
-                  onClick={() => select(option.id)}
-                  sx={{ minHeight: option.detail ? 54 : 46, borderRadius: 1.5, gap: 1, alignItems: "flex-start" }}
-                >
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography>{option.label}</Typography>
-                    {option.detail ? <Typography variant="caption" color="text.secondary">{option.detail}</Typography> : null}
-                  </Box>
-                  {option.id === current ? <CheckIcon fontSize="small" sx={{ mt: 0.25 }} /> : null}
-                </MenuItem>;
+                const showGroup = option.group && option.group !== active.options[index - 1]?.group;
+                return [
+                  ...(showGroup ? [
+                    <ListSubheader key={`group-${option.group}`} sx={{ bgcolor: "background.paper", lineHeight: "34px", fontWeight: 800 }}>
+                      {option.group}
+                    </ListSubheader>,
+                  ] : []),
+                  <MenuItem
+                    key={option.id || "default"}
+                    disabled={option.disabled}
+                    selected={option.id === current}
+                    onClick={() => select(option.id)}
+                    sx={{ minHeight: option.detail ? 54 : 46, borderRadius: 1.5, gap: 1, alignItems: "flex-start" }}
+                  >
+                    <Box sx={{ flex: 1, minWidth: 0 }}>
+                      <Typography>{option.label}</Typography>
+                      {option.detail ? <Typography variant="caption" color="text.secondary">{option.detail}</Typography> : null}
+                    </Box>
+                    {option.id === current ? <CheckIcon fontSize="small" sx={{ mt: 0.25 }} /> : null}
+                  </MenuItem>,
+                ];
               })}
             </MenuList>
           </Paper> : null}

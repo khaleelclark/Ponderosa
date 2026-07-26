@@ -8,6 +8,8 @@ import {
   FormControl,
   FormControlLabel,
   InputLabel,
+  ListItemText,
+  ListSubheader,
   MenuItem,
   Paper,
   Select,
@@ -16,14 +18,16 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { EngineDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { EngineDto, ProjectDto, ProjectEngineModelCatalogDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import {
   effortOptionsForModel,
   engineIsAvailable,
+  enginesWithModelCatalog,
   resolveRuntimeSelection,
+  runtimeControlState,
 } from "../conversationEngine";
 import type { ColorMode } from "../theme";
 import {
@@ -334,35 +338,62 @@ function NotificationSettingsSection({
 function ClaudeModelOptionsSettings({
   engine,
   preferences,
+  projectId,
+  catalogLoading,
   onPreferences,
 }: {
   engine: EngineDto;
   preferences: WorkspacePreferencesDto;
+  projectId?: string;
+  catalogLoading: boolean;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
   const [modelId, setModelId] = useState("");
-  const [modelLabel, setModelLabel] = useState("");
+  const [validationError, setValidationError] = useState<string>();
+  const queryClient = useQueryClient();
   const normalizedId = modelId.trim();
   const configured = engine.configuredModels ?? [];
   const idAlreadyExists = Boolean(normalizedId) &&
     engine.models.some(model => model.id === normalizedId);
-  const addModel = () => {
-    if (!normalizedId || idAlreadyExists) return;
+  const validateModel = useMutation({
+    mutationFn: () => api.validateEngineModel(projectId!, "claude", normalizedId),
+  });
+  const addModel = async () => {
+    if (!projectId || !normalizedId || idAlreadyExists) return;
+    setValidationError(undefined);
+    const result = await validateModel.mutateAsync();
+    if (!result.valid) {
+      setValidationError(result.error);
+      return;
+    }
     onPreferences({
       claudeModelOptions: [
         ...preferences.claudeModelOptions,
         {
-          id: normalizedId,
-          ...(modelLabel.trim() ? { label: modelLabel.trim() } : {}),
+          id: result.model.id,
+          label: result.model.label,
+          ...(result.model.resolvedModel ? { resolvedModel: result.model.resolvedModel } : {}),
+          ...(result.model.validatedAt ? { validatedAt: result.model.validatedAt } : {}),
+          availability: result.model.availability ?? "available",
         },
       ],
     });
+    queryClient.setQueryData<ProjectEngineModelCatalogDto>(
+      queryKeys.engines.models(projectId, "claude"),
+      current => current && !current.models.some((model) => model.id === result.model.id)
+        ? { ...current, models: [...current.models, result.model] }
+        : current,
+    );
     setModelId("");
-    setModelLabel("");
   };
   return (
     <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
       <Typography fontWeight={700}>Pinned Claude model versions</Typography>
+      {catalogLoading ? (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          Refreshing Claude models…
+        </Typography>
+      ) : null}
       {configured.length ? (
         <Stack spacing={0.75} sx={{ mt: 1 }}>
           <Typography variant="caption" color="text.secondary">
@@ -405,6 +436,13 @@ function ClaudeModelOptionsSettings({
               >
                 {model.id}
               </Typography>
+              {model.validatedAt ? (
+                <Typography variant="caption" color={model.availability === "unavailable" ? "warning.main" : "success.main"}>
+                  {model.availability === "unavailable"
+                    ? `Unavailable · ${model.unavailableReason ?? "Claude rejected this model"}`
+                    : `Validated ${new Date(model.validatedAt).toLocaleString()}`}
+                </Typography>
+              ) : null}
             </Box>
             <Button
               size="small"
@@ -434,21 +472,19 @@ function ClaudeModelOptionsSettings({
             }
             error={Boolean(normalizedId && idAlreadyExists)}
           />
-          <TextField
-            fullWidth
-            label="Label (optional)"
-            value={modelLabel}
-            onChange={event => setModelLabel(event.target.value)}
-          />
           <Button
             variant="outlined"
-            disabled={!normalizedId || idAlreadyExists}
-            onClick={addModel}
+            disabled={!projectId || !normalizedId || idAlreadyExists || validateModel.isPending}
+            onClick={() => void addModel()}
             sx={{ alignSelf: { xs: "stretch", sm: "flex-start" }, minHeight: 56 }}
           >
-            Add
+            {validateModel.isPending ? "Validating…" : "Validate & Add"}
           </Button>
         </Stack>
+        {validationError ? <Alert severity="error">{validationError}</Alert> : null}
+        {!projectId ? (
+          <Alert severity="info">Create a Project before validating a Claude model.</Alert>
+        ) : null}
       </Stack>
     </Box>
   );
@@ -458,12 +494,16 @@ function ProviderSettingsSection({
   preferences,
   engines,
   updatePending,
+  validationProjectId,
+  modelCatalogLoading,
   onPreferences,
   onToggleEngine,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   updatePending: boolean;
+  validationProjectId?: string;
+  modelCatalogLoading: boolean;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
 }): JSX.Element {
@@ -477,6 +517,7 @@ function ProviderSettingsSection({
       ) : null}
       {engines.map(engine => {
         const resolved = resolveRuntimeSelection(engine, preferences);
+        const modelState = runtimeControlState(engine, resolved);
         const efforts = effortOptionsForModel(engine, resolved.model);
         return (
           <Paper key={engine.id} variant="outlined" sx={{ p: 2.5 }}>
@@ -528,11 +569,14 @@ function ProviderSettingsSection({
                     });
                   }}
                 >
-                  {engine.models.map(option => (
-                    <MenuItem key={option.id || "provider-default"} value={option.id}>
-                      {option.label}
-                    </MenuItem>
-                  ))}
+                  {modelState.models.flatMap((option, index) => [
+                    ...(option.group && option.group !== modelState.models[index - 1]?.group
+                      ? [<ListSubheader key={`group-${option.group}`}>{option.group}</ListSubheader>]
+                      : []),
+                    <MenuItem key={option.id || "provider-default"} value={option.id} disabled={option.disabled}>
+                      <ListItemText primary={option.label} secondary={option.detail} />
+                    </MenuItem>,
+                  ])}
                 </Select>
               </FormControl>
               <FormControl fullWidth>
@@ -564,11 +608,18 @@ function ProviderSettingsSection({
               </FormControl>
             </Stack>
             {engine.configuredModels !== undefined ? (
-              <ClaudeModelOptionsSettings
-                engine={engine}
-                preferences={preferences}
-                onPreferences={onPreferences}
-              />
+              <>
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                  Latest aliases follow future Claude upgrades. Pinned exact IDs stay on the selected version.
+                </Typography>
+                <ClaudeModelOptionsSettings
+                  engine={engine}
+                  preferences={preferences}
+                  projectId={validationProjectId}
+                  catalogLoading={modelCatalogLoading}
+                  onPreferences={onPreferences}
+                />
+              </>
             ) : null}
             {!engineIsAvailable(engine) ? (
               <Alert severity="warning" sx={{ mt: 2 }}>
@@ -585,6 +636,7 @@ function ProviderSettingsSection({
 export function WorkspaceSettingsView({
   preferences,
   engines,
+  projects,
   colorMode,
   onToggleColorMode,
   onPreferences,
@@ -592,12 +644,21 @@ export function WorkspaceSettingsView({
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
+  projects: ProjectDto[];
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   section?: "general" | "providers" | "notifications";
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const validationProject = projects[0];
+  const modelCatalogQuery = useQuery({
+    queryKey: queryKeys.engines.models(validationProject?.id, "claude"),
+    queryFn: () => api.getEngineModels(validationProject!.id, "claude"),
+    enabled: Boolean(validationProject && engines.some((engine) => engine.id === "claude")),
+    staleTime: 5 * 60_000,
+  });
+  const settingsEngines = enginesWithModelCatalog(engines, modelCatalogQuery.data);
   const [instructions, setInstructions] = useState(
     preferences.globalInstructions,
   );
@@ -718,8 +779,10 @@ export function WorkspaceSettingsView({
         {section === "providers" ? (
           <ProviderSettingsSection
             preferences={preferences}
-            engines={engines}
+            engines={settingsEngines}
             updatePending={updateEngine.isPending}
+            validationProjectId={validationProject?.id}
+            modelCatalogLoading={modelCatalogQuery.isLoading}
             onPreferences={onPreferences}
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })

@@ -8,6 +8,7 @@ export { CodexAdapter, renderSeedPrompt } from "./codex.js";
 export { CodexAppServerSession, mapCodexAppServerNotification } from "./codex-app-server.js";
 export type { CodexAdapterOptions, SpawnFn } from "./codex.js";
 export { ClaudeAdapter } from "./claude.js";
+export { ClaudeModelCatalogProbe, claudeModelDisplayName, normalizeClaudeProviderModels } from "./claude-models.js";
 export { ClaudeStreamSession } from "./claude-stream-session.js";
 export type { ClaudeAdapterOptions } from "./claude.js";
 export { mapCodexEvent, mapFileChangeKind } from "./events.js";
