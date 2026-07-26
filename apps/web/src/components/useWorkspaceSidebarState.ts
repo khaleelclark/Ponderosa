@@ -1,5 +1,5 @@
 import type { ConversationDto } from "@ponderosa/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   routeInitialSidebarSection,
@@ -57,9 +57,20 @@ export function useWorkspaceSidebarResize(
   onWidthChange?: (width: number) => void,
 ) {
   const [resizing, setResizing] = useState(false);
+  // A drag attaches window listeners that only pointerup or pointercancel
+  // removes. Unmounting mid-drag delivers neither, so they outlived the
+  // sidebar and kept driving onWidthChange against a gone component. Hold the
+  // detach so unmount can run it; it takes no state so it is safe there.
+  const detachDrag = useRef<(() => void) | undefined>(undefined);
+  useEffect(() => () => {
+    detachDrag.current?.();
+    detachDrag.current = undefined;
+  }, []);
+
   const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!onWidthChange) return;
     event.preventDefault();
+    detachDrag.current?.();
     const startX = event.clientX;
     const startWidth = width;
     setResizing(true);
@@ -67,12 +78,17 @@ export function useWorkspaceSidebarResize(
       onWidthChange(
         clampWorkspaceSidebarWidth(startWidth + next.clientX - startX),
       );
-    const stop = () => {
-      setResizing(false);
+    const detach = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
       window.removeEventListener("pointercancel", stop);
+      detachDrag.current = undefined;
     };
+    const stop = () => {
+      detach();
+      setResizing(false);
+    };
+    detachDrag.current = detach;
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
     window.addEventListener("pointercancel", stop);

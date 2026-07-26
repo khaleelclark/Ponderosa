@@ -8,6 +8,7 @@ export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
 export { CoordinationV3Store } from "./coordination-v3-store.js";
+export { PendingActivationCapacityError } from "./coordination-v3-activation.js";
 export type {
   CoordinateV3Input,
   CoordinateV3Result,
