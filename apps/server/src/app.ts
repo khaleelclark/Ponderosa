@@ -243,6 +243,7 @@ import {
   registerProjectFolderRoutes,
 } from "./routes/project-folders.js";
 import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes/agent-audit.js";
+import { registerAgentPresetRoutes } from "./routes/agent-presets.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
@@ -9153,39 +9154,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return store.listAgents(request.params.id);
   });
 
-  const validatePreset = (
-    input: { name?: string; description?: string; guidance?: string; engine?: string; model?: string | null; effort?: string | null },
-    partial = false,
-    projectId?: string,
-  ): string | undefined => {
-    if (!partial && (!input.name?.trim() || !input.description?.trim() || !input.guidance?.trim() || !input.engine)) return "name, description, guidance, and engine are required";
-    if (input.name !== undefined && (input.name.trim().length < 2 || input.name.trim().length > 60)) return "name must be 2-60 characters";
-    if (input.description !== undefined && input.description.trim().length > 240) return "description must be at most 240 characters";
-    if (input.guidance !== undefined && (input.guidance.trim().length < 10 || input.guidance.trim().length > 8000)) return "guidance must be 10-8000 characters";
-    if (input.engine) {
-      const configured = engines.get(input.engine); if (!configured) return "unknown engine";
+  registerAgentPresetRoutes(app, {
+    store,
+    validateRuntimeSelection: (input, projectId) => {
+      if (!input.engine) return undefined;
+      const configured = engines.get(input.engine);
+      if (!configured) return "unknown engine";
       return runtimeSelectionError(
         configured.adapter,
         input.model ?? undefined,
         input.effort ?? undefined,
         cachedModelOptions(configured.adapter, projectId),
       );
-    }
-  };
-  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-presets", async (request, reply) => store.getProject(request.params.id) ? store.listAgentPresets(request.params.id) : reply.code(404).send({ error: "project not found" }));
-  app.post<{ Params: { id: string }; Body: import("@ponderosa/core").CreateAgentPresetRequest }>("/api/projects/:id/agent-presets", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const error = validatePreset(request.body ?? {}, false, request.params.id); if (error) return reply.code(400).send({ error });
-    return reply.code(201).send(store.createAgentPreset(request.params.id, request.body));
+    },
   });
-  app.patch<{ Params: { id: string }; Body: import("@ponderosa/core").UpdateAgentPresetRequest }>("/api/agent-presets/:id", async (request, reply) => {
-    const current = store.getAgentPreset(request.params.id); if (!current) return reply.code(404).send({ error: "preset not found" });
-    const body = request.body ?? {};
-    if (Object.keys(body).some((key) => !["name", "description", "guidance", "engine", "model", "effort", "enabled"].includes(key))) return reply.code(400).send({ error: "unknown preset field" });
-    const error = validatePreset({ ...current, ...body }, true, current.projectId); if (error) return reply.code(400).send({ error });
-    return store.updateAgentPreset(request.params.id, body)!;
-  });
-  app.delete<{ Params: { id: string } }>("/api/agent-presets/:id", async (request, reply) => store.deleteAgentPreset(request.params.id) ? { deleted: true } : reply.code(404).send({ error: "preset not found" }));
 
   app.post<{
     Params: { id: string };
