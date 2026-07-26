@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { type Socket } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -253,6 +253,10 @@ import {
 export {
   normalizeExternalCitations,
 } from "./external-content.js";
+import {
+  derivedRunActionKey,
+  secretEqual,
+} from "./security.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -672,17 +676,6 @@ const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
 const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
 const CONTEXT_ROLLOVER_INSTRUCTION = "Your provider session is approaching its practical context limit. Before ending this Run, call `ponderosa_rollover` once with a 300–500 word handoff for the fresh session that will replace you. The handoff must explicitly separate: (1) the objective; (2) work completed; (3) unblocked work that should continue now; (4) blocked work and what blocks it; (5) the exact next action; (6) verified facts versus assumptions; (7) references to relevant files and artifacts. Do not summarize the whole conversation — carry only working state the next session needs. Then finish or safely stop your current work as normal.";
-
-function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
-  return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
-}
-
-function secretEqual(provided: string | undefined, expected: string): boolean {
-  if (provided === undefined) return false;
-  const actual = Buffer.from(provided);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
 
 function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStreamEvent {
   return event.type !== "user_message";
