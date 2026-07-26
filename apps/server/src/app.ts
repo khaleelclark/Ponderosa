@@ -154,7 +154,7 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
-import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
+import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, readOperatorProfileImage } from "./operator-profile-images.js";
 import { ProviderUsageCache, type ProviderUsageTarget } from "./provider-usage-cache.js";
 import {
   descriptorRelativeFilesystemCapability,
@@ -253,6 +253,7 @@ import {
 } from "./security.js";
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerLimitsRoutes } from "./routes/limits.js";
+import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import type { ServerContext } from "./server-context.js";
 import {
@@ -12283,25 +12284,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
 
-  app.post<{ Body: Buffer }>("/api/workspace/profile-images", { bodyLimit: MAX_OPERATOR_AVATAR_BYTES }, async (request, reply) => {
-    if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "profile image body is required" });
-    try {
-      const uploaded = await storeOperatorProfileImage(opts.dataDir, request.body, request.headers["content-type"]);
-      return reply.code(201).send(uploaded);
-    } catch (error) {
-      if (error instanceof OperatorProfileImageError) return reply.code(error.statusCode).send({ error: error.message });
-      throw error;
-    }
-  });
-
-  app.get<{ Params: { avatarId: string } }>("/api/workspace/profile-images/:avatarId", async (request, reply) => {
-    const image = await readOperatorProfileImage(opts.dataDir, request.params.avatarId);
-    if (!image) return reply.code(404).send({ error: "profile image not found" });
-    return reply.type(image.mediaType)
-      .header("cache-control", "private, max-age=31536000, immutable")
-      .header("content-disposition", "inline")
-      .send(image.body);
-  });
+  registerOperatorProfileImageRoutes(app, serverContext);
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 

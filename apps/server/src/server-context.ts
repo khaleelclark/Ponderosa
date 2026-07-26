@@ -5,6 +5,7 @@ export interface ServerContext {
   opts: {
     buildVersion?: string;
     buildRevision?: string;
+    dataDir: string;
   };
   documentationReferences: typeof documentationReferences;
   limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
