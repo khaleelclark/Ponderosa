@@ -36,6 +36,7 @@ import {
 import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./coordination-v3-activation.js";
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
+import { terminalAt } from "./coordination-v3-request-state.js";
 import {
   RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE,
   RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES,
@@ -566,10 +567,6 @@ export interface CoordinationV3StoreOptions {
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
-
-function terminalAt(state: CoordinationRequestState, now: string): string | null {
-  return TERMINAL_REQUEST_STATES.has(state) ? now : null;
-}
 
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
