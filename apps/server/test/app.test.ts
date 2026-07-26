@@ -505,6 +505,59 @@ describe("server public API behavior", () => {
     expect(detail.body).not.toContain("fileActivity");
   });
 
+  it("validates Agent preset CRUD through the public routes", async () => {
+    const project = store.createProject({
+      label: "Presets",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const app = server();
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agent-presets`,
+      payload: {
+        name: "X",
+        description: "Too short",
+        guidance: "Use a careful and repeatable workflow.",
+        engine: "codex",
+      },
+    })).json()).toEqual({ error: "name must be 2-60 characters" });
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agent-presets`,
+      payload: {
+        name: "Reviewer",
+        description: "Review changes",
+        guidance: "Review every change against the public behavior contract.",
+        engine: "codex",
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const preset = created.json<{ id: string }>();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-presets`,
+    })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: preset.id, name: "Reviewer", enabled: true }),
+    ]));
+
+    const rejectedPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/agent-presets/${preset.id}`,
+      payload: { unexpected: true },
+    });
+    expect(rejectedPatch.statusCode).toBe(400);
+    expect(rejectedPatch.json()).toEqual({ error: "unknown preset field" });
+    expect((await app.inject({
+      method: "DELETE",
+      url: `/api/agent-presets/${preset.id}`,
+    })).json()).toEqual({ deleted: true });
+  });
+
   it.skipIf(process.platform === "linux")(
     "fails artifact-dependent Agent creation closed when descriptor-relative access is unavailable",
     async () => {
