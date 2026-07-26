@@ -553,7 +553,7 @@ export function AgentDetail({
       telemetryElementId(focusTelemetry.stream, focusedId),
     );
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    target.scrollIntoView({ behavior: "auto", block: "center" });
     target.focus({ preventScroll: true });
     focusedTelemetryRef.current = focusKey;
   }, [
