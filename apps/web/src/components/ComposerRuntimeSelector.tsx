@@ -6,6 +6,7 @@ import {
   ButtonBase,
   ClickAwayListener,
   Divider,
+  ListSubheader,
   MenuItem,
   MenuList,
   Paper,
@@ -22,6 +23,7 @@ export interface ComposerRuntimeOption {
   label: string;
   disabled?: boolean;
   detail?: string;
+  group?: "Latest" | "Pinned";
 }
 
 type RuntimeSection = "engine" | "model" | "effort";
@@ -151,9 +153,16 @@ export function ComposerRuntimeSelector({
             </Box>
             <MenuList aria-label={`${active.label} options`} sx={{ maxHeight: "min(48vh, 410px)", overflowY: "auto", px: 0.75, pb: 0.75 }}>
               {compact ? <MenuItem onClick={() => setSection(null)} sx={{ borderRadius: 1.5 }}>Back</MenuItem> : null}
-              {active.options.map((option) => {
+              {active.options.map((option, index) => {
                 const current = active.id === "engine" ? engine : active.id === "model" ? model : effort;
-                return <MenuItem
+                const showGroup = option.group && option.group !== active.options[index - 1]?.group;
+                return <Box key={option.id || "default"}>
+                  {showGroup ? (
+                    <ListSubheader sx={{ bgcolor: "background.paper", lineHeight: "34px", fontWeight: 800 }}>
+                      {option.group}
+                    </ListSubheader>
+                  ) : null}
+                  <MenuItem
                   key={option.id || "default"}
                   disabled={option.disabled}
                   selected={option.id === current}
@@ -165,7 +174,8 @@ export function ComposerRuntimeSelector({
                     {option.detail ? <Typography variant="caption" color="text.secondary">{option.detail}</Typography> : null}
                   </Box>
                   {option.id === current ? <CheckIcon fontSize="small" sx={{ mt: 0.25 }} /> : null}
-                </MenuItem>;
+                  </MenuItem>
+                </Box>;
               })}
             </MenuList>
           </Paper> : null}

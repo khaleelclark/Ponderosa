@@ -52,6 +52,7 @@ import type {
   EditQueuedMessageRequest,
   EditQueuedMessageResponse,
   EngineDto,
+  EngineModelValidationDto,
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
@@ -71,6 +72,7 @@ import type {
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
   ProjectDto,
+  ProjectEngineModelCatalogDto,
   ProjectEngineCapabilitiesDto,
   ReadinessDto,
   ProjectFolderOptionsDto,
@@ -514,6 +516,17 @@ export const realApi = {
   },
   recheckEngine(engineId: string): Promise<EngineDto> {
     return requestJson<EngineDto>(`/api/engines/${encodeURIComponent(engineId)}/recheck`, { method: "POST" });
+  },
+  getEngineModels(projectId: string, engineId: string, refresh = false): Promise<ProjectEngineModelCatalogDto> {
+    return requestJson<ProjectEngineModelCatalogDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/engine-models/${encodeURIComponent(engineId)}${toQuery(refresh ? { refresh: true } : {})}`,
+    );
+  },
+  validateEngineModel(projectId: string, engineId: string, modelId: string): Promise<EngineModelValidationDto> {
+    return requestJson<EngineModelValidationDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/engine-models/${encodeURIComponent(engineId)}/validate`,
+      { method: "POST", body: JSON.stringify({ modelId }) },
+    );
   },
   getEngineCapabilities(projectId: string, context?: { engineId?: string; model?: string; agentId?: string; refresh?: boolean }): Promise<ProjectEngineCapabilitiesDto[]> {
     return requestJson<ProjectEngineCapabilitiesDto[]>(

@@ -20,6 +20,7 @@ import { mergeAgentStatuses } from "../agents";
 import { pickAgentName } from "../parkNames";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
+import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
@@ -90,6 +91,17 @@ export function ProjectShell({
   const agents = agentsQuery.data ?? [];
   const presetsQuery = useAgentPresets(projectId);
   const healthQuery = useAgentHealth(projectId);
+  const claudeEngine = engines.find((engine) => engine.id === "claude");
+  const modelCatalogQuery = useQuery({
+    queryKey: queryKeys.engines.models(projectId, "claude"),
+    queryFn: () => api.getEngineModels(projectId, "claude"),
+    enabled: Boolean(claudeEngine),
+    staleTime: 5 * 60_000,
+  });
+  const projectEngines = useMemo(
+    () => enginesWithModelCatalog(engines, modelCatalogQuery.data),
+    [engines, modelCatalogQuery.data],
+  );
   const routedAgent = route.kind === "agent"
     ? agents.find((agent) => agent.id === route.agentId)
     : undefined;
@@ -280,7 +292,7 @@ export function ProjectShell({
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}
         initialView={route.urlDriven ? (route.channel ?? "main") : route.channel}
-        engines={engines}
+        engines={projectEngines}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
         statusByAgentId={statusByAgentId}
@@ -317,7 +329,8 @@ export function ProjectShell({
           kind: "agent", projectId, agentId: route.agentId, view: "technical",
           ...(technicalFocusId ? { technicalFocusId } : {}),
         })}
-        engines={engines}
+        engines={projectEngines}
+        modelCatalogLoading={modelCatalogQuery.isLoading}
         engineCapabilities={engineCapabilities}
         onRefreshCapabilities={refreshCapabilities}
         projectedStatus={statusByAgentId.get(route.agentId)}
@@ -351,7 +364,7 @@ export function ProjectShell({
       <AgentsTab
         agents={agents}
         projectId={projectId}
-        engines={engines}
+        engines={projectEngines}
         conversations={conversations}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
@@ -385,7 +398,7 @@ export function ProjectShell({
         agents={agents}
         health={healthQuery.data?.agents}
         healthByAgentId={healthByAgentId}
-        engines={engines}
+        engines={projectEngines}
         notifications={notifications}
         preferences={preferences}
         onPreferences={onPreferences}
@@ -412,7 +425,7 @@ export function ProjectShell({
     <>
       <CreateConversationDialog
         open={masterDialogOpen}
-        engines={engines}
+        engines={projectEngines}
         pending={createConversation.isPending}
         error={createConversation.isError ? String(createConversation.error) : undefined}
         onClose={() => setMasterDialogOpen(false)}
@@ -420,7 +433,7 @@ export function ProjectShell({
       />
       <CreateAgentDialog
         open={agentDialog.open}
-        engines={engines}
+        engines={projectEngines}
         conversations={conversations}
         presets={presets}
         agents={agents}
@@ -435,7 +448,7 @@ export function ProjectShell({
         onClose={() => setAgentDialog({ open: false })}
         onCreate={(input) => createAgent.mutate(input)}
       />
-      <PresetManagerDialog open={presetsOpen} engines={engines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
+      <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);
         await action;
         await queryClient.invalidateQueries({ queryKey: queryKeys.agents.presets(projectId) });

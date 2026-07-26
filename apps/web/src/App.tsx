@@ -353,6 +353,7 @@ export default function App({
       queryClient.setQueryData(queryKeys.workspacePreferences.all, value);
       if (patch.claudeModelOptions !== undefined) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
+        void queryClient.invalidateQueries({ queryKey: ["engine-models"] });
       }
     });
   };
@@ -955,6 +956,7 @@ export default function App({
                   <WorkspaceSettingsView
                     preferences={preferences}
                     engines={engines}
+                    projects={projects}
                     colorMode={colorMode}
                     onToggleColorMode={onToggleColorMode}
                     onPreferences={savePreferences}

@@ -1,4 +1,10 @@
-import type { EffortOption, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type {
+  EffortOption,
+  EngineDto,
+  ProjectDto,
+  ProjectEngineModelCatalogDto,
+  WorkspacePreferencesDto,
+} from "@ponderosa/core";
 
 export function engineIsAvailable(engine: { authenticated: boolean; available: boolean; enabled?: boolean } | undefined): boolean {
   return Boolean(engine?.enabled !== false && engine?.authenticated && engine.available);
@@ -118,12 +124,57 @@ interface RuntimeOption {
   label: string;
   disabled?: boolean;
   detail?: string;
+  group?: "Latest" | "Pinned";
 }
 
 export interface RuntimeControlState extends RuntimeSelection {
   models: RuntimeOption[];
   efforts: RuntimeOption[];
   ready: boolean;
+}
+
+export function enginesWithModelCatalog(
+  engines: EngineDto[],
+  catalog: ProjectEngineModelCatalogDto | undefined,
+): EngineDto[] {
+  if (!catalog) return engines;
+  return engines.map((engine) => engine.id !== catalog.engineId
+    ? engine
+    : {
+        ...engine,
+        models: catalog.models.map((model) => ({
+          ...model,
+          ...(model.supportedEffortLevels
+            ? { efforts: model.supportedEffortLevels.map((effort) => ({ id: effort, label: effort })) }
+            : {}),
+        })),
+        modelCatalogKnown: true,
+      });
+}
+
+function runtimeModelOption(
+  engine: EngineDto,
+  option: EngineDto["models"][number],
+): RuntimeOption {
+  const resolvedLabel = option.resolvedModel
+    ? engine.models.find((candidate) => candidate.id === option.resolvedModel)?.label ?? option.resolvedModel
+    : undefined;
+  const pinned = option.kind === "exact";
+  const unavailable = option.availability === "unavailable";
+  const semantics = pinned
+    ? `Pinned · stores ${option.id}`
+    : option.kind === "alias"
+      ? `Latest${resolvedLabel ? ` · currently resolves to ${resolvedLabel}` : ""} · stores ${option.id}`
+      : undefined;
+  return {
+    id: option.id,
+    label: option.label,
+    ...(option.kind ? { group: pinned ? "Pinned" as const : "Latest" as const } : {}),
+    ...(unavailable ? { disabled: true } : {}),
+    ...((unavailable ? option.unavailableReason : semantics ?? option.description)
+      ? { detail: unavailable ? `Unavailable · ${option.unavailableReason ?? "provider rejected this model"}` : semantics ?? option.description }
+      : {}),
+  };
 }
 
 /**
@@ -150,7 +201,7 @@ export function runtimeControlState(
     : advertisedEfforts;
   return {
     ...selection,
-    models,
+    models: models.map((option) => runtimeModelOption(engine, option)),
     efforts,
     ready: engineIsAvailable(engine),
   };

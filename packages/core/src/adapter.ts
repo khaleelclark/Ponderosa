@@ -32,6 +32,10 @@ export interface ChatMessage {
   }>;
 }
 
+export type EngineModelKind = "alias" | "exact";
+export type EngineModelSource = "provider-probe" | "operator" | "environment";
+export type EngineModelAvailability = "available" | "unavailable";
+
 /** A selectable model for an engine (e.g. Codex's model set). */
 export interface ModelOption {
   id: string;
@@ -40,7 +44,45 @@ export interface ModelOption {
   efforts?: EffortOption[];
   /** Provider-reported default effort for this exact model. */
   defaultEffort?: string;
+  resolvedModel?: string;
+  description?: string;
+  kind?: EngineModelKind;
+  supportedEffortLevels?: string[];
+  source?: EngineModelSource;
+  validatedAt?: string;
+  availability?: EngineModelAvailability;
+  unavailableReason?: string;
 }
+
+/**
+ * Provider-backed model metadata. `id` is always the exact value supplied to
+ * the subscription CLI; `resolvedModel` is provider evidence, never a locally
+ * inferred replacement.
+ */
+export interface EngineModelOption extends ModelOption {
+  kind: EngineModelKind;
+  source: EngineModelSource;
+}
+
+export interface EngineModelCatalog {
+  models: EngineModelOption[];
+  cliVersion: string;
+  /** Adapter-owned fingerprint of configuration that can affect discovery. */
+  configurationKey: string;
+}
+
+export type EngineModelValidationError =
+  | "invalid_model"
+  | "model_not_found"
+  | "authentication"
+  | "organization_policy"
+  | "plan_entitlement"
+  | "network"
+  | "provider_error";
+
+export type EngineModelValidationResult =
+  | { valid: true; model: EngineModelOption }
+  | { valid: false; errorCode: EngineModelValidationError; error: string };
 
 /** A selectable reasoning-effort level (e.g. low|medium|high|xhigh|max). */
 export interface EffortOption {
@@ -246,6 +288,8 @@ export interface EngineCapabilities {
   /** Provider-resolved active model when reported. */
   model?: string;
   catalogVersion?: string;
+  /** Provider model rows captured from this exact live session initialization. */
+  modelCatalog?: EngineModelCatalog;
   commands: EngineCommand[];
   mcpServers: EngineMcpServer[];
   composerCapabilities: EngineComposerCapability[];
@@ -256,6 +300,12 @@ export interface EngineCapabilityDiscoveryOptions {
   model?: string;
   signal: AbortSignal;
   /** Called synchronously for every helper process spawned by discovery. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+}
+
+export interface EngineModelDiscoveryOptions {
+  signal: AbortSignal;
+  /** Called synchronously for every provider helper process that is spawned. */
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
 }
 
@@ -272,7 +322,15 @@ export interface Adapter {
   /** Host-configured provider model pins, excluding built-in aliases. */
   configuredModelOptions?(): ModelOption[];
   /** Replace operator-managed model options without rebuilding the adapter. */
-  setOperatorModelOptions?(models: ModelOption[]): void;
+  setOperatorModelOptions?(models: EngineModelOption[]): void;
+  /** Configuration-only fingerprint used to keep Project model caches isolated. */
+  modelCatalogConfigurationKey?(): string;
+  /** Discover provider-advertised aliases and exact model choices without a turn. */
+  discoverModelCatalog?(cwd: string, context: EngineModelDiscoveryOptions): Promise<EngineModelCatalog>;
+  /** Merge live provider rows with operator and environment configuration. */
+  configuredModelCatalog?(providerModels: EngineModelOption[]): EngineModelOption[];
+  /** Validate a typed model through an explicit, user-initiated provider check. */
+  validateModel?(cwd: string, modelId: string, context: EngineModelDiscoveryOptions): Promise<EngineModelValidationResult>;
   listEfforts(model?: string): EffortOption[];
   /** Concrete adapter-owned fallback used when no operator or Project override exists. */
   defaultModel?(): string | undefined;

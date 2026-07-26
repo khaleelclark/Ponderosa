@@ -14,8 +14,9 @@
 //   {"type":"result","subtype":"success","is_error":false,"result":"...","usage":{...}}
 //   {"type":"rate_limit_event", ...}  (informational — ignored)
 
-import type { AgentEvent, FileChangeKind, TokenUsage } from "@ponderosa/core";
+import type { AgentEvent, FileChangeKind, ProviderErrorCode, TokenUsage } from "@ponderosa/core";
 import type { CodexMapContext } from "./events.js";
+import { claudeProviderErrorCode } from "./claude-models.js";
 
 interface RawBlock {
   type?: string;
@@ -43,7 +44,28 @@ interface RawClaudeEvent {
   message?: RawMessage;
   result?: string;
   is_error?: boolean;
+  error?: string;
+  errors?: string[];
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+}
+
+function providerErrorMessage(code: ProviderErrorCode | undefined, detail: string): string {
+  switch (code) {
+    case "invalid_model":
+      return `Claude rejected the selected model as invalid${detail ? `: ${detail}` : ""}`;
+    case "model_not_found":
+      return `Claude could not find or access the selected model${detail ? `: ${detail}` : ""}`;
+    case "authentication_failed":
+      return `Claude authentication failed${detail ? `: ${detail}` : ""}`;
+    case "organization_policy":
+      return `Claude organization policy rejected the request${detail ? `: ${detail}` : ""}`;
+    case "plan_entitlement":
+      return `The Claude plan rejected the selected model${detail ? `: ${detail}` : ""}`;
+    case "network":
+      return `Claude could not reach the provider${detail ? `: ${detail}` : ""}`;
+    default:
+      return detail || "claude run failed";
+  }
 }
 
 /** Claude Code's file-mutating tools → a normalized {@link FileChangeKind}. */
@@ -123,8 +145,17 @@ export function mapClaudeEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEv
         ? [{ type: "session", sessionId: ev.session_id }]
         : [];
 
-    case "assistant":
-      return mapAssistant(ev.message, ctx);
+    case "assistant": {
+      const mapped = mapAssistant(ev.message, ctx);
+      if (!ev.error) return mapped;
+      const detail = mapped
+        .filter((event): event is Extract<AgentEvent, { type: "text" }> => event.type === "text")
+        .map((event) => event.delta)
+        .join(" ")
+        .trim();
+      const code = claudeProviderErrorCode(ev.error, detail);
+      return [{ type: "error", message: providerErrorMessage(code, detail), ...(code ? { code } : {}) }];
+    }
 
     case "user":
       return mapUser(ev.message);
@@ -132,7 +163,16 @@ export function mapClaudeEvent(raw: unknown, ctx: CodexMapContext = {}): AgentEv
     case "result": {
       const out: AgentEvent[] = [];
       if (ev.is_error) {
-        out.push({ type: "error", message: ev.result ?? "claude run failed" });
+        const detail = [
+          ev.result ?? "",
+          ...(ev.errors ?? []),
+        ].filter(Boolean).join(" ").trim();
+        const code = claudeProviderErrorCode(ev.error, detail);
+        out.push({
+          type: "error",
+          message: providerErrorMessage(code, detail),
+          ...(code ? { code } : {}),
+        });
       }
       out.push({ type: "turn_done", usage: mapUsage(ev.usage) });
       return out;

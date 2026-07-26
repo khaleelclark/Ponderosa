@@ -844,16 +844,42 @@ function normalizeClaudeModelOptions(
   input: unknown,
 ): WorkspacePreferencesDto["claudeModelOptions"] {
   if (!Array.isArray(input)) return [];
-  const models = new Map<string, { id: string; label?: string }>();
+  const models = new Map<string, WorkspacePreferencesDto["claudeModelOptions"][number]>();
   for (const candidate of input) {
     if (!candidate || typeof candidate !== "object") continue;
-    const raw = candidate as { id?: unknown; label?: unknown };
+    const raw = candidate as {
+      id?: unknown;
+      label?: unknown;
+      resolvedModel?: unknown;
+      validatedAt?: unknown;
+      availability?: unknown;
+      unavailableReason?: unknown;
+    };
     const id = typeof raw.id === "string" ? raw.id.trim().slice(0, 200) : "";
     if (!id) continue;
     const label = typeof raw.label === "string"
       ? raw.label.trim().slice(0, 200)
       : "";
-    models.set(id, { id, ...(label ? { label } : {}) });
+    const resolvedModel = typeof raw.resolvedModel === "string"
+      ? raw.resolvedModel.trim().slice(0, 200)
+      : "";
+    const validatedAt = typeof raw.validatedAt === "string" && Number.isFinite(Date.parse(raw.validatedAt))
+      ? new Date(raw.validatedAt).toISOString()
+      : undefined;
+    const availability = raw.availability === "available" || raw.availability === "unavailable"
+      ? raw.availability
+      : undefined;
+    const unavailableReason = typeof raw.unavailableReason === "string"
+      ? raw.unavailableReason.trim().slice(0, 1_000)
+      : "";
+    models.set(id, {
+      id,
+      ...(label ? { label } : {}),
+      ...(resolvedModel ? { resolvedModel } : {}),
+      ...(validatedAt ? { validatedAt } : {}),
+      ...(availability ? { availability } : {}),
+      ...(unavailableReason ? { unavailableReason } : {}),
+    });
     if (models.size >= 100) break;
   }
   return [...models.values()];
