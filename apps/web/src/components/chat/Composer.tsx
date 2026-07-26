@@ -263,8 +263,9 @@ export function Composer({
       },
     );
   const setDestination = (handle: string) =>
-    update(current =>
-      `#${handle} ${replaceDestination(current, undefined).trimStart()}`.trimEnd(),
+    update(
+      current =>
+        `#${handle} ${replaceDestination(current, undefined).trimStart()}`,
     );
   const removeHandle = (value: string, handle: string) =>
     value
