@@ -1,3 +1,4 @@
+import type { AssetLimitsDto } from "@ponderosa/core";
 import type { documentationReferences } from "./documentation-reference/index.js";
 
 export interface ServerContext {
@@ -6,4 +7,5 @@ export interface ServerContext {
     buildRevision?: string;
   };
   documentationReferences: typeof documentationReferences;
+  limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
 }

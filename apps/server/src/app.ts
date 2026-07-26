@@ -252,6 +252,7 @@ import {
   secretEqual,
 } from "./security.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import { registerLimitsRoutes } from "./routes/limits.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import type { ServerContext } from "./server-context.js";
 import {
@@ -3963,7 +3964,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
-  const serverContext: ServerContext = { opts, documentationReferences };
+  const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
+  const serverContext: ServerContext = { opts, documentationReferences, limits };
   app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
@@ -10455,9 +10457,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return metadata && await assets.content(agent.projectId, agent.id, id, false) ? metadata : undefined;
   }
 
-  const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
-  app.get("/api/attachment-limits", async () => limits);
-  app.get("/api/asset-limits", async () => ASSET_LIMITS);
+  registerLimitsRoutes(app, serverContext);
 
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
