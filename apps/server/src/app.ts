@@ -221,6 +221,14 @@ export {
   notificationKindForCommunication,
   notificationPreferenceMatches,
 } from "./notification-routing.js";
+import {
+  conciseConversationTitle,
+  semanticConversationTitle,
+} from "./conversation-titles.js";
+export {
+  conciseConversationTitle,
+  semanticConversationTitle,
+} from "./conversation-titles.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -1417,27 +1425,6 @@ export function parseTokenUsageRange(query: { from?: string; to?: string }): Tok
   }
   if (range.from && range.to && range.from >= range.to) throw new Error("from must be earlier than to");
   return range;
-}
-
-export function conciseConversationTitle(text: string): string | undefined {
-  const normalized = text
-    .replace(/^\s*(?:#(?:broadcast|everyone|user|[\w-]+)\s+)+/i, "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[`*_#>\[\](){}]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return undefined;
-  const words = normalized.split(" ").filter(Boolean).slice(0, 5);
-  if (words.length < 2) return undefined;
-  return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 48).trim() || undefined;
-}
-
-/** Deterministic title used when no provider title service is available.
- * The conversation belongs to the operator's request, not a keyword mash of
- * an agent's response. */
-export function semanticConversationTitle(operatorText: string, agentText: string): string | undefined {
-  void agentText;
-  return conciseConversationTitle(operatorText);
 }
 
 export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {
