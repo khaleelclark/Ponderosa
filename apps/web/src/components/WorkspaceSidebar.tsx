@@ -66,33 +66,19 @@ import {
   type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
-import { ponderosaLayoutTokens } from "../theme";
 import {
   ResourceContextMenu,
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
-
-const SIDEBAR_RAIL_WIDTH = ponderosaLayoutTokens.sidebarRailWidth;
-const SIDEBAR_PANEL_WIDTH = ponderosaLayoutTokens.sidebarPanelWidth;
-
-function projectSnapshots(
-  projects: ProjectDto[],
-  conversations: Array<ConversationDto[] | undefined>,
-  agents: Array<Awaited<ReturnType<typeof api.listAgents>> | undefined>,
-  health: Array<Awaited<ReturnType<typeof api.getAgentHealth>> | undefined>,
-): WorkspaceProjectSnapshot[] {
-  return projects.map((project, index) => ({
-    project,
-    conversations: conversations[index] ?? [],
-    agents: agents[index] ?? [],
-    health: health[index]?.agents ?? [],
-  }));
-}
-
-const sidebarSurface = "var(--ponderosa-sidebar)";
-const railSurface = "var(--ponderosa-rail)";
-const starColor = "var(--ponderosa-star)";
+import {
+  SIDEBAR_PANEL_WIDTH,
+  SIDEBAR_RAIL_WIDTH,
+  projectSnapshots,
+  railSurface,
+  sidebarSurface,
+  starColor,
+} from "./WorkspaceSidebar.helpers";
 
 function SidebarSectionHeading({
   children,
