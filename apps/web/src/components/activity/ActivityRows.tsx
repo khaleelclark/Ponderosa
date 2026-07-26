@@ -1,7 +1,17 @@
+import BuildOutlinedIcon from "@mui/icons-material/BuildOutlined";
 import CheckIcon from "@mui/icons-material/Check";
+import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
+import CodeIcon from "@mui/icons-material/Code";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import LanguageIcon from "@mui/icons-material/Language";
+import PlayCircleOutlineIcon from "@mui/icons-material/PlayCircleOutline";
+import PsychologyOutlinedIcon from "@mui/icons-material/PsychologyOutlined";
 import { Box, Button, Chip, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import type { ResponseFileActivityDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
@@ -82,7 +92,8 @@ export function RunHeaderRow({
     sx={{ mt: 3, pt: 1.5, pb: 0.75, borderTop: 2, borderColor: "divider" }}
   >
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".025em" }}>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".025em" }}>
+        <PlayCircleOutlineIcon fontSize="small" />
         {entry.executionId
           ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
           : "Unscoped activity"}
@@ -113,7 +124,8 @@ export function CommandRow({
     : copyState === "failed" ? "Copy command failed" : "Copy command";
   return <Row entry={entry} focusId={focusId}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ flex: 1, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, flex: 1, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+        <CodeIcon fontSize="small" />
         {entry.internal ? "Ponderosa communication" : "Command"}
       </Typography>
       {!entry.internal ? <>
@@ -134,8 +146,8 @@ export function CommandRow({
     </Stack>
     {entry.internal
       ? <Typography variant="body2" color="text.secondary">Sent a structured Ponderosa communication or managed-agent event.</Typography>
-      : <Box component="pre" sx={{ m: 0, mt: 0.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13.5, userSelect: "text" }}>
-          $ {entry.command}
+      : <Box sx={{ mt: 0.5 }}>
+          <CollapsibleCode value={`$ ${entry.command}`} maxLines={2} fontSize={13.5} />
         </Box>}
     {!entry.internal && entry.cwd && entry.cwd !== projectRoot ? <Typography variant="caption" color="text.secondary">
       cwd: {entry.cwd}
@@ -183,7 +195,11 @@ export function ActionGroupRow({
         onClick={() => setExpanded((value) => !value)}
         sx={{ color: ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.5 }}
       >
-        {summary}
+        <Stack component="span" direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+          {commandCount ? <CodeIcon fontSize="small" /> : null}
+          {toolCount ? <BuildOutlinedIcon fontSize="small" /> : null}
+          <Box component="span">{summary}</Box>
+        </Stack>
       </Button>
       {failureCount ? <Typography variant="caption" color="error.main">
         {failureCount} failed
@@ -202,7 +218,15 @@ export function ActionGroupRow({
   </Box>;
 }
 
-function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number }): JSX.Element {
+function CollapsibleCode({
+  value,
+  maxLines,
+  fontSize = 12.5,
+}: {
+  value: string;
+  maxLines: number;
+  fontSize?: number;
+}): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const lines = value.split("\n");
   const collapsible = lines.length > maxLines || value.length > 700;
@@ -212,7 +236,7 @@ function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number 
       whiteSpace: "pre-wrap",
       overflowWrap: "anywhere",
       fontFamily: "monospace",
-      fontSize: 12.5,
+      fontSize,
       lineHeight: 1.45,
       ...(!expanded && collapsible ? {
         maxHeight: `${maxLines * 1.45}em`,
@@ -243,7 +267,10 @@ export function ToolRow({
     formatted = String(entry.input);
   }
   return <Row entry={entry} focusId={focusId}>
-    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>Tool call: {entry.name}</Typography>
+    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+      <BuildOutlinedIcon fontSize="small" />
+      Tool call: {entry.name}
+    </Typography>
     <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
       <CollapsibleCode value={formatted || "null"} maxLines={6} />
     </Box>
@@ -292,7 +319,10 @@ export function FileRow({
       }}
       sx={{ alignItems: "center", minWidth: 0 }}
     >
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>{verb}</Typography>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>
+        <DescriptionOutlinedIcon fontSize="small" />
+        {verb}
+      </Typography>
       <Typography variant="body2" sx={{ fontFamily: "monospace", minWidth: 0, overflowWrap: "anywhere" }}>{entry.path}</Typography>
       {entry.additions !== undefined || entry.deletions !== undefined ? <Typography variant="caption" sx={{ flexShrink: 0 }}>
         <Box component="span" color="success.main">+{entry.additions ?? 0}</Box>{" "}
@@ -354,7 +384,10 @@ export function ThinkingRow({
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
     <Box sx={{ pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
-      <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>Thinking</Typography>
+      <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+        <PsychologyOutlinedIcon fontSize="small" />
+        Thinking
+      </Typography>
       <RunOutputFullText segment={entry.segment} render={(text) => <ThinkingText text={text} />} />
     </Box>
   </Row>;
@@ -376,7 +409,8 @@ export function ResponseRow({
   projectId?: string;
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
-    <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+    <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+      <EditOutlinedIcon fontSize="small" />
       {entry.segment.completed ? "Response" : "Response · live"}
     </Typography>
     <RunOutputFullText
@@ -423,8 +457,16 @@ export function CompactActivityRow({
       : entry.kind === "browser"
         ? browserDescription(entry)
         : { title: entry.title, detail: entry.detail ?? "" };
+  const icon = entry.kind === "test"
+    ? entry.passed ? <CheckCircleOutlineIcon fontSize="small" /> : <ErrorOutlineIcon fontSize="small" />
+    : entry.kind === "error"
+      ? <ErrorOutlineIcon fontSize="small" />
+      : entry.kind === "browser"
+        ? <LanguageIcon fontSize="small" />
+        : <InfoOutlinedIcon fontSize="small" />;
   return <Row entry={entry} focusId={focusId}>
-    <Typography variant="subtitle2" color={entry.kind === "error" ? "error.main" : ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+    <Typography variant="subtitle2" color={entry.kind === "error" ? "error.main" : ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
+      {icon}
       {content.title}
     </Typography>
     {content.detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>

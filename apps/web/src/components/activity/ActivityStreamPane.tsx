@@ -27,11 +27,12 @@ type ActivityDisplayEntry =
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
 const MAX_ACTION_GROUP_GAP_MS = 2_000;
-const MAX_ACTION_GROUP_SPAN_MS = 4_000;
+const MAX_ACTION_GROUP_IDLE_SPAN_MS = 4_000;
 
 function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
   let actions: GroupedActionEntry[] = [];
+  let accumulatedIdleMs = 0;
   const flush = () => {
     const commandCount = actions.filter((entry) => entry.kind === "command").length;
     const toolCount = actions.filter((entry) => entry.kind === "tool").length;
@@ -46,22 +47,25 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
       grouped.push(...actions);
     }
     actions = [];
+    accumulatedIdleMs = 0;
   };
   const append = (entry: GroupedActionEntry) => {
-    const first = actions[0];
     const previous = actions.at(-1);
-    if (first && previous) {
-      const firstTime = Date.parse(first.createdAt);
-      const previousTime = Date.parse(previous.createdAt);
-      const entryTime = Date.parse(entry.createdAt);
-      const invalidTime = !Number.isFinite(firstTime) ||
-        !Number.isFinite(previousTime) ||
-        !Number.isFinite(entryTime) ||
-        entryTime < previousTime;
+    if (previous) {
+      const previousCompletedAt = previous.kind === "browser"
+        ? previous.createdAt
+        : previous.result?.completedAt;
+      const previousCompletedTime = Date.parse(previousCompletedAt ?? "");
+      const entryStartTime = Date.parse(entry.createdAt);
+      const invalidTime = !Number.isFinite(previousCompletedTime) ||
+        !Number.isFinite(entryStartTime);
+      const idleGap = Math.max(0, entryStartTime - previousCompletedTime);
       if (invalidTime ||
-          entryTime - previousTime > MAX_ACTION_GROUP_GAP_MS ||
-          entryTime - firstTime > MAX_ACTION_GROUP_SPAN_MS) {
+          idleGap > MAX_ACTION_GROUP_GAP_MS ||
+          accumulatedIdleMs + idleGap > MAX_ACTION_GROUP_IDLE_SPAN_MS) {
         flush();
+      } else {
+        accumulatedIdleMs += idleGap;
       }
     }
     actions.push(entry);

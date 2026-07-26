@@ -18,6 +18,7 @@ export interface ActivityStreamResult {
   activityId: string;
   agentId: string;
   seq: number;
+  completedAt: string;
   output: string;
   isError: boolean;
   outputPreview?: AgentActivityDto["outputPreview"];
@@ -98,6 +99,7 @@ function activityResult(item: AgentActivityDto): ActivityStreamResult | undefine
     activityId: item.id,
     agentId: item.agentId,
     seq: item.seq,
+    completedAt: item.createdAt,
     output: item.event.output,
     isError: item.event.isError === true,
     ...(item.outputPreview ? { outputPreview: item.outputPreview } : {}),
