@@ -244,6 +244,7 @@ import { registerLimitsRoutes } from "./routes/limits.js";
 import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
 import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes/agent-audit.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
+import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -13159,27 +13160,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  app.get<{ Params: { projectId: string; documentId: string } }>(
-    "/api/projects/:projectId/communication-documents/:documentId",
-    async (request, reply) => {
-      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
-      if (!found) return reply.code(404).send({ error: "document not found" });
-      const { content, ...metadata } = found.document;
-      const root = `/api/projects/${encodeURIComponent(request.params.projectId)}/communication-documents/${encodeURIComponent(found.document.id)}`;
-      return { ...metadata, previewUrl: root, downloadUrl: `${root}/download`, content };
-    },
-  );
-
-  app.get<{ Params: { projectId: string; documentId: string } }>(
-    "/api/projects/:projectId/communication-documents/:documentId/download",
-    async (request, reply) => {
-      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
-      if (!found) return reply.code(404).send({ error: "document not found" });
-      return reply.type("text/markdown; charset=utf-8")
-        .header("Content-Disposition", contentDisposition(`${found.document.title}.md`))
-        .send(found.document.content);
-    },
-  );
+  registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
 
   async function generatedFile(
     projectId: string,
