@@ -24,7 +24,6 @@ import type {
   ResponseFileActivityDto,
   AgentDto,
   TeamOperationalEventDto,
-  WorkspaceNotificationDto,
   ConversationDecisionEventDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -75,7 +74,6 @@ import { queryKeys } from "../queryKeys";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
-import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 import {
   conversationComposerRuntime,
   decisionChoice,
@@ -90,6 +88,17 @@ import {
   ConversationHeader,
   MainConversationTimeline,
 } from "./ConversationView.parts";
+import {
+  useConversationActiveViewPersistence,
+  useConversationActiveViewState,
+  useConversationResetEffect,
+} from "./useConversationActiveView";
+import {
+  useConversationMessageFocusCleanup,
+  useConversationMessageFocusEffect,
+  useConversationMessageFocusRefs,
+} from "./useConversationMessageFocus";
+import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 
 function MasterRespondingIndicator({
   agents,
@@ -119,11 +128,7 @@ function MasterRespondingIndicator({
     </ChatLiveBanner>
   );
 }
-import { chatStateKey, readChatState, writeChatState } from "../chatState";
-import {
-  highlightFocusedMessage,
-  projectedMessageIdForFocus,
-} from "../messageFocus";
+import { chatStateKey } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
@@ -175,15 +180,10 @@ export function ConversationView({
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [activeView, setActiveView] = useState<
-    "main" | "collaboration" | "agents"
-  >(() => {
-    if (initialView) return initialView;
-    const saved = readChatState(
-      chatStateKey("view", `conversation.${conversationId}`),
-    );
-    return saved === "collaboration" || saved === "agents" ? saved : "main";
-  });
+  const [activeView, setActiveView] = useConversationActiveViewState(
+    conversationId,
+    initialView,
+  );
   const detailQuery = useConversation(conversationId);
   // Team Chat is a comparatively expensive operational projection. Keep it
   // dormant while ordinary Chat is visible; React Query fetches the latest page
@@ -213,28 +213,10 @@ export function ConversationView({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const notificationsQuery = useNotifications();
-  const markedVisibleNotificationIds = useRef(new Set<string>());
-  const markCommunicationVisible = useCallback((communicationEventId: string | undefined) => {
-    if (!communicationEventId || document.visibilityState === "hidden") return;
-    const notifications = (notificationsQuery.data ?? []).filter((item) =>
-      item.communicationEventId === communicationEventId &&
-      !item.readAt &&
-      (item.status ?? "open") === "open" &&
-      isOrdinaryMessageNotification(item) &&
-      !markedVisibleNotificationIds.current.has(item.id));
-    if (!notifications.length) return;
-    const ids = new Set(notifications.map((item) => item.id));
-    ids.forEach((id) => markedVisibleNotificationIds.current.add(id));
-    const readAt = new Date().toISOString();
-    queryClient.setQueryData<WorkspaceNotificationDto[]>(queryKeys.notifications.all, (current = []) =>
-      current.map((item) => ids.has(item.id) ? { ...item, readAt } : item));
-    void Promise.all(notifications.map((item) => api.markNotificationRead(item.id)))
-      .then(() => queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }))
-      .catch(() => {
-        ids.forEach((id) => markedVisibleNotificationIds.current.delete(id));
-        void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-      });
-  }, [notificationsQuery.data, queryClient]);
+  const markCommunicationVisible = useConversationNotificationVisibility(
+    notificationsQuery,
+    queryClient,
+  );
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -271,39 +253,27 @@ export function ConversationView({
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
-  const focusedMessage = useRef<string>();
-  const focusedMessageHighlightDisposer = useRef<() => void>();
+  const { focusedMessage, focusedMessageHighlightDisposer } =
+    useConversationMessageFocusRefs();
   const theme = useTheme();
   const mobileRoster = useMediaQuery(theme.breakpoints.down("sm"));
   const mobileComposer = useMobileComposerAutoHide(mobileRoster);
 
-  useEffect(() => {
-    mobileComposer.reset();
-    collaborationVisited.current = false;
-    setOlderMain(undefined);
-    setOlderCollaboration(undefined);
-    focusedMessage.current = undefined;
-    const saved = readChatState(
-      chatStateKey("view", `conversation.${conversationId}`),
-    );
-    setActiveView(
-      initialView ??
-        (saved === "collaboration" || saved === "agents" ? saved : "main"),
-    );
-  }, [conversationId, initialView]);
-  useEffect(() => () => {
-    focusedMessageHighlightDisposer.current?.();
-    focusedMessageHighlightDisposer.current = undefined;
-  }, []);
+  useConversationResetEffect({
+    collaborationVisited,
+    conversationId,
+    focusedMessage,
+    initialView,
+    mobileComposer,
+    setActiveView,
+    setOlderCollaboration,
+    setOlderMain,
+  });
+  useConversationMessageFocusCleanup(focusedMessageHighlightDisposer);
 
   if (activeView === "collaboration") collaborationVisited.current = true;
 
-  useEffect(() => {
-    writeChatState(
-      chatStateKey("view", `conversation.${conversationId}`),
-      activeView,
-    );
-  }, [activeView, conversationId]);
+  useConversationActiveViewPersistence(activeView, conversationId);
 
   const conversation = detailQuery.data?.conversation;
   const projectBrowser = useQuery({
@@ -467,101 +437,21 @@ export function ConversationView({
       setLoadingOlder(false);
     }
   };
-  useEffect(() => {
-    if (
-      !focusMessageId ||
-      focusedMessage.current === focusMessageId ||
-      focusedMessage.current === `missing:${focusMessageId}`
-    )
-      return;
-    const focusView = initialView ?? "main";
-    if (activeView !== focusView) {
-      setActiveView(focusView);
-      return;
-    }
-    const focusedMessages =
-      focusView === "collaboration" ? collaborationMessages : messages;
-    const projectedId = projectedMessageIdForFocus(
-      focusedMessages,
-      focusMessageId,
-    );
-    if (!projectedId) {
-      if (focusedMessage.current !== `loading:${focusMessageId}`) {
-        focusedMessage.current = `loading:${focusMessageId}`;
-        if (focusView === "collaboration") {
-          void api
-            .getCollaborationView(
-              conversationId,
-              100,
-              undefined,
-              focusMessageId,
-            )
-            .then(page => {
-              setOlderCollaboration(current => ({
-                messages: mergeConversationMessages(
-                  page.messages,
-                  current?.messages ?? [],
-                  collaborationQuery.data?.messages ?? [],
-                ),
-                operations: current?.operations ?? [],
-                cursor: page.history?.cursor,
-                operationCursor: current?.operationCursor,
-                hasMore: page.history?.hasMore ?? false,
-                operationHasMore: current?.operationHasMore ?? false,
-              }));
-              focusedMessage.current = page.messages.length
-                ? undefined
-                : `missing:${focusMessageId}`;
-            })
-            .catch(() => {
-              focusedMessage.current = undefined;
-            });
-        } else {
-          void api
-            .getConversation(conversationId, 100, undefined, focusMessageId)
-            .then(page => {
-              setOlderMain(current => ({
-                messages: mergeConversationMessages(
-                  page.messages,
-                  current?.messages ?? [],
-                  detailQuery.data?.messages ?? [],
-                ),
-                decisionEvents: mergeDecisionEvents(
-                  page.decisionEvents ?? [],
-                  current?.decisionEvents ?? [],
-                  detailQuery.data?.decisionEvents ?? [],
-                ),
-                cursor: page.history?.cursor,
-                hasMore: page.history?.hasMore ?? false,
-              }));
-              focusedMessage.current = page.messages.length
-                ? undefined
-                : `missing:${focusMessageId}`;
-            })
-            .catch(() => {
-              focusedMessage.current = undefined;
-            });
-        }
-      }
-      return;
-    }
-    const target = document.getElementById(`master-message-${projectedId}`);
-    if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
-    target.focus({ preventScroll: true });
-    focusedMessageHighlightDisposer.current?.();
-    focusedMessageHighlightDisposer.current = highlightFocusedMessage(target);
-    focusedMessage.current = focusMessageId;
-  }, [
+  useConversationMessageFocusEffect({
     activeView,
     collaborationMessages,
-    collaborationQuery.data?.messages,
+    collaborationQuery,
     conversationId,
-    detailQuery.data?.messages,
+    detailQuery,
+    focusedMessage,
+    focusedMessageHighlightDisposer,
     focusMessageId,
     initialView,
     messages,
-  ]);
+    setActiveView,
+    setOlderCollaboration,
+    setOlderMain,
+  });
   useEffect(() => {
     if (!conversation || initializedFor.current === conversation.id) {
       return;
