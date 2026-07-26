@@ -256,6 +256,7 @@ import { registerWorkspacePreferenceRoutes } from "./routes/workspace-preference
 import { registerAgentMessageRunRoute } from "./routes/agent-message-run.js";
 import { registerProviderCommandRoutes } from "./routes/provider-commands.js";
 import { registerServerControlRoutes } from "./routes/server-control.js";
+import { registerAgentSurface } from "./routes/agent-surface.js";
 import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -1878,7 +1879,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     resolveCollaborationIntents,
     resolveExplicitCollaborationIntents,
     subscribe,
-  } = createAgentEventService({
+    agentCanReadDocument,
+    agentCanReadRuntimeArtifact,
+    authoritativeCommunicationDocument,
+    managedProjectArtifactAgreesWithRuntime,
+  } = registerAgentSurface(app, {
+    opts,
     store,
     coordinationV3,
     subscribers,
@@ -1886,137 +1892,35 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     collaborationViewDetail,
     refreshProviderUsageAfterRun,
     appendWorkspace,
-    notifyScheduler: () => coordinationV3Scheduler?.notify(),
-    isClosed: () => closed,
     publishCoordinationV3Changed,
-  });
-
-  registerAgentDecisionRoutes(app, {
-    store,
-    coordinationV3,
     workspace,
     agentMessageCapabilities,
     activeRuns,
     capabilityOwnsAuthoritativeRun,
     publishWorkspaceSince,
-  });
-
-  registerAgentManagementRoutes(app, {
-    store,
-    coordinationV3,
-    workspace,
     engines,
     managementPlans,
-    activeRuns,
-    agentMessageCapabilities,
     deletingAgentIds,
     cachedModelOptions,
-    capabilityOwnsAuthoritativeRun,
     publicManagementOperations,
     commitAgentDeletion,
-    appendWorkspace,
-    publishWorkspaceSince,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    authToken: opts.authToken,
-  });
-
-  registerAgentRuntimeToolRoutes(app, {
-    store,
-    coordinationV3,
     assets,
     resultCursorSecret,
-    agentMessageCapabilities,
-    activeRuns,
     browserSessions,
     projectBrowserSessions,
     projectBrowserGrants,
     projectBrowserScope,
-    capabilityOwnsAuthoritativeRun,
-    agentCanReadRuntimeArtifact: (artifact, agentId) =>
-      agentCanReadRuntimeArtifact(artifact, agentId),
-  });
-
-  registerAgentDirectoryRoutes(app, {
-    store,
-    agentMessageCapabilities,
-    activeRuns,
-    capabilityOwnsAuthoritativeRun,
     teamDirectory,
-  });
-
-  registerAgentCoordinationRoutes(app, {
-    store,
-    coordinationV3,
-    engines,
-    deletingAgentIds,
-    agentMessageCapabilities,
-    activeRuns,
-    cachedModelOptions,
-    capabilityOwnsAuthoritativeRun,
-    recordCommunication,
-    projectCommunicationToAgentAudit,
-    publishCoordinationV3Changed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
     runAuthorization,
-    resolveExplicitCollaborationIntents,
-    logWarn: (meta, message) => app.log.warn(meta, message),
-  });
-
-  registerAgentRequestCommandRoutes(app, {
-    store,
-    coordinationV3,
-    agentMessageCapabilities,
-    activeRuns,
-    capabilityOwnsAuthoritativeRun,
     capabilityMatchesCleanupRun,
-    runAuthorization,
     projectCommunicationArtifact,
     requestArtifactAccess,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
-    publishCoordinationV3Changed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    messageLifecycleFaults: opts.messageLifecycleFaults,
-  });
-
-  registerAgentCommunicationRoutes(app, {
-    store,
-    coordinationV3,
-    workspace,
-    agentMessageCapabilities,
-    activeRuns,
-    capabilityOwnsAuthoritativeRun,
-    runAuthorization,
-    recordCommunication,
-    projectBroadcastToAgentAudits,
-    projectCommunicationToAgentAudit,
-    resolveExplicitCollaborationIntents,
-    appendBlockedMentionWarnings,
     communicationArtifactAccess,
-    projectCommunicationArtifact,
-    runtimeArtifactMetadata,
-    stageCommunicationArtifact,
-    publishCoordinationV3Changed,
-    publishWorkspaceSince,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    messageLifecycleFaults: opts.messageLifecycleFaults,
     reconcileRuntimeCommunicationProjections,
-    publish,
-  });
-
-  const {
-    agentCanReadDocument,
-    agentCanReadRuntimeArtifact,
-    authoritativeCommunicationDocument,
-    managedProjectArtifactAgreesWithRuntime,
-  } = createCommunicationDocumentAuthority(app, {
-    store,
-    coordinationV3,
-    assets,
-    communicationArtifactAccess,
-    agentMessageCapabilities,
-    activeRuns,
-    capabilityOwnsAuthoritativeRun,
+    notifyScheduler: () => coordinationV3Scheduler.notify(),
+    isClosed: () => closed,
   });
 
   registerServerControlRoutes(app, {
