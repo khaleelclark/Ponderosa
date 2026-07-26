@@ -24,7 +24,6 @@ interface DeliveryActivationRow {
   state: string;
   payload_json: string;
 }
-
 type CreateActivation = (input: {
   projectId: string;
   agentId: string;
@@ -558,4 +557,3 @@ export class CoordinationV3ActivationCommandAuthority {
     );
   }
 }
-
