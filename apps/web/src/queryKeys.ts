@@ -171,6 +171,10 @@ export const queryKeys = {
       sha256: string | undefined,
     ) => ["activity-output", agentId, seq, sha256] as const,
   },
+  runOutputText: {
+    detail: (agentId: string, seq: number, totalUtf8Bytes: number) =>
+      ["run-output-text", agentId, seq, totalUtf8Bytes] as const,
+  },
   assetLimits: {
     all: ["asset-limits"] as const,
   },

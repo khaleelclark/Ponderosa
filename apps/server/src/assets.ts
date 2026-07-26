@@ -1164,7 +1164,32 @@ export class AssetStore {
 
 }
 
+/**
+ * A download name can reach here carrying separators — an artifact recorded
+ * under a host path, an operator-supplied document title. RFC 5987 encoding
+ * hides those from the header parser but not from the browser, which reduces
+ * `filename*` to its last segment on save. Reduce to a bare filename here so
+ * both parameters describe the same file and the saved name is the one this
+ * server chose, not one a path in the value implied.
+ */
 export function contentDisposition(name: string): string {
-  const fallback = name.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "asset";
-  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+  const bare = name.split(/[\\/]/).pop()?.trim() || "asset";
+  const fallback = bare.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "asset";
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(bare)}`;
+}
+
+/**
+ * `summary` is a filename for exactly one artifact kind: a generated file
+ * records the emitting Agent's own `event.name` there. For every other kind it
+ * is prose — a diff's summary is `"<change> <host path>"` — so using it as a
+ * download name names the file after the diff's *subject*. That shipped a
+ * 115-byte text patch as `Mutant-Knights-Riftfront-1.2.0-READY.jar`, which
+ * Forge then rejected with `zip END header not found`. The artifact's own path
+ * is authoritative for everything that is not a generated file.
+ */
+export function managedArtifactDownloadName(
+  managed: Pick<ArtifactDto, "kind" | "path" | "summary">,
+): string {
+  const named = managed.kind === "generated_file" ? managed.summary?.trim() : undefined;
+  return named || path.basename(managed.path);
 }

@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
   "scripts": {
     "build": "NODE_ENV=production rsbuild build",
     "dev": "rsbuild dev",
@@ -28,9 +31,13 @@
   "devDependencies": {
     "@rsbuild/core": "^1.1.0",
     "@rsbuild/plugin-react": "^1.1.0",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   }

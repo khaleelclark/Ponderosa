@@ -121,9 +121,23 @@ function GeneralSettingsSection({
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
   const parsedRolloverFraction = Number(rolloverFraction);
+  const rolloverTokensError = !rolloverTokens.trim()
+    ? "Enter a rollover threshold."
+    : !Number.isFinite(parsedRolloverTokens)
+      ? "Enter a valid rollover threshold."
+      : parsedRolloverTokens < 75_000 ||
+          parsedRolloverTokens > 2_000_000
+        ? "Enter between 75,000 and 2,000,000 context tokens."
+        : undefined;
+  const rolloverFractionError = !rolloverFraction.trim()
+    ? "Enter a context-window share."
+    : !Number.isFinite(parsedRolloverFraction)
+      ? "Enter a valid context-window share."
+      : parsedRolloverFraction < 0.3 || parsedRolloverFraction > 0.95
+        ? "Enter a value from 0.3 to 0.95."
+        : undefined;
   const rolloverValuesValid =
-    Number.isFinite(parsedRolloverTokens) &&
-    Number.isFinite(parsedRolloverFraction);
+    rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
     <Stack spacing={2.5}>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
@@ -221,8 +235,12 @@ function GeneralSettingsSection({
             label="Roll over above (context tokens)"
             value={rolloverTokens}
             onChange={event => onRolloverTokens(event.target.value)}
-            inputProps={{ min: 20_000, max: 2_000_000, step: 10_000 }}
-            helperText="Counts everything occupying the provider's context window, including cached tokens — not just new input. Default 150,000."
+            inputProps={{ min: 75_000, max: 2_000_000, step: 10_000 }}
+            error={Boolean(rolloverTokensError)}
+            helperText={
+              rolloverTokensError ??
+              "Minimum 75,000. Fresh Ponderosa sessions already consume substantial context, so lower values can cause repeated rollover. Default 150,000."
+            }
           />
           <TextField
             type="number"
@@ -230,7 +248,11 @@ function GeneralSettingsSection({
             value={rolloverFraction}
             onChange={event => onRolloverFraction(event.target.value)}
             inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}
-            helperText="Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+            error={Boolean(rolloverFractionError)}
+            helperText={
+              rolloverFractionError ??
+              "Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+            }
           />
           <Button
             variant="contained"

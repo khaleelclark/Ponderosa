@@ -13,7 +13,9 @@ An **Activation** is an actionable reason to wake an Agent. A **Run** is the bou
 
 ## Follow current work
 
-The responding indicator and elapsed time come from canonical Run ownership. **Work log** contains completed ordinary response text and transient reasoning detail for that execution. **Activity** shows commands, tests, tools, browser operations, and file events. **Changed Files** is the Agent-attributed set, while **Review** may layer current Git working-tree state over that provenance.
+The responding indicator and elapsed time come from canonical Run ownership. **Work log** contains completed ordinary response text and transient reasoning detail for that execution. **Activity** is a read-only chronological inspection stream that interleaves those response and reasoning segments with commands, tests, tools, browser operations, and file events at their canonical event sequence. Command and file-change events may carry the provider call ID so their later tool result can be paired without changing either event's communication scope. **Changed Files** is the Agent-attributed set, while **Review** may layer current Git working-tree state over that provenance.
+
+Activity is execution telemetry, never Communication: it does not notify, become unread work, enter Project chat, or become future provider context.
 
 ## Keep results durable
 

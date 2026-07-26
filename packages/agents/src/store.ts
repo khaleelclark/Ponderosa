@@ -8,11 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
-  closeSync,
-  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -30,8 +26,6 @@ import type {
   CommunicationEvent,
   CommunicationAudience,
   CommunicationRevisionEvent,
-  CommunicationDocumentRecord,
-  CommunicationDocumentReference,
   CommunicationProjection,
   CommunicationReconciliationReport,
   ProjectedCommunicationMessage,
@@ -81,15 +75,26 @@ import type {
 } from "@ponderosa/core";
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
-
-function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
-  const { content: _content, ...metadata } = document;
-  const root = `/api/projects/${encodeURIComponent(projectId)}/communication-documents/${encodeURIComponent(document.id)}`;
-  return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
-}
+import { healthObservation, utf8Prefix } from "./store-activity.js";
+import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
+import {
+  communicationDocumentReference,
+  communicationMessageProjection,
+  normalizedAgentIds,
+  revisedRenderedText,
+  userDmAgentIds,
+} from "./store-communication.js";
+import {
+  acquireDataDirectoryOwnership,
+  ensureV1Layout,
+  releaseDataDirectoryOwnership,
+  type DataDirectoryOwnership,
+} from "./store-data-directory.js";
+import { fsyncDirectory, pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
+export { AgentDeletionConflictError } from "./store-agent-management.js";
 import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
-import { artifactId, messageId as projectedMessageId } from "./ids.js";
+import { artifactId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
@@ -101,17 +106,6 @@ import {
   type ProjectionState,
 } from "./projectors.js";
 
-function revisedRenderedText(rendered: string, original: string, replacement: string): string {
-  if (rendered === original) return replacement;
-  if (original && rendered.endsWith(original)) return `${rendered.slice(0, -original.length)}${replacement}`.trimEnd();
-  return replacement;
-}
-
-function fsyncDirectory(directory: string): void {
-  const descriptor = openSync(directory, "r");
-  try { fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
-}
 import {
   artifacts,
   agentPresets,
@@ -156,6 +150,19 @@ interface ActivityProjectionReadRow {
   output_sha256: string | null;
 }
 
+interface RunOutputEventRow {
+  seq: number;
+  payload_json: string;
+  created_at: string;
+}
+
+interface RunOutputSegmentRow {
+  first_seq: number;
+  last_seq: number;
+  event_type: "text" | "reasoning";
+  execution_id: string;
+}
+
 interface ArtifactProjectionReadRow {
   id: string;
   agent_id: string;
@@ -172,46 +179,19 @@ interface ArtifactProjectionReadRow {
 }
 
 const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
+const RUN_OUTPUT_TEXT_PREVIEW_BYTES = 32 * 1_024;
+const RUN_OUTPUT_TEXT_MAX_BYTES = 8 * 1_024 * 1_024;
 const ACTIVITY_EVENT_TYPES = new Set([
   "command", "file_change", "test_result", "tool_call", "tool_result", "error",
   "browser_session", "browser_action", "browser_console", "browser_screenshot",
   "context_rollover_triggered",
 ]);
+const RUN_OUTPUT_BREAKING_TYPES = [
+  "command", "tool_call", "tool_result", "file_change", "test_result", "error",
+  "browser_session", "browser_action", "browser_console", "browser_screenshot",
+  "context_rollover_triggered",
+] as const;
 
-function healthObservation(event: LogEvent, timestamp: string): {
-  status: AgentLifecycleStatus;
-  statusTimestamp: string;
-  reason: AgentLifecycleReason;
-  executionId?: string;
-} | undefined {
-  const executionId = "executionId" in event && typeof event.executionId === "string" ? event.executionId : undefined;
-  if (event.type === "error") return { status: "failed", statusTimestamp: timestamp, reason: "runtime_error", ...(executionId ? { executionId } : {}) };
-  if (event.type === "agent_lifecycle") return {
-    status: event.status === "completed" ? "idle" : event.status,
-    statusTimestamp: timestamp,
-    reason: event.reason,
-    executionId: event.executionId,
-  };
-  if (event.type === "work_item_update" && event.status === "waiting_approval") {
-    return { status: "waiting", statusTimestamp: timestamp, reason: "work_item_waiting_approval", ...(executionId ? { executionId } : {}) };
-  }
-  if (event.type === "turn_done") return { status: "idle", statusTimestamp: timestamp, reason: "turn_completed", ...(executionId ? { executionId } : {}) };
-  if (event.type === "work_item_update" && event.status === "done") {
-    return { status: "idle", statusTimestamp: timestamp, reason: "work_item_completed", ...(executionId ? { executionId } : {}) };
-  }
-  return undefined;
-}
-
-function utf8Prefix(text: string, maximumBytes: number): string {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= maximumBytes) return text;
-  let end = maximumBytes;
-  while (end > 0) {
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)); }
-    catch { end -= 1; }
-  }
-  return "";
-}
 import {
   artifactsDir,
   artifactContentPath,
@@ -263,53 +243,6 @@ type ManagedArtifactEvent =
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 
-interface DataDirectoryOwnership {
-  path: string;
-  token: string;
-}
-
-function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
-  const path = join(dataDir, ".ponderosa-daemon.lock");
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const token = randomUUID();
-    try {
-      const descriptor = openSync(path, "wx", 0o600);
-      try {
-        writeFileSync(descriptor, JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() }), "utf8");
-      } finally {
-        closeSync(descriptor);
-      }
-      return { path, token };
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
-      if (code !== "EEXIST") throw error;
-      let owner: { pid?: number; token?: string } = {};
-      try { owner = JSON.parse(readFileSync(path, "utf8")) as { pid?: number; token?: string }; } catch { /* stale malformed lock */ }
-      let alive = false;
-      if (Number.isSafeInteger(owner.pid) && owner.pid! > 0) {
-        try { process.kill(owner.pid!, 0); alive = true; } catch { /* stale owner */ }
-      }
-      if (alive) throw new Error(`data directory is already owned by Ponderosa process ${owner.pid}`);
-      // Remove only the stale record we inspected; a changed token means
-      // another contender already acquired ownership.
-      try {
-        const current = JSON.parse(readFileSync(path, "utf8")) as { token?: string };
-        if (current.token !== owner.token) continue;
-      } catch { /* malformed stale record remains removable */ }
-      rmSync(path, { force: true });
-    }
-  }
-  throw new Error("could not acquire exclusive Ponderosa data-directory ownership");
-}
-
-function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undefined): void {
-  if (!ownership) return;
-  try {
-    const current = JSON.parse(readFileSync(ownership.path, "utf8")) as { token?: string };
-    if (current.token === ownership.token) rmSync(ownership.path, { force: true });
-  } catch { /* a missing/replaced lock is no longer ours */ }
-}
-
 interface AgentJson {
   id: string;
   projectId: string;
@@ -336,13 +269,6 @@ export interface AgentSpawnOrigin {
   executionId: string;
   idempotencyKey: string;
   prompt?: string;
-}
-
-export class AgentDeletionConflictError extends Error {
-  constructor(readonly currentPreview: AgentDeletionPreviewDto) {
-    super("Agent organization changed after deletion preview");
-    this.name = "AgentDeletionConflictError";
-  }
 }
 
 type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
@@ -393,36 +319,6 @@ interface MessageDispatchRecord {
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
-function writeJson(file: string, data: unknown): void {
-  const directory = dirname(file);
-  mkdirSync(directory, { recursive: true });
-  const temporary = join(directory, `.${randomUUID()}.json.tmp`);
-  try {
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
-    const descriptor = openSync(temporary, "r");
-    try { fsyncSync(descriptor); }
-    finally { closeSync(descriptor); }
-    renameSync(temporary, file);
-    fsyncDirectory(directory);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
-  }
-}
-
-function requireManagementPermissions(value: unknown): AgentDto["managementPermissions"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("management permissions must be an object");
-  const permissions = value as Record<string, unknown>;
-  if (typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
-      typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
-    throw new Error("management permissions must contain exact boolean values");
-  }
-  return {
-    allowAutomaticDescendantDeletion: permissions.allowAutomaticDescendantDeletion,
-    allowAutomaticDescendantReorganization: permissions.allowAutomaticDescendantReorganization,
-  };
-}
-
 export interface AgentDeletionReceipt {
   id: string;
   projectId: string;
@@ -456,70 +352,6 @@ export interface AgentManagementAuthorization {
   scopeHash: string;
   permission: "deletion" | "reorganization";
   approvalDecisionId?: string;
-}
-
-function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(file, "utf8")) as T;
-}
-
-function readJsonLines<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as T);
-}
-
-/** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
-function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
-  if (!existsSync(root)) return;
-  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
-    const childRelative = relative ? join(relative, entry.name) : entry.name;
-    const child = join(root, childRelative);
-    if (entry.isDirectory()) {
-      pruneArtifactDirectory(root, protectedPaths, childRelative);
-      if (readdirSync(child).length === 0) rmSync(child, { recursive: false, force: true });
-    } else if (!entry.isFile() || !protectedPaths.has(childRelative)) {
-      rmSync(child, { force: true });
-    }
-  }
-}
-
-/** V1 is a destructive test-data cutover; managed source workspaces are external. */
-function ensureV1Layout(dataDir: string): void {
-  const marker = join(dataDir, ".ponderosa-layout-version");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;
-  mkdirSync(dataDir, { recursive: true });
-  for (const entry of readdirSync(dataDir)) {
-    if (entry === "workspaces" || entry === ".ponderosa-layout-version") continue;
-    rmSync(join(dataDir, entry), { recursive: true, force: true });
-  }
-  writeFileSync(marker, "1\n", "utf8");
-}
-
-function communicationMessageProjection(agentId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
-  const event = stored.event;
-  if (event.type === "user_message") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
-    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
-  };
-  if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
-  };
-  return undefined;
-}
-
-function userDmAgentIds(event: CommunicationEvent): string[] {
-  if (event.schemaVersion !== 2 || event.intent !== "user_dm") return [];
-  return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
-}
-
-function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
-  const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
-  if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
-  return normalized as [string, ...string[]];
 }
 
 export class AgentStore {
@@ -1613,6 +1445,7 @@ export class AgentStore {
       throw error;
     }
     this.communicationEventCache.delete(id);
+    this.communicationRevisionCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
@@ -2651,10 +2484,17 @@ export class AgentStore {
           createdAt,
         }));
       if (eventsToAppend.length > 0) {
-        appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, authorization.projectId), eventsToAppend);
         for (const event of eventsToAppend) this.client.prepare(`
           UPDATE agents SET manager_agent_id = ?, updated_at = ? WHERE id = ?
         `).run(event.managerAgentId, event.createdAt, event.agentId);
+        // The canonical log append is the last statement in the transaction. A
+        // failing UPDATE now rolls back before anything reaches the log, rather
+        // than leaving a durable record of a reorganization SQLite rejected --
+        // which a later projection rebuild would have replayed as real. The
+        // remaining window, a crash between this append and COMMIT, is the one
+        // setAgentManager already has and resolves the same way: the log is
+        // canonical and the rebuild reapplies it.
+        appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, authorization.projectId), eventsToAppend);
       }
       return [...new Set(operations.map((operation) => operation.targetAgentId))];
     })();
@@ -2971,30 +2811,162 @@ export class AgentStore {
       });
   }
 
-  /** Completed ordinary responses are read only from canonical agent_output records. */
-  getRunOutputs(agentId: string): RunOutputDto[] {
-    const entries: RunOutputDto[] = [];
-    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed");
-    for (const stored of this.readEvents(agentId)) {
-      const { event } = stored;
-      if (event.type === "agent_output" && event.text.trim()) {
-        const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
-        entries.push({
-          id: `${agentId}:runOutput:${stored.seq}`,
-          agentId,
-          executionId: event.executionId,
-          kind: "response",
-          text: event.text,
-          completed: true,
-          seq: stored.seq,
-          sourceSeqStart: event.sourceSeqStart,
-          sourceSeqEnd: event.sourceSeqEnd,
-          createdAt: stored.ts,
-          ...(fileActivity.length ? { fileActivity } : {}),
-        });
+  private runOutputSegmentRows(
+    agentId: string,
+    input?: { beforeSeq?: number; endingAtSeq?: number; limit?: number },
+  ): RunOutputSegmentRow[] {
+    const breakingTypes = RUN_OUTPUT_BREAKING_TYPES.map((type) => `'${type}'`).join(", ");
+    const limit = input?.limit === undefined ? "" : "LIMIT ?";
+    const rows = this.client.prepare(`
+      WITH visible AS (
+        SELECT seq, type, payload_json,
+          json_extract(payload_json, '$.executionId') AS execution_id
+        FROM events
+        WHERE agent_id = ?
+          AND type IN ('text', 'reasoning', ${breakingTypes})
+      ),
+      annotated AS (
+        SELECT *,
+          lag(type) OVER (ORDER BY seq) AS previous_type,
+          lag(execution_id) OVER (ORDER BY seq) AS previous_execution_id
+        FROM visible
+      ),
+      marked AS (
+        SELECT *,
+          CASE
+            WHEN type IN ('text', 'reasoning')
+              AND type = previous_type
+              AND execution_id IS previous_execution_id
+            THEN 0
+            WHEN type IN ('text', 'reasoning') THEN 1
+            ELSE 0
+          END AS starts_segment
+        FROM annotated
+      ),
+      grouped AS (
+        SELECT *,
+          sum(starts_segment) OVER (ORDER BY seq) AS segment_number
+        FROM marked
+      ),
+      segments AS (
+        SELECT
+          min(seq) AS first_seq,
+          max(seq) AS last_seq,
+          min(type) AS event_type,
+          min(execution_id) AS execution_id
+        FROM grouped
+        WHERE type IN ('text', 'reasoning') AND execution_id IS NOT NULL
+        GROUP BY segment_number
+      )
+      SELECT first_seq, last_seq, event_type, execution_id
+      FROM segments
+      WHERE 1 = 1
+        ${input?.beforeSeq === undefined ? "" : "AND first_seq < ?"}
+        ${input?.endingAtSeq === undefined ? "" : "AND first_seq <= ?"}
+      ORDER BY first_seq DESC
+      ${limit}
+    `);
+    const parameters: Array<string | number> = [agentId];
+    if (input?.beforeSeq !== undefined) parameters.push(input.beforeSeq);
+    if (input?.endingAtSeq !== undefined) parameters.push(input.endingAtSeq);
+    if (input?.limit !== undefined) parameters.push(input.limit);
+    return rows.all(...parameters) as RunOutputSegmentRow[];
+  }
+
+  private materializeRunOutputSegments(
+    agentId: string,
+    segmentRows: RunOutputSegmentRow[],
+  ): RunOutputDto[] {
+    if (segmentRows.length === 0) return [];
+    const orderedSegments = [...segmentRows].sort((a, b) => a.first_seq - b.first_seq);
+    const eventRows = this.client.prepare(`
+      SELECT seq, payload_json, created_at
+      FROM events
+      WHERE agent_id = ? AND type IN ('text', 'reasoning')
+        AND seq BETWEEN ? AND ?
+      ORDER BY seq
+    `);
+    const byStart = new Map<number, RunOutputDto>();
+    for (const segment of orderedSegments) {
+      const previewParts: string[] = [];
+      let previewUtf8Bytes = 0;
+      let rawUtf8Bytes = 0;
+      let canonicalUtf8Bytes = 0;
+      let createdAt = "";
+      for (const row of eventRows.iterate(
+        agentId,
+        segment.first_seq,
+        segment.last_seq,
+      ) as IterableIterator<RunOutputEventRow>) {
+        const event = JSON.parse(row.payload_json) as LogEvent;
+        if ((event.type === "text" || event.type === "reasoning") &&
+            event.executionId === segment.execution_id) {
+          createdAt ||= row.created_at;
+          const deltaUtf8Bytes = Buffer.byteLength(event.delta, "utf8");
+          const trimmedDelta = event.delta.trimEnd();
+          if (trimmedDelta) {
+            canonicalUtf8Bytes = rawUtf8Bytes + Buffer.byteLength(trimmedDelta, "utf8");
+          }
+          rawUtf8Bytes += deltaUtf8Bytes;
+          if (previewUtf8Bytes < RUN_OUTPUT_TEXT_PREVIEW_BYTES) {
+            const part = utf8Prefix(
+              event.delta,
+              RUN_OUTPUT_TEXT_PREVIEW_BYTES - previewUtf8Bytes,
+            );
+            previewParts.push(part);
+            previewUtf8Bytes += Buffer.byteLength(part, "utf8");
+          }
+        }
       }
+      if (canonicalUtf8Bytes === 0) continue;
+      const preview = previewParts.join("");
+      const text = canonicalUtf8Bytes <= previewUtf8Bytes
+        ? utf8Prefix(preview, canonicalUtf8Bytes).trimEnd()
+        : preview;
+      previewUtf8Bytes = Buffer.byteLength(text, "utf8");
+      byStart.set(segment.first_seq, {
+        id: `${agentId}:runOutput:${segment.first_seq}`,
+        agentId,
+        executionId: segment.execution_id,
+        kind: segment.event_type === "reasoning" ? "reasoning" : "response",
+        text,
+        completed: true,
+        seq: segment.first_seq,
+        sourceSeqStart: segment.first_seq,
+        sourceSeqEnd: segment.last_seq,
+        createdAt,
+        ...(previewUtf8Bytes < canonicalUtf8Bytes ? {
+          textPreview: {
+            truncated: true,
+            previewUtf8Bytes,
+            totalUtf8Bytes: canonicalUtf8Bytes,
+            retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/run-output/${segment.first_seq}/text`,
+          },
+        } : {}),
+      });
     }
-    return entries.sort((a, b) => a.seq - b.seq);
+    const items = [...byStart.values()];
+    const executionIds = new Set(items.map((item) => item.executionId));
+    const fileActivityByExecution = this.responseFileActivityByExecution(
+      agentId,
+      "completed",
+      executionIds,
+    );
+    const lastResponseByExecution = new Map<string, number>();
+    for (const segment of this.runOutputSegmentRows(agentId)) {
+      if (segment.event_type !== "text" || lastResponseByExecution.has(segment.execution_id)) continue;
+      lastResponseByExecution.set(segment.execution_id, segment.first_seq);
+    }
+    return items.map((item) => {
+      if (item.kind !== "response" || lastResponseByExecution.get(item.executionId) !== item.seq) return item;
+      const fileActivity = fileActivityByExecution.get(item.executionId) ?? [];
+      return fileActivity.length ? { ...item, fileActivity } : item;
+    });
+  }
+
+  /** Durable response/reasoning segments interleaved by canonical event sequence. */
+  getRunOutputs(agentId: string): RunOutputDto[] {
+    return this.materializeRunOutputSegments(agentId, this.runOutputSegmentRows(agentId));
   }
 
   private eventSeqBoundary(cursor: string | undefined, stream: string, agentId: string): number | undefined {
@@ -3021,43 +2993,39 @@ export class AgentStore {
     const limit = Math.max(1, Math.min(input.limit, 500));
     if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
     const focusSeq = this.eventSeqFocus(input.focusId, "runOutput", agentId);
-    const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
-    const rows = this.client.prepare(`
-      SELECT seq, payload_json, created_at
-      FROM events
-      WHERE agent_id = ? AND type = 'agent_output' ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
-      ORDER BY seq DESC LIMIT ?
-    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as Array<{
-      seq: number; payload_json: string; created_at: string;
-    }>;
-    if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
-      return { items: [], history: { limit, hasMore: false } };
+    const boundary = this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
+    let endingAtSeq: number | undefined;
+    if (focusSeq !== undefined) {
+      const allSegments = this.runOutputSegmentRows(agentId);
+      let containing = allSegments.find(
+        (segment) => segment.first_seq <= focusSeq && segment.last_seq >= focusSeq,
+      );
+      if (!containing) {
+        const legacy = this.client.prepare(`
+          SELECT payload_json FROM events
+          WHERE agent_id = ? AND seq = ? AND type = 'agent_output'
+        `).get(agentId, focusSeq) as { payload_json: string } | undefined;
+        if (legacy) {
+          const event = JSON.parse(legacy.payload_json) as LogEvent;
+          if (event.type === "agent_output") {
+            containing = allSegments.find(
+              (segment) => segment.first_seq <= event.sourceSeqEnd &&
+                segment.last_seq >= event.sourceSeqEnd,
+            );
+          }
+        }
+      }
+      if (!containing) return { items: [], history: { limit, hasMore: false } };
+      endingAtSeq = containing.first_seq;
     }
+    const rows = this.runOutputSegmentRows(agentId, {
+      ...(boundary !== undefined ? { beforeSeq: boundary } : {}),
+      ...(endingAtSeq !== undefined ? { endingAtSeq } : {}),
+      limit: limit + 1,
+    });
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
-    const executionIds = new Set(selected.flatMap((row) => {
-      const event = JSON.parse(row.payload_json) as LogEvent;
-      return event.type === "agent_output" ? [event.executionId] : [];
-    }));
-    const fileActivityByExecution = this.responseFileActivityByExecution(agentId, "completed", executionIds);
-    const items = selected.flatMap((row) => {
-      const event = JSON.parse(row.payload_json) as LogEvent;
-      if (event.type !== "agent_output" || !event.text.trim()) return [];
-      const fileActivity = fileActivityByExecution.get(event.executionId) ?? [];
-      return [{
-        id: `${agentId}:runOutput:${row.seq}`,
-        agentId,
-        executionId: event.executionId,
-        kind: "response" as const,
-        text: event.text,
-        completed: true,
-        seq: row.seq,
-        sourceSeqStart: event.sourceSeqStart,
-        sourceSeqEnd: event.sourceSeqEnd,
-        createdAt: row.created_at,
-        ...(fileActivity.length ? { fileActivity } : {}),
-      }];
-    }).reverse();
+    const items = this.materializeRunOutputSegments(agentId, selected);
     const oldest = selected.at(-1);
     return {
       items,
@@ -3067,10 +3035,47 @@ export class AgentStore {
         ...(hasMore && oldest ? {
           cursor: this.encodeHistoryCursor({
             stream: "agent:runOutput", scope: agentId,
-            orderKey: String(oldest.seq), rowKey: String(oldest.seq),
+            orderKey: String(oldest.first_seq), rowKey: String(oldest.first_seq),
           }),
         } : {}),
       },
+    };
+  }
+
+  getRunOutputText(agentId: string, seq: number): {
+    agentId: string;
+    runOutputId: string;
+    seq: number;
+    text: string;
+    totalUtf8Bytes: number;
+  } | undefined {
+    const segment = this.runOutputSegmentRows(agentId).find((row) => row.first_seq === seq);
+    if (!segment) return undefined;
+    const item = this.materializeRunOutputSegments(agentId, [segment])[0];
+    if (!item) return undefined;
+    const boundedTotal = item.textPreview?.totalUtf8Bytes ?? Buffer.byteLength(item.text, "utf8");
+    if (boundedTotal > RUN_OUTPUT_TEXT_MAX_BYTES) {
+      throw new RangeError("run output segment exceeds the 8 MiB retrieval limit");
+    }
+    const rows = this.client.prepare(`
+      SELECT payload_json
+      FROM events
+      WHERE agent_id = ? AND type IN ('text', 'reasoning')
+        AND seq BETWEEN ? AND ?
+      ORDER BY seq
+    `).all(agentId, segment.first_seq, segment.last_seq) as Array<{ payload_json: string }>;
+    const text = rows.flatMap((row) => {
+      const event = JSON.parse(row.payload_json) as LogEvent;
+      return (event.type === "text" || event.type === "reasoning") &&
+        event.executionId === segment.execution_id ? [event.delta] : [];
+    }).join("").trimEnd();
+    const totalUtf8Bytes = Buffer.byteLength(text, "utf8");
+    return {
+      agentId,
+      runOutputId: `${agentId}:runOutput:${seq}`,
+      seq,
+      text,
+      totalUtf8Bytes,
     };
   }
 
@@ -3755,7 +3760,38 @@ export class AgentStore {
     };
   }
 
+  private runActivityCounts(agentId: string): Map<string, NonNullable<AgentRunDto["activityCounts"]>> {
+    const rows = this.client.prepare(`
+      SELECT execution_id, event_type,
+        CASE
+          WHEN event_type = 'file_change'
+          THEN COUNT(DISTINCT json_extract(event_json, '$.path'))
+          ELSE COUNT(*)
+        END AS n
+      FROM activity_projection
+      WHERE agent_id = ? AND execution_id IS NOT NULL
+        AND event_type IN ('command', 'tool_call', 'file_change', 'error')
+      GROUP BY execution_id, event_type
+    `).all(agentId) as Array<{ execution_id: string; event_type: string; n: number }>;
+    const counts = new Map<string, NonNullable<AgentRunDto["activityCounts"]>>();
+    for (const row of rows) {
+      const current = counts.get(row.execution_id) ?? {
+        commands: 0,
+        tools: 0,
+        files: 0,
+        errors: 0,
+      };
+      if (row.event_type === "command") current.commands = row.n;
+      else if (row.event_type === "tool_call") current.tools = row.n;
+      else if (row.event_type === "file_change") current.files = row.n;
+      else if (row.event_type === "error") current.errors = row.n;
+      counts.set(row.execution_id, current);
+    }
+    return counts;
+  }
+
   getRuns(agentId: string): AgentRunDto[] {
+    const activityCounts = this.runActivityCounts(agentId);
     return this.db
       .select()
       .from(runs)
@@ -3790,6 +3826,7 @@ export class AgentStore {
         startedAt: r.startedAt,
         updatedAt: r.updatedAt,
         completedAt: r.completedAt ?? undefined,
+        ...(activityCounts.get(r.id) ? { activityCounts: activityCounts.get(r.id) } : {}),
         ...(providerInput ? { providerInput: {
           promptHash: providerInput.prompt_hash,
           sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,
@@ -3827,6 +3864,7 @@ export class AgentStore {
     }>;
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
+    const activityCounts = this.runActivityCounts(agentId);
     const items = selected.map((row): AgentRunDto => {
       const providerInput = this.client.prepare(`
         SELECT prompt_hash, source_manifest_json FROM provider_inputs WHERE execution_id = ? AND agent_id = ?
@@ -3851,6 +3889,7 @@ export class AgentStore {
           : {}),
         startedAt: row.started_at, updatedAt: row.updated_at,
         ...(row.completed_at ? { completedAt: row.completed_at } : {}),
+        ...(activityCounts.get(row.id) ? { activityCounts: activityCounts.get(row.id) } : {}),
         ...(providerInput ? { providerInput: {
           promptHash: providerInput.prompt_hash,
           sourceManifest: JSON.parse(providerInput.source_manifest_json) as ProviderInputSourceManifest,
