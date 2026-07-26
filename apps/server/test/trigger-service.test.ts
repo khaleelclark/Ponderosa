@@ -36,6 +36,12 @@ function setup(
   return { directory, agents, project, conversation, agent, coordination, service, notifications: () => notifications };
 }
 
+// Wall-clock dependent on OS filesystem event latency, unreliable under parallel load.
+// Keep these cases out of the default gate and run them through the dedicated serial script.
+const filesystemWatcherLatencyIt = process.env.PONDEROSA_RUN_FILESYSTEM_WATCHER_LATENCY_TESTS === "1"
+  ? it
+  : it.skip;
+
 describe("V3.2 Trigger sources", () => {
   it("keeps webhook encryption keys owner-only", () => {
     const directory = mkdtempSync(join(tmpdir(), "ponderosa-trigger-key-"));
@@ -317,7 +323,7 @@ describe("V3.2 Trigger sources", () => {
     }
   });
 
-  it("shares one Project watcher while routing metadata to each matching Trigger", async () => {
+  filesystemWatcherLatencyIt("shares one Project watcher while routing metadata to each matching Trigger", async () => {
     const now = new Date("2026-07-16T12:00:00.000Z");
     const context = setup(now);
     try {
@@ -355,7 +361,7 @@ describe("V3.2 Trigger sources", () => {
     }
   }, 12_000);
 
-  it("restores a persisted filesystem quiet-window burst after service restart", async () => {
+  filesystemWatcherLatencyIt("restores a persisted filesystem quiet-window burst after service restart", async () => {
     const now = new Date("2026-07-16T12:00:00.000Z");
     const context = setup(now);
     let restarted: TriggerSourceService | undefined;
