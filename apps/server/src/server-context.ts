@@ -2,14 +2,19 @@ import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import type { AgentDetailDto, AssetLimitsDto, GlobalChatSearchResponseDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
 import type { documentationReferences } from "./documentation-reference/index.js";
 
+/**
+ * Read-only authority handed to extracted route domains. Every member must be a
+ * read or a projection: a route that mutates state belongs with the authority it
+ * mutates, or must declare that authority in its own parameter list. `dataDir`
+ * is deliberately absent — it is a filesystem write capability, not a read.
+ */
 export interface ServerContext {
-  opts: {
-    buildVersion?: string;
-    buildRevision?: string;
-    dataDir: string;
+  readonly opts: {
+    readonly buildVersion?: string;
+    readonly buildRevision?: string;
   };
-  documentationReferences: typeof documentationReferences;
-  limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
+  readonly documentationReferences: typeof documentationReferences;
+  readonly limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
   readonly agentDetail: (
     agentId: string,
     input?: { limit?: number; cursor?: string; focusId?: string },

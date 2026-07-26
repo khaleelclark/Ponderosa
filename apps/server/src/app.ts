@@ -12085,7 +12085,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
 
-  registerOperatorProfileImageRoutes(app, serverContext);
+  registerOperatorProfileImageRoutes(app, opts);
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 
