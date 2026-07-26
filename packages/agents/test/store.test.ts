@@ -1251,6 +1251,65 @@ describe("AgentStore — append + projection", () => {
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
   });
 
+  it("preserves private managed-artifact identity and access across projection rebuilds", () => {
+    const project = store.createProject({ label: "Private artifacts", hostPath: "/private-artifacts" });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex" });
+    const unrelated = store.createAgent(project.id, { title: "Unrelated", engine: "codex" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const outsider = store.createAgent(otherProject.id, { title: "Outsider", engine: "codex" });
+    const artifact = {
+      id: "private-managed-artifact",
+      projectId: project.id,
+      agentId: sender.id,
+      originAgentId: sender.id,
+      executionId: "run-private",
+      kind: "generated_file" as const,
+      path: "generated/private.txt",
+      sourcePath: "private.txt",
+      summary: "private.txt",
+      createdAt: "2026-07-26T12:00:00.000Z",
+      mediaType: "text/plain",
+      visibility: "project" as const,
+      pinned: false,
+      size: 7,
+      sha256: "b".repeat(64),
+    };
+    const access = {
+      ownerKind: "communication" as const,
+      ownerId: "communication-private",
+      audience: {
+        kind: "user_agent" as const,
+        userId: "local-operator",
+        agentId: recipient.id,
+      },
+      senderAgentId: sender.id,
+    };
+
+    store.recordProjectArtifact(artifact, access);
+    store.recordProjectArtifact(artifact, access);
+
+    const assertPrivateAccess = () => {
+      expect(store.getProjectArtifactAccess(project.id, artifact.id)).toEqual(access);
+      expect(store.projectArtifactIsOrganizationVisible(project.id, artifact.id)).toBe(false);
+      expect(store.operatorCanReadProjectArtifact(project.id, artifact.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, sender.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, recipient.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, unrelated.id)).toBe(false);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, outsider.id)).toBe(false);
+      expect(store.getProjectContextArtifacts(project.id)).toEqual([]);
+    };
+
+    assertPrivateAccess();
+    expect(() => store.recordProjectArtifact({ ...artifact, summary: "changed.txt" }, access))
+      .toThrow("managed artifact identity and provenance are immutable");
+    expect(() => store.recordProjectArtifact(artifact, { ...access, ownerId: "changed-owner" }))
+      .toThrow("managed artifact identity and provenance are immutable");
+
+    store.rebuildProjections();
+    assertPrivateAccess();
+  });
+
   it("serves 50-Agent health heads and reconnect tails without reopening canonical JSONL", () => {
     const project = store.createProject({ label: "Large team", hostPath: "/large-team" });
     const team = Array.from({ length: 50 }, (_, index) =>
