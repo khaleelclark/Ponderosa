@@ -635,32 +635,63 @@ export function ConversationView({
       text,
       files,
       requestId,
+      agentIds,
+      activeRunDelivery,
     }: {
       text: string;
       files: File[];
       requestId: string;
+      agentIds: string[];
+      activeRunDelivery: "steer" | "queue";
     }) => {
       const owner = agents.find(agent => !agent.archived);
       if (files.length && !owner)
         throw new Error(
           "Create an agent before attaching files to shared project context.",
         );
+      const uploadAgentIds = [
+        ...new Set([
+          ...(owner ? [owner.id] : []),
+          ...agentIds,
+        ]),
+      ];
+      const uploadedRecipients = await uploadFilesForRecipients(
+        uploadAgentIds,
+        files,
+        (agentId, file) => api.uploadAttachment(agentId, file),
+        (agentId, item) => api.deleteAttachment(agentId, item.id),
+      );
+      const attachmentsByAgent = new Map(
+        uploadedRecipients.map(recipient => [
+          recipient.agentId,
+          recipient.attachments,
+        ]),
+      );
       const attachments = owner
-        ? await Promise.all(
-            files.map(file => api.uploadAttachment(owner.id, file)),
-          )
+        ? (attachmentsByAgent.get(owner.id) ?? [])
         : [];
       try {
         return await api.sendConversationMessage(conversationId, {
           text,
           attachments,
+          recipientAgentIds: agentIds,
+          recipientAttachments: agentIds.map(agentId => ({
+            agentId,
+            attachmentIds: (attachmentsByAgent.get(agentId) ?? []).map(
+              item => item.id,
+            ),
+          })),
+          activeRunDelivery,
           idempotencyKey: requestId,
         });
       } catch (error) {
-        if (owner)
-          await Promise.allSettled(
-            attachments.map(item => api.deleteAttachment(owner.id, item.id)),
-          );
+        await Promise.allSettled(
+          uploadedRecipients.flatMap(recipient =>
+            recipient.attachments.map(item =>
+              api.deleteAttachment(recipient.agentId, item.id),
+            ),
+          ),
+        );
         throw error;
       }
     },
@@ -1003,10 +1034,9 @@ export function ConversationView({
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
     const explicitlyMentionedAgents = findMentioned(text);
-    if (broadcastMentioned && (everyoneMentioned || explicitlyMentionedAgents.length > 0))
-      throw new Error("Broadcast cannot be combined with Agent recipients.");
-    if (broadcastMentioned && broadcastText === undefined)
-      throw new Error("Put #broadcast first so its shared scope is explicit.");
+    const targets = everyoneMentioned
+      ? agents.filter(agent => !agent.archived)
+      : explicitlyMentionedAgents;
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0)
         throw new Error(
@@ -1016,12 +1046,13 @@ export function ConversationView({
         text: broadcastText,
         files,
         requestId: createClientId(),
+        agentIds: targets.map(target => target.id),
+        activeRunDelivery,
       });
       return;
     }
-    const targets = everyoneMentioned
-      ? agents.filter(agent => !agent.archived)
-      : explicitlyMentionedAgents;
+    if (broadcastMentioned)
+      throw new Error("Broadcast scope could not be resolved.");
     if (everyoneMentioned && targets.length === 0)
       throw new Error("There are no active agents to notify.");
     if (targets.length > 0) {

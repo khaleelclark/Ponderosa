@@ -33,7 +33,6 @@ import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
 import { readChatState, writeChatState } from "../../chatState";
 import { createClientId } from "../../clientId";
-import { managerBroadcastText } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import {
@@ -214,30 +213,20 @@ export function Composer({
         handle.toLocaleLowerCase(),
   );
   const hasBroadcastDestination = hasBroadcastMention(submissionText);
-  const hasLeadingBroadcastDestination =
-    managerBroadcastText(submissionText) !== undefined;
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
   const destinationError =
-    destinationMode === "project-chat" &&
-    hasBroadcastDestination &&
-    (projectDestinations.length > 0 || hasEveryoneDestination)
-      ? "Broadcast cannot be combined with Agent recipients."
-      : destinationMode === "project-chat" &&
-          hasBroadcastDestination &&
-          !hasLeadingBroadcastDestination
-        ? "Put #broadcast first so its shared scope is explicit."
-        : destinationMode === "target-required" && hasBroadcastDestination
-          ? targetRequiredDestinations.length > 0
-            ? "Broadcast cannot be combined with an Agent recipient."
-            : "#broadcast is not available in All Messages. Choose an Agent."
-          : destinationMode === "target-required" &&
-              targetRequiredDestinations.length > 1
-            ? "Choose one Agent at a time in All Messages."
-            : destinationMode === "target-required" && unresolvedAmbiguousTarget
-              ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
-              : undefined;
+    destinationMode === "target-required" && hasBroadcastDestination
+      ? targetRequiredDestinations.length > 0
+        ? "Broadcast is only available in a Project Chat."
+        : "#broadcast is not available in All Messages. Choose an Agent."
+      : destinationMode === "target-required" &&
+          targetRequiredDestinations.length > 1
+        ? "Choose one Agent at a time in All Messages."
+        : destinationMode === "target-required" && unresolvedAmbiguousTarget
+          ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
+          : undefined;
   const setDestination = (handle: string) =>
     update(
       current =>
@@ -824,7 +813,15 @@ export function Composer({
   const projectDestinationHelper =
     destinationError ??
     (hasBroadcastDestination
-      ? "Adds durable shared Project context; starts no Agent."
+      ? hasEveryoneDestination
+        ? "Shared with the Project; every active Agent will receive this."
+        : projectDestinations.length === 1
+          ? `Shared with the Project; ${projectDestinations[0]!.title} will receive this.`
+          : projectDestinations.length === 2
+            ? `Shared with the Project; ${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
+            : projectDestinations.length > 2
+              ? `Shared with the Project; ${projectDestinations.length} Agents will receive this.`
+              : "Adds durable shared Project context; starts no Agent."
       : hasEveryoneDestination
         ? "Every active Agent in this Chat will receive this."
         : projectDestinations.length === 1

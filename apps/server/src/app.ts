@@ -38,6 +38,7 @@ import type {
   ConversationDetailDto,
   CollaborationViewDto,
   CreateCollaborationMessageRequest,
+  CreateConversationMessageRequest,
   AssetDto,
   ImageAttachmentDto,
   CreateMultiAgentDirectMessageRequest,
@@ -8233,19 +8234,48 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   app.post<{
     Params: { id: string };
-    Body: { role?: "user" | "assistant" | "system"; text: string; attachments?: AssetDto[]; idempotencyKey?: string };
+    Body: CreateConversationMessageRequest;
   }>("/api/conversations/:id/messages", async (request, reply) => {
     const requestedText = request.body?.text?.trim();
     const rawText = requestedText ? stripLeadingScopeTag(requestedText, "broadcast") : "";
     const requestedAssets = request.body?.attachments ?? [];
+    const recipientAgentIds = request.body?.recipientAgentIds ?? [];
+    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
+    const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
     if (!rawText && (!Array.isArray(requestedAssets) || requestedAssets.length === 0)) {
       return reply.code(400).send({ error: "broadcast text or an attachment is required" });
+    }
+    if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
+      return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+    }
+    if (!Array.isArray(recipientAgentIds) || recipientAgentIds.length > 100 ||
+        recipientAgentIds.some((id) => typeof id !== "string" || !id.trim()) ||
+        new Set(recipientAgentIds).size !== recipientAgentIds.length) {
+      return reply.code(400).send({ error: "broadcast recipient Agent IDs must be unique and limited to 100" });
+    }
+    if (!Array.isArray(requestedRecipientAttachments) ||
+        requestedRecipientAttachments.length > recipientAgentIds.length ||
+        new Set(requestedRecipientAttachments.map((entry) => entry.agentId)).size !== requestedRecipientAttachments.length ||
+        requestedRecipientAttachments.some((entry) =>
+          !entry || !recipientAgentIds.includes(entry.agentId) ||
+          !Array.isArray(entry.attachmentIds) ||
+          entry.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE ||
+          new Set(entry.attachmentIds).size !== entry.attachmentIds.length
+        )) {
+      return reply.code(400).send({ error: "broadcast recipient attachments must belong to unique explicit recipients" });
     }
     const idempotencyKey = request.body?.idempotencyKey?.trim();
     if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
     const master = store.getConversation(request.params.id);
     if (!master) return reply.code(404).send({ error: "conversation not found" });
     if (deletingProjectIds.has(master.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
+    const recipientAgents = recipientAgentIds.map((agentId) => store.getAgent(agentId));
+    if (recipientAgents.some((agent) =>
+      !agent || agent.archived || agent.projectId !== master.projectId ||
+      !agent.conversationIds.includes(master.id)
+    )) {
+      return reply.code(404).send({ error: "broadcast recipient not found" });
+    }
     if (!Array.isArray(requestedAssets) || requestedAssets.length > MAX_ATTACHMENTS_PER_MESSAGE) return reply.code(400).send({ error: `at most ${MAX_ATTACHMENTS_PER_MESSAGE} assets are allowed` });
     const validatedAssets: AssetDto[] = [];
     for (const requested of requestedAssets) {
@@ -8257,6 +8287,34 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       validatedAssets.push({ ...publicAsset, state: "associated" });
     }
     if (validatedAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
+    const requestedRecipientAttachmentIds = new Map(
+      requestedRecipientAttachments.map((entry) => [entry.agentId, entry.attachmentIds]),
+    );
+    const recipientAssets = new Map<string, AssetDto[]>();
+    for (const agentId of recipientAgentIds) {
+      const attached = await Promise.all(
+        (requestedRecipientAttachmentIds.get(agentId) ?? []).map((id) =>
+          assetMetadata(agentId, id),
+        ),
+      );
+      if (attached.some((item) => !item || item.agentId !== agentId)) {
+        return reply.code(404).send({ error: "broadcast recipient attachment not found" });
+      }
+      const publicAssets = (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
+        const {
+          projectId: _projectId,
+          originalFile: _originalFile,
+          previewFile: _previewFile,
+          associatedAt: _associatedAt,
+          ...publicAsset
+        } = item;
+        return { ...publicAsset, state: "associated" as const };
+      }) as AssetDto[];
+      if (publicAssets.reduce((sum, item) => sum + item.size, 0) > ASSET_LIMITS.maxMessageBytes) {
+        return reply.code(413).send({ error: "broadcast recipient attachment quota exceeded" });
+      }
+      recipientAssets.set(agentId, publicAssets);
+    }
     const eventId = idempotencyKey
       ? `broadcast-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
       : randomUUID();
@@ -8291,8 +8349,44 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         sender: communicationInput.sender,
         intent: communicationInput.intent,
         audience: communicationInput.audience,
-        payload: { communication: communicationInput },
+        payload: {
+          communication: communicationInput,
+          ...(recipientAgentIds.length ? {
+            dispatch: {
+              conversationId: master.id,
+              sourceConversationId: master.id,
+              sourceChannel: "main" as const,
+              shareWithOrganization: true,
+              communicationEventId: eventId,
+              text: prepared.publishedText,
+              ...(prepared.artifact ? {
+                artifactId: prepared.artifact.id,
+                resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
+              } : {}),
+              activeRunDelivery,
+              recipients: recipientAgentIds.map((agentId) => ({
+                agentId,
+                attachments: (recipientAssets.get(agentId) ?? []).map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  mediaType: item.mediaType,
+                  size: item.size,
+                })),
+              })),
+            },
+          } : {}),
+        },
         ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
+        ...(recipientAgentIds.length ? {
+          activations: recipientAgentIds.map((agentId, index) => ({
+            agentId,
+            kind: "human_message" as const,
+            priority: 100,
+            dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" as const : "next_run" as const,
+            promptClass: "human" as const,
+            dedupeKey: `communication:${eventId}:${agentId}:${index}`,
+          })),
+        } : {}),
         now: createdAt,
       });
     } catch (error) {
@@ -8315,18 +8409,27 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const replayedMessage = communication && idempotencyKey
       ? store.getConversationMessages(master.id).find((candidate) => candidate.communicationEventId === communication.eventId)
       : undefined;
-    if (replayedMessage) return replayedMessage;
-    const message = store.appendConversationMessage(request.params.id, {
+    const message = replayedMessage ?? store.appendConversationMessage(request.params.id, {
       role: request.body.role,
       text: renderScopedMessage("broadcast", prepared.publishedText),
       attachments: validatedAssets,
     }, undefined, "main", undefined, undefined, communication?.eventId);
-    await Promise.all(validatedAssets.map((asset) => {
-      const owner = store.getAgent(asset.agentId)!;
-      return assets.associate(owner.projectId, owner.id, [asset.id]);
-    }));
+    const assetsByAgent = new Map<string, Set<string>>();
+    for (const asset of [
+      ...validatedAssets,
+      ...[...recipientAssets.values()].flat(),
+    ]) {
+      const ids = assetsByAgent.get(asset.agentId) ?? new Set<string>();
+      ids.add(asset.id);
+      assetsByAgent.set(asset.agentId, ids);
+    }
+    await Promise.all([...assetsByAgent].map(([agentId, ids]) =>
+      assets.associate(master.projectId, agentId, [...ids]),
+    ));
     if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
     if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
+    for (const agentId of recipientAgentIds) publishCoordinationV3Changed(agentId);
+    if (recipientAgentIds.length) coordinationV3Scheduler.notify();
     return message ?? reply.code(404).send({ error: "conversation not found" });
   });
 
