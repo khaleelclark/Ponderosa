@@ -257,6 +257,7 @@ import {
   secretEqual,
 } from "./security.js";
 import { registerHealthRoutes } from "./routes/health.js";
+import type { ServerContext } from "./server-context.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -4477,6 +4478,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  const serverContext: ServerContext = { opts, documentationReferences };
   app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
@@ -7725,7 +7727,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { scheduled: true, afterRunId: capability.runId, handoffId };
   });
 
-  registerHealthRoutes(app, { opts });
+  registerHealthRoutes(app, serverContext);
 
   app.get("/api/launcher/status", async () => ({
     service: "ponderosa",
