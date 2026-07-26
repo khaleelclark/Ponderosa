@@ -17,13 +17,8 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Chip,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControl,
   FormControlLabel,
   IconButton,
@@ -36,7 +31,6 @@ import {
   Select,
   Stack,
   Switch,
-  TextField,
   Tooltip,
   Typography,
   useMediaQuery,
@@ -54,12 +48,9 @@ import type {
   ProviderUsageStateDto,
   ResponseFileActivityDto,
   SendMessageRequest,
-  SendMessageResponse,
   AgentDetailDto,
   AgentDto,
-  AgentTelemetryPageDto,
   AgentTelemetryStream,
-  HistoryWindowDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -101,7 +92,6 @@ import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { buildMarkdownTranscript, transcriptFileName } from "../chatTranscript";
-import { conversationDisplayTitle } from "../conversationLabels";
 import { AttentionSurface } from "./AttentionSurface";
 import type { AgentDetailView, AgentTelemetryFocus } from "../routing";
 import { telemetryElementId } from "../telemetryFocus";
@@ -109,7 +99,6 @@ import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import { AgentsTab } from "./AgentsTab";
-import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { TriggersPane } from "./TriggersPane";
 import {
@@ -123,141 +112,23 @@ import { ConfirmDialog } from "./ConfirmationDialogs";
 import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../time";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import { AgentProviderUsageCard } from "./ProviderUsageCenter";
-
-type AgentTab = AgentDetailView;
-
-const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
-  stream === "artifacts" || stream === "changedFiles"
-    ? "artifacts"
-    : stream === "runs" || stream === "workItems"
-      ? "technical"
-      : "activity";
-
-type TelemetryPageState = {
-  [K in AgentTelemetryStream]?: {
-    items: AgentDetailDto[K extends "runOutput"
-      ? "runOutput"
-      : K extends "activity"
-        ? "activity"
-        : K extends "changedFiles"
-          ? "changedFiles"
-          : K extends "runs"
-            ? "runs"
-            : K extends "workItems"
-              ? "workItems"
-              : "artifacts"];
-    history?: HistoryWindowDto;
-  };
-};
-
-function mergeTelemetryPage(
-  current: TelemetryPageState,
-  page: AgentTelemetryPageDto,
-  preserveHistory = false,
-): TelemetryPageState {
-  const next = { ...current };
-  const history = preserveHistory
-    ? current[page.stream]?.history
-    : page.history;
-  if (page.stream === "runOutput")
-    next.runOutput = {
-      items: uniqueBy(
-        [...page.items, ...(current.runOutput?.items ?? [])],
-        item => item.id,
-      ),
-      history,
-    };
-  else if (page.stream === "activity")
-    next.activity = {
-      items: uniqueBy(
-        [...page.items, ...(current.activity?.items ?? [])],
-        item => item.id,
-      ),
-      history,
-    };
-  else if (page.stream === "changedFiles")
-    next.changedFiles = {
-      items: uniqueBy(
-        [...page.items, ...(current.changedFiles?.items ?? [])],
-        item => item.path,
-      ),
-      history,
-    };
-  else if (page.stream === "runs")
-    next.runs = {
-      items: uniqueBy(
-        [...page.items, ...(current.runs?.items ?? [])],
-        item => item.id,
-      ),
-      history,
-    };
-  else if (page.stream === "workItems")
-    next.workItems = {
-      items: uniqueBy(
-        [...page.items, ...(current.workItems?.items ?? [])],
-        item => item.id,
-      ),
-      history,
-    };
-  else
-    next.artifacts = {
-      items: uniqueBy(
-        [...page.items, ...(current.artifacts?.items ?? [])],
-        item => item.id,
-      ),
-      history,
-    };
-  return next;
-}
-
-const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
-  tab === "activity"
-    ? ["runOutput", "activity", "runs"]
-    : tab === "artifacts"
-      ? ["artifacts"]
-      : [];
-
-function directAgentDeliveryNotice(
-  response: SendMessageResponse,
-  activeRunDelivery: NonNullable<
-    SendMessageRequest["activeRunDelivery"]
-  > = "steer",
-): string | undefined {
-  if (response.queued) {
-    if (activeRunDelivery === "steer") return undefined;
-    return `Queued in position ${response.position}; it will start when the current response finishes.`;
-  }
-  return response.steered ? "Steered into the active turn." : undefined;
-}
-
-function portablePackageFileName(
-  title: string,
-  organization: boolean,
-  mode: "template" | "full",
-): string {
-  const safe = title
-    .normalize("NFKD")
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "")
-    .toLocaleLowerCase()
-    .slice(0, 80);
-  return `${safe || (organization ? "organization" : "agent")}-${mode === "template" ? "template" : "full"}.ponderosa.json`;
-}
-
-function downloadJson(value: unknown, fileName: string): void {
-  const blob = new Blob([`${JSON.stringify(value, null, 2)}\n`], {
-    type: "application/json;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.style.display = "none";
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
+import {
+  directAgentDeliveryNotice,
+  downloadJson,
+  mergeTelemetryPage,
+  portablePackageFileName,
+  telemetryStreamsForTab,
+  telemetryTab,
+  type AgentTab,
+  type TelemetryPageState,
+} from "./AgentDetail.helpers";
+import {
+  AgentMembershipDialog,
+  AgentOrganizationDialog,
+  AgentRenameDialog,
+  AgentRuntimeControls,
+} from "./AgentDetail.parts";
+import { useAgentRunClock } from "./useAgentRunClock";
 
 function AgentRunState({
   status,
@@ -268,13 +139,7 @@ function AgentRunState({
   connected: boolean;
   startedAt?: string;
 }): JSX.Element {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!startedAt) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
+  const now = useAgentRunClock(startedAt);
   const runState = startedAt
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
@@ -306,32 +171,6 @@ const AGENT_DETAIL_TABS: Array<{
   },
   { value: "settings", label: "Settings", icon: <SettingsOutlinedIcon /> },
 ];
-
-function eligibleOrganizationParents(
-  agent: AgentDto,
-  agents: AgentDto[],
-): AgentDto[] {
-  const byId = new Map(agents.map(candidate => [candidate.id, candidate]));
-  const isDescendant = (candidate: AgentDto): boolean => {
-    const seen = new Set<string>();
-    let parentId = candidate.managerAgentId;
-    while (parentId && !seen.has(parentId)) {
-      if (parentId === agent.id) return true;
-      seen.add(parentId);
-      parentId = byId.get(parentId)?.managerAgentId;
-    }
-    return false;
-  };
-  return agents
-    .filter(
-      candidate =>
-        candidate.id !== agent.id &&
-        candidate.projectId === agent.projectId &&
-        !candidate.archived &&
-        !isDescendant(candidate),
-    )
-    .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
-}
 
 export function AgentDetail({
   agentId,
@@ -1308,25 +1147,14 @@ export function AgentDetail({
     }
   };
   collectDelegatedAgents(detail.agent.id);
-  const agentRuntimeControls = <ComposerRuntimeSelector
-    engine={engine?.id ?? ""}
-    engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
-    engineLocked
+  const agentRuntimeControls = <AgentRuntimeControls
+    engine={engine}
+    engineCapability={engineCapability}
     model={model}
     models={models}
-    resolvedModel={
-      engineCapability?.selectedModel === model
-        ? engineCapability.model
-        : undefined
-    }
     effort={effort}
     efforts={efforts}
-    onModelChange={(nextModel) => {
-      selectedRuntime.selectModel(nextModel);
-    }}
-    onEffortChange={(nextEffort) => {
-      selectedRuntime.selectEffort(nextEffort);
-    }}
+    selectedRuntime={selectedRuntime}
   />;
 
   const submitAgentMessage =
@@ -2296,201 +2124,34 @@ export function AgentDetail({
         onImported={onOpenAgent}
       />
 
-      <Dialog
-        open={renameOpen}
-        onClose={() => setRenameOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Rename agent</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            value={renameValue}
-            onChange={event => setRenameValue(event.target.value)}
-            helperText="Spaces are supported; tag multi-word names with hyphens (for example, #Grand-Teton)."
-            sx={{ mt: 1 }}
-          />
-          {rename.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(rename.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setRenameOpen(false)}
-            disabled={rename.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!renameValue.trim() || rename.isPending}
-            onClick={() => rename.mutate(renameValue.trim())}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <AgentRenameDialog
+        renameOpen={renameOpen}
+        setRenameOpen={setRenameOpen}
+        renameValue={renameValue}
+        setRenameValue={setRenameValue}
+        rename={rename}
+      />
 
-      <Dialog
-        open={membershipOpen}
-        onClose={() => setMembershipOpen(false)}
-        fullWidth
-        maxWidth="sm"
-      >
-        <DialogTitle>Project chat membership</DialogTitle>
-        <DialogContent>
-          <Stack spacing={2} sx={{ mt: 1 }}>
-            <FormControl fullWidth>
-              <InputLabel id="agent-memberships-label">
-                Project chats
-              </InputLabel>
-              <Select
-                labelId="agent-memberships-label"
-                multiple
-                value={membershipIds}
-                label="Project chats"
-                renderValue={selected =>
-                  selected
-                    .map(id => {
-                      const chat = conversations.find(
-                        candidate => candidate.id === id,
-                      );
-                      return chat
-                        ? conversationDisplayTitle(chat, conversations)
-                        : id;
-                    })
-                    .join(", ")
-                }
-                onChange={event => {
-                  const ids =
-                    typeof event.target.value === "string"
-                      ? event.target.value.split(",")
-                      : event.target.value;
-                  setMembershipIds(ids);
-                  if (!ids.includes(primaryConversationId))
-                    setPrimaryConversationId(ids[0] ?? "");
-                }}
-              >
-                {conversations
-                  .filter(
-                    chat => !chat.archived || membershipIds.includes(chat.id),
-                  )
-                  .map(chat => (
-                    <MenuItem key={chat.id} value={chat.id}>
-                      <Checkbox checked={membershipIds.includes(chat.id)} />
-                      <ListItemText
-                        primary={conversationDisplayTitle(chat, conversations)}
-                        secondary={chat.archived ? "Archived" : undefined}
-                      />
-                    </MenuItem>
-                  ))}
-              </Select>
-            </FormControl>
-            <FormControl fullWidth disabled={membershipIds.length === 0}>
-              <InputLabel id="agent-primary-chat-label">Home chat</InputLabel>
-              <Select
-                labelId="agent-primary-chat-label"
-                value={primaryConversationId}
-                label="Home chat"
-                onChange={event => setPrimaryConversationId(event.target.value)}
-              >
-                {membershipIds.map(id => {
-                  const chat = conversations.find(
-                    candidate => candidate.id === id,
-                  );
-                  return (
-                    <MenuItem key={id} value={id}>
-                      {chat
-                        ? conversationDisplayTitle(chat, conversations)
-                        : id}
-                    </MenuItem>
-                  );
-                })}
-              </Select>
-            </FormControl>
-            <Typography variant="body2" color="text.secondary">
-              The home chat controls default routing and shared organizational
-              context. Every membership uses this agent's single session and
-              history.
-            </Typography>
-            {updateMemberships.isError ? (
-              <Alert severity="error">{String(updateMemberships.error)}</Alert>
-            ) : null}
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setMembershipOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={
-              updateMemberships.isPending ||
-              (membershipIds.length > 0 && !primaryConversationId)
-            }
-            onClick={() => updateMemberships.mutate()}
-          >
-            Save Membership
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <AgentMembershipDialog
+        membershipOpen={membershipOpen}
+        setMembershipOpen={setMembershipOpen}
+        membershipIds={membershipIds}
+        setMembershipIds={setMembershipIds}
+        conversations={conversations}
+        primaryConversationId={primaryConversationId}
+        setPrimaryConversationId={setPrimaryConversationId}
+        updateMemberships={updateMemberships}
+      />
 
-      <Dialog
-        open={organizationOpen}
-        onClose={() => setOrganizationOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Agent organization</DialogTitle>
-        <DialogContent>
-          <FormControl fullWidth sx={{ mt: 1 }}>
-            <InputLabel id="agent-organizational-parent-label">
-              Delegated under
-            </InputLabel>
-            <Select
-              labelId="agent-organizational-parent-label"
-              value={organizationParentId}
-              label="Delegated under"
-              onChange={event => setOrganizationParentId(event.target.value)}
-            >
-              <MenuItem value="">Top Level</MenuItem>
-              {eligibleOrganizationParents(detail.agent, agents).map(
-                candidate => (
-                  <MenuItem key={candidate.id} value={candidate.id}>
-                    {candidate.title}
-                  </MenuItem>
-                ),
-              )}
-            </Select>
-          </FormControl>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-            This changes which Agent delegates work to this Agent. Its Run and
-            message history remain attached to the same Agent.
-          </Typography>
-          {updateOrganization.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(updateOrganization.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setOrganizationOpen(false)}
-            disabled={updateOrganization.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={updateOrganization.isPending}
-            onClick={() => updateOrganization.mutate()}
-          >
-            Save Organization
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <AgentOrganizationDialog
+        organizationOpen={organizationOpen}
+        setOrganizationOpen={setOrganizationOpen}
+        organizationParentId={organizationParentId}
+        setOrganizationParentId={setOrganizationParentId}
+        detail={detail}
+        agents={agents}
+        updateOrganization={updateOrganization}
+      />
     </Box>
   );
 }

@@ -1,4 +1,3 @@
-import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -13,9 +12,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
-  Badge,
   Box,
-  Button,
   Chip,
   IconButton,
   InputAdornment,
@@ -35,8 +32,6 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import {
@@ -45,11 +40,6 @@ import {
   useProjectConversations,
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
-import {
-  routeInitialSidebarSection,
-  routeSynchronizedSidebarSection,
-  type RouteSidebarSection,
-} from "../routeRegistry";
 import type { Route } from "../routing";
 import {
   reorderStableIds,
@@ -66,238 +56,25 @@ import {
   type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
-import { ponderosaLayoutTokens } from "../theme";
-import {
-  ResourceContextMenu,
-  type ResourceContextMenuState,
-} from "./ResourceContextMenu";
+import { ResourceContextMenu } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
-
-const SIDEBAR_RAIL_WIDTH = ponderosaLayoutTokens.sidebarRailWidth;
-const SIDEBAR_PANEL_WIDTH = ponderosaLayoutTokens.sidebarPanelWidth;
-
-function projectSnapshots(
-  projects: ProjectDto[],
-  conversations: Array<ConversationDto[] | undefined>,
-  agents: Array<Awaited<ReturnType<typeof api.listAgents>> | undefined>,
-  health: Array<Awaited<ReturnType<typeof api.getAgentHealth>> | undefined>,
-): WorkspaceProjectSnapshot[] {
-  return projects.map((project, index) => ({
-    project,
-    conversations: conversations[index] ?? [],
-    agents: agents[index] ?? [],
-    health: health[index]?.agents ?? [],
-  }));
-}
-
-const sidebarSurface = "var(--ponderosa-sidebar)";
-const railSurface = "var(--ponderosa-rail)";
-const starColor = "var(--ponderosa-star)";
-
-function SidebarSectionHeading({
-  children,
-}: {
-  children: ReactNode;
-}): JSX.Element {
-  return (
-    <Typography
-      variant="subtitle2"
-      color="text.secondary"
-      sx={{
-        px: 1,
-        mb: 0.5,
-        fontSize: 11,
-        fontWeight: 800,
-        letterSpacing: ".06em",
-        textTransform: "uppercase",
-      }}
-    >
-      {children}
-    </Typography>
-  );
-}
-
-function SharedSidebarPanel({
-  icon,
-  title,
-  total,
-  searchLabel,
-  searchValue,
-  onSearchValueChange,
-  topContent,
-  starredRows,
-  allRows,
-  empty,
-  newLabel,
-  newIcon,
-  onNew,
-  newDisabled = false,
-  viewAllLabel,
-  viewAllIcon,
-  onViewAll,
-  drawer,
-}: {
-  icon: ReactNode;
-  title: string;
-  total: number;
-  searchLabel: string;
-  searchValue: string;
-  onSearchValueChange(value: string): void;
-  topContent?: ReactNode;
-  starredRows: ReactNode;
-  allRows: ReactNode;
-  empty?: ReactNode;
-  newLabel: string;
-  newIcon?: ReactNode;
-  onNew(): void;
-  newDisabled?: boolean;
-  viewAllLabel: string;
-  viewAllIcon: ReactNode;
-  onViewAll(): void;
-  drawer: boolean;
-}): JSX.Element {
-  return (
-    <Box
-      data-sidebar-layout="shared-resource"
-      data-sidebar-panel={title.toLocaleLowerCase()}
-      sx={{
-        minHeight: 0,
-        minWidth: 0,
-        display: "grid",
-        gridTemplateRows: "auto auto minmax(0, 1fr) auto",
-        bgcolor: sidebarSurface,
-      }}
-    >
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "baseline",
-          pl: 2.25,
-          pr: drawer ? 7 : 2.25,
-          pt: 2,
-          pb: 1.25,
-        }}
-      >
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <IconTitle icon={icon} title={title} />
-        </Box>
-        <Typography variant="caption" color="text.secondary">
-          {total} total
-        </Typography>
-      </Stack>
-      <Box sx={{ px: 1.75, pb: 1.5 }}>
-        <TextField
-          fullWidth
-          size="small"
-          value={searchValue}
-          onChange={event => onSearchValueChange(event.target.value)}
-          placeholder={searchLabel}
-          inputProps={{ "aria-label": searchLabel }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          }}
-        />
-      </Box>
-      <Box
-        data-testid="workspace-navigation-scroll"
-        className="ponderosa-scroll"
-        sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 1.5 }}
-      >
-        {topContent}
-        <Box component="section" data-sidebar-section="starred" sx={{ mb: 2 }}>
-          <SidebarSectionHeading>Starred</SidebarSectionHeading>
-          <List disablePadding>{starredRows}</List>
-        </Box>
-        <Box component="section" data-sidebar-section="all">
-          <SidebarSectionHeading>
-            {title === "Home" ? "All" : `All ${title}`}
-          </SidebarSectionHeading>
-          <List disablePadding>{allRows}</List>
-        </Box>
-        {empty}
-      </Box>
-      <Box
-        sx={{
-          p: 1.75,
-          boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
-        }}
-      >
-        <Button
-          fullWidth
-          color="inherit"
-          startIcon={newIcon ?? <AddIcon />}
-          onClick={onNew}
-          disabled={newDisabled}
-          sx={{
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {newLabel}
-        </Button>
-        <Button
-          fullWidth
-          startIcon={viewAllIcon}
-          onClick={onViewAll}
-          sx={{
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {viewAllLabel}
-        </Button>
-      </Box>
-    </Box>
-  );
-}
-
-function RailButton({
-  label,
-  selected = false,
-  badge,
-  badgeColor = "primary",
-  children,
-  onClick,
-}: {
-  label: string;
-  selected?: boolean;
-  badge?: number;
-  badgeColor?: "primary" | "info" | "error";
-  children: ReactNode;
-  onClick(): void;
-}): JSX.Element {
-  return (
-    <Tooltip title={label} placement="right">
-      <IconButton
-        aria-label={label}
-        onClick={onClick}
-        sx={{
-          width: 48,
-          height: 48,
-          borderRadius: 1,
-          color: selected
-            ? "var(--ponderosa-rail-foreground-active)"
-            : "var(--ponderosa-rail-foreground)",
-          bgcolor: selected ? "rgba(124, 191, 138, .14)" : "transparent",
-          "&:hover": {
-            bgcolor: selected
-              ? "rgba(124, 191, 138, .20)"
-              : "rgba(178, 187, 180, .10)",
-            color: "#E6E7DF",
-          },
-        }}
-      >
-        <Badge color={badgeColor} badgeContent={badge} max={99}>
-          {children}
-        </Badge>
-      </IconButton>
-    </Tooltip>
-  );
-}
+import {
+  SIDEBAR_PANEL_WIDTH,
+  SIDEBAR_RAIL_WIDTH,
+  projectSnapshots,
+  railSurface,
+  sidebarSurface,
+  starColor,
+} from "./WorkspaceSidebar.helpers";
+import {
+  RailButton,
+  SharedSidebarPanel,
+  SidebarSectionHeading,
+} from "./WorkspaceSidebar.parts";
+import {
+  useWorkspaceSidebarNavigation,
+  useWorkspaceSidebarResize,
+} from "./useWorkspaceSidebarState";
 
 export function WorkspaceSidebar({
   projects,
@@ -350,33 +127,17 @@ export function WorkspaceSidebar({
     healthQueries.map(query => query.data),
   );
   const counts = workspaceCounts(snapshots, notifications);
-  const [sidebarSection, setSidebarSection] =
-    useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
-  const [filter, setFilter] = useState("");
-  const [draggedResource, setDraggedResource] = useState<{
-    kind: "home" | "chat" | "agent" | "trigger";
-    id: string;
-  }>();
-  type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
-  const [menu, setMenu] =
-    useState<ResourceContextMenuState<SidebarMenuResource>>();
-  const openResourceMenu = (
-    anchor: HTMLElement,
-    route: Route,
-    conversation?: ConversationDto,
-  ) =>
-    setMenu({
-      anchor,
-      resource: { route, ...(conversation ? { conversation } : {}) },
-    });
-  useEffect(() => {
-    // Directory workplaces are destinations, not sidebar-section commands.
-    // Keep the operator's current panel, filter, and scroll state when one opens.
-    const section = routeSynchronizedSidebarSection(route);
-    if (!section) return;
-    setSidebarSection(section);
-    setFilter("");
-  }, [route.kind]);
+  const {
+    sidebarSection,
+    setSidebarSection,
+    filter,
+    setFilter,
+    draggedResource,
+    setDraggedResource,
+    menu,
+    setMenu,
+    openResourceMenu,
+  } = useWorkspaceSidebarNavigation(route);
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const showingAgents = sidebarSection === "agents";
@@ -780,13 +541,6 @@ export function WorkspaceSidebar({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ ml: 1, minWidth: 24, textAlign: "right", flexShrink: 0 }}
-            >
-              {snapshot.conversations.filter(item => !item.archived).length}
-            </Typography>
           </ListItemButton>
           <Tooltip
             title={
@@ -1538,27 +1292,10 @@ export function WorkspaceSidebar({
             : showingProjects
               ? projectsPanel
               : homePanel;
-  const [resizing, setResizing] = useState(false);
-  const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!onWidthChange) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = width;
-    setResizing(true);
-    const move = (next: PointerEvent) =>
-      onWidthChange(
-        clampWorkspaceSidebarWidth(startWidth + next.clientX - startX),
-      );
-    const stop = () => {
-      setResizing(false);
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
-  };
+  const { resizing, resizeStart } = useWorkspaceSidebarResize(
+    width,
+    onWidthChange,
+  );
 
   return (
     <Box

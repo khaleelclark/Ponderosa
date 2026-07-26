@@ -8,11 +8,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
-  fsyncSync,
   mkdirSync,
-  openSync,
-  closeSync,
-  readFileSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -30,8 +26,6 @@ import type {
   CommunicationEvent,
   CommunicationAudience,
   CommunicationRevisionEvent,
-  CommunicationDocumentRecord,
-  CommunicationDocumentReference,
   CommunicationProjection,
   CommunicationReconciliationReport,
   ProjectedCommunicationMessage,
@@ -81,15 +75,26 @@ import type {
 } from "@ponderosa/core";
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
-
-function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
-  const { content: _content, ...metadata } = document;
-  const root = `/api/projects/${encodeURIComponent(projectId)}/communication-documents/${encodeURIComponent(document.id)}`;
-  return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
-}
+import { healthObservation, utf8Prefix } from "./store-activity.js";
+import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
+import {
+  communicationDocumentReference,
+  communicationMessageProjection,
+  normalizedAgentIds,
+  revisedRenderedText,
+  userDmAgentIds,
+} from "./store-communication.js";
+import {
+  acquireDataDirectoryOwnership,
+  ensureV1Layout,
+  releaseDataDirectoryOwnership,
+  type DataDirectoryOwnership,
+} from "./store-data-directory.js";
+import { fsyncDirectory, pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
+export { AgentDeletionConflictError } from "./store-agent-management.js";
 import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
-import { artifactId, messageId as projectedMessageId } from "./ids.js";
+import { artifactId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
@@ -101,17 +106,6 @@ import {
   type ProjectionState,
 } from "./projectors.js";
 
-function revisedRenderedText(rendered: string, original: string, replacement: string): string {
-  if (rendered === original) return replacement;
-  if (original && rendered.endsWith(original)) return `${rendered.slice(0, -original.length)}${replacement}`.trimEnd();
-  return replacement;
-}
-
-function fsyncDirectory(directory: string): void {
-  const descriptor = openSync(directory, "r");
-  try { fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
-}
 import {
   artifacts,
   agentPresets,
@@ -198,40 +192,6 @@ const RUN_OUTPUT_BREAKING_TYPES = [
   "context_rollover_triggered",
 ] as const;
 
-function healthObservation(event: LogEvent, timestamp: string): {
-  status: AgentLifecycleStatus;
-  statusTimestamp: string;
-  reason: AgentLifecycleReason;
-  executionId?: string;
-} | undefined {
-  const executionId = "executionId" in event && typeof event.executionId === "string" ? event.executionId : undefined;
-  if (event.type === "error") return { status: "failed", statusTimestamp: timestamp, reason: "runtime_error", ...(executionId ? { executionId } : {}) };
-  if (event.type === "agent_lifecycle") return {
-    status: event.status === "completed" ? "idle" : event.status,
-    statusTimestamp: timestamp,
-    reason: event.reason,
-    executionId: event.executionId,
-  };
-  if (event.type === "work_item_update" && event.status === "waiting_approval") {
-    return { status: "waiting", statusTimestamp: timestamp, reason: "work_item_waiting_approval", ...(executionId ? { executionId } : {}) };
-  }
-  if (event.type === "turn_done") return { status: "idle", statusTimestamp: timestamp, reason: "turn_completed", ...(executionId ? { executionId } : {}) };
-  if (event.type === "work_item_update" && event.status === "done") {
-    return { status: "idle", statusTimestamp: timestamp, reason: "work_item_completed", ...(executionId ? { executionId } : {}) };
-  }
-  return undefined;
-}
-
-function utf8Prefix(text: string, maximumBytes: number): string {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= maximumBytes) return text;
-  let end = maximumBytes;
-  while (end > 0) {
-    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end)); }
-    catch { end -= 1; }
-  }
-  return "";
-}
 import {
   artifactsDir,
   artifactContentPath,
@@ -283,53 +243,6 @@ type ManagedArtifactEvent =
   | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
   | { type: "deleted"; artifactId: string; at: string; reason: string };
 
-interface DataDirectoryOwnership {
-  path: string;
-  token: string;
-}
-
-function acquireDataDirectoryOwnership(dataDir: string): DataDirectoryOwnership {
-  const path = join(dataDir, ".ponderosa-daemon.lock");
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const token = randomUUID();
-    try {
-      const descriptor = openSync(path, "wx", 0o600);
-      try {
-        writeFileSync(descriptor, JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() }), "utf8");
-      } finally {
-        closeSync(descriptor);
-      }
-      return { path, token };
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
-      if (code !== "EEXIST") throw error;
-      let owner: { pid?: number; token?: string } = {};
-      try { owner = JSON.parse(readFileSync(path, "utf8")) as { pid?: number; token?: string }; } catch { /* stale malformed lock */ }
-      let alive = false;
-      if (Number.isSafeInteger(owner.pid) && owner.pid! > 0) {
-        try { process.kill(owner.pid!, 0); alive = true; } catch { /* stale owner */ }
-      }
-      if (alive) throw new Error(`data directory is already owned by Ponderosa process ${owner.pid}`);
-      // Remove only the stale record we inspected; a changed token means
-      // another contender already acquired ownership.
-      try {
-        const current = JSON.parse(readFileSync(path, "utf8")) as { token?: string };
-        if (current.token !== owner.token) continue;
-      } catch { /* malformed stale record remains removable */ }
-      rmSync(path, { force: true });
-    }
-  }
-  throw new Error("could not acquire exclusive Ponderosa data-directory ownership");
-}
-
-function releaseDataDirectoryOwnership(ownership: DataDirectoryOwnership | undefined): void {
-  if (!ownership) return;
-  try {
-    const current = JSON.parse(readFileSync(ownership.path, "utf8")) as { token?: string };
-    if (current.token === ownership.token) rmSync(ownership.path, { force: true });
-  } catch { /* a missing/replaced lock is no longer ours */ }
-}
-
 interface AgentJson {
   id: string;
   projectId: string;
@@ -356,13 +269,6 @@ export interface AgentSpawnOrigin {
   executionId: string;
   idempotencyKey: string;
   prompt?: string;
-}
-
-export class AgentDeletionConflictError extends Error {
-  constructor(readonly currentPreview: AgentDeletionPreviewDto) {
-    super("Agent organization changed after deletion preview");
-    this.name = "AgentDeletionConflictError";
-  }
 }
 
 type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
@@ -413,36 +319,6 @@ interface MessageDispatchRecord {
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
-function writeJson(file: string, data: unknown): void {
-  const directory = dirname(file);
-  mkdirSync(directory, { recursive: true });
-  const temporary = join(directory, `.${randomUUID()}.json.tmp`);
-  try {
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
-    const descriptor = openSync(temporary, "r");
-    try { fsyncSync(descriptor); }
-    finally { closeSync(descriptor); }
-    renameSync(temporary, file);
-    fsyncDirectory(directory);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
-  }
-}
-
-function requireManagementPermissions(value: unknown): AgentDto["managementPermissions"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("management permissions must be an object");
-  const permissions = value as Record<string, unknown>;
-  if (typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
-      typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
-    throw new Error("management permissions must contain exact boolean values");
-  }
-  return {
-    allowAutomaticDescendantDeletion: permissions.allowAutomaticDescendantDeletion,
-    allowAutomaticDescendantReorganization: permissions.allowAutomaticDescendantReorganization,
-  };
-}
-
 export interface AgentDeletionReceipt {
   id: string;
   projectId: string;
@@ -476,70 +352,6 @@ export interface AgentManagementAuthorization {
   scopeHash: string;
   permission: "deletion" | "reorganization";
   approvalDecisionId?: string;
-}
-
-function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(file, "utf8")) as T;
-}
-
-function readJsonLines<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as T);
-}
-
-/** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
-function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
-  if (!existsSync(root)) return;
-  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
-    const childRelative = relative ? join(relative, entry.name) : entry.name;
-    const child = join(root, childRelative);
-    if (entry.isDirectory()) {
-      pruneArtifactDirectory(root, protectedPaths, childRelative);
-      if (readdirSync(child).length === 0) rmSync(child, { recursive: false, force: true });
-    } else if (!entry.isFile() || !protectedPaths.has(childRelative)) {
-      rmSync(child, { force: true });
-    }
-  }
-}
-
-/** V1 is a destructive test-data cutover; managed source workspaces are external. */
-function ensureV1Layout(dataDir: string): void {
-  const marker = join(dataDir, ".ponderosa-layout-version");
-  if (existsSync(marker) && readFileSync(marker, "utf8").trim() === "1") return;
-  mkdirSync(dataDir, { recursive: true });
-  for (const entry of readdirSync(dataDir)) {
-    if (entry === "workspaces" || entry === ".ponderosa-layout-version") continue;
-    rmSync(join(dataDir, entry), { recursive: true, force: true });
-  }
-  writeFileSync(marker, "1\n", "utf8");
-}
-
-function communicationMessageProjection(agentId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
-  const event = stored.event;
-  if (event.type === "user_message") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
-    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
-  };
-  if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
-  };
-  return undefined;
-}
-
-function userDmAgentIds(event: CommunicationEvent): string[] {
-  if (event.schemaVersion !== 2 || event.intent !== "user_dm") return [];
-  return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
-}
-
-function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
-  const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
-  if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
-  return normalized as [string, ...string[]];
 }
 
 export class AgentStore {
