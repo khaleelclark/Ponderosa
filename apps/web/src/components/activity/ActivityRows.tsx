@@ -18,7 +18,7 @@ import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
 import type { ActivityStreamEntry } from "./activityStream";
 import { ResponseFileActivity } from "./ResponseFileActivity";
 
-const ACTIVITY_TITLE_COLOR = "text.primary";
+const ACTIVITY_TITLE_COLOR = "success.main";
 const ACTIVITY_TITLE_FONT_SIZE = 15;
 type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
 
@@ -247,7 +247,7 @@ export function ToolRow({
     <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
       <CollapsibleCode value={formatted || "null"} maxLines={6} />
     </Box>
-    {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={5} /> : null}
+    {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
   </Row>;
 }
 
@@ -320,7 +320,7 @@ export function FileRow({
         Open focused diff
       </Button> : null}
     </Box> : null}
-    {entry.result ? <ActivityOutput result={entry.result} label="File tool output" /> : null}
+    {entry.result ? <ActivityOutput result={entry.result} label="File tool output" collapsedLines={2} /> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Row>;
 }
@@ -430,6 +430,6 @@ export function CompactActivityRow({
     {content.detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
       {content.detail}
     </Typography> : null}
-    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool output" /> : null}
+    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
   </Row>;
 }
