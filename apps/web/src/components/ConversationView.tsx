@@ -3,12 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Stack,
-  TextField,
   Typography,
   useMediaQuery,
   useTheme,
@@ -65,14 +60,12 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { formatExecutionElapsed } from "../time";
 import { buildMarkdownTranscript } from "../chatTranscript";
-import { ImportAgentDialog } from "./ImportAgentDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { queryKeys } from "../queryKeys";
 import { ChatLiveBanner } from "./chat/ChatLiveBanner";
-import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
 import {
   conversationComposerRuntime,
@@ -88,6 +81,7 @@ import {
   ConversationHeader,
   MainConversationTimeline,
 } from "./ConversationView.parts";
+import { ConversationDialogs } from "./ConversationView.dialogs";
 import {
   useConversationActiveViewPersistence,
   useConversationActiveViewState,
@@ -1482,157 +1476,44 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <ImportAgentDialog
-        open={importOpen}
-        projectId={conversation.projectId}
+      <ConversationDialogs
+        conversation={conversation}
         engines={engines}
-        conversations={[conversation]}
-        initialConversationId={conversation.id}
-        onClose={() => setImportOpen(false)}
-        onImported={onOpenAgent}
+        importOpen={importOpen}
+        stopConfirmation={stopConfirmation}
+        renameOpen={renameOpen}
+        renameValue={renameValue}
+        renamePending={rename.isPending}
+        renameError={rename.isError ? String(rename.error) : undefined}
+        editingMessage={editingMessage}
+        correctionText={correctionText}
+        correctionPending={correctMessage.isPending}
+        correctionError={
+          correctMessage.isError ? String(correctMessage.error) : undefined
+        }
+        deleteOpen={deleteOpen}
+        deletePending={deleteConversation.isPending}
+        deleteError={
+          deleteConversation.isError
+            ? String(deleteConversation.error)
+            : undefined
+        }
+        onImportClose={() => setImportOpen(false)}
+        onImported={agentId => onOpenAgent(agentId)}
+        onStopCancel={() => setStopConfirmation(undefined)}
+        onStopConfirm={(targets, names) =>
+          void cancelOperationTargets(targets, names)
+        }
+        onRenameClose={() => setRenameOpen(false)}
+        onRenameValueChange={setRenameValue}
+        onRename={() => rename.mutate(renameValue.trim())}
+        onCorrectionClose={() => setEditingMessage(undefined)}
+        onCorrectionTextChange={setCorrectionText}
+        onCorrectMessage={message => correctMessage.mutate(message)}
+        onDeleteClose={() => setDeleteOpen(false)}
+        onDelete={() => deleteConversation.mutate()}
       />
 
-      <ConfirmDialog
-        open={Boolean(stopConfirmation)}
-        title="Stop Operation Tree?"
-        confirmLabel="Stop Operation"
-        onCancel={() => setStopConfirmation(undefined)}
-        onConfirm={() => {
-          if (stopConfirmation)
-            void cancelOperationTargets(
-              stopConfirmation.targets,
-              stopConfirmation.names,
-            );
-        }}
-      >
-        <Typography sx={{ pt: 1 }}>
-          Stop work for {stopConfirmation?.names}? Partial output from every
-          affected Agent will remain visible.
-        </Typography>
-      </ConfirmDialog>
-
-      <Dialog
-        open={renameOpen}
-        onClose={() => setRenameOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Rename Project chat</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            label="Project chat name"
-            value={renameValue}
-            onChange={event => setRenameValue(event.target.value)}
-            sx={{ mt: 1 }}
-          />
-          {rename.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(rename.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!renameValue.trim() || rename.isPending}
-            onClick={() => rename.mutate(renameValue.trim())}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(editingMessage)}
-        onClose={() =>
-          !correctMessage.isPending && setEditingMessage(undefined)
-        }
-        fullWidth
-        maxWidth="sm"
-      >
-        <DialogTitle>Edit Message</DialogTitle>
-        <DialogContent>
-          <Alert severity="info" sx={{ mb: 2 }}>
-            The original remains in append-only history. Broadcast edits update
-            the shared note; edits to a delivered request queue a correction to
-            its original recipient.
-          </Alert>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={3}
-            label="Message"
-            value={correctionText}
-            onChange={event => setCorrectionText(event.target.value)}
-          />
-          {correctMessage.isError ? (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {String(correctMessage.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setEditingMessage(undefined)}
-            disabled={correctMessage.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!correctionText.trim() || correctMessage.isPending}
-            onClick={() =>
-              editingMessage && correctMessage.mutate(editingMessage)
-            }
-          >
-            Save Edit
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={deleteOpen}
-        onClose={() => {
-          if (!deleteConversation.isPending) setDeleteOpen(false);
-        }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Delete Project chat?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes{" "}
-            <Box component="strong">{conversation.title}</Box> and its chat
-            history. Its agents are preserved in the Agents tab as unassigned
-            agents. This cannot be undone.
-          </Typography>
-          {deleteConversation.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(deleteConversation.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setDeleteOpen(false)}
-            disabled={deleteConversation.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={deleteConversation.isPending}
-            onClick={() => deleteConversation.mutate()}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }
