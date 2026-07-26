@@ -81,11 +81,7 @@ import type {
   CreateLinkPreviewRequest,
   LinkPreviewDto,
   GlobalChatSearchResponseDto,
-  BrowserControlRequest,
-  BrowserOperatorInputRequest,
   ProjectBrowserSessionDto,
-  ProjectBrowserControlRequest,
-  ProjectBrowserNavigateRequest,
   CreateTriggerRequest,
   CreateTriggerResponse,
   UpdateTriggerRequest,
@@ -258,6 +254,7 @@ import {
 } from "./routes/notifications.js";
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
 import { registerSearchRoutes } from "./routes/search.js";
+import { registerBrowserRoutes } from "./routes/browsers.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import {
   PROJECT_FILE_DOWNLOAD_WEIGHT,
@@ -12138,227 +12135,41 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  type BrowserRouteParams = { projectId: string; id: string; runId: string };
-  const operatorBrowserScope = (params: BrowserRouteParams): BrowserScope => {
-    const agent = store.getAgent(params.id);
-    if (!agent || agent.projectId !== params.projectId) throw new BrowserSessionError("agent not found", 404);
-    if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
-      throw new BrowserSessionError("Project deletion is in progress", 409);
-    }
-    const run = activeRuns.get(agent.id);
-    if (!run || run.runId !== params.runId || !ownsActiveRun(agent.id, run)) {
-      throw new BrowserSessionError("browser access requires the exact active run", 404);
-    }
-    return {
-      projectId: agent.projectId,
-      agentId: agent.id,
-      runId: run.runId,
-      ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-    };
-  };
-  const browserRouteError = (reply: FastifyReply, error: unknown) => {
-    if (error instanceof BrowserSessionError) return reply.code(error.statusCode).send({ error: error.message });
-    throw error;
-  };
-  const projectBrowserRoute = "/api/projects/:projectId/browser";
-
-  app.get<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    const scope = projectBrowserScope(request.params.projectId);
-    const session = projectBrowserSessions.get(scope.agentId);
-    if (!session) return reply.code(404).send({ error: "project browser has not been opened" });
-    return projectBrowserDto(request.params.projectId, session);
-  });
-
-  app.post<{ Params: { projectId: string }; Body: Partial<ProjectBrowserNavigateRequest> }>(projectBrowserRoute, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    try {
-      const scope = projectBrowserScope(request.params.projectId);
-      const session = await projectBrowserSessions.open(scope, request.body?.url, "operator");
-      return projectBrowserDto(request.params.projectId, session);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: { projectId: string }; Body: ProjectBrowserNavigateRequest }>(`${projectBrowserRoute}/navigate`, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    try {
-      if (typeof request.body?.url !== "string") return reply.code(400).send({ error: "url is required" });
-      const scope = projectBrowserScope(request.params.projectId);
-      const session = await projectBrowserSessions.navigate(scope, request.body.url, "operator");
-      return projectBrowserDto(request.params.projectId, session);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: { projectId: string } }>(`${projectBrowserRoute}/reconnect`, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    try {
-      const scope = projectBrowserScope(request.params.projectId);
-      const session = await projectBrowserSessions.reconnect(scope);
-      return projectBrowserDto(request.params.projectId, session);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.delete<{ Params: { projectId: string } }>(projectBrowserRoute, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    try {
-      projectBrowserGrants.delete(request.params.projectId);
-      const session = await projectBrowserSessions.close(projectBrowserScope(request.params.projectId), "operator_closed");
-      return projectBrowserDto(request.params.projectId, session);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.put<{ Params: { projectId: string }; Body: ProjectBrowserControlRequest }>(`${projectBrowserRoute}/control`, async (request, reply) => {
-    const project = store.getProject(request.params.projectId);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    if ((request.body?.owner !== "agent" && request.body?.owner !== "operator") || !Number.isSafeInteger(request.body?.expectedControlEpoch)) {
-      return reply.code(400).send({ error: "owner and expectedControlEpoch are required" });
-    }
-    try {
-      const previousGrant = projectBrowserGrants.get(project.id);
-      if (request.body.owner === "operator") {
-        const current = projectBrowserSessions.get(projectBrowserScope(project.id).agentId);
-        if (current?.status === "ready" && current.controlOwner === "operator" && !previousGrant) {
-          return projectBrowserDto(project.id, current);
-        }
-        const session = await projectBrowserSessions.setControl(projectBrowserScope(project.id, previousGrant), "operator", request.body.expectedControlEpoch);
-        projectBrowserGrants.delete(project.id);
-        return projectBrowserDto(project.id, session);
+  registerBrowserRoutes(app, {
+    browserSessions,
+    projectBrowserSessions,
+    projectExists: (projectId) => Boolean(store.getProject(projectId)),
+    projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
+    operatorBrowserScope: (params) => {
+      const agent = store.getAgent(params.id);
+      if (!agent || agent.projectId !== params.projectId) {
+        throw new BrowserSessionError("agent not found", 404);
       }
-      const agent = request.body.agentId ? store.getAgent(request.body.agentId) : undefined;
+      if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
+        throw new BrowserSessionError("Project deletion is in progress", 409);
+      }
+      const run = activeRuns.get(agent.id);
+      if (!run || run.runId !== params.runId || !ownsActiveRun(agent.id, run)) {
+        throw new BrowserSessionError("browser access requires the exact active run", 404);
+      }
+      return browserScopeForRun(agent.id, run)!;
+    },
+    projectBrowserScope,
+    projectBrowserDto,
+    getProjectBrowserGrant: (projectId) => projectBrowserGrants.get(projectId),
+    setProjectBrowserGrant: (projectId, grant) => projectBrowserGrants.set(projectId, grant),
+    deleteProjectBrowserGrant: (projectId) => {
+      projectBrowserGrants.delete(projectId);
+    },
+    activeProjectBrowserController: (projectId, agentId) => {
+      const agent = agentId ? store.getAgent(agentId) : undefined;
       const run = agent ? activeRuns.get(agent.id) : undefined;
-      if (!agent || agent.projectId !== project.id || !run || !ownsActiveRun(agent.id, run)) {
-        return reply.code(409).send({ error: "agent control requires an active Run in this Project" });
-      }
-      const grant = { agentId: agent.id, runId: run.runId };
-      projectBrowserGrants.set(project.id, grant);
-      try {
-        const session = await projectBrowserSessions.setControl(projectBrowserScope(project.id, grant), "agent", request.body.expectedControlEpoch);
-        const privateScope = browserScopeForRun(agent.id, run);
-        if (privateScope) await browserSessions.closeRun(privateScope, "project_browser_granted");
-        return projectBrowserDto(project.id, session);
-      } catch (error) {
-        if (previousGrant) projectBrowserGrants.set(project.id, previousGrant);
-        else projectBrowserGrants.delete(project.id);
-        throw error;
-      }
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: { projectId: string }; Body: BrowserOperatorInputRequest }>(`${projectBrowserRoute}/input`, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(request.params.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    try {
-      if (!request.body || !["click", "type", "key", "scroll"].includes(request.body.kind) || !Number.isSafeInteger(request.body.expectedControlEpoch)) {
-        return reply.code(400).send({ error: "valid input and expectedControlEpoch are required" });
-      }
-      const session = await projectBrowserSessions.operatorInput(projectBrowserScope(request.params.projectId), request.body);
-      return projectBrowserDto(request.params.projectId, session);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.get<{ Params: { projectId: string } }>(`${projectBrowserRoute}/frame`, async (request, reply) => {
-    if (!store.getProject(request.params.projectId)) return reply.code(404).send({ error: "project not found" });
-    try {
-      const frame = await projectBrowserSessions.captureFrame(projectBrowserScope(request.params.projectId));
-      return reply.type("image/png").header("cache-control", "private, no-store")
-        .header("x-ponderosa-browser-revision", String(frame.revision)).send(frame.body);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  const browserRoute = "/api/projects/:projectId/agents/:id/runs/:runId/browser";
-
-  app.get<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
-    try {
-      const scope = operatorBrowserScope(request.params);
-      const session = browserSessions.get(scope.agentId);
-      if (!session || session.runId !== scope.runId || session.projectId !== scope.projectId || session.conversationId !== scope.conversationId) {
-        return reply.code(404).send({ error: "browser session has not been opened for this run" });
-      }
-      return session;
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
-    try {
-      return await browserSessions.open(operatorBrowserScope(request.params));
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: BrowserRouteParams }>(`${browserRoute}/reconnect`, async (request, reply) => {
-    try {
-      return await browserSessions.reconnect(operatorBrowserScope(request.params));
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.delete<{ Params: BrowserRouteParams }>(browserRoute, async (request, reply) => {
-    try {
-      return await browserSessions.close(operatorBrowserScope(request.params), "operator_closed");
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.put<{ Params: BrowserRouteParams; Body: BrowserControlRequest }>(`${browserRoute}/control`, async (request, reply) => {
-    try {
-      if ((request.body?.owner !== "agent" && request.body?.owner !== "operator") || !Number.isSafeInteger(request.body?.expectedControlEpoch)) {
-        return reply.code(400).send({ error: "owner and expectedControlEpoch are required" });
-      }
-      return await browserSessions.setControl(
-        operatorBrowserScope(request.params),
-        request.body.owner,
-        request.body.expectedControlEpoch,
-      );
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.post<{ Params: BrowserRouteParams; Body: BrowserOperatorInputRequest }>(`${browserRoute}/input`, async (request, reply) => {
-    try {
-      if (!request.body || !["click", "type", "key", "scroll"].includes(request.body.kind) || !Number.isSafeInteger(request.body.expectedControlEpoch)) {
-        return reply.code(400).send({ error: "valid input and expectedControlEpoch are required" });
-      }
-      return await browserSessions.operatorInput(operatorBrowserScope(request.params), request.body);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
-  });
-
-  app.get<{ Params: BrowserRouteParams }>(`${browserRoute}/frame`, async (request, reply) => {
-    try {
-      const frame = await browserSessions.captureFrame(operatorBrowserScope(request.params));
-      return reply
-        .type("image/png")
-        .header("cache-control", "private, no-store")
-        .header("x-ponderosa-browser-revision", String(frame.revision))
-        .send(frame.body);
-    } catch (error) {
-      return browserRouteError(reply, error);
-    }
+      if (!agent || agent.projectId !== projectId || !run || !ownsActiveRun(agent.id, run)) return undefined;
+      return {
+        grant: { agentId: agent.id, runId: run.runId },
+        privateScope: browserScopeForRun(agent.id, run),
+      };
+    },
   });
 
   app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/:id/cancel", async (request, reply) => {
