@@ -31,9 +31,12 @@ import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
+import { CoordinationV3ActivationReadModel } from "./coordination-v3-activation-read-model.js";
 import { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
 import { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
+import { CoordinationV3RuntimeCommunicationReadModel } from "./coordination-v3-runtime-communication-read-model.js";
 import { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
+import { CoordinationV3RunContextReadModel } from "./coordination-v3-run-context-read-model.js";
 import { terminalAt } from "./coordination-v3-request-state.js";
 import {
   isIso,
@@ -224,19 +227,28 @@ const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
+  private readonly activationReadModel: CoordinationV3ActivationReadModel;
   private readonly readModel: CoordinationV3ReadModel;
   private readonly runtimeAttachmentAuthority: CoordinationV3RuntimeAttachmentAuthority;
   private readonly runtimeArtifactAuthority: CoordinationV3RuntimeArtifactAuthority;
+  private readonly runtimeCommunicationReadModel: CoordinationV3RuntimeCommunicationReadModel;
   private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority;
+  private readonly runContextReadModel: CoordinationV3RunContextReadModel;
 
   constructor(
     private readonly sqlite: Database.Database,
     private readonly options: CoordinationV3StoreOptions = {},
   ) {
+    this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.readModel = new CoordinationV3ReadModel(sqlite);
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
     this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
+    this.runContextReadModel = new CoordinationV3RunContextReadModel(sqlite);
+    this.runtimeCommunicationReadModel = new CoordinationV3RuntimeCommunicationReadModel(
+      sqlite,
+      this.runtimeScopeAuthority,
+    );
   }
 
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
@@ -455,76 +467,19 @@ export class CoordinationV3Store {
   }
 
   runtimeCommunications(projectId?: string): RuntimeCommunicationV3View[] {
-    const rows = this.sqlite.prepare(`
-      SELECT id, project_id, audience_json, payload_json, created_at
-      FROM runtime_communications
-      WHERE (? IS NULL OR project_id = ?)
-      ORDER BY created_at, id
-    `).all(projectId ?? null, projectId ?? null) as Array<{
-      id: string; project_id: string; audience_json: string; payload_json: string; created_at: string;
-    }>;
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      audience: JSON.parse(row.audience_json) as unknown,
-      payload: JSON.parse(row.payload_json) as unknown,
-      createdAt: row.created_at,
-    }));
+    return this.runtimeCommunicationReadModel.runtimeCommunications(projectId);
   }
 
   runtimeCommunication(id: string): RuntimeCommunicationV3View | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT id, project_id, audience_json, payload_json, created_at FROM runtime_communications WHERE id = ?
-    `).get(id) as { id: string; project_id: string; audience_json: string; payload_json: string; created_at: string } | undefined;
-    return row ? {
-      id: row.id,
-      projectId: row.project_id,
-      audience: JSON.parse(row.audience_json) as unknown,
-      payload: JSON.parse(row.payload_json) as unknown,
-      createdAt: row.created_at,
-    } : undefined;
+    return this.runtimeCommunicationReadModel.runtimeCommunication(id);
   }
 
   runtimeArtifacts(ownerKind?: RuntimeArtifactV3["ownerKind"], ownerId?: string): RuntimeArtifactV3[] {
-    const rows = this.sqlite.prepare(`
-      SELECT id, owner_kind, owner_id, project_id, role, title, media_type, blob_path,
-        blob_hash, byte_length, origin_agent_id, execution_id, created_at
-      FROM runtime_artifacts
-      WHERE (? IS NULL OR owner_kind = ?) AND (? IS NULL OR owner_id = ?)
-      ORDER BY created_at, id
-    `).all(ownerKind ?? null, ownerKind ?? null, ownerId ?? null, ownerId ?? null) as Array<{
-      id: string; owner_kind: "communication" | "request_update"; owner_id: string;
-      project_id: string; role: "long_text" | "document";
-      title: string; media_type: "text/markdown"; blob_path: string; blob_hash: string; byte_length: number;
-      origin_agent_id: string | null; execution_id: string | null; created_at: string;
-    }>;
-    return rows.map((row) => ({
-      id: row.id, ownerKind: row.owner_kind, ownerId: row.owner_id, projectId: row.project_id,
-      role: row.role, title: row.title, mediaType: row.media_type, blobPath: row.blob_path,
-      blobHash: row.blob_hash, byteLength: row.byte_length, createdAt: row.created_at,
-      ...(row.origin_agent_id ? { originAgentId: row.origin_agent_id } : {}),
-      ...(row.execution_id ? { executionId: row.execution_id } : {}),
-    }));
+    return this.runtimeCommunicationReadModel.runtimeArtifacts(ownerKind, ownerId);
   }
 
   runtimeArtifact(id: string): RuntimeArtifactV3 | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT id, owner_kind, owner_id, project_id, role, title, media_type, blob_path,
-        blob_hash, byte_length, origin_agent_id, execution_id, created_at
-      FROM runtime_artifacts WHERE id = ?
-    `).get(id) as {
-      id: string; owner_kind: "communication" | "request_update"; owner_id: string;
-      project_id: string; role: "long_text" | "document";
-      title: string; media_type: "text/markdown"; blob_path: string; blob_hash: string; byte_length: number;
-      origin_agent_id: string | null; execution_id: string | null; created_at: string;
-    } | undefined;
-    return row ? {
-      id: row.id, ownerKind: row.owner_kind, ownerId: row.owner_id, projectId: row.project_id,
-      role: row.role, title: row.title, mediaType: row.media_type, blobPath: row.blob_path,
-      blobHash: row.blob_hash, byteLength: row.byte_length, createdAt: row.created_at,
-      ...(row.origin_agent_id ? { originAgentId: row.origin_agent_id } : {}),
-      ...(row.execution_id ? { executionId: row.execution_id } : {}),
-    } : undefined;
+    return this.runtimeCommunicationReadModel.runtimeArtifact(id);
   }
 
   requestForUpdate(updateId: string): CoordinationRequestV3View | undefined {
@@ -539,149 +494,18 @@ export class CoordinationV3Store {
   /** Project immutable authored messages onto mutable, per-recipient delivery
    * evidence without rewriting the Communication or its chat projection. */
   deliveryReceiptsForCommunication(projectId: string, communicationEventId: string): MessageDeliveryReceiptDto[] {
-    return this.deliveryReceiptsForCommunications(projectId, [communicationEventId]).get(communicationEventId) ?? [];
+    return this.runtimeCommunicationReadModel.deliveryReceiptsForCommunication(
+      projectId, communicationEventId,
+    );
   }
 
-  /** Batch the mutable delivery projection for a bounded page of canonical
-   * messages. The former per-message path repeated the same activation scan and
-   * authority lookups up to 1,000 times in one synchronous HTTP request. */
   deliveryReceiptsForCommunications(
     projectId: string,
-    requestedCommunicationEventIds: readonly string[],
+    communicationEventIds: readonly string[],
   ): Map<string, MessageDeliveryReceiptDto[]> {
-    const communicationEventIds = [...new Set(
-      requestedCommunicationEventIds.map((eventId) => eventId.trim()).filter(Boolean),
-    )];
-    const receiptsByCommunication = new Map<string, MessageDeliveryReceiptDto[]>(
-      communicationEventIds.map((eventId) => [eventId, []]),
+    return this.runtimeCommunicationReadModel.deliveryReceiptsForCommunications(
+      projectId, communicationEventIds,
     );
-    if (!projectId.trim() || communicationEventIds.length === 0) return receiptsByCommunication;
-    const eventBindings = Object.fromEntries(
-      communicationEventIds.map((eventId, index) => [`event${index}`, eventId]),
-    );
-    const eventPlaceholders = communicationEventIds.map((_, index) => `@event${index}`).join(", ");
-    const activations = this.sqlite.prepare(`
-      SELECT DISTINCT CASE WHEN runtime.id IN (${eventPlaceholders}) THEN runtime.id
-          ELSE json_extract(runtime.payload_json, '$.communication.eventId') END AS communication_event_id,
-        activation.id, activation.project_id, activation.agent_id,
-        activation.scope_key, activation.kind, activation.state, activation.updated_at,
-        activation.rowid AS row_sequence,
-        COALESCE(retry_lineage.attempt_number, 0) AS attempt_number,
-        runtime.sender_json, runtime.intent, runtime.audience_json, runtime.payload_json
-      FROM activation_sources source
-      JOIN runtime_communications runtime ON runtime.id = source.source_id
-      JOIN agent_activations activation ON activation.id = source.activation_id
-      LEFT JOIN activation_delivery_retry_lineage retry_lineage
-        ON retry_lineage.successor_activation_id = activation.id
-      WHERE source.source_kind = 'communication'
-        AND runtime.project_id = @projectId
-        AND activation.project_id = runtime.project_id
-        AND (
-          runtime.id IN (${eventPlaceholders}) OR
-          CASE WHEN json_valid(runtime.payload_json)
-            THEN json_extract(runtime.payload_json, '$.communication.eventId')
-            ELSE NULL
-          END IN (${eventPlaceholders})
-        )
-      ORDER BY communication_event_id, attempt_number, row_sequence
-    `).all({ projectId, ...eventBindings }) as Array<{
-      communication_event_id: string; id: string; project_id: string; agent_id: string; scope_key: string;
-      kind: string; state: string; updated_at: string; row_sequence: number; attempt_number: number;
-      sender_json: string; intent: string; audience_json: string; payload_json: string;
-    }>;
-    const latestByCommunication = new Map<
-      string,
-      Map<string, { activation: typeof activations[number]; attemptCount: number }>
-    >();
-    for (const activation of activations) {
-      let sender: unknown;
-      let audience: unknown;
-      let payload: unknown;
-      try {
-        sender = JSON.parse(activation.sender_json) as unknown;
-        audience = JSON.parse(activation.audience_json) as unknown;
-        payload = JSON.parse(activation.payload_json) as unknown;
-      } catch {
-        continue;
-      }
-      if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
-        projectId,
-        sender,
-        intent: activation.intent,
-        audience,
-        payload,
-        activations: [{ agentId: activation.agent_id, kind: activation.kind, scopeKey: activation.scope_key }],
-      }, false)) continue;
-      let latestByRecipient = latestByCommunication.get(activation.communication_event_id);
-      if (!latestByRecipient) {
-        latestByRecipient = new Map();
-        latestByCommunication.set(activation.communication_event_id, latestByRecipient);
-      }
-      latestByRecipient.set(activation.agent_id, {
-        activation,
-        attemptCount: activation.attempt_number + 1,
-      });
-    }
-    for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
-      const receipts = [...latestByRecipient.values()].map(({ activation, attemptCount }) => {
-      const injection = this.sqlite.prepare(`
-        SELECT injection.id, injection.kind, injection.state, injection.updated_at
-        FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
-        WHERE member.value = ?
-        ORDER BY injection.created_at DESC, injection.sequence DESC LIMIT 1
-      `).get(activation.id) as {
-        id: string; kind: "turn" | "steer"; state: string; updated_at: string;
-      } | undefined;
-      const recovery = injection ? this.sqlite.prepare(`
-        SELECT recovery.state, recovery.recover_at, recovery.updated_at,
-          mapping.recovery_activation_id, recovery_activation.state AS recovery_activation_state
-        FROM scheduler_steering_recoveries recovery
-        LEFT JOIN scheduler_steering_recovery_activations mapping
-          ON mapping.injection_id = recovery.injection_id AND mapping.source_activation_id = ?
-        LEFT JOIN agent_activations recovery_activation ON recovery_activation.id = mapping.recovery_activation_id
-        WHERE recovery.injection_id = ?
-      `).get(activation.id, injection.id) as {
-        state: "grace_period" | "wait_for_run" | "recovery_queued";
-        recover_at: string; updated_at: string;
-        recovery_activation_id: string | null; recovery_activation_state: string | null;
-      } | undefined : undefined;
-      let state: MessageDeliveryReceiptDto["state"];
-      if (activation.state === "outcome_unknown") {
-        if (!recovery) state = "undelivered";
-        else if (recovery.state === "grace_period") state = "unconfirmed";
-        else if (recovery.recovery_activation_state === "consumed") state = "recovered";
-        else if (["failed", "outcome_unknown", "cancelled"].includes(recovery.recovery_activation_state ?? "")) state = "failed";
-        else if (recovery.recovery_activation_state === "attached") state = "recovering";
-        else state = recovery.state === "wait_for_run" ? "waiting_for_run" : "recovery_queued";
-      } else if (activation.state === "failed") state = "failed";
-      else if (activation.state === "cancelled") state = "cancelled";
-      else if (activation.state === "consumed") state = "processed";
-      else if (injection?.state === "acknowledged") state = "delivered";
-      else if (injection?.kind === "steer" && (injection.state === "pending" || injection.state === "submitted")) state = "steering";
-      else if (activation.state === "attached") state = "started";
-      else state = "queued";
-      return {
-        activationId: activation.id,
-        targetAgentId: activation.agent_id,
-        state,
-        updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
-        attemptCount,
-        ...((state === "undelivered" || state === "failed") && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
-          activation.project_id,
-          activation.agent_id,
-          activation.scope_key,
-        )
-          ? { canRetry: true as const, ...(activation.state === "outcome_unknown" ? { retryMayDuplicate: true as const } : {}) }
-          : {}),
-        ...(injection ? { injectionId: injection.id } : {}),
-        ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
-        ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
-        ...(recovery?.recovery_activation_id ? { recoveryActivationId: recovery.recovery_activation_id } : {}),
-      };
-      });
-      receiptsByCommunication.set(communicationEventId, receipts);
-    }
-    return receiptsByCommunication;
   }
 
   /** Create a new delivery attempt without duplicating the canonical user
@@ -897,62 +721,11 @@ export class CoordinationV3Store {
   }
 
   pendingActivations(projectId?: string): PendingActivationV3View[] {
-    const rows = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, kind, state, payload_json, created_at
-      FROM agent_activations
-      WHERE state IN ('pending', 'retry_pending') AND (? IS NULL OR project_id = ?)
-      ORDER BY priority DESC, created_at, id
-    `).all(projectId ?? null, projectId ?? null) as Array<{
-      id: string; project_id: string; agent_id: string; kind: string;
-      state: "pending" | "retry_pending"; payload_json: string; created_at: string;
-    }>;
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      agentId: row.agent_id,
-      kind: row.kind,
-      state: row.state,
-      payload: JSON.parse(row.payload_json) as unknown,
-      createdAt: row.created_at,
-    }));
+    return this.activationReadModel.pendingActivations(projectId);
   }
 
   terminalActivations(projectId?: string, limit = 100): TerminalActivationV3View[] {
-    const rows = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, kind, state, scope_key, terminal_outcome, delivery_failures,
-        (SELECT COALESCE(json_extract(runtime.payload_json, '$.communication.eventId'), runtime.id)
-          FROM activation_sources source
-          JOIN runtime_communications runtime ON runtime.id = source.source_id
-          WHERE source.activation_id = agent_activations.id AND source.source_kind = 'communication'
-          ORDER BY runtime.created_at, runtime.id LIMIT 1) AS communication_event_id,
-        (SELECT runtime.intent FROM activation_sources source
-          JOIN runtime_communications runtime ON runtime.id = source.source_id
-          WHERE source.activation_id = agent_activations.id AND source.source_kind = 'communication'
-          ORDER BY runtime.created_at, runtime.id LIMIT 1) AS communication_intent,
-        last_delivery_error, terminal_at
-      FROM agent_activations
-      WHERE terminal_outcome IS NOT NULL AND (? IS NULL OR project_id = ?)
-      ORDER BY terminal_at DESC, id DESC LIMIT ?
-    `).all(projectId ?? null, projectId ?? null, Math.max(1, Math.min(limit, 500))) as Array<{
-      id: string; project_id: string; agent_id: string; kind: string; state: TerminalActivationV3View["state"]; scope_key: string | null;
-      communication_event_id: string | null; communication_intent: string | null;
-      terminal_outcome: ActivationTerminalOutcome; delivery_failures: number;
-      last_delivery_error: string | null; terminal_at: string;
-    }>;
-    return rows.map((row) => ({
-      id: row.id,
-      projectId: row.project_id,
-      agentId: row.agent_id,
-      kind: row.kind,
-      state: row.state,
-      ...(row.scope_key ? { scopeKey: row.scope_key } : {}),
-      ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
-      ...(row.communication_intent ? { communicationIntent: row.communication_intent } : {}),
-      outcome: row.terminal_outcome,
-      deliveryFailures: row.delivery_failures,
-      ...(row.last_delivery_error ? { lastDeliveryError: row.last_delivery_error } : {}),
-      terminalAt: row.terminal_at,
-    }));
+    return this.activationReadModel.terminalActivations(projectId, limit);
   }
 
   /** Idempotent, preconditioned operator repair for one known poison
@@ -1031,17 +804,9 @@ export class CoordinationV3Store {
   }
 
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {
-    return (this.sqlite.prepare(`
-      SELECT DISTINCT activation.agent_id
-      FROM activation_sources source
-      JOIN agent_activations activation ON activation.id = source.activation_id
-      JOIN runtime_communications communication ON communication.id = source.source_id
-      WHERE source.source_kind = 'communication'
-        AND communication.project_id = ?
-        AND activation.project_id = communication.project_id
-        AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
-      ORDER BY activation.agent_id
-    `).all(projectId, communicationId, communicationId) as Array<{ agent_id: string }>).map((row) => row.agent_id);
+    return this.runtimeCommunicationReadModel.communicationRecipientAgentIds(
+      projectId, communicationId,
+    );
   }
 
   cancelPendingActivation(input: {
@@ -1215,86 +980,21 @@ export class CoordinationV3Store {
   activationPayloads(agentId: string, activationIds: string[], runId?: string): Array<{
     id: string; kind: string; promptClass: ActivationPromptClass; payload: unknown;
   }> {
-    if (activationIds.length === 0) return [];
-    const placeholders = activationIds.map(() => "?").join(", ");
-    const rows = this.sqlite.prepare(`
-      SELECT id, kind, prompt_class, payload_json FROM agent_activations
-      WHERE agent_id = ? AND id IN (${placeholders})
-        AND (? IS NULL OR EXISTS (
-          SELECT 1 FROM scheduler_run_activations attached
-          WHERE attached.activation_id = agent_activations.id AND attached.run_id = ?
-        ))
-    `).all(agentId, ...activationIds, runId ?? null, runId ?? null) as Array<{
-      id: string; kind: string; prompt_class: ActivationPromptClass; payload_json: string;
-    }>;
-    const byId = new Map(rows.map((row) => [row.id, row]));
-    return activationIds.flatMap((id) => {
-      const row = byId.get(id);
-      return row ? [{ id, kind: row.kind, promptClass: row.prompt_class, payload: JSON.parse(row.payload_json) as unknown }] : [];
-    });
+    return this.activationReadModel.activationPayloads(agentId, activationIds, runId);
   }
 
   activationIdsAttachedToRun(runId: string, agentId: string): string[] {
-    return (this.sqlite.prepare(`
-      SELECT attached.activation_id AS id
-      FROM scheduler_run_activations attached
-      JOIN scheduler_runs run ON run.id = attached.run_id
-      JOIN agent_activations activation ON activation.id = attached.activation_id
-      WHERE attached.run_id = ? AND run.agent_id = ? AND activation.agent_id = ?
-      ORDER BY attached.attached_at, attached.activation_id
-    `).all(runId, agentId, agentId) as Array<{ id: string }>).map((row) => row.id);
+    return this.activationReadModel.activationIdsAttachedToRun(runId, agentId);
   }
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
-    const directRows = this.sqlite.prepare(`
-      SELECT DISTINCT request.id, request.created_at
-      FROM scheduler_runs run
-      JOIN scheduler_run_activations attached ON attached.run_id = run.id
-      JOIN activation_sources source ON source.activation_id = attached.activation_id
-      LEFT JOIN coordination_request_updates request_update
-        ON source.source_kind = 'request_update' AND request_update.id = source.source_id
-      JOIN coordination_requests request ON request.id = CASE
-        WHEN source.source_kind = 'request' THEN source.source_id
-        WHEN source.source_kind = 'request_update' THEN request_update.request_id
-      END
-      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND source.source_kind IN ('request', 'request_update')
-      ORDER BY request.created_at, request.id
-    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
-    const continuationRows = this.sqlite.prepare(`
-      SELECT DISTINCT request.id, request.created_at
-      FROM scheduler_runs run
-      JOIN scheduler_run_activations attached ON attached.run_id = run.id
-      JOIN activation_sources source
-        ON source.activation_id = attached.activation_id AND source.source_kind = 'join'
-      JOIN coordination_joins join_record ON join_record.id = source.source_id
-      JOIN json_each(join_record.continuation_request_ids_json) continuation
-      JOIN coordination_requests request ON request.id = continuation.value
-      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND (
-          request.recipient_agent_id = run.agent_id
-          OR (request.requester_agent_id = run.agent_id
-            AND request.state = 'awaiting_answer')
-        )
-    `).all(runId, agentId) as Array<{ id: string; created_at: string }>;
-    return [...new Map([...directRows, ...continuationRows].map((row) => [row.id, row])).values()]
-      .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
-      .map((row) => row.id);
+    return this.runContextReadModel.requestIdsAttachedToRun(runId, agentId);
   }
 
   outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
-    const attached = this.requestIdsAttachedToRun(runId, agentId);
-    if (attached.length === 0) return [];
-    const placeholders = attached.map(() => "?").join(", ");
-    return (this.sqlite.prepare(`
-      SELECT id
-      FROM coordination_requests
-      WHERE id IN (${placeholders})
-        AND requester_agent_id = ?
-        AND state = 'awaiting_answer'
-        AND open_question_update_id IS NOT NULL
-      ORDER BY created_at, id
-    `).all(...attached, agentId) as Array<{ id: string }>).map((row) => row.id);
+    return this.runContextReadModel.outboundAwaitingQuestionRequestIdsAttachedToRun(
+      runId, agentId,
+    );
   }
 
   suspendQuestionsForDecision(input: {
@@ -1325,56 +1025,17 @@ export class CoordinationV3Store {
   }
 
   /** Ordinary recipient-to-requester messages during correlated work are
-   * audit copies regardless of provider tool order. The Request or Join owns
-   * the single actionable wake; urgent messages remain an explicit override. */
+   * audit copies regardless of provider tool order. */
   requesterIdsForRun(runId: string, agentId: string): string[] {
-    const requestIds = this.requestIdsAttachedToRun(runId, agentId);
-    if (requestIds.length === 0) return [];
-    const placeholders = requestIds.map(() => "?").join(", ");
-    return (this.sqlite.prepare(`
-      SELECT DISTINCT requester_agent_id
-      FROM coordination_requests
-      WHERE id IN (${placeholders}) AND recipient_agent_id = ?
-        AND requester_agent_id IS NOT NULL
-      ORDER BY requester_agent_id
-    `).all(...requestIds, agentId) as Array<{ requester_agent_id: string }>)
-      .map((row) => row.requester_agent_id);
+    return this.runContextReadModel.requesterIdsForRun(runId, agentId);
   }
 
-  /** Whether this Run consumes creation of a new request addressed to the
-   * recipient. V3.1 uses this durable causal edge to select a fresh provider
-   * cache without conflating provider memory with agent identity. Request
-   * updates (including answers), joins, and ordinary messages intentionally do
-   * not match and therefore retain continuity. */
   runStartsNewRecipientRequest(runId: string, agentId: string): boolean {
-    const row = this.sqlite.prepare(`
-      SELECT 1 AS matched
-      FROM scheduler_runs run
-      JOIN scheduler_run_activations attached ON attached.run_id = run.id
-      JOIN activation_sources source ON source.activation_id = attached.activation_id
-      JOIN coordination_requests request
-        ON source.source_kind = 'request' AND request.id = source.source_id
-      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
-        AND request.recipient_agent_id = ?
-      LIMIT 1
-    `).get(runId, agentId, agentId) as { matched: number } | undefined;
-    return Boolean(row);
+    return this.runContextReadModel.runStartsNewRecipientRequest(runId, agentId);
   }
 
-  /** A provider cache is scoped to one Team Chat at a time. Switching an
-   * Agent between chats must reseed rather than carrying hidden context across
-   * membership boundaries. */
   runChangesScope(runId: string, agentId: string): boolean {
-    const current = this.sqlite.prepare(`
-      SELECT scope_key FROM scheduler_runs WHERE id = ? AND agent_id = ?
-    `).get(runId, agentId) as { scope_key: string } | undefined;
-    if (!current) throw new Error("run not found");
-    const previous = this.sqlite.prepare(`
-      SELECT scope_key FROM scheduler_runs
-      WHERE agent_id = ? AND id <> ?
-      ORDER BY created_at DESC, rowid DESC LIMIT 1
-    `).get(agentId, runId) as { scope_key: string } | undefined;
-    return Boolean(previous && previous.scope_key !== current.scope_key);
+    return this.runContextReadModel.runChangesScope(runId, agentId);
   }
 
   coordinate(input: CoordinateV3Input, now = new Date().toISOString()): CoordinateV3Result {
