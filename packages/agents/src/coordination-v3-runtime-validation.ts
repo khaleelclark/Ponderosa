@@ -4,7 +4,7 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   type AssetDto,
 } from "@ponderosa/core";
-import type { RuntimeArtifactInputV3 } from "./coordination-v3-store.js";
+import type { RuntimeArtifactInputV3 } from "./coordination-v3-types.js";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set<string>(ASSET_MEDIA_TYPES);

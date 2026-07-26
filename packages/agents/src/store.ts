@@ -76,6 +76,7 @@ import type {
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
 import { healthObservation, utf8Prefix } from "./store-activity.js";
+import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
 import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
 import {
   communicationDocumentReference,
@@ -98,6 +99,36 @@ import { artifactId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
+import type {
+  ContextReadBoundary,
+  ContextSourcePage,
+  ActivityProjectionReadRow,
+  RunOutputEventRow,
+  RunOutputSegmentRow,
+  ArtifactProjectionReadRow,
+  ProjectJson,
+  ManagedArtifactAccess,
+  ManagedArtifactEvent,
+  AgentJson,
+  AgentSpawnOrigin,
+  PresetEvent,
+  ConversationJson,
+  ConversationDeliveryIntent,
+  MessageDispatchRecord,
+  AgentDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store-types.js";
+export type {
+  ContextReadBoundary,
+  ContextSourcePage,
+  ManagedArtifactAccess,
+  AgentSpawnOrigin,
+  ConversationDeliveryIntent,
+  AgentDeletionReceipt,
+  ProjectDeletionReceipt,
+  AgentManagementAuthorization,
+} from "./store-types.js";
 import {
   initProjectionState,
   projectAll,
@@ -129,54 +160,6 @@ import {
   projectDeletionPending,
   projectDeletionReceipts,
 } from "./schema.js";
-
-export interface ContextReadBoundary {
-  createdAt: string;
-  id: string;
-}
-
-export interface ContextSourcePage<T> {
-  items: T[];
-  hasMore: boolean;
-}
-
-interface ActivityProjectionReadRow {
-  seq: number;
-  execution_id: string | null;
-  event_json: string;
-  created_at: string;
-  output_preview_utf8_bytes: number | null;
-  output_total_utf8_bytes: number | null;
-  output_sha256: string | null;
-}
-
-interface RunOutputEventRow {
-  seq: number;
-  payload_json: string;
-  created_at: string;
-}
-
-interface RunOutputSegmentRow {
-  first_seq: number;
-  last_seq: number;
-  event_type: "text" | "reasoning";
-  execution_id: string;
-}
-
-interface ArtifactProjectionReadRow {
-  id: string;
-  agent_id: string;
-  execution_id: string | null;
-  kind: string;
-  path: string;
-  summary: string | null;
-  created_at: string;
-  source_path: string | null;
-  media_type: string | null;
-  visibility: string | null;
-  pinned: number | null;
-  size: number | null;
-}
 
 const ACTIVITY_OUTPUT_PREVIEW_BYTES = 4_096;
 const RUN_OUTPUT_TEXT_PREVIEW_BYTES = 32 * 1_024;
@@ -217,61 +200,6 @@ import {
   importedAgentHistoryPath,
   agentsDir,
 } from "./paths.js";
-
-interface ProjectJson {
-  id: string;
-  label: string;
-  hostPath: string;
-  createdAt: string;
-  lastUsedAt?: string;
-  defaultEngine: string;
-  defaultModel?: string;
-  defaultEffort?: string;
-  lastConversationId?: string;
-  instructions?: string;
-}
-
-export interface ManagedArtifactAccess {
-  ownerKind: "project" | "communication" | "request_update";
-  ownerId: string;
-  audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
-  senderAgentId?: string;
-}
-
-type ManagedArtifactEvent =
-  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
-  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
-  | { type: "deleted"; artifactId: string; at: string; reason: string };
-
-interface AgentJson {
-  id: string;
-  projectId: string;
-  conversationId?: string;
-  conversationIds?: string[];
-  title: string;
-  activeEngine: string;
-  model?: string;
-  effort?: string;
-  createdAt: string;
-  updatedAt: string;
-  archived: boolean;
-  deletedAt?: string;
-  managementPermissions?: AgentDto["managementPermissions"];
-  spawnedByAgentId?: string;
-  spawnedByExecutionId?: string;
-  spawnPrompt?: string;
-  spawnIdempotencyKey?: string;
-  presetSnapshot?: AgentDto["presetSnapshot"];
-}
-
-export interface AgentSpawnOrigin {
-  agentId: string;
-  executionId: string;
-  idempotencyKey: string;
-  prompt?: string;
-}
-
-type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
 const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine: "codex" }> = [
   { name: "Frontend", description: "Accessible, polished product UI", guidance: "Act as a product-minded frontend engineer. Prioritize responsive UX, accessibility, and tested user flows.", engine: "codex" },
   { name: "Security", description: "Threat-model and harden changes", guidance: "Act as a security reviewer. Preserve trust boundaries, minimize authority, and test abuse cases.", engine: "codex" },
@@ -279,84 +207,10 @@ const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine
   { name: "Documentation", description: "Create clear, accurate documentation", guidance: "Act as a technical writer. Verify behavior in the code and write concise task-oriented documentation.", engine: "codex" },
 ];
 
-interface ConversationJson {
-  id: string;
-  projectId: string;
-  title: string;
-  defaultEngine?: string;
-  defaultModel?: string;
-  defaultEffort?: string;
-  createdAt: string;
-  updatedAt: string;
-  archived: boolean;
-}
-
-export interface ConversationDeliveryIntent {
-  targetAgentId: string;
-  relayDepth: number;
-  mentionTrail: string[];
-  kind: "direct" | "tag";
-  /** The selector that authorized this recipient when the message was recorded. */
-  audience?: "mention" | "everyone";
-  /** Explicit behavior when the recipient has an active durable wait. */
-  /** Target-owned staged assets delivered with this recipient turn. */
-  attachmentIds?: string[];
-}
-
-interface MessageDispatchRecord {
-  schemaVersion: 1;
-  eventId: string;
-  messageId: string;
-  conversationId: string;
-  channel: ConversationChannel;
-  role: "user" | "assistant" | "system";
-  renderedText: string;
-  createdAt: string;
-  authorAgentId?: string;
-  deliveryIntents?: ConversationDeliveryIntent[];
-  messageReceiptKey?: string;
-  orderKey: string;
-  attachments?: import("@ponderosa/core").ImageAttachmentDto[];
-}
-
-export interface AgentDeletionReceipt {
-  id: string;
-  projectId: string;
-  previewHash: string;
-  rootAgentIds: string[];
-  deletedAgentIds: string[];
-  storageCleanupCompleted: boolean;
-  serverCleanupCompleted: boolean;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface ProjectDeletionReceipt {
-  projectId: string;
-  tombstoneName: string;
-  storageCleanupCompleted: boolean;
-  lastError?: string;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-}
-
-export interface AgentManagementAuthorization {
-  planId: string;
-  projectId: string;
-  conversationId: string;
-  ownerAgentId: string;
-  runId: string;
-  scopeHash: string;
-  permission: "deletion" | "reorganization";
-  approvalDecisionId?: string;
-}
-
 export class AgentStore {
   private readonly db: Db;
   private readonly client: Database.Database;
+  private readonly telemetry!: AgentTelemetryReadModel;
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
   private readonly deliverySequenceFile: string;
@@ -392,6 +246,11 @@ export class AgentStore {
       const opened = openDb(dbPath(dataDir));
       this.db = opened.db;
       this.client = opened.client;
+      this.telemetry = new AgentTelemetryReadModel(
+        this.client,
+        (input) => this.encodeHistoryCursor(input),
+        (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
+      );
       // Canonical files are written before their SQLite projections. Rebuilding
       // on startup closes the crash window where a durable append succeeded but
       // the projection write did not, and keeps every read path deterministic.
@@ -2768,18 +2627,7 @@ export class AgentStore {
   }
 
   getFinalizedWorkDurationMs(agentId: string): number {
-    const row = this.client.prepare(`
-      SELECT COALESCE(SUM(
-        CASE
-          WHEN completed_at IS NOT NULL AND completed_at >= started_at
-            THEN CAST(ROUND((julianday(completed_at) - julianday(started_at)) * 86400000) AS INTEGER)
-          ELSE 0
-        END
-      ), 0) AS durationMs
-      FROM runs
-      WHERE agent_id = ?
-    `).get(agentId) as { durationMs: number };
-    return Math.max(0, Number(row.durationMs) || 0);
+    return this.telemetry.getFinalizedWorkDurationMs(agentId);
   }
 
   getMessages(agentId: string): MessageDto[] {
@@ -2969,31 +2817,14 @@ export class AgentStore {
     return this.materializeRunOutputSegments(agentId, this.runOutputSegmentRows(agentId));
   }
 
-  private eventSeqBoundary(cursor: string | undefined, stream: string, agentId: string): number | undefined {
-    if (!cursor) return undefined;
-    const decoded = this.decodeHistoryCursor(cursor, stream, agentId);
-    const seq = Number(decoded.orderKey);
-    if (!Number.isSafeInteger(seq) || seq < 1 || decoded.rowKey !== String(seq)) throw new Error("invalid history cursor");
-    return seq;
-  }
-
-  private eventSeqFocus(focusId: string | undefined, stream: "runOutput" | "activity", agentId: string): number | undefined {
-    if (!focusId) return undefined;
-    const prefix = `${agentId}:${stream}:`;
-    if (!focusId.startsWith(prefix)) throw new Error("invalid history focus");
-    const seq = Number(focusId.slice(prefix.length));
-    if (!Number.isSafeInteger(seq) || seq < 1) throw new Error("invalid history focus");
-    return seq;
-  }
-
   getRunOutputPage(
     agentId: string,
     input: { limit: number; cursor?: string; focusId?: string },
   ): HistoryPageDto<RunOutputDto> {
     const limit = Math.max(1, Math.min(input.limit, 500));
     if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
-    const focusSeq = this.eventSeqFocus(input.focusId, "runOutput", agentId);
-    const boundary = this.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
+    const focusSeq = this.telemetry.eventSeqFocus(input.focusId, "runOutput", agentId);
+    const boundary = this.telemetry.eventSeqBoundary(input.cursor, "agent:runOutput", agentId);
     let endingAtSeq: number | undefined;
     if (focusSeq !== undefined) {
       const allSegments = this.runOutputSegmentRows(agentId);
@@ -3081,75 +2912,14 @@ export class AgentStore {
 
   /** Execution activity is rebuilt from canonical log events, never from live-only UI state. */
   getActivity(agentId: string): AgentActivityDto[] {
-    const rows = this.client.prepare(`
-      SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
-        output_total_utf8_bytes, output_sha256
-      FROM activity_projection WHERE agent_id = ? ORDER BY seq
-    `).all(agentId) as ActivityProjectionReadRow[];
-    return rows.map((row) => this.activityDtoFromProjectionRow(agentId, row));
-  }
-
-  private activityDtoFromProjectionRow(agentId: string, row: ActivityProjectionReadRow): AgentActivityDto {
-    const event = JSON.parse(row.event_json) as AgentActivityDto["event"];
-    const base: AgentActivityDto = {
-      id: `${agentId}:activity:${row.seq}`,
-      agentId,
-      ...(row.execution_id ? { executionId: row.execution_id } : {}),
-      seq: row.seq,
-      createdAt: row.created_at,
-      event,
-    };
-    if (event.type !== "tool_result" || row.output_total_utf8_bytes === null ||
-        row.output_preview_utf8_bytes === null || !row.output_sha256 ||
-        row.output_preview_utf8_bytes >= row.output_total_utf8_bytes) return base;
-    return {
-      ...base,
-      outputPreview: {
-        truncated: true,
-        previewUtf8Bytes: row.output_preview_utf8_bytes,
-        totalUtf8Bytes: row.output_total_utf8_bytes,
-        sha256: row.output_sha256,
-        retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/activity/${row.seq}/output`,
-      },
-    };
+    return this.telemetry.getActivity(agentId);
   }
 
   getActivityPage(
     agentId: string,
     input: { limit: number; cursor?: string; focusId?: string },
   ): HistoryPageDto<AgentActivityDto> {
-    const limit = Math.max(1, Math.min(input.limit, 500));
-    if (input.cursor && input.focusId) throw new Error("history cursor and focus cannot be combined");
-    const focusSeq = this.eventSeqFocus(input.focusId, "activity", agentId);
-    const boundary = focusSeq ?? this.eventSeqBoundary(input.cursor, "agent:activity", agentId);
-    const rows = this.client.prepare(`
-      SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
-        output_total_utf8_bytes, output_sha256
-      FROM activity_projection
-      WHERE agent_id = ?
-        ${boundary === undefined ? "" : `AND seq ${focusSeq === undefined ? "<" : "<="} ?`}
-      ORDER BY seq DESC LIMIT ?
-    `).all(...(boundary === undefined ? [agentId, limit + 1] : [agentId, boundary, limit + 1])) as ActivityProjectionReadRow[];
-    if (focusSeq !== undefined && rows[0]?.seq !== focusSeq) {
-      return { items: [], history: { limit, hasMore: false } };
-    }
-    const hasMore = rows.length > limit;
-    const selected = rows.slice(0, limit);
-    const items = selected.map((row) => this.activityDtoFromProjectionRow(agentId, row)).reverse();
-    const oldest = selected.at(-1);
-    return {
-      items,
-      history: {
-        limit,
-        hasMore,
-        ...(hasMore && oldest ? {
-          cursor: this.encodeHistoryCursor({
-            stream: "agent:activity", scope: agentId,
-            orderKey: String(oldest.seq), rowKey: String(oldest.seq),
-          }),
-        } : {}),
-      },
-    };
+    return this.telemetry.getActivityPage(agentId, input);
   }
 
   getActivityOutput(agentId: string, seq: number): {
@@ -3160,19 +2930,7 @@ export class AgentStore {
     totalUtf8Bytes: number;
     sha256: string;
   } | undefined {
-    const row = this.client.prepare(`
-      SELECT output, total_utf8_bytes, sha256
-      FROM tool_output_projection WHERE agent_id = ? AND seq = ?
-    `).get(agentId, seq) as { output: Buffer; total_utf8_bytes: number; sha256: string } | undefined;
-    if (!row) return undefined;
-    return {
-      agentId,
-      activityId: `${agentId}:activity:${seq}`,
-      seq,
-      output: Buffer.isBuffer(row.output) ? row.output.toString("utf8") : String(row.output),
-      totalUtf8Bytes: row.total_utf8_bytes,
-      sha256: row.sha256,
-    };
+    return this.telemetry.getActivityOutput(agentId, seq);
   }
 
   getActivityOutputPage(agentId: string, seq: number, startUtf8Byte: number, maxBytes: number): {
@@ -3184,38 +2942,7 @@ export class AgentStore {
     totalUtf8Bytes: number;
     sha256: string;
   } | undefined {
-    const row = this.client.prepare(`
-      SELECT substr(output, ?, ?) AS page, total_utf8_bytes, sha256
-      FROM tool_output_projection WHERE agent_id = ? AND seq = ?
-    `).get(startUtf8Byte + 1, maxBytes + 3, agentId, seq) as {
-      page: Buffer; total_utf8_bytes: number; sha256: string;
-    } | undefined;
-    if (!row) return undefined;
-    if (!Number.isSafeInteger(startUtf8Byte) || startUtf8Byte < 0 || startUtf8Byte > row.total_utf8_bytes) {
-      throw new Error("activity output cursor is outside the retained output");
-    }
-    const bytes = Buffer.isBuffer(row.page) ? row.page : Buffer.from(row.page);
-    let pageBytes = Math.min(maxBytes, bytes.length);
-    // The cursor is always emitted on a code-point boundary. Pulling three
-    // lookahead bytes lets this page retreat from a split UTF-8 sequence while
-    // still returning the largest valid prefix within maxBytes.
-    while (pageBytes > 0) {
-      try {
-        new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, pageBytes));
-        break;
-      } catch {
-        pageBytes -= 1;
-      }
-    }
-    return {
-      agentId,
-      activityId: `${agentId}:activity:${seq}`,
-      seq,
-      output: bytes.subarray(0, pageBytes).toString("utf8"),
-      pageUtf8Bytes: pageBytes,
-      totalUtf8Bytes: row.total_utf8_bytes,
-      sha256: row.sha256,
-    };
+    return this.telemetry.getActivityOutputPage(agentId, seq, startUtf8Byte, maxBytes);
   }
 
   /** Bounded newest-first keyset over one row per touched path. */
@@ -3223,69 +2950,11 @@ export class AgentStore {
     agentId: string,
     input: { limit: number; cursor?: string },
   ): HistoryPageDto<ChangedFileDto> {
-    const limit = Math.max(1, Math.min(input.limit, 500));
-    const boundary = input.cursor
-      ? this.decodeHistoryCursor(input.cursor, "agent:changedFiles", agentId)
-      : undefined;
-    const boundarySeq = boundary ? Number(boundary.orderKey) : undefined;
-    if (boundary && (!Number.isSafeInteger(boundarySeq) || boundarySeq! < 1)) throw new Error("invalid history cursor");
-    const rows = this.client.prepare(`
-      SELECT path, kind, last_seq, last_changed_at, execution_count, diff IS NOT NULL AS diff_available
-      FROM changed_file_projection
-      WHERE agent_id = ?
-        ${boundary ? "AND (last_seq < ? OR (last_seq = ? AND path < ?))" : ""}
-      ORDER BY last_seq DESC, path DESC
-      LIMIT ?
-    `).all(...(boundary
-      ? [agentId, boundarySeq, boundarySeq, boundary.rowKey, limit + 1]
-      : [agentId, limit + 1])) as Array<{
-      path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
-      execution_count: number; diff_available: number;
-    }>;
-    const hasMore = rows.length > limit;
-    const selected = rows.slice(0, limit);
-    const oldest = selected.at(-1);
-    return {
-      items: selected.map((row) => ({
-        path: row.path,
-        kind: row.kind,
-        lastSeq: row.last_seq,
-        lastChangedAt: row.last_changed_at,
-        executionCount: row.execution_count,
-        diffAvailable: row.diff_available === 1,
-      })),
-      history: {
-        limit,
-        hasMore,
-        ...(hasMore && oldest ? { cursor: this.encodeHistoryCursor({
-          stream: "agent:changedFiles", scope: agentId,
-          orderKey: String(oldest.last_seq), rowKey: oldest.path,
-        }) } : {}),
-      },
-    };
+    return this.telemetry.getChangedFilePage(agentId, input);
   }
 
   getChangedFileDetail(agentId: string, path: string): ChangedFileDetailDto | undefined {
-    const row = this.client.prepare(`
-      SELECT path, kind, last_seq, last_changed_at, execution_ids_json, execution_count, diff
-      FROM changed_file_projection WHERE agent_id = ? AND path = ?
-    `).get(agentId, path) as {
-      path: string; kind: ChangedFileDto["kind"]; last_seq: number; last_changed_at: string;
-      execution_ids_json: string; execution_count: number; diff: string | null;
-    } | undefined;
-    if (!row) return undefined;
-    const executionIds = JSON.parse(row.execution_ids_json) as string[];
-    return {
-      path: row.path,
-      kind: row.kind,
-      lastSeq: row.last_seq,
-      lastChangedAt: row.last_changed_at,
-      executionCount: row.execution_count,
-      diffAvailable: row.diff !== null,
-      executionIds,
-      provenanceTruncated: executionIds.length < row.execution_count,
-      ...(row.diff ? { diff: row.diff } : {}),
-    };
+    return this.telemetry.getChangedFileDetail(agentId, path);
   }
 
   /**
@@ -3334,7 +3003,7 @@ export class AgentStore {
             AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
           ORDER BY seq
         `).all(agentId, ...executionFilter) as ActivityProjectionReadRow[])
-          .map((row) => this.activityDtoFromProjectionRow(agentId, row))
+          .map((row) => this.telemetry.activityDtoFromProjectionRow(agentId, row))
         : []
       : this.getActivity(agentId);
     for (const item of activity) {

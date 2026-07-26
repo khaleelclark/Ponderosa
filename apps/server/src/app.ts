@@ -2,7 +2,6 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { type Socket } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import os from "node:os";
 import { Readable, Transform } from "node:stream";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -26,10 +25,6 @@ import type {
   EngineModelValidationDto,
   ProjectEngineCapabilitiesDto,
   ProjectEngineModelCatalogDto,
-  CreateHostFolderRequest,
-  HostFolderCreateDto,
-  ProjectFolderOptionsDto,
-  HostFolderBrowseDto,
   WorkspaceFileViewDto,
   CreateProjectRequest,
   UpdateProjectRequest,
@@ -82,7 +77,6 @@ import type {
   NotificationPreferencesDto,
   NotificationPreference,
   VerifiedCitationDto,
-  WebPushSubscriptionDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
   CreateLinkPreviewRequest,
@@ -243,9 +237,19 @@ import {
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerLimitsRoutes } from "./routes/limits.js";
 import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
+import {
+  createProjectFolderPathBoundary,
+  registerProjectFolderRoutes,
+} from "./routes/project-folders.js";
 import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes/agent-audit.js";
+import { registerAgentPresetRoutes } from "./routes/agent-presets.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
+import {
+  registerNotificationListRoute,
+  registerNotificationMutationRoutes,
+  registerPushRoutes,
+} from "./routes/notifications.js";
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -2055,6 +2059,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
+  const projectFolderPathBoundary = createProjectFolderPathBoundary({
+    managedWorkspacesRoot,
+    allowedBrowseRoots: opts.allowedBrowseRoots,
+  });
   const draftAttachmentsRoot = path.resolve(opts.dataDir, "draft-attachments");
   const draftAttachmentId = /^[a-f0-9-]{36}$/i;
   const draftOwnerId = /^[A-Za-z0-9_-]{1,128}$/;
@@ -2095,45 +2103,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (kind === "agent") return Boolean(store.getAgent(id));
     return false;
   };
-  const configuredBrowseRoots = (opts.allowedBrowseRoots ?? (process.env.PONDEROSA_BROWSE_ROOTS ?? "").split(path.delimiter))
-    .map((root) => root.trim()).filter(Boolean).map((root) => path.resolve(root));
-
-  async function restrictedBrowseRoots(): Promise<string[]> {
-    const resolved: string[] = [];
-    for (const root of configuredBrowseRoots) {
-      try {
-        const real = await fs.realpath(root);
-        if ((await fs.stat(real)).isDirectory() && !resolved.includes(real)) resolved.push(real);
-      } catch { /* invalid configured roots are not exposed */ }
-    }
-    return resolved;
-  }
-
-  function insideRoot(candidate: string, root: string): boolean {
-    const relative = path.relative(root, candidate);
-    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-  }
-
-  async function validatedBrowsePath(input: string): Promise<{ candidate: string; root: string }> {
-    const candidate = await fs.realpath(path.resolve(input));
-    if (!(await fs.stat(candidate)).isDirectory()) throw new Error("path must be a directory");
-    const roots = await restrictedBrowseRoots();
-    const root = roots.length > 0
-      ? roots.find((allowed) => insideRoot(candidate, allowed))
-      : path.parse(candidate).root;
-    if (!root) throw new Error("path is outside configured browse roots");
-    return { candidate, root };
-  }
-  async function defaultBrowsePath(): Promise<string> {
-    const restrictedRoots = await restrictedBrowseRoots();
-    if (restrictedRoots[0]) return restrictedRoots[0];
-    try {
-      const home = await fs.realpath(os.homedir());
-      if ((await fs.stat(home)).isDirectory()) return home;
-    } catch { /* use the managed workspace when the host home is unavailable */ }
-    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    return fs.realpath(managedWorkspacesRoot);
-  }
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -7649,57 +7618,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     closeLinkPreviewRegistration(request.params.id, 1001, "preview explicitly closed");
     return { closed: true };
   });
-  app.get("/api/project-folders", async (): Promise<ProjectFolderOptionsDto> => {
-    await fs.mkdir(managedWorkspacesRoot, { recursive: true });
-    const registered = store.listProjects().map((project) => ({ hostPath: project.hostPath, name: project.label, source: "registered" as const }));
-    const managedEntries = await fs.readdir(managedWorkspacesRoot, { withFileTypes: true });
-    const managed = managedEntries.filter((entry) => entry.isDirectory()).map((entry) => ({
-      hostPath: path.join(managedWorkspacesRoot, entry.name), name: entry.name, source: "managed" as const,
-    }));
-    const folders = new Map<string, ProjectFolderOptionsDto["folders"][number]>();
-    for (const folder of [...registered, ...managed]) if (!folders.has(folder.hostPath)) folders.set(folder.hostPath, folder);
-    return { managedRoot: managedWorkspacesRoot, folders: [...folders.values()].sort((a, b) => a.name.localeCompare(b.name)) };
-  });
-
-  app.get<{ Querystring: { path?: string } }>("/api/project-folders/browse", async (request, reply): Promise<HostFolderBrowseDto | unknown> => {
-    try {
-      const requested = request.query.path || await defaultBrowsePath();
-      const { candidate, root } = await validatedBrowsePath(requested);
-      const entries = await fs.readdir(candidate, { withFileTypes: true });
-      const folders: HostFolderBrowseDto["folders"] = [];
-      for (const entry of entries) {
-        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        try {
-          const hostPath = await fs.realpath(path.join(candidate, entry.name));
-          if (!insideRoot(hostPath, root) || !(await fs.stat(hostPath)).isDirectory()) continue;
-          folders.push({ name: entry.name, hostPath });
-        } catch { /* broken/inaccessible links are omitted */ }
-      }
-      const parent = path.dirname(candidate);
-      return { path: candidate, root, ...(insideRoot(parent, root) ? { parentPath: parent } : {}), folders: folders.sort((a, b) => a.name.localeCompare(b.name)) };
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "folder is unavailable" });
-    }
-  });
-
-  app.post<{ Body: CreateHostFolderRequest }>("/api/project-folders/create", async (request, reply): Promise<HostFolderCreateDto | unknown> => {
-    const parentPath = request.body?.parentPath?.trim();
-    const name = request.body?.name?.trim();
-    if (!parentPath) return reply.code(400).send({ error: "parentPath is required" });
-    if (!name || !/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(name) || name === "." || name === "..") {
-      return reply.code(400).send({ error: "folder name must be a single safe name" });
-    }
-    try {
-      const parent = await validatedBrowsePath(parentPath);
-      const requestedPath = path.join(parent.candidate, name);
-      if (!insideRoot(requestedPath, parent.root)) return reply.code(400).send({ error: "folder is outside the configured browse root" });
-      await fs.mkdir(requestedPath, { recursive: false });
-      const hostPath = await fs.realpath(requestedPath);
-      return { name, hostPath };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return reply.code(409).send({ error: "folder already exists" });
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "folder could not be created" });
-    }
+  registerProjectFolderRoutes(app, {
+    managedWorkspacesRoot,
+    pathBoundary: projectFolderPathBoundary,
+    store,
   });
 
   app.post<{ Body: CreateProjectRequest }>("/api/projects", async (request, reply) => {
@@ -7725,7 +7647,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       try {
         const stat = await fs.stat(candidate);
         if (!stat.isDirectory()) return reply.code(400).send({ error: "hostPath must be a directory" });
-        const validated = await validatedBrowsePath(candidate);
+        const validated = await projectFolderPathBoundary.validatedBrowsePath(candidate);
         hostPath = validated.candidate;
       } catch {
         return reply.code(400).send({ error: "hostPath does not exist" });
@@ -9236,39 +9158,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return store.listAgents(request.params.id);
   });
 
-  const validatePreset = (
-    input: { name?: string; description?: string; guidance?: string; engine?: string; model?: string | null; effort?: string | null },
-    partial = false,
-    projectId?: string,
-  ): string | undefined => {
-    if (!partial && (!input.name?.trim() || !input.description?.trim() || !input.guidance?.trim() || !input.engine)) return "name, description, guidance, and engine are required";
-    if (input.name !== undefined && (input.name.trim().length < 2 || input.name.trim().length > 60)) return "name must be 2-60 characters";
-    if (input.description !== undefined && input.description.trim().length > 240) return "description must be at most 240 characters";
-    if (input.guidance !== undefined && (input.guidance.trim().length < 10 || input.guidance.trim().length > 8000)) return "guidance must be 10-8000 characters";
-    if (input.engine) {
-      const configured = engines.get(input.engine); if (!configured) return "unknown engine";
+  registerAgentPresetRoutes(app, {
+    store,
+    validateRuntimeSelection: (input, projectId) => {
+      if (!input.engine) return undefined;
+      const configured = engines.get(input.engine);
+      if (!configured) return "unknown engine";
       return runtimeSelectionError(
         configured.adapter,
         input.model ?? undefined,
         input.effort ?? undefined,
         cachedModelOptions(configured.adapter, projectId),
       );
-    }
-  };
-  app.get<{ Params: { id: string } }>("/api/projects/:id/agent-presets", async (request, reply) => store.getProject(request.params.id) ? store.listAgentPresets(request.params.id) : reply.code(404).send({ error: "project not found" }));
-  app.post<{ Params: { id: string }; Body: import("@ponderosa/core").CreateAgentPresetRequest }>("/api/projects/:id/agent-presets", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const error = validatePreset(request.body ?? {}, false, request.params.id); if (error) return reply.code(400).send({ error });
-    return reply.code(201).send(store.createAgentPreset(request.params.id, request.body));
+    },
   });
-  app.patch<{ Params: { id: string }; Body: import("@ponderosa/core").UpdateAgentPresetRequest }>("/api/agent-presets/:id", async (request, reply) => {
-    const current = store.getAgentPreset(request.params.id); if (!current) return reply.code(404).send({ error: "preset not found" });
-    const body = request.body ?? {};
-    if (Object.keys(body).some((key) => !["name", "description", "guidance", "engine", "model", "effort", "enabled"].includes(key))) return reply.code(400).send({ error: "unknown preset field" });
-    const error = validatePreset({ ...current, ...body }, true, current.projectId); if (error) return reply.code(400).send({ error });
-    return store.updateAgentPreset(request.params.id, body)!;
-  });
-  app.delete<{ Params: { id: string } }>("/api/agent-presets/:id", async (request, reply) => store.deleteAgentPreset(request.params.id) ? { deleted: true } : reply.code(404).send({ error: "preset not found" }));
 
   app.post<{
     Params: { id: string };
@@ -12419,11 +12322,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(204).send();
   });
 
-  app.get("/api/notifications", async () => {
-    reconcileCommunicationFailureNotifications();
-    reconcileCoordinationAttentionNotifications();
-    return workspace.listNotifications();
-  });
+  const notificationRoutesOptions = {
+    workspace,
+    store,
+    publishWorkspaceSince,
+    reconcileCommunicationFailureNotifications,
+    reconcileCoordinationAttentionNotifications,
+  };
+  registerNotificationListRoute(app, notificationRoutesOptions);
   app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
     const status = request.query.status;
     if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
@@ -12470,90 +12376,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3Scheduler.notify();
     return decision;
   });
-  app.post<{ Params: { id: string }; Body: { status?: "resolved" | "dismissed" } }>("/api/notifications/:id/status", async (request, reply) => {
-    if (request.body?.status !== "resolved" && request.body?.status !== "dismissed") return reply.code(400).send({ error: "status must be resolved or dismissed" });
-    const cursor = workspace.cursor();
-    const notification = workspace.setNotificationStatus(request.params.id, request.body.status);
-    if (!notification) return reply.code(404).send({ error: "notification not found" });
-    publishWorkspaceSince(cursor);
-    return notification;
-  });
-  app.post<{ Params: { id: string } }>("/api/notifications/:id/read", async (request, reply) => {
-    const cursor = workspace.cursor();
-    const notification = workspace.readNotification(request.params.id);
-    if (!notification) return reply.code(404).send({ error: "notification not found" });
-    publishWorkspaceSince(cursor);
-    return { read: true };
-  });
-  app.post("/api/notifications/read", async () => {
-    const cursor = workspace.cursor();
-    const read = workspace.readAllNotifications();
-    publishWorkspaceSince(cursor);
-    return { read };
-  });
-  app.delete("/api/notifications", async () => {
-    const cursor = workspace.cursor();
-    const cleared = workspace.clearNotifications();
-    publishWorkspaceSince(cursor);
-    return { cleared };
-  });
-  app.delete<{ Params: { id: string } }>("/api/projects/:id/notifications", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const cursor = workspace.cursor();
-    const cleared = workspace.clearProjectNotifications(request.params.id);
-    publishWorkspaceSince(cursor);
-    return { cleared };
-  });
-  app.post<{ Params: { id: string }; Body: { scope?: "messages" } }>("/api/conversations/:id/notifications/read", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
-    const cursor = workspace.cursor();
-    if (request.body?.scope === "messages") workspace.readConversationMessages(request.params.id);
-    else workspace.readConversation(request.params.id);
-    publishWorkspaceSince(cursor);
-    return { read: true };
-  });
-
-  app.get<{ Querystring: { deviceId?: string } }>("/api/push/status", async (request) => ({
-    configured: webPushConfigured,
-    configuration: webPushConfiguration,
-    detail: webPushConfigurationDetail,
-    setupCommand: "pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa",
-    ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
-    ...(request.query.deviceId ? { deviceRegistered: workspace.hasPushSubscription(request.query.deviceId) } : {}),
-  }));
-
-  app.put<{ Params: { deviceId: string }; Body: WebPushSubscriptionDto }>("/api/push/subscriptions/:deviceId", async (request, reply) => {
-    const deviceId = request.params.deviceId.trim();
-    const subscription = request.body;
-    if (!webPushConfigured) return reply.code(503).send({ error: "web push is not configured on this host" });
-    if (!deviceId || deviceId.length > 200 || subscription?.deviceId !== deviceId) {
-      return reply.code(400).send({ error: "device identity is invalid" });
-    }
-    let endpoint: URL;
-    try {
-      endpoint = new URL(subscription.endpoint);
-    } catch {
-      return reply.code(400).send({ error: "push endpoint is invalid" });
-    }
-    if (endpoint.protocol !== "https:" || !subscription.keys?.p256dh || !subscription.keys?.auth) {
-      return reply.code(400).send({ error: "a secure push endpoint and encryption keys are required" });
-    }
-    const cursor = workspace.cursor();
-    workspace.putPushSubscription({
-      deviceId,
-      endpoint: endpoint.toString(),
-      expirationTime: subscription.expirationTime ?? null,
-      keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth },
-    });
-    publishWorkspaceSince(cursor);
-    return reply.code(204).send();
-  });
-
-  app.delete<{ Params: { deviceId: string } }>("/api/push/subscriptions/:deviceId", async (request, reply) => {
-    const cursor = workspace.cursor();
-    workspace.deletePushSubscription(request.params.deviceId);
-    publishWorkspaceSince(cursor);
-    return reply.code(204).send();
+  registerNotificationMutationRoutes(app, notificationRoutesOptions);
+  registerPushRoutes(app, {
+    workspace,
+    publishWorkspaceSince,
+    configuration: {
+      configured: webPushConfigured,
+      state: webPushConfiguration,
+      detail: webPushConfigurationDetail,
+      ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
+    },
   });
 
   app.get<{ Querystring: { lastEventId?: string } }>("/api/workspace/stream", async (request, reply) => {

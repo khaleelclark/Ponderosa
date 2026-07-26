@@ -1,0 +1,186 @@
+import type {
+  AgentDto,
+  AgentPresetDto,
+  ArtifactDto,
+  CommunicationAudience,
+  ConversationChannel,
+  ImageAttachmentDto,
+} from "@ponderosa/core";
+
+export interface ContextReadBoundary {
+  createdAt: string;
+  id: string;
+}
+
+export interface ContextSourcePage<T> {
+  items: T[];
+  hasMore: boolean;
+}
+
+export interface ActivityProjectionReadRow {
+  seq: number;
+  execution_id: string | null;
+  event_json: string;
+  created_at: string;
+  output_preview_utf8_bytes: number | null;
+  output_total_utf8_bytes: number | null;
+  output_sha256: string | null;
+}
+
+export interface RunOutputEventRow {
+  seq: number;
+  payload_json: string;
+  created_at: string;
+}
+
+export interface RunOutputSegmentRow {
+  first_seq: number;
+  last_seq: number;
+  event_type: "text" | "reasoning";
+  execution_id: string;
+}
+
+export interface ArtifactProjectionReadRow {
+  id: string;
+  agent_id: string;
+  execution_id: string | null;
+  kind: string;
+  path: string;
+  summary: string | null;
+  created_at: string;
+  source_path: string | null;
+  media_type: string | null;
+  visibility: string | null;
+  pinned: number | null;
+  size: number | null;
+}
+
+export interface ProjectJson {
+  id: string;
+  label: string;
+  hostPath: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  defaultEngine: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+  lastConversationId?: string;
+  instructions?: string;
+}
+
+export interface ManagedArtifactAccess {
+  ownerKind: "project" | "communication" | "request_update";
+  ownerId: string;
+  audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
+  senderAgentId?: string;
+}
+
+export type ManagedArtifactEvent =
+  | { type: "created"; artifact: ArtifactDto & { projectId: string; originAgentId: string }; access?: ManagedArtifactAccess }
+  | { type: "visibility"; artifactId: string; visibility: "project" | "published"; pinned: boolean; at: string }
+  | { type: "deleted"; artifactId: string; at: string; reason: string };
+
+export interface AgentJson {
+  id: string;
+  projectId: string;
+  conversationId?: string;
+  conversationIds?: string[];
+  title: string;
+  activeEngine: string;
+  model?: string;
+  effort?: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+  deletedAt?: string;
+  managementPermissions?: AgentDto["managementPermissions"];
+  spawnedByAgentId?: string;
+  spawnedByExecutionId?: string;
+  spawnPrompt?: string;
+  spawnIdempotencyKey?: string;
+  presetSnapshot?: AgentDto["presetSnapshot"];
+}
+
+export interface AgentSpawnOrigin {
+  agentId: string;
+  executionId: string;
+  idempotencyKey: string;
+  prompt?: string;
+}
+
+export type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
+
+export interface ConversationJson {
+  id: string;
+  projectId: string;
+  title: string;
+  defaultEngine?: string;
+  defaultModel?: string;
+  defaultEffort?: string;
+  createdAt: string;
+  updatedAt: string;
+  archived: boolean;
+}
+
+export interface ConversationDeliveryIntent {
+  targetAgentId: string;
+  relayDepth: number;
+  mentionTrail: string[];
+  kind: "direct" | "tag";
+  /** The selector that authorized this recipient when the message was recorded. */
+  audience?: "mention" | "everyone";
+  /** Explicit behavior when the recipient has an active durable wait. */
+  /** Target-owned staged assets delivered with this recipient turn. */
+  attachmentIds?: string[];
+}
+
+export interface MessageDispatchRecord {
+  schemaVersion: 1;
+  eventId: string;
+  messageId: string;
+  conversationId: string;
+  channel: ConversationChannel;
+  role: "user" | "assistant" | "system";
+  renderedText: string;
+  createdAt: string;
+  authorAgentId?: string;
+  deliveryIntents?: ConversationDeliveryIntent[];
+  messageReceiptKey?: string;
+  orderKey: string;
+  attachments?: ImageAttachmentDto[];
+}
+
+export interface AgentDeletionReceipt {
+  id: string;
+  projectId: string;
+  previewHash: string;
+  rootAgentIds: string[];
+  deletedAgentIds: string[];
+  storageCleanupCompleted: boolean;
+  serverCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface ProjectDeletionReceipt {
+  projectId: string;
+  tombstoneName: string;
+  storageCleanupCompleted: boolean;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface AgentManagementAuthorization {
+  planId: string;
+  projectId: string;
+  conversationId: string;
+  ownerAgentId: string;
+  runId: string;
+  scopeHash: string;
+  permission: "deletion" | "reorganization";
+  approvalDecisionId?: string;
+}

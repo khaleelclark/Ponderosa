@@ -1,4 +1,4 @@
-import type { ActivationDispatchPolicy, ActivationPromptClass } from "./coordination-v3-store.js";
+import type { ActivationDispatchPolicy, ActivationPromptClass } from "./coordination-v3-types.js";
 
 class PendingActivationCapacityError extends Error {}
 

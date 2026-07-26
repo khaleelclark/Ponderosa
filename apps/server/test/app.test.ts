@@ -212,6 +212,67 @@ describe("server public API behavior", () => {
     })).statusCode).toBe(404);
   });
 
+  it("bounds host-folder browsing and creation to configured roots", async () => {
+    const browseRoot = mkdtempSync(path.join(tmpdir(), "ponderosa-server-browse-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "ponderosa-server-browse-outside-"));
+    extraDirectories.push(browseRoot, outside);
+    mkdirSync(path.join(browseRoot, "existing"));
+    await import("node:fs").then(({ symlinkSync }) => {
+      symlinkSync(outside, path.join(browseRoot, "outside-link"));
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      allowedBrowseRoots: [browseRoot],
+    });
+
+    const defaultBrowse = await app.inject({
+      method: "GET",
+      url: "/api/project-folders/browse",
+    });
+    expect(defaultBrowse.statusCode).toBe(200);
+    expect(defaultBrowse.json()).toEqual({
+      path: realpathSync(browseRoot),
+      root: realpathSync(browseRoot),
+      folders: [{
+        name: "existing",
+        hostPath: realpathSync(path.join(browseRoot, "existing")),
+      }],
+    });
+
+    const outsideBrowse = await app.inject({
+      method: "GET",
+      url: `/api/project-folders/browse?path=${encodeURIComponent(outside)}`,
+    });
+    expect(outsideBrowse.statusCode).toBe(400);
+    expect(outsideBrowse.json()).toEqual({
+      error: "path is outside configured browse roots",
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "new project" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toEqual({
+      name: "new project",
+      hostPath: realpathSync(path.join(browseRoot, "new project")),
+    });
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "new project" },
+    })).statusCode).toBe(409);
+    expect((await app.inject({
+      method: "POST",
+      url: "/api/project-folders/create",
+      payload: { parentPath: browseRoot, name: "../escape" },
+    })).statusCode).toBe(400);
+  });
+
   it("rejects cross-origin mutations while accepting the same origin", async () => {
     const app = server();
     const rejected = await app.inject({
@@ -442,6 +503,107 @@ describe("server public API behavior", () => {
     ]);
     expect(detail.body).not.toContain("toolCall");
     expect(detail.body).not.toContain("fileActivity");
+  });
+
+  it("validates Agent preset CRUD through the public routes", async () => {
+    const project = store.createProject({
+      label: "Presets",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const app = server();
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agent-presets`,
+      payload: {
+        name: "X",
+        description: "Too short",
+        guidance: "Use a careful and repeatable workflow.",
+        engine: "codex",
+      },
+    })).json()).toEqual({ error: "name must be 2-60 characters" });
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agent-presets`,
+      payload: {
+        name: "Reviewer",
+        description: "Review changes",
+        guidance: "Review every change against the public behavior contract.",
+        engine: "codex",
+        model: "test-model",
+        effort: "high",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    const preset = created.json<{ id: string }>();
+    expect((await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-presets`,
+    })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: preset.id, name: "Reviewer", enabled: true }),
+    ]));
+
+    const rejectedPatch = await app.inject({
+      method: "PATCH",
+      url: `/api/agent-presets/${preset.id}`,
+      payload: { unexpected: true },
+    });
+    expect(rejectedPatch.statusCode).toBe(400);
+    expect(rejectedPatch.json()).toEqual({ error: "unknown preset field" });
+    expect((await app.inject({
+      method: "DELETE",
+      url: `/api/agent-presets/${preset.id}`,
+    })).json()).toEqual({ deleted: true });
+  });
+
+  it("serves notification state and rejects push registration when host setup is absent", async () => {
+    const workspace = new WorkspaceStore(dataDir);
+    const notification = workspace.createNotification({
+      kind: "operational",
+      title: "Needs attention",
+      body: "A provider needs operator attention.",
+    });
+    const app = server();
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/notifications",
+    })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: notification.id, status: "open" }),
+    ]));
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/read`,
+    })).json()).toEqual({ read: true });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/status`,
+      payload: { status: "resolved" },
+    })).json()).toEqual(expect.objectContaining({
+      id: notification.id,
+      status: "resolved",
+    }));
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/push/status?deviceId=test-device",
+    })).json()).toMatchObject({
+      configured: false,
+      configuration: "missing",
+      deviceRegistered: false,
+    });
+    expect((await app.inject({
+      method: "PUT",
+      url: "/api/push/subscriptions/test-device",
+      payload: {
+        deviceId: "test-device",
+        endpoint: "https://push.example.test/subscription",
+        keys: { p256dh: "public", auth: "auth" },
+        updatedAt: "ignored",
+      },
+    })).statusCode).toBe(503);
   });
 
   it.skipIf(process.platform === "linux")(
