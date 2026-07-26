@@ -127,6 +127,7 @@ import {
   AgentRenameDialog,
   AgentRuntimeControls,
 } from "./AgentDetail.parts";
+import { useAgentRunClock } from "./useAgentRunClock";
 
 function AgentRunState({
   status,
@@ -137,13 +138,7 @@ function AgentRunState({
   connected: boolean;
   startedAt?: string;
 }): JSX.Element {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!startedAt) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [startedAt]);
+  const now = useAgentRunClock(startedAt);
   const runState = startedAt
     ? `${agentStatusLabel(status)} · ${formatExecutionElapsed(startedAt, now)}`
     : agentStatusLabel(status);
