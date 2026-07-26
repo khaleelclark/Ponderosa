@@ -558,6 +558,54 @@ describe("server public API behavior", () => {
     })).json()).toEqual({ deleted: true });
   });
 
+  it("serves notification state and rejects push registration when host setup is absent", async () => {
+    const workspace = new WorkspaceStore(dataDir);
+    const notification = workspace.createNotification({
+      kind: "operational",
+      title: "Needs attention",
+      body: "A provider needs operator attention.",
+    });
+    const app = server();
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/notifications",
+    })).json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: notification.id, status: "open" }),
+    ]));
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/read`,
+    })).json()).toEqual({ read: true });
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/notifications/${notification.id}/status`,
+      payload: { status: "resolved" },
+    })).json()).toEqual(expect.objectContaining({
+      id: notification.id,
+      status: "resolved",
+    }));
+
+    expect((await app.inject({
+      method: "GET",
+      url: "/api/push/status?deviceId=test-device",
+    })).json()).toMatchObject({
+      configured: false,
+      configuration: "missing",
+      deviceRegistered: false,
+    });
+    expect((await app.inject({
+      method: "PUT",
+      url: "/api/push/subscriptions/test-device",
+      payload: {
+        deviceId: "test-device",
+        endpoint: "https://push.example.test/subscription",
+        keys: { p256dh: "public", auth: "auth" },
+        updatedAt: "ignored",
+      },
+    })).statusCode).toBe(503);
+  });
+
   it.skipIf(process.platform === "linux")(
     "fails artifact-dependent Agent creation closed when descriptor-relative access is unavailable",
     async () => {
