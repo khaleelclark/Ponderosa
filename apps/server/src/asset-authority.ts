@@ -382,4 +382,3 @@ export class AssetAuthority {
   }
   close(): void { this.db.close(); }
 }
-
