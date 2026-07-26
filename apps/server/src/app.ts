@@ -77,7 +77,6 @@ import type {
   NotificationPreferencesDto,
   NotificationPreference,
   VerifiedCitationDto,
-  WebPushSubscriptionDto,
   CancelAgentRunRequest,
   CancelAgentRunResponse,
   CreateLinkPreviewRequest,
@@ -246,6 +245,11 @@ import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes
 import { registerAgentPresetRoutes } from "./routes/agent-presets.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
+import {
+  registerNotificationListRoute,
+  registerNotificationMutationRoutes,
+  registerPushRoutes,
+} from "./routes/notifications.js";
 import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -12318,11 +12322,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(204).send();
   });
 
-  app.get("/api/notifications", async () => {
-    reconcileCommunicationFailureNotifications();
-    reconcileCoordinationAttentionNotifications();
-    return workspace.listNotifications();
-  });
+  const notificationRoutesOptions = {
+    workspace,
+    store,
+    publishWorkspaceSince,
+    reconcileCommunicationFailureNotifications,
+    reconcileCoordinationAttentionNotifications,
+  };
+  registerNotificationListRoute(app, notificationRoutesOptions);
   app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
     const status = request.query.status;
     if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
@@ -12369,90 +12376,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     coordinationV3Scheduler.notify();
     return decision;
   });
-  app.post<{ Params: { id: string }; Body: { status?: "resolved" | "dismissed" } }>("/api/notifications/:id/status", async (request, reply) => {
-    if (request.body?.status !== "resolved" && request.body?.status !== "dismissed") return reply.code(400).send({ error: "status must be resolved or dismissed" });
-    const cursor = workspace.cursor();
-    const notification = workspace.setNotificationStatus(request.params.id, request.body.status);
-    if (!notification) return reply.code(404).send({ error: "notification not found" });
-    publishWorkspaceSince(cursor);
-    return notification;
-  });
-  app.post<{ Params: { id: string } }>("/api/notifications/:id/read", async (request, reply) => {
-    const cursor = workspace.cursor();
-    const notification = workspace.readNotification(request.params.id);
-    if (!notification) return reply.code(404).send({ error: "notification not found" });
-    publishWorkspaceSince(cursor);
-    return { read: true };
-  });
-  app.post("/api/notifications/read", async () => {
-    const cursor = workspace.cursor();
-    const read = workspace.readAllNotifications();
-    publishWorkspaceSince(cursor);
-    return { read };
-  });
-  app.delete("/api/notifications", async () => {
-    const cursor = workspace.cursor();
-    const cleared = workspace.clearNotifications();
-    publishWorkspaceSince(cursor);
-    return { cleared };
-  });
-  app.delete<{ Params: { id: string } }>("/api/projects/:id/notifications", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    const cursor = workspace.cursor();
-    const cleared = workspace.clearProjectNotifications(request.params.id);
-    publishWorkspaceSince(cursor);
-    return { cleared };
-  });
-  app.post<{ Params: { id: string }; Body: { scope?: "messages" } }>("/api/conversations/:id/notifications/read", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
-    const cursor = workspace.cursor();
-    if (request.body?.scope === "messages") workspace.readConversationMessages(request.params.id);
-    else workspace.readConversation(request.params.id);
-    publishWorkspaceSince(cursor);
-    return { read: true };
-  });
-
-  app.get<{ Querystring: { deviceId?: string } }>("/api/push/status", async (request) => ({
-    configured: webPushConfigured,
-    configuration: webPushConfiguration,
-    detail: webPushConfigurationDetail,
-    setupCommand: "pnpm --filter @ponderosa/server push:configure && sudo systemctl restart ponderosa",
-    ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
-    ...(request.query.deviceId ? { deviceRegistered: workspace.hasPushSubscription(request.query.deviceId) } : {}),
-  }));
-
-  app.put<{ Params: { deviceId: string }; Body: WebPushSubscriptionDto }>("/api/push/subscriptions/:deviceId", async (request, reply) => {
-    const deviceId = request.params.deviceId.trim();
-    const subscription = request.body;
-    if (!webPushConfigured) return reply.code(503).send({ error: "web push is not configured on this host" });
-    if (!deviceId || deviceId.length > 200 || subscription?.deviceId !== deviceId) {
-      return reply.code(400).send({ error: "device identity is invalid" });
-    }
-    let endpoint: URL;
-    try {
-      endpoint = new URL(subscription.endpoint);
-    } catch {
-      return reply.code(400).send({ error: "push endpoint is invalid" });
-    }
-    if (endpoint.protocol !== "https:" || !subscription.keys?.p256dh || !subscription.keys?.auth) {
-      return reply.code(400).send({ error: "a secure push endpoint and encryption keys are required" });
-    }
-    const cursor = workspace.cursor();
-    workspace.putPushSubscription({
-      deviceId,
-      endpoint: endpoint.toString(),
-      expirationTime: subscription.expirationTime ?? null,
-      keys: { p256dh: subscription.keys.p256dh, auth: subscription.keys.auth },
-    });
-    publishWorkspaceSince(cursor);
-    return reply.code(204).send();
-  });
-
-  app.delete<{ Params: { deviceId: string } }>("/api/push/subscriptions/:deviceId", async (request, reply) => {
-    const cursor = workspace.cursor();
-    workspace.deletePushSubscription(request.params.deviceId);
-    publishWorkspaceSince(cursor);
-    return reply.code(204).send();
+  registerNotificationMutationRoutes(app, notificationRoutesOptions);
+  registerPushRoutes(app, {
+    workspace,
+    publishWorkspaceSince,
+    configuration: {
+      configured: webPushConfigured,
+      state: webPushConfiguration,
+      detail: webPushConfigurationDetail,
+      ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
+    },
   });
 
   app.get<{ Querystring: { lastEventId?: string } }>("/api/workspace/stream", async (request, reply) => {
