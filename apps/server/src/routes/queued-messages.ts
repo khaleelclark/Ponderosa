@@ -348,7 +348,4 @@ export function registerQueuedMessageRoutes(
     if (result.targetAgentId) publishMessageDeliveryChanged(result.targetAgentId);
     return result satisfies CancelMessageDeliveryResponse;
   });
-
-
 }
-

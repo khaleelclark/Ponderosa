@@ -31,7 +31,6 @@ export interface PreparedCommunicationArtifact {
   executionId?: string;
   createdAt: string;
 }
-
 type RuntimeArtifactInput = NonNullable<
   Parameters<CoordinationV3Store["recordRuntimeCommunication"]>[0]["artifacts"]
 >[number];
@@ -504,4 +503,3 @@ export function registerConversationDeliveryRoutes(
     });
   });
 }
-
