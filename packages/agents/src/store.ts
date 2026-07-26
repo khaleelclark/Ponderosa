@@ -82,6 +82,7 @@ import { AgentEventProjectionStore } from "./store-event-projection.js";
 import { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
 import { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
 import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
 import {
   communicationDocumentReference,
@@ -188,6 +189,7 @@ export class AgentStore {
   private readonly conversationProjection!: AgentConversationProjectionReadModel;
   private readonly communicationProjectionLedger!: AgentCommunicationProjectionLedger;
   private readonly workspaceCatalog!: AgentWorkspaceCatalogAuthority;
+  private readonly agentCatalog!: AgentCatalogAuthority;
   private readonly deliverySequenceFile: string;
   private deliverySequence: number;
   private readonly communicationEventCache = new Map<string, {
@@ -235,6 +237,13 @@ export class AgentStore {
             primaryConversationId,
           ),
         projectId => this.chatFeed.refreshAllChatFeedProject(projectId),
+      );
+      this.agentCatalog = new AgentCatalogAuthority(
+        dataDir,
+        this.db,
+        this.client,
+        presetId => this.getAgentPreset(presetId),
+        (agentId, input) => this.updateAgentOrganization(agentId, input),
       );
       this.artifactCatalog = new AgentArtifactCatalog(
         dataDir,
@@ -1180,161 +1189,34 @@ export class AgentStore {
   // ─── Agents ───────────────────────────────────────────────────────────────
 
   createAgent(projectId: string, input: CreateAgentRequest, origin?: AgentSpawnOrigin): AgentDto {
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    const preset = input.presetId ? this.getAgentPreset(input.presetId) : undefined;
-    if (input.presetId && (!preset || preset.projectId !== projectId || !preset.enabled)) throw new Error("invalid preset");
-    const presetSnapshot = preset ? { id: preset.id, name: preset.name, description: preset.description, guidance: preset.guidance, engine: preset.engine, model: preset.model, effort: preset.effort } : undefined;
-    const model = preset?.model ?? input.model;
-    const effort = preset?.effort ?? input.effort;
-    const managementPermissions = input.managementPermissions
-      ? requireManagementPermissions(input.managementPermissions)
-      : { allowAutomaticDescendantDeletion: false, allowAutomaticDescendantReorganization: false };
-    const record: AgentJson = {
-      id,
-      projectId,
-      conversationId: input.conversationId,
-      conversationIds: input.conversationId ? [input.conversationId] : [],
-      title: input.title,
-      activeEngine: input.engine,
-      model,
-      effort,
-      createdAt: now,
-      updatedAt: now,
-      archived: false,
-      managementPermissions,
-      spawnedByAgentId: origin?.agentId,
-      spawnedByExecutionId: origin?.executionId,
-      spawnPrompt: origin?.prompt,
-      spawnIdempotencyKey: origin?.idempotencyKey,
-      presetSnapshot,
-    };
-    mkdirSync(agentDir(this.dataDir, projectId, id), { recursive: true });
-    mkdirSync(artifactsDir(this.dataDir, projectId, id), { recursive: true });
-    mkdirSync(attachmentsDir(this.dataDir, projectId, id), { recursive: true });
-    writeJson(agentJsonPath(this.dataDir, projectId, id), record);
-    this.db
-      .insert(agents)
-      .values({
-        id,
-        projectId,
-        conversationId: input.conversationId ?? null,
-        title: input.title,
-        activeEngine: input.engine,
-        model: model ?? null,
-        effort: effort ?? null,
-        createdAt: now,
-        updatedAt: now,
-        archived: 0,
-        allowAutomaticDescendantDeletion: managementPermissions.allowAutomaticDescendantDeletion ? 1 : 0,
-        allowAutomaticDescendantReorganization: managementPermissions.allowAutomaticDescendantReorganization ? 1 : 0,
-        spawnedByAgentId: origin?.agentId ?? null,
-        spawnedByExecutionId: origin?.executionId ?? null,
-        spawnPrompt: origin?.prompt ?? null,
-        spawnIdempotencyKey: origin?.idempotencyKey ?? null,
-        presetSnapshotJson: presetSnapshot ? JSON.stringify(presetSnapshot) : null,
-      })
-      .run();
-    if (input.conversationId) {
-      this.db.insert(agentConversationMemberships).values({ agentId: id, conversationId: input.conversationId, position: 0 }).run();
-    }
-    if (input.managerAgentId) this.updateAgentOrganization(id, { managerAgentId: input.managerAgentId });
-    return this.rowToAgentDto(id)!;
+    return this.agentCatalog.createAgent(projectId, input, origin);
   }
 
   findAgentSpawn(agentId: string, executionId: string, idempotencyKey: string): AgentDto | undefined {
-    const row = this.db.select().from(agents).where(and(
-      eq(agents.spawnedByAgentId, agentId),
-      eq(agents.spawnedByExecutionId, executionId),
-      eq(agents.spawnIdempotencyKey, idempotencyKey),
-      isNull(agents.deletedAt),
-    )).get();
-    return row ? this.agentRowToDto(row) : undefined;
+    return this.agentCatalog.findAgentSpawn(agentId, executionId, idempotencyKey);
   }
 
   listAgents(projectId: string): AgentDto[] {
-    return this.db
-      .select()
-      .from(agents)
-      .where(and(eq(agents.projectId, projectId), isNull(agents.deletedAt)))
-      .all()
-      .map((r) => this.agentRowToDto(r));
+    return this.agentCatalog.listAgents(projectId);
   }
 
   getAgent(id: string): AgentDto | undefined {
-    const row = this.db.select().from(agents).where(and(eq(agents.id, id), isNull(agents.deletedAt))).get();
-    return row ? this.agentRowToDto(row) : undefined;
+    return this.agentCatalog.getAgent(id);
   }
 
   setImportedHistory(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[]): void {
-    const agent = this.getAgent(agentId);
-    if (!agent) throw new Error("agent not found");
-    const bounded = messages.map((message) => ({
-      role: message.role,
-      text: message.text.slice(0, 100_000),
-      ...(message.createdAt ? { createdAt: message.createdAt } : {}),
-    }));
-    const imported = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages: bounded };
-    writeJson(importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id), imported);
-    this.projectImportedHistory(agent.id, imported);
+    this.agentCatalog.setImportedHistory(agentId, source, messages);
   }
 
   getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[] } | undefined {
-    const agent = this.getAgent(agentId);
-    if (!agent) return undefined;
-    const file = importedAgentHistoryPath(this.dataDir, agent.projectId, agent.id);
-    if (!existsSync(file)) return undefined;
-    return readJson(file);
-  }
-
-  private projectImportedHistory(
-    agentId: string,
-    imported: { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[] },
-  ): void {
-    this.db.transaction((tx) => {
-      tx.delete(importedHistoryMessages).where(eq(importedHistoryMessages.agentId, agentId)).run();
-      imported.messages.forEach((message, sequence) => {
-        tx.insert(importedHistoryMessages).values({
-          agentId,
-          messageId: `imported:${agentId}:${String(sequence).padStart(12, "0")}`,
-          sequence,
-          role: message.role,
-          text: message.text,
-          createdAt: message.createdAt ?? imported.importedAt,
-        }).run();
-      });
-    });
+    return this.agentCatalog.getImportedHistory(agentId);
   }
 
   getImportedHistoryMessagePage(
     agentId: string,
     input: { limit: number; before?: ContextReadBoundary },
   ): ContextSourcePage<MessageDto> {
-    const limit = Math.max(1, Math.min(input.limit, 100));
-    const rows = this.client.prepare(`
-      SELECT message_id, sequence, role, text, created_at
-      FROM imported_history_messages
-      WHERE agent_id = ?
-        ${input.before ? "AND (created_at < ? OR (created_at = ? AND message_id < ?))" : ""}
-      ORDER BY created_at DESC, message_id DESC
-      LIMIT ?
-    `).all(...(input.before
-      ? [agentId, input.before.createdAt, input.before.createdAt, input.before.id, limit + 1]
-      : [agentId, limit + 1])) as Array<{
-      message_id: string; sequence: number; role: PortableAgentHistoryMessageDto["role"];
-      text: string; created_at: string;
-    }>;
-    return {
-      hasMore: rows.length > limit,
-      items: rows.slice(0, limit).map((row) => ({
-        id: row.message_id,
-        agentId,
-        seq: -(row.sequence + 1),
-        role: row.role === "assistant" ? "assistant" : "user",
-        text: row.role === "system" ? `[Imported private context]\n${row.text}` : row.text,
-        createdAt: row.created_at,
-      })),
-    };
+    return this.agentCatalog.getImportedHistoryMessagePage(agentId, input);
   }
 
   listAgentSubtree(id: string): AgentDto[] {
@@ -2478,7 +2360,7 @@ export class AgentStore {
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);
         if (existsSync(importedHistoryFile)) {
-          this.projectImportedHistory(agentId, readJson(importedHistoryFile));
+          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile));
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);
@@ -2551,67 +2433,16 @@ export class AgentStore {
   }
 
   private projectIdOf(agentId: string): string {
-    const row = this.db
-      .select({ projectId: agents.projectId })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .get();
-    if (!row) throw new Error(`unknown agent: ${agentId}`);
-    return row.projectId;
+    return this.agentCatalog.projectIdOf(agentId);
   }
 
   private activeEngineOf(agentId: string): string {
-    const row = this.db
-      .select({ engine: agents.activeEngine })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .get();
-    return row?.engine ?? "codex";
+    return this.agentCatalog.activeEngineOf(agentId);
   }
 
   private rowToAgentDto(id: string): AgentDto | undefined {
-    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    return row ? this.agentRowToDto(row) : undefined;
+    return this.agentCatalog.rowToAgentDto(id);
   }
-
-  private agentRowToDto(row: typeof agents.$inferSelect): AgentDto {
-    const state: AgentState = {};
-    if (row.stateBranch) state.branch = row.stateBranch;
-    if (row.stateCommit) state.commit = row.stateCommit;
-    let imported: { source: string; messages: PortableAgentHistoryMessageDto[] } | undefined;
-    try {
-      const file = importedAgentHistoryPath(this.dataDir, row.projectId, row.id);
-      if (existsSync(file)) imported = readJson(file);
-    } catch { /* malformed optional import history stays out of runtime metadata */ }
-    return {
-      id: row.id,
-      projectId: row.projectId,
-      conversationId: row.conversationId ?? undefined,
-      conversationIds: this.db.select().from(agentConversationMemberships)
-        .where(eq(agentConversationMemberships.agentId, row.id))
-        .orderBy(asc(agentConversationMemberships.position)).all().map((membership) => membership.conversationId),
-      title: row.title,
-      activeEngine: row.activeEngine,
-      model: row.model ?? undefined,
-      effort: row.effort ?? undefined,
-      state,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-      archived: row.archived === 1 || Boolean(row.deletedAt),
-      ...(row.deletedAt ? { deletedAt: row.deletedAt } : {}),
-      managerAgentId: row.managerAgentId ?? undefined,
-      managementPermissions: {
-        allowAutomaticDescendantDeletion: row.allowAutomaticDescendantDeletion === 1,
-        allowAutomaticDescendantReorganization: row.allowAutomaticDescendantReorganization === 1,
-      },
-      spawnedByAgentId: row.spawnedByAgentId ?? undefined,
-      spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
-      spawnPrompt: row.spawnPrompt ?? undefined,
-      presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
-      ...(imported ? { importedHistoryCount: imported.messages.length, importedFrom: imported.source } : {}),
-    };
-  }
-
 
   private persistAgentMemberships(
     id: string,
@@ -2619,26 +2450,12 @@ export class AgentStore {
     primaryConversationId?: string,
     beforeProjectionChange?: () => void,
   ): void {
-    const row = this.db.select().from(agents).where(eq(agents.id, id)).get();
-    if (!row) throw new Error(`unknown agent: ${id}`);
-    const now = new Date().toISOString();
-    const jsonPath = agentJsonPath(this.dataDir, row.projectId, id);
-    const json = readJson<AgentJson>(jsonPath);
-    // Canonical metadata is committed first; SQLite remains a rebuildable projection.
-    writeJson(jsonPath, { ...json, conversationId: primaryConversationId, conversationIds, updatedAt: now });
-    try {
-      this.db.transaction((tx) => {
-        beforeProjectionChange?.();
-        tx.delete(agentConversationMemberships).where(eq(agentConversationMemberships.agentId, id)).run();
-        conversationIds.forEach((conversationId, position) => {
-          tx.insert(agentConversationMemberships).values({ agentId: id, conversationId, position }).run();
-        });
-        tx.update(agents).set({ conversationId: primaryConversationId ?? null, updatedAt: now }).where(eq(agents.id, id)).run();
-      });
-    } catch (error) {
-      writeJson(jsonPath, json);
-      throw error;
-    }
+    this.agentCatalog.persistAgentMemberships(
+      id,
+      conversationIds,
+      primaryConversationId,
+      beforeProjectionChange,
+    );
   }
 
   continuationHandoffForRun(agentId: string, executionId: string): {
