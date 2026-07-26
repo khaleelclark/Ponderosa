@@ -237,6 +237,7 @@ import { createOperationalNotifications } from "./operational-notifications.js";
 import { createRuntimeAuthority } from "./runtime-authority.js";
 import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
 import { createLinkPreviewService } from "./link-preview-service.js";
+import { createBrowserAuthority } from "./browser-authority.js";
 import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import { ProjectFileAuthority, registerProjectFileRoutes } from "./routes/project-files.js";
@@ -857,34 +858,22 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     if (!providerEnabled(engineId)) resolveOperationalNotification(`provider:${engineId}:unavailable`);
   }
   const contextCursors = new ContextCursorStore(opts.dataDir);
-  const browserSessions = new BrowserSessionManager(
-    opts.dataDir,
-    opts.browserDriverFactory ?? chromeBrowserDriverFactory(opts.dataDir),
-    (scope, event) => {
-      const run = activeRuns.get(scope.agentId);
-      if (!run || run.runId !== scope.runId || run.conversationId !== scope.conversationId) return;
-      // Cancellation advances the scheduler fence before provider/browser
-      // interruption. The server-owned close audit is still valid for the exact
-      // in-memory Run even though late runtime/browser activity must now fail.
-      if (event.type === "browser_session" && event.status === "closed") {
-        publish(scope.agentId, store.appendEvent(scope.agentId, event));
-        return;
-      }
-      persistRuntimeEvent(scope.agentId, run, event);
-    },
-  );
-  const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
-  const projectBrowserSessions = new BrowserSessionManager(
-    opts.dataDir,
-    opts.browserDriverFactory ?? chromeBrowserDriverFactory(opts.dataDir),
-    (scope, event) => {
-      const grant = projectBrowserGrants.get(scope.projectId);
-      if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
-      const run = activeRuns.get(grant.agentId);
-      if (!run || run.runId !== grant.runId) return;
-      persistRuntimeEvent(grant.agentId, run, { ...event, executionId: grant.runId });
-    },
-  );
+  const {
+    browserScopeForRun,
+    browserSessions,
+    closeRunBrowser,
+    projectBrowserDto,
+    projectBrowserGrants,
+    projectBrowserScope,
+    projectBrowserSessions,
+  } = createBrowserAuthority({
+    dataDir: opts.dataDir,
+    driverFactory: opts.browserDriverFactory,
+    store,
+    activeRuns,
+    publish,
+    persistRuntimeEvent: (agentId, run, event) => persistRuntimeEvent(agentId, run, event as LogEvent),
+  });
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");
   const projectFolderPathBoundary = createProjectFolderPathBoundary({
     managedWorkspacesRoot,
@@ -1110,67 +1099,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     clearRunLeaseTimer: (run) => clearRunLeaseTimer(run),
     clearRunLivenessTimer: (run) => clearRunLivenessTimer(run),
   });
-
-  function browserScopeForRun(agentId: string, run: ActiveRun): BrowserScope | undefined {
-    const agent = store.getAgent(agentId);
-    if (!agent) return undefined;
-    return {
-      projectId: agent.projectId,
-      agentId,
-      runId: run.runId,
-      ...(run.conversationId ? { conversationId: run.conversationId } : {}),
-    };
-  }
-
-  function closeRunBrowser(
-    agentId: string,
-    run: ActiveRun,
-    reason: string,
-  ): Promise<void> {
-    const scope = browserScopeForRun(agentId, run);
-    const releaseProjectBrowser = async (): Promise<void> => {
-      const agent = store.getAgent(agentId);
-      const projectId = agent?.projectId;
-      if (!projectId) return;
-      const grant = projectBrowserGrants.get(projectId);
-      if (!grant || grant.agentId !== agentId || grant.runId !== run.runId) return;
-      projectBrowserGrants.delete(projectId);
-      const projectScope = projectBrowserScope(projectId);
-      const session = projectBrowserSessions.get(projectScope.agentId);
-      if (session?.status === "ready" && session.controlOwner === "agent") {
-        await projectBrowserSessions.setControl(projectScope, "operator", session.controlEpoch).catch(() => undefined);
-      }
-    };
-    return Promise.all([
-      scope ? browserSessions.closeRun(scope, reason) : Promise.resolve(),
-      releaseProjectBrowser(),
-    ]).then(() => undefined);
-  }
-
-  const projectBrowserScope = (projectId: string, grant?: { agentId: string; runId: string }): BrowserScope => ({
-    projectId,
-    agentId: `project-browser:${projectId}`,
-    runId: `project:${projectId}`,
-    ...(grant ? { actorAgentId: grant.agentId, actorRunId: grant.runId } : {}),
-  });
-
-  const projectBrowserDto = (projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto => {
-    const grant = projectBrowserGrants.get(projectId);
-    return {
-      id: session.id,
-      projectId,
-      status: session.status,
-      controlOwner: session.controlOwner,
-      ...(grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
-      controlEpoch: session.controlEpoch,
-      ...(session.url ? { url: session.url } : {}),
-      ...(session.title ? { title: session.title } : {}),
-      frameRevision: session.frameRevision,
-      openedAt: session.openedAt,
-      updatedAt: session.updatedAt,
-      ...(session.failure ? { failure: session.failure } : {}),
-    };
-  };
 
   const {
     claimActiveRun,
