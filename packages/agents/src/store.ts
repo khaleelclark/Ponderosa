@@ -30,8 +30,6 @@ import type {
   CommunicationEvent,
   CommunicationAudience,
   CommunicationRevisionEvent,
-  CommunicationDocumentRecord,
-  CommunicationDocumentReference,
   CommunicationProjection,
   CommunicationReconciliationReport,
   ProjectedCommunicationMessage,
@@ -82,16 +80,17 @@ import type {
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
 import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
+import {
+  communicationDocumentReference,
+  communicationMessageProjection,
+  normalizedAgentIds,
+  revisedRenderedText,
+  userDmAgentIds,
+} from "./store-communication.js";
 export { AgentDeletionConflictError } from "./store-agent-management.js";
-
-function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
-  const { content: _content, ...metadata } = document;
-  const root = `/api/projects/${encodeURIComponent(projectId)}/communication-documents/${encodeURIComponent(document.id)}`;
-  return { ...metadata, previewUrl: root, downloadUrl: `${root}/download` };
-}
 import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
-import { artifactId, messageId as projectedMessageId } from "./ids.js";
+import { artifactId } from "./ids.js";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
 import { publishManagedArtifactContent, readManagedArtifactContent } from "./managed-artifact-files.js";
 import type { LogEvent, StoredLogEvent } from "./log-event.js";
@@ -102,12 +101,6 @@ import {
   type ProjectionOp,
   type ProjectionState,
 } from "./projectors.js";
-
-function revisedRenderedText(rendered: string, original: string, replacement: string): string {
-  if (rendered === original) return replacement;
-  if (original && rendered.endsWith(original)) return `${rendered.slice(0, -original.length)}${replacement}`.trimEnd();
-  return replacement;
-}
 
 function fsyncDirectory(directory: string): void {
   const descriptor = openSync(directory, "r");
@@ -477,31 +470,6 @@ function ensureV1Layout(dataDir: string): void {
     rmSync(join(dataDir, entry), { recursive: true, force: true });
   }
   writeFileSync(marker, "1\n", "utf8");
-}
-
-function communicationMessageProjection(agentId: string, stored: StoredLogEvent): CommunicationProjection["message"] | undefined {
-  const event = stored.event;
-  if (event.type === "user_message") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: "user", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id) } : {}),
-    ...(event.attachments?.length ? { attachments: event.attachments } : {}),
-  };
-  if (event.type === "communication_projection") return {
-    messageId: projectedMessageId(agentId, stored.seq), role: event.role ?? "assistant", renderedText: event.text, createdAt: stored.ts, sequence: stored.seq,
-    ...(event.attachments?.length ? { attachmentIds: event.attachments.map((item) => item.id), attachments: event.attachments } : {}),
-  };
-  return undefined;
-}
-
-function userDmAgentIds(event: CommunicationEvent): string[] {
-  if (event.schemaVersion !== 2 || event.intent !== "user_dm") return [];
-  return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
-}
-
-function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
-  const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
-  if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
-  return normalized as [string, ...string[]];
 }
 
 export class AgentStore {
