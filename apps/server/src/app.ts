@@ -140,9 +140,9 @@ import {
   type CoordinationRequestUpdateKind,
   type RequestLifetime,
 } from "@ponderosa/core";
-import { artifactContentPath, managedArtifactContentPath, publishManagedArtifactContent, openManagedArtifactContent, readManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type ManagedArtifactContentHandle, type ManagedArtifactAsyncReadFaults, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store } from "@ponderosa/agents";
+import { artifactContentPath, managedArtifactContentPath, publishManagedArtifactContent, openManagedArtifactContent, readManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type ManagedArtifactContentHandle, type ManagedArtifactAsyncReadFaults, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store, PendingActivationCapacityError } from "@ponderosa/agents";
 import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
-import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
+import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, generatedArtifactMetadataIsValid, managedArtifactDownloadName, type AuthoritativeRuntimeAttachment, type RegisteredGeneratedArtifact } from "./assets.js";
 import { ContextCursorStore } from "./context-cursors.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { EngineAvailabilityStore } from "./engine-availability-store.js";
@@ -9664,6 +9664,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return reply.code(result.replayed ? 200 : 202).send(result);
     } catch (error) {
       const message = error instanceof Error ? error.message : "webhook rejected";
+      // Capacity is the one rejection here that says nothing about the caller's
+      // credentials; falling through to 401 would tell a correctly signed
+      // sender its signature was bad.
+      if (error instanceof PendingActivationCapacityError) {
+        return reply.code(429).header("Retry-After", "60").send({ error: message });
+      }
       if (message.includes("idempotency conflict")) return reply.code(409).send({ error: message });
       if (message.startsWith("canonical JSON exceeds")) return reply.code(400).send({ error: message });
       if (message === "webhook Trigger not found" || message === "webhook Trigger owner is unavailable") {
@@ -13203,7 +13209,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       );
       return authoritative ? {
         managed: authoritative,
-        name: managed.summary ?? path.basename(managed.path),
+        name: managedArtifactDownloadName(managed),
         mediaType: managed.mediaType,
         size: authoritative.size,
       } : undefined;
@@ -13331,6 +13337,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       }
       const response = reply.type(file.mediaType)
         .header("Content-Length", String(file.size))
+        // The declared media type is the only truthful statement about these
+        // bytes; nothing downstream should re-decide it from the file name.
+        .header("X-Content-Type-Options", "nosniff")
         .header("Content-Disposition", contentDisposition(file.name));
       if (file.managed) {
         const body = file.managed.createReadStream(transfer.signal);
