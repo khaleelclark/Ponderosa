@@ -9,7 +9,6 @@ import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
-import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
@@ -19,24 +18,13 @@ import {
   Button,
   Chip,
   CircularProgress,
-  FormControl,
-  FormControlLabel,
   IconButton,
-  InputLabel,
   Link,
-  ListSubheader,
-  ListItemText,
-  MenuItem,
-  Paper,
-  Select,
   Stack,
-  Switch,
-  Tooltip,
   Typography,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { SelectChangeEvent } from "@mui/material/Select";
 import type {
   AgentHealthDto,
   EngineCommand,
@@ -129,6 +117,7 @@ import {
   AgentRuntimeControls,
 } from "./AgentDetail.parts";
 import { useAgentRunClock } from "./useAgentRunClock";
+import { AgentSettingsPane } from "./AgentDetail.settings";
 
 function AgentRunState({
   status,
@@ -1229,332 +1218,88 @@ export function AgentDetail({
     else onOpenReviewInNewTab(file.path);
   };
   const renderSettingsPane = () => (
-    <Stack
-      spacing={2}
-      aria-label="Agent settings"
-      className="ponderosa-scroll"
-      sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}
-    >
-      <Box>
-        <Typography variant="h6">Agent Settings</Typography>
-        <Typography variant="body2" color="text.secondary">
-          Agent controls, assignments, permissions, and runtime choices for
-          upcoming work.
-        </Typography>
-      </Box>
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Provider and next Run
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          Provider, model, and reasoning are persistent Agent defaults. Changes
-          apply when the next Run starts; steering an active Run keeps that
-          Run&apos;s captured runtime.
-        </Typography>
-        <Stack spacing={1.5}>
-          <FormControl size="small" fullWidth>
-            <InputLabel id="agent-detail-engine-label">
-              Provider · next Run
-            </InputLabel>
-            <Select
-              labelId="agent-detail-engine-label"
-              value={settingsEngine}
-              label="Provider · next Run"
-              onChange={(event: SelectChangeEvent) => {
-                setSettingsEngine(event.target.value);
-                setSettingsModel("");
-                setSettingsEffort("");
-                setRuntimeSettingsNotice(undefined);
-              }}
-            >
-              {engines.map(option => (
-                <MenuItem key={option.id} value={option.id}>
-                  {option.displayName}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Chip
-            size="small"
-            label={`${settingsEngineRegistration?.displayName ?? settingsEngine}${engineIsAvailable(settingsEngineRegistration) ? "" : settingsEngineRegistration?.authenticated ? " · access unavailable" : " · not signed in"}`}
-            color={
-              engineIsAvailable(settingsEngineRegistration)
-                ? "default"
-                : "warning"
-            }
-            sx={{ alignSelf: "flex-start" }}
-          />
-          {settingsEngineRegistration?.authenticated &&
-          !engineIsAvailable(settingsEngineRegistration) ? (
-            <>
-              <Typography variant="caption" color="warning.main">
-                {settingsEngineRegistration.availabilityDetail ??
-                  "The provider rejected runtime access."}
-              </Typography>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={recheckEngine.isPending}
-                onClick={() => setRecheckEngineOpen(true)}
-              >
-                {recheckEngine.isPending ? "Testing Access…" : "Test Access"}
-              </Button>
-            </>
-          ) : null}
-          {modelCatalogLoading && settingsEngine === "claude" ? (
-            <Typography variant="caption" color="text.secondary">
-              Refreshing Claude models…
-            </Typography>
-          ) : null}
-          <FormControl size="small" fullWidth>
-            <InputLabel id="agent-detail-model-label">
-              Model · next Run
-            </InputLabel>
-            <Select
-              labelId="agent-detail-model-label"
-              value={
-                settingsModels.some(option => option.id === settingsModel)
-                  ? settingsModel
-                  : ""
-              }
-              label="Model · next Run"
-              onChange={(event: SelectChangeEvent) => {
-                const nextModel = event.target.value;
-                setSettingsModel(nextModel);
-                if (
-                  !effortSelectionIsCompatible(
-                    settingsEngineRegistration,
-                    nextModel,
-                    settingsEffort,
-                  )
-                )
-                  setSettingsEffort("");
-                setRuntimeSettingsNotice(undefined);
-              }}
-            >
-              <MenuItem value="">Engine Default</MenuItem>
-              {settingsModels.flatMap((option, index) => [
-                ...(option.group && option.group !== settingsModels[index - 1]?.group
-                  ? [<ListSubheader key={`group-${option.group}`}>{option.group}</ListSubheader>]
-                  : []),
-                <MenuItem key={option.id} value={option.id} disabled={option.disabled}>
-                  <ListItemText primary={option.label} secondary={option.detail} />
-                </MenuItem>,
-              ])}
-            </Select>
-          </FormControl>
-          {settingsEngine === "claude" ? (
-            <Typography variant="caption" color="text.secondary">
-              Latest aliases follow future provider upgrades. Pinned exact IDs stay on the selected version.
-            </Typography>
-          ) : null}
-          <FormControl size="small" fullWidth>
-            <InputLabel id="agent-detail-effort-label">
-              Reasoning · next Run
-            </InputLabel>
-            <Select
-              labelId="agent-detail-effort-label"
-              value={
-                settingsEfforts.some(option => option.id === settingsEffort)
-                  ? settingsEffort
-                  : ""
-              }
-              label="Reasoning · next Run"
-              onChange={(event: SelectChangeEvent) => {
-                setSettingsEffort(event.target.value);
-                setRuntimeSettingsNotice(undefined);
-              }}
-            >
-              <MenuItem value="">Engine Default</MenuItem>
-              {settingsEfforts.map(option => (
-                <MenuItem key={option.id} value={option.id}>
-                  {option.label}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          <Button
-            size="small"
-            variant="contained"
-            disabled={
-              !runtimeSettingsDirty ||
-              updateRuntimeSettings.isPending ||
-              !settingsEngine
-            }
-            onClick={() => updateRuntimeSettings.mutate()}
-          >
-            {updateRuntimeSettings.isPending
-              ? "Saving…"
-              : "Save Runtime Settings"}
-          </Button>
-          {runtimeSettingsNotice ? (
-            <Alert severity="success">{runtimeSettingsNotice}</Alert>
-          ) : null}
-          {updateRuntimeSettings.isError ? (
-            <Alert severity="error">
-              {String(updateRuntimeSettings.error)}
-            </Alert>
-          ) : null}
-          <Button
-            size="small"
-            variant="outlined"
-            startIcon={<RestartAltIcon />}
-            onClick={() => {
-              setQueuedMessageNotice(
-                "Starting this Agent with a fresh provider session next time…",
-              );
-              void api
-                .compactSession(agentId)
-                .then(() =>
-                  setQueuedMessageNotice(
-                    "Fresh provider session scheduled. Canonical history remains available.",
-                  ),
-                )
-                .catch((error: unknown) =>
-                  setQueuedMessageNotice(
-                    error instanceof Error
-                      ? error.message
-                      : "Fresh provider session could not be scheduled.",
-                  ),
-                );
-            }}
-          >
-            Start Fresh Provider Session for Next Run
-          </Button>
-          <Typography variant="caption" color="text.secondary">
-            {detail.state.branch ?? "No branch"}
-            {detail.state.commit ? ` · ${detail.state.commit}` : ""}
-          </Typography>
-        </Stack>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Chat assignments
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          {master ? (
-            <>
-              Home chat:{" "}
-              <Link component="button" onClick={() => onOpenMaster(master.id)}>
-                {master.title}
-              </Link>
-            </>
-          ) : (
-            "This Agent is not assigned to a Project chat."
-          )}
-        </Typography>
-        <Button
-          variant="outlined"
-          startIcon={<ForumOutlinedIcon />}
-          onClick={() => {
-            setMembershipIds(detail.agent.conversationIds);
-            setPrimaryConversationId(detail.agent.conversationId ?? "");
-            setMembershipOpen(true);
-          }}
-        >
-          Manage Chat Assignments
-        </Button>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Organization and automatic child management
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-          {organizationalParent ? (
-            <>
-              Delegated under{" "}
-              <Link
-                component="button"
-                onClick={() => onOpenAgent(organizationalParent.id)}
-              >
-                {organizationalParent.title}
-              </Link>
-            </>
-          ) : (
-            "Top-level Agent"
-          )}
-        </Typography>
-        <Stack spacing={1}>
-          <FormControlLabel
-            control={
-              <Switch
-                size="small"
-                checked={
-                  detail.agent.managementPermissions
-                    .allowAutomaticDescendantDeletion
-                }
-                disabled={updateManagementPermissions.isPending}
-                onChange={(_event, checked) =>
-                  updateManagementPermissions.mutate({
-                    ...detail.agent.managementPermissions,
-                    allowAutomaticDescendantDeletion: checked,
-                  })
-                }
-              />
-            }
-            label="Allow automatic descendant deletion"
-          />
-          <Typography variant="caption" color="text.secondary" sx={{ pl: 6 }}>
-            May cancel active work and permanently delete descendant branches
-            without another Decision.
-          </Typography>
-          <FormControlLabel
-            control={
-              <Switch
-                size="small"
-                checked={
-                  detail.agent.managementPermissions
-                    .allowAutomaticDescendantReorganization
-                }
-                disabled={updateManagementPermissions.isPending}
-                onChange={(_event, checked) =>
-                  updateManagementPermissions.mutate({
-                    ...detail.agent.managementPermissions,
-                    allowAutomaticDescendantReorganization: checked,
-                  })
-                }
-              />
-            }
-            label="Allow automatic descendant reorganization"
-          />
-          <Typography variant="caption" color="text.secondary" sx={{ pl: 6 }}>
-            May rearrange reporting lines inside its subtree, but cannot detach
-            or promote descendants.
-          </Typography>
-          <Button
-            variant="outlined"
-            startIcon={<AccountTreeOutlinedIcon />}
-            onClick={() => {
-              setOrganizationParentId(detail.agent.managerAgentId ?? "");
-              setOrganizationOpen(true);
-            }}
-          >
-            Change Reporting Line
-          </Button>
-          {updateManagementPermissions.isError ? (
-            <Alert severity="error">
-              {String(updateManagementPermissions.error)}
-            </Alert>
-          ) : null}
-        </Stack>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
-          Runtime capabilities
-        </Typography>
-        <Tooltip
-          title={<span style={{ whiteSpace: "pre-line" }}>{mcpSummary}</span>}
-        >
-          <Chip
-            size="small"
-            variant="outlined"
-            color={usableMcps.length > 0 ? "success" : "default"}
-            label={`${usableMcps.length}/${configuredMcps.length} MCPs · ${mcpToolCountLabel}${engineCapability?.steering ? " · Steerable" : ""}`}
-            sx={{ mt: 1 }}
-          />
-        </Tooltip>
-      </Paper>
-    </Stack>
+    <AgentSettingsPane
+      agent={detail.agent}
+      engines={engines}
+      modelCatalogLoading={modelCatalogLoading}
+      settingsEngine={settingsEngine}
+      settingsModel={settingsModel}
+      settingsEffort={settingsEffort}
+      settingsEngineRegistration={settingsEngineRegistration}
+      settingsModels={settingsModels}
+      settingsEfforts={settingsEfforts}
+      runtimeSettingsDirty={runtimeSettingsDirty}
+      runtimeSettingsNotice={runtimeSettingsNotice}
+      runtimeSettingsPending={updateRuntimeSettings.isPending}
+      runtimeSettingsError={updateRuntimeSettings.error}
+      recheckPending={recheckEngine.isPending}
+      master={master}
+      organizationalParent={organizationalParent}
+      managementPermissionsPending={updateManagementPermissions.isPending}
+      managementPermissionsError={updateManagementPermissions.error}
+      mcpSummary={mcpSummary}
+      configuredMcpCount={configuredMcps.length}
+      usableMcpCount={usableMcps.length}
+      mcpToolCountLabel={mcpToolCountLabel}
+      steering={engineCapability?.steering}
+      onSettingsEngineChange={value => {
+        setSettingsEngine(value);
+        setSettingsModel("");
+        setSettingsEffort("");
+        setRuntimeSettingsNotice(undefined);
+      }}
+      onSettingsModelChange={value => {
+        setSettingsModel(value);
+        if (
+          !effortSelectionIsCompatible(
+            settingsEngineRegistration,
+            value,
+            settingsEffort,
+          )
+        )
+          setSettingsEffort("");
+        setRuntimeSettingsNotice(undefined);
+      }}
+      onSettingsEffortChange={value => {
+        setSettingsEffort(value);
+        setRuntimeSettingsNotice(undefined);
+      }}
+      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate()}
+      onRecheckEngine={() => setRecheckEngineOpen(true)}
+      onStartFreshSession={() => {
+        setQueuedMessageNotice(
+          "Starting this Agent with a fresh provider session next time…",
+        );
+        void api
+          .compactSession(agentId)
+          .then(() =>
+            setQueuedMessageNotice(
+              "Fresh provider session scheduled. Canonical history remains available.",
+            ),
+          )
+          .catch((error: unknown) =>
+            setQueuedMessageNotice(
+              error instanceof Error
+                ? error.message
+                : "Fresh provider session could not be scheduled.",
+            ),
+          );
+      }}
+      onOpenMaster={onOpenMaster}
+      onManageMemberships={() => {
+        setMembershipIds(detail.agent.conversationIds);
+        setPrimaryConversationId(detail.agent.conversationId ?? "");
+        setMembershipOpen(true);
+      }}
+      onOpenAgent={onOpenAgent}
+      onUpdateManagementPermissions={value =>
+        updateManagementPermissions.mutate(value)
+      }
+      onChangeReportingLine={() => {
+        setOrganizationParentId(detail.agent.managerAgentId ?? "");
+        setOrganizationOpen(true);
+      }}
+    />
   );
 
   const panes: Record<AgentTab, JSX.Element> = {
