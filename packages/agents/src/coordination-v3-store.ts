@@ -36,6 +36,7 @@ import {
   isCommunicationAudience,
   isCommunicationEvent,
 } from "@ponderosa/core";
+import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./coordination-v3-activation.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import { triggerBudgetEndsAt } from "./coordination-v3-trigger-budget.js";
 
@@ -557,35 +558,6 @@ export interface CoordinationV3StoreOptions {
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
-
-class PendingActivationCapacityError extends Error {}
-
-const PRIORITY = {
-  human: 100,
-  urgent: 90,
-  actionable: 80,
-  satisfied: 70,
-  request: 60,
-  ordinary: 50,
-} as const;
-
-function activationDefaults(kind: string, priority: number): {
-  dispatchPolicy: ActivationDispatchPolicy;
-  promptClass: ActivationPromptClass;
-} {
-  if (kind === "human_message" || kind === "urgent_message" || kind.includes("question") || kind.includes("block")) {
-    return {
-      dispatchPolicy: "steer_or_run",
-      promptClass: kind === "human_message" ? "human" : "blocker",
-    };
-  }
-  return {
-    dispatchPolicy: "next_run",
-    promptClass: priority >= PRIORITY.actionable ? "blocker"
-      : kind.startsWith("coordination_") ? "coordination"
-        : "ordinary",
-  };
-}
 
 const DEFAULT_CANONICAL_JSON_LIMITS = { maxDepth: 512, maxNodes: 1_000_000 } as const;
 const TRIGGER_CANONICAL_JSON_LIMITS = { maxDepth: 64, maxNodes: 250_000 } as const;
