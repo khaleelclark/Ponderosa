@@ -26,8 +26,8 @@ type ActivityDisplayEntry =
   | ActivityStreamEntry
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
-const MAX_ACTION_GROUP_GAP_MS = 2_000;
-const MAX_ACTION_GROUP_IDLE_SPAN_MS = 4_000;
+const MAX_ACTION_GROUP_GAP_MS = 10_000;
+const MAX_ACTION_GROUP_IDLE_SPAN_MS = 30_000;
 
 function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
@@ -54,14 +54,14 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
     if (previous) {
       const previousCompletedAt = previous.kind === "browser"
         ? previous.createdAt
-        : previous.result?.completedAt;
+        : previous.result?.completedAt ?? previous.createdAt;
       const previousCompletedTime = Date.parse(previousCompletedAt ?? "");
       const entryStartTime = Date.parse(entry.createdAt);
       const invalidTime = !Number.isFinite(previousCompletedTime) ||
         !Number.isFinite(entryStartTime);
       const idleGap = Math.max(0, entryStartTime - previousCompletedTime);
       if (invalidTime ||
-          idleGap > MAX_ACTION_GROUP_GAP_MS ||
+          idleGap >= MAX_ACTION_GROUP_GAP_MS ||
           accumulatedIdleMs + idleGap > MAX_ACTION_GROUP_IDLE_SPAN_MS) {
         flush();
       } else {
@@ -71,11 +71,11 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
     actions.push(entry);
   };
   for (const entry of entries) {
-    if (entry.kind === "command" && !entry.internal && entry.result) {
+    if (entry.kind === "command" && !entry.internal) {
       append(entry);
       continue;
     }
-    if (entry.kind === "tool" && entry.result) {
+    if (entry.kind === "tool") {
       append(entry);
       continue;
     }
@@ -133,7 +133,17 @@ export function ActivityStreamPane({
   }), [activity, runOutput, runs, activeExecutionId]);
   const displayEntries = useMemo(() => groupConsecutiveActions(entries), [entries]);
   const last = entries.at(-1);
-  const layoutKey = last ? `${entries.length}:${last.id}:${last.seq}` : "0";
+  const latestActivitySeq = activity.reduce(
+    (latest, item) => Math.max(latest, item.seq),
+    0,
+  );
+  const latestRunOutputSeq = runOutput.reduce(
+    (latest, item) => Math.max(latest, item.sourceSeqEnd),
+    0,
+  );
+  const layoutKey = last
+    ? `${entries.length}:${last.id}:${latestActivitySeq}:${latestRunOutputSeq}`
+    : `0:${latestActivitySeq}:${latestRunOutputSeq}`;
   return <ChatSurface
     layout="workspace"
     label="Agent activity"
