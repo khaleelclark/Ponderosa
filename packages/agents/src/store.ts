@@ -4,18 +4,7 @@
 // joins, activations, Runs, leases, fences, injections, and idempotency records
 // are authoritative SQLite state. Exposes NO HTTP (SPEC §7).
 
-import { createHash, randomUUID } from "node:crypto";
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  renameSync,
-  rmSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
-import Database from "better-sqlite3";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import type Database from "better-sqlite3";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -23,7 +12,6 @@ import type {
   ChangedFileDetailDto,
   AgentOrganizationEvent,
   CommunicationEvent,
-  CommunicationAudience,
   CommunicationRevisionEvent,
   CommunicationProjection,
   CommunicationReconciliationReport,
@@ -42,26 +30,16 @@ import type {
   ProjectDto,
   AgentRunDto,
   ProviderInputDto,
-  ProviderInputSourceManifest,
   WorkItemDto,
-  WorkItemStatus,
-  AgentLifecycleReason,
-  AgentLifecycleStatus,
-  AgentRunStatus,
   AgentDetailDto,
   HistoryPageDto,
   AgentDto,
   AgentDeletionPreviewDto,
   PortableAgentHistoryMessageDto,
-  AgentState,
   TokenUsageSummaryDto,
-  TokenUsageBreakdownDto,
-  TokenUsageMetric,
   TokenUsageRangeDto,
   TokenUsage,
-  GlobalChatSearchAuthorDto,
   GlobalChatSearchResponseDto,
-  AllChatItemDto,
   AllChatPageDto,
   RunOutputDto,
   ResponseFileActivityDto,
@@ -71,55 +49,42 @@ import type {
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
-import { communicationHasProjectionTarget, deriveCommunicationBehavior } from "@ponderosa/core";
 import type { GlobalChatSearchInput } from "./store-chat-search-read-model.js";
-import { AgentChatFeedProjection } from "./store-chat-feed-projection.js";
-import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
-import { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
-import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
-import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
-import { AgentEventProjectionStore } from "./store-event-projection.js";
-import { AgentEventSessionAuthority } from "./store-event-session-authority.js";
-import { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
-import { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
-import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
-import { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
-import { AgentCommunicationJournalAuthority } from "./store-communication-journal-authority.js";
-import { AgentManagementAuthority } from "./store-agent-management-authority.js";
-import { AgentProjectDeletionAuthority } from "./store-project-deletion-authority.js";
-import { AgentDeletionAuthority } from "./store-agent-deletion-authority.js";
-import { AgentProjectionRebuilder } from "./store-projection-rebuilder.js";
-import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
+import type { AgentChatFeedProjection } from "./store-chat-feed-projection.js";
+import type { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
+import type { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
+import type { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
+import type { AgentArtifactCatalog } from "./store-artifact-catalog.js";
+import type { AgentEventSessionAuthority } from "./store-event-session-authority.js";
+import type { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
+import type { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
+import type { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
+import type { AgentCatalogAuthority } from "./store-agent-catalog-authority.js";
+import type { AgentCommunicationJournalAuthority } from "./store-communication-journal-authority.js";
+import type { AgentManagementAuthority } from "./store-agent-management-authority.js";
+import type { AgentProjectDeletionAuthority } from "./store-project-deletion-authority.js";
+import type { AgentDeletionAuthority } from "./store-agent-deletion-authority.js";
+import type { AgentProjectionRebuilder } from "./store-projection-rebuilder.js";
+import type { AgentAuditReadModel } from "./store-agent-audit-read-model.js";
 import {
-  communicationDocumentReference,
-  communicationMessageProjection,
-  normalizedAgentIds,
-  revisedRenderedText,
-  userDmAgentIds,
-} from "./store-communication.js";
+  createAgentStoreComponents,
+  openAgentStoreData,
+  type AgentStoreComponentPorts,
+} from "./store-component-factory.js";
+import { AgentStoreSupport } from "./store-support.js";
+import { AgentEventSessionFacade } from "./store-event-session-facade.js";
 import {
-  acquireDataDirectoryOwnership,
-  ensureV1Layout,
   releaseDataDirectoryOwnership,
   type DataDirectoryOwnership,
 } from "./store-data-directory.js";
-import { fsyncDirectory, pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
 export { AgentDeletionConflictError } from "./store-agent-management.js";
-import { openDb, type Db } from "./db.js";
-import { EventLog } from "./eventlog.js";
-import { artifactId } from "./ids.js";
-import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
-import { readManagedArtifactContent } from "./managed-artifact-files.js";
-import type { LogEvent, StoredLogEvent } from "./log-event.js";
+import type { Db } from "./db.js";
+import type { LogEvent } from "./log-event.js";
 import type {
   ContextReadBoundary,
   ContextSourcePage,
-  ProjectJson,
   ManagedArtifactAccess,
-  AgentJson,
   AgentSpawnOrigin,
-  PresetEvent,
-  ConversationJson,
   ConversationDeliveryIntent,
   MessageDispatchRecord,
   AgentDeletionReceipt,
@@ -136,54 +101,7 @@ export type {
   ProjectDeletionReceipt,
   AgentManagementAuthorization,
 } from "./store-types.js";
-import {
-  artifacts,
-  agentPresets,
-  events,
-  conversations,
-  messages,
-  chatSearchMessages,
-  importedHistoryMessages,
-  activityProjection,
-  changedFileProjection,
-  managedArtifactProjection,
-  projects,
-  runs,
-  workItems,
-  agents,
-  agentDeletionTombstones,
-  agentDeletionReceipts,
-  agentManagementApprovals,
-  agentConversationMemberships,
-  continuationHandoffs,
-  projectDeletionPending,
-  projectDeletionReceipts,
-} from "./schema.js";
-
-import {
-  artifactsDir,
-  managedArtifactContentPath,
-  attachmentsDir,
-  dbPath,
-  eventsPath,
-  conversationDir,
-  communicationEventsPath,
-  communicationRevisionsPath,
-  communicationProjectionsPath,
-  messageDispatchesPath,
-  conversationJsonPath,
-  conversationsDir,
-  projectJsonPath,
-  agentPresetsPath,
-  agentOrganizationEventsPath,
-  projectsDir,
-  projectDir,
-  agentDir,
-  agentJsonPath,
-  importedAgentHistoryPath,
-  agentsDir,
-} from "./paths.js";
-export class AgentStore {
+export class AgentStore extends AgentEventSessionFacade {
   private readonly db: Db;
   private readonly client: Database.Database;
   private readonly telemetry!: AgentTelemetryReadModel;
@@ -191,8 +109,7 @@ export class AgentStore {
   private readonly chatFeed!: AgentChatFeedProjection;
   private readonly runUsage!: AgentRunUsageReadModel;
   private readonly artifactCatalog!: AgentArtifactCatalog;
-  private readonly eventProjection!: AgentEventProjectionStore;
-  private readonly eventSession!: AgentEventSessionAuthority;
+  protected readonly eventSession!: AgentEventSessionAuthority;
   private readonly conversationProjection!: AgentConversationProjectionReadModel;
   private readonly communicationProjectionLedger!: AgentCommunicationProjectionLedger;
   private readonly workspaceCatalog!: AgentWorkspaceCatalogAuthority;
@@ -202,245 +119,72 @@ export class AgentStore {
   private readonly projectDeletion!: AgentProjectDeletionAuthority;
   private readonly agentDeletion!: AgentDeletionAuthority;
   private readonly projectionRebuilder!: AgentProjectionRebuilder;
-  private readonly communicationProjectionCache = new Map<string, {
-    projections: CommunicationProjection[];
-    byTuple: Map<string, CommunicationProjection>;
-  }>();
+  private readonly auditReadModel!: AgentAuditReadModel;
+  private readonly support: AgentStoreSupport;
   private ownership?: DataDirectoryOwnership;
   private closed = false;
 
   constructor(private readonly dataDir: string) {
-    ensureV1Layout(dataDir);
-    mkdirSync(dataDir, { recursive: true });
-    mkdirSync(projectsDir(dataDir), { recursive: true });
-    this.ownership = acquireDataDirectoryOwnership(dataDir);
-    const deliverySequenceFile = `${dataDir}/delivery-order.jsonl`;
-    const deliverySequence = readRepairableJsonl<{ sequence: number }>(deliverySequenceFile, "delivery order journal", true)
-      .reduce((maximum, record) => Math.max(maximum, record.sequence), 0);
+    super();
+    this.support = new AgentStoreSupport(dataDir);
+    const opened = openAgentStoreData(dataDir);
+    this.db = opened.db;
+    this.client = opened.client;
+    this.ownership = opened.ownership;
     try {
-      const opened = openDb(dbPath(dataDir));
-      this.db = opened.db;
-      this.client = opened.client;
-      this.workspaceCatalog = new AgentWorkspaceCatalogAuthority(
-        dataDir,
-        this.db,
-        this.client,
-        projectId => this.listAgents(projectId),
-        (conversationId, channel) =>
-          this.getConversationMessages(conversationId, channel),
-        (agentId, conversationIds, primaryConversationId) =>
-          this.persistAgentMemberships(
-            agentId,
-            conversationIds,
-            primaryConversationId,
-          ),
-        projectId => this.chatFeed.refreshAllChatFeedProject(projectId),
-      );
-      this.agentCatalog = new AgentCatalogAuthority(
-        dataDir,
-        this.db,
-        this.client,
-        presetId => this.getAgentPreset(presetId),
-        (agentId, input) => this.updateAgentOrganization(agentId, input),
-      );
-      this.communicationJournal = new AgentCommunicationJournalAuthority(
-        dataDir,
-        this.db,
-        deliverySequenceFile,
-        deliverySequence,
-        projectId => this.getProject(projectId),
-        conversationId => this.getConversation(conversationId),
-        agentId => this.getAgent(agentId),
-        (projectId, artifactIdValue) =>
-          this.getProjectArtifact(projectId, artifactIdValue),
-        (projectId, projection) =>
-          this.communicationProjectionAllowed(projectId, projection),
-        (projectId, projection) =>
-          this.appendCommunicationProjection(projectId, projection),
-      );
-      this.artifactCatalog = new AgentArtifactCatalog(
-        dataDir,
-        this.client,
-        input => this.encodeHistoryCursor(input),
-        (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
-        agentId => this.rowToAgentDto(agentId),
-        projectId => Boolean(this.getProject(projectId)),
-        agentId => this.readEvents(agentId),
-      );
-      this.eventProjection = new AgentEventProjectionStore(
-        dataDir,
-        this.db,
-        this.client,
-        agentId => this.activeEngineOf(agentId),
-        artifact => this.artifactCatalog.recordProjectArtifact(artifact),
-      );
-      this.eventSession = new AgentEventSessionAuthority(
-        this.db,
-        this.client,
-        this.eventProjection,
-        agentId => this.getAgent(agentId),
-        agentId => this.projectIdOf(agentId),
-        () => this.listProjects(),
-        projectId => this.listAgents(projectId),
-        (projectId, projection) =>
-          this.communicationProjectionAllowed(projectId, projection),
-        (projectId, projection) =>
-          this.appendCommunicationProjection(projectId, projection),
-      );
-      this.projectDeletion = new AgentProjectDeletionAuthority(
-        dataDir,
-        this.db,
-        this.client,
-        projectId => this.getProject(projectId),
-        projectId => this.listAgents(projectId),
-        (projectId, agentIds) => {
-          this.communicationJournal.clearProject(projectId);
-          this.communicationProjectionCache.delete(projectId);
-          for (const agentId of agentIds) this.eventProjection.forgetAgent(agentId);
-        },
-      );
-      this.chatFeed = new AgentChatFeedProjection(
-        this.db,
-        this.client,
-        projectId => this.communicationIndex(projectId),
-        projectId => this.projectionIndex(projectId),
-        (projectId, projection) =>
-          this.communicationProjectionAllowed(projectId, projection),
-        (projectId, surface, projectionKey, limit) =>
-          this.readProjectedCommunicationMessages(
-            projectId,
-            surface,
-            projectionKey,
-            limit,
-          ),
-        (projectId, surface, projectionKey, input) =>
-          this.readProjectedCommunicationMessagePage(
-            projectId,
-            surface,
-            projectionKey,
-            input,
-          ),
-        (projectId, projections) =>
-          this.materializeProjectedCommunicationMessages(projectId, projections),
-        agentId => this.rowToAgentDto(agentId),
-        agentId => this.getAgent(agentId),
-        projectId => this.listAgents(projectId),
-        () => this.listProjects(),
-        input => this.encodeHistoryCursor(input),
-        (cursor, stream, scope) =>
-          this.decodeHistoryCursor(cursor, stream, scope),
-      );
-      this.agentManagement = new AgentManagementAuthority(
-        dataDir,
-        this.db,
-        this.client,
-        agentId => this.getAgent(agentId),
-        projectId => this.listAgents(projectId),
-        projectId => this.getProject(projectId),
-        conversationId => this.getConversation(conversationId),
-        agentId => this.rowToAgentDto(agentId),
-        (agentId, conversationIds, primaryConversationId, beforeProjectionChange) =>
-          this.persistAgentMemberships(
-            agentId,
-            conversationIds,
-            primaryConversationId,
-            beforeProjectionChange,
-          ),
-        projectId => this.chatFeed.refreshAllChatFeedProject(projectId),
-      );
-      this.agentDeletion = new AgentDeletionAuthority(
-        dataDir,
-        this.db,
-        this.client,
-        agentId => this.getAgent(agentId),
-        projectId => this.listAgents(projectId),
-        (authorization, targetAgentIds) =>
+      const ports: AgentStoreComponentPorts = {
+        listAgents: projectId => this.listAgents(projectId),
+        getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
+        persistAgentMemberships: (agentId, conversationIds, primaryConversationId, beforeProjectionChange) =>
+          this.persistAgentMemberships(agentId, conversationIds, primaryConversationId, beforeProjectionChange),
+        getAgentPreset: presetId => this.getAgentPreset(presetId),
+        updateAgentOrganization: (agentId, input) => this.updateAgentOrganization(agentId, input),
+        getProject: projectId => this.getProject(projectId),
+        getConversation: conversationId => this.getConversation(conversationId),
+        getAgent: agentId => this.getAgent(agentId),
+        getProjectArtifact: (projectId, artifactId) => this.getProjectArtifact(projectId, artifactId),
+        communicationProjectionAllowed: (projectId, projection) => this.communicationProjectionAllowed(projectId, projection),
+        appendCommunicationProjection: (projectId, projection) => this.appendCommunicationProjection(projectId, projection),
+        encodeHistoryCursor: input => this.encodeHistoryCursor(input),
+        decodeHistoryCursor: (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
+        rowToAgentDto: agentId => this.rowToAgentDto(agentId),
+        readEvents: agentId => this.readEvents(agentId),
+        activeEngineOf: agentId => this.activeEngineOf(agentId),
+        projectIdOf: agentId => this.projectIdOf(agentId),
+        authorizeAgentManagementPlan: (authorization, targetAgentIds) =>
           this.authorizeAgentManagementPlan(authorization, targetAgentIds),
-        projectId => this.chatFeed.refreshAllChatFeedProject(projectId),
-        agentId => this.eventProjection.forgetAgent(agentId),
-      );
-      this.communicationProjectionLedger = new AgentCommunicationProjectionLedger(
-        dataDir,
-        this.client,
-        projectId => this.getProject(projectId),
-        conversationId => this.getConversation(conversationId),
-        agentId => this.getAgent(agentId),
-        projectId => this.listAgents(projectId),
-        agentId => this.readEvents(agentId),
-        projectId => this.readCommunicationEvents(projectId),
-        projectId => this.communicationIndex(projectId),
-        projectId => this.communicationRevisionIndex(projectId),
-        projectId => this.projectionIndex(projectId),
-        projectId => this.messageDispatches(projectId),
-        event => this.ensureCommunicationBehaviorProjections(event),
-        (projectId, projection) =>
-          this.chatFeed.upsertGlobalChatSearchProjection(projectId, projection),
-        input => this.encodeHistoryCursor(input),
-        (cursor, stream, scope) =>
-          this.decodeHistoryCursor(cursor, stream, scope),
-      );
-      this.fileActivity = new AgentFileActivityReadModel(
-        this.client,
-        agentId => this.artifactCatalog.getArtifacts(agentId),
-        (agentId, row) => this.artifactCatalog.artifactDtoFromProjectionRow(agentId, row),
-      );
-      this.telemetry = new AgentTelemetryReadModel(
-        this.client,
-        (input) => this.encodeHistoryCursor(input),
-        (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
-        (agentId, status, executionFilter) =>
-          this.fileActivity.byExecution(agentId, status, executionFilter),
-      );
-      this.runUsage = new AgentRunUsageReadModel(
-        this.db,
-        this.client,
-        input => this.encodeHistoryCursor(input),
-        (cursor, stream, scope) =>
-          this.decodeHistoryCursor(cursor, stream, scope),
-        (projectId, eventId) =>
-          this.getCommunicationEvent(projectId, eventId)?.conversationId,
-      );
-      this.conversationProjection = new AgentConversationProjectionReadModel(
-        this.client,
-        conversationId => this.getConversation(conversationId),
-        projectId => this.messageDispatches(projectId),
-        (projectId, surface, projectionKey, limit) =>
-          this.readProjectedCommunicationMessages(
-            projectId,
-            surface,
-            projectionKey,
-            limit,
-          ),
-        (projectId, surface, projectionKey, input) =>
-          this.readProjectedCommunicationMessagePage(
-            projectId,
-            surface,
-            projectionKey,
-            input,
-          ),
-        (projectId, eventId, surface, projectionKey) =>
-          this.projectionIndex(projectId).byTuple.get(
-            `${eventId}\u0000${surface}\u0000${projectionKey}`,
-          ),
-        (projectId, projections) =>
+        communicationIndex: projectId => this.communicationIndex(projectId),
+        communicationRevisionIndex: projectId => this.communicationRevisionIndex(projectId),
+        messageDispatches: projectId => this.messageDispatches(projectId),
+        projectionIndex: projectId => this.projectionIndex(projectId),
+        readProjectedCommunicationMessages: (projectId, surface, projectionKey, limit) =>
+          this.readProjectedCommunicationMessages(projectId, surface, projectionKey, limit),
+        readProjectedCommunicationMessagePage: (projectId, surface, projectionKey, input) =>
+          this.readProjectedCommunicationMessagePage(projectId, surface, projectionKey, input),
+        materializeProjectedCommunicationMessages: (projectId, projections) =>
           this.materializeProjectedCommunicationMessages(projectId, projections),
-        agentId => Boolean(this.getAgent(agentId)),
-        agentId => this.getRuns(agentId),
-        (agentId, status, executionIds) =>
-          this.fileActivity.byExecution(agentId, status, executionIds),
-      );
-      this.projectionRebuilder = new AgentProjectionRebuilder(
-        dataDir,
-        this.db,
-        this.client,
-        this.artifactCatalog,
-        this.agentCatalog,
-        this.eventProjection,
-        () => this.recoverProjectDeletionDirectories(),
-        () => this.recoverAgentDeletionDirectories(),
-        projectId => this.sanitizeOrganizationProjection(projectId),
-        () => this.chatFeed.rebuildGlobalChatSearchProjection(),
-      );
+        listProjects: () => this.listProjects(),
+        ensureCommunicationBehaviorProjections: event => this.ensureCommunicationBehaviorProjections(event),
+        getCommunicationEvent: (projectId, eventId) => this.getCommunicationEvent(projectId, eventId),
+        getRuns: agentId => this.getRuns(agentId),
+        recoverProjectDeletionDirectories: () => this.recoverProjectDeletionDirectories(),
+        recoverAgentDeletionDirectories: () => this.recoverAgentDeletionDirectories(),
+        sanitizeOrganizationProjection: projectId => this.sanitizeOrganizationProjection(projectId),
+        clearCommunicationProjectionCache: projectId => this.support.clearCommunicationProjectionCache(projectId),
+        getRunOutputs: agentId => this.getRunOutputs(agentId),
+        getRunOutputPage: (agentId, input) => this.getRunOutputPage(agentId, input),
+        getActivity: agentId => this.getActivity(agentId),
+        getActivityPage: (agentId, input) => this.getActivityPage(agentId, input),
+        getChangedFilePage: (agentId, input) => this.getChangedFilePage(agentId, input),
+        getRunPage: (agentId, input) => this.getRunPage(agentId, input),
+        getFinalizedWorkDurationMs: agentId => this.getFinalizedWorkDurationMs(agentId),
+        getWorkItems: agentId => this.getWorkItems(agentId),
+        getWorkItemPage: (agentId, input) => this.getWorkItemPage(agentId, input),
+        getArtifacts: agentId => this.getArtifacts(agentId),
+        getArtifactPage: (agentId, input) => this.getArtifactPage(agentId, input),
+      };
+      const components = createAgentStoreComponents(dataDir, opened, ports);
+      Object.assign(this, components);
       // Canonical files are written before their SQLite projections. Rebuilding
       // on startup closes the crash window where a durable append succeeded but
       // the projection write did not, and keeps every read path deterministic.
@@ -470,15 +214,7 @@ export class AgentStore {
   }
 
   private projectionIndex(projectId: string) {
-    let cached = this.communicationProjectionCache.get(projectId);
-    if (cached) return cached;
-    const records = readRepairableJsonl<CommunicationProjection>(communicationProjectionsPath(this.dataDir, projectId), "communication projection log", true);
-    const byTuple = new Map(records.map((projection) => [
-      `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`, projection,
-    ]));
-    cached = { projections: [...byTuple.values()], byTuple };
-    this.communicationProjectionCache.set(projectId, cached);
-    return cached;
+    return this.support.projectionIndex(projectId);
   }
 
   /** Expose the drizzle db for advanced/read-only queries (e.g. the v2 search). */
@@ -568,25 +304,11 @@ export class AgentStore {
   }
 
   private encodeHistoryCursor(input: { stream: string; scope: string; orderKey: string; rowKey: string }): string {
-    return Buffer.from(JSON.stringify({ v: 1, ...input }), "utf8").toString("base64url");
+    return this.support.encodeHistoryCursor(input);
   }
 
   private decodeHistoryCursor(cursor: string, stream: string, scope: string): { orderKey: string; rowKey: string } {
-    let parsed: unknown;
-    try {
-      const decoded = Buffer.from(cursor, "base64url");
-      if (decoded.toString("base64url") !== cursor) throw new Error("non-canonical cursor");
-      parsed = JSON.parse(decoded.toString("utf8"));
-    } catch {
-      throw new Error("invalid history cursor");
-    }
-    if (!parsed || typeof parsed !== "object") throw new Error("invalid history cursor");
-    const value = parsed as Record<string, unknown>;
-    if (value.v !== 1 || value.stream !== stream || value.scope !== scope ||
-      typeof value.orderKey !== "string" || typeof value.rowKey !== "string") {
-      throw new Error("invalid history cursor");
-    }
-    return { orderKey: value.orderKey, rowKey: value.rowKey };
+    return this.support.decodeHistoryCursor(cursor, stream, scope);
   }
 
   readProjectedCommunicationMessagePage(
@@ -958,38 +680,7 @@ export class AgentStore {
 
   /** Full agent-detail hydration for GET /api/agents/:id (SPEC §8). */
   getAgentDetail(id: string, limit?: number, includeMessages = true): AgentDetailDto | undefined {
-    const agent = this.rowToAgentDto(id);
-    if (!agent) return undefined;
-    const messages = includeMessages ? this.getMessages(id) : [];
-    const runOutputPage = limit === undefined ? undefined : this.getRunOutputPage(id, { limit });
-    const activityPage = limit === undefined ? undefined : this.getActivityPage(id, { limit });
-    const changedFilePage = this.getChangedFilePage(id, { limit: limit ?? 100 });
-    const runPage = limit === undefined ? undefined : this.getRunPage(id, { limit });
-    const workItemPage = limit === undefined ? undefined : this.getWorkItemPage(id, { limit });
-    const artifactPage = limit === undefined ? undefined : this.getArtifactPage(id, { limit });
-    return {
-      agent,
-      messages: limit === undefined ? messages : messages.slice(-limit),
-      runOutput: runOutputPage?.items ?? this.getRunOutputs(id),
-      activity: activityPage?.items ?? this.getActivity(id),
-      changedFiles: changedFilePage.items,
-      runs: runPage?.items ?? this.getRuns(id),
-      finalizedWorkDurationMs: this.getFinalizedWorkDurationMs(id),
-      workItems: workItemPage?.items ?? this.getWorkItems(id),
-      artifacts: artifactPage?.items ?? this.getArtifacts(id),
-      state: agent.state,
-      ...(limit !== undefined ? {
-        history: { limit, hasMore: messages.length > limit },
-        telemetryHistory: {
-          runOutput: runOutputPage!.history,
-          activity: activityPage!.history,
-          changedFiles: changedFilePage.history,
-          runs: runPage!.history,
-          workItems: workItemPage!.history,
-          artifacts: artifactPage!.history,
-        },
-      } : {}),
-    };
+    return this.auditReadModel.getAgentDetail(id, limit, includeMessages);
   }
 
   getFinalizedWorkDurationMs(agentId: string): number {
@@ -997,32 +688,7 @@ export class AgentStore {
   }
 
   getMessages(agentId: string): MessageDto[] {
-    const projectId = this.projectIdOf(agentId);
-    return this.db
-      .select()
-      .from(messages)
-      .where(eq(messages.agentId, agentId))
-      .orderBy(asc(messages.seq))
-      .all()
-      .map((r) => {
-        const communication = r.communicationEventId
-          ? this.getCommunicationEvent(projectId, r.communicationEventId)
-          : undefined;
-        const authorAgentId = communication?.sender.kind === "agent"
-          ? communication.sender.agentId
-          : undefined;
-        return {
-          id: r.id,
-          communicationEventId: r.communicationEventId ?? undefined,
-          agentId: r.agentId,
-          seq: r.seq,
-          role: authorAgentId ? "assistant" : r.role === "user" ? "user" : "assistant",
-          text: r.text,
-          createdAt: r.createdAt,
-          ...(authorAgentId ? { authorAgentId } : {}),
-          attachments: r.attachmentsJson ? JSON.parse(r.attachmentsJson) : undefined,
-        } satisfies MessageDto;
-      });
+    return this.auditReadModel.getMessages(agentId);
   }
 
   /** Durable response/reasoning segments interleaved by canonical event sequence. */
@@ -1253,39 +919,6 @@ export class AgentStore {
     return this.artifactCatalog.getArtifact(agentId, artifactIdValue);
   }
 
-  // ─── Event log (append-only) + projection ──────────────────────────────────
-
-  /**
-   * Append one event to an agent's canonical log AND update its projections.
-   * The log write happens (and fsyncs) BEFORE the projection, so the log is always
-   * complete for replay (SPEC §8: log write before broadcast). Returns the stored
-   * event (seq + ts) so the caller can broadcast it over SSE.
-   */
-  appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
-    return this.eventSession.appendEvent(agentId, event);
-  }
-
-  readEvents(agentId: string): StoredLogEvent[] {
-    return this.eventSession.readEvents(agentId);
-  }
-
-  readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.eventSession.readEventsSince(agentId, sinceSeq);
-  }
-
-  lastSeqOf(agentId: string): number {
-    return this.eventSession.lastSeqOf(agentId);
-  }
-
-  latestHealthObservation(agentId: string): {
-    status: AgentLifecycleStatus;
-    statusTimestamp: string;
-    reason: AgentLifecycleReason;
-    executionId?: string;
-  } | undefined {
-    return this.eventSession.latestHealthObservation(agentId);
-  }
-
   // ─── Rebuild (SQLite is disposable; the log is truth) ──────────────────────
 
   /**
@@ -1347,41 +980,6 @@ export class AgentStore {
       primaryConversationId,
       beforeProjectionChange,
     );
-  }
-
-  continuationHandoffForRun(agentId: string, executionId: string): {
-    id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
-  } | undefined {
-    return this.eventSession.continuationHandoffForRun(agentId, executionId);
-  }
-
-  pendingContinuationHandoff(agentId: string): {
-    id: string; executionId: string; text: string; createdAt: string;
-  } | undefined {
-    return this.eventSession.pendingContinuationHandoff(agentId);
-  }
-
-  consumeContinuationHandoff(agentId: string, handoffId: string, executionId: string): boolean {
-    return this.eventSession.consumeContinuationHandoff(agentId, handoffId, executionId);
-  }
-
-  resumeSessionState(agentId: string): {
-    sessionId: string;
-    toolContractHash?: string;
-    artifactIds: string[];
-  } | undefined {
-    return this.eventSession.resumeSessionState(agentId);
-  }
-
-  resumeSessionId(agentId: string): string | undefined {
-    return this.eventSession.resumeSessionId(agentId);
-  }
-
-  clearResumeSession(
-    agentId: string,
-    reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit",
-  ): boolean {
-    return this.eventSession.clearResumeSession(agentId, reason);
   }
 
 }
