@@ -252,6 +252,7 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerProjectDeletionRoutes } from "./project-deletion-coordinator.js";
 import { registerAgentCreationRoutes } from "./routes/agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./routes/agent-maintenance.js";
+import { registerWorkspacePreferenceRoutes } from "./routes/workspace-preferences.js";
 import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -4341,118 +4342,12 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
-
-  registerOperatorProfileImageRoutes(app, opts);
-
-  app.get("/api/workspace/preferences", async () => workspace.getPreferences());
-
-  app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
-    const patch = request.body ?? {};
-    if (patch.projectSort && !["last_used", "alphabetical", "custom"].includes(patch.projectSort)) return reply.code(400).send({ error: "invalid project sort" });
-    for (const [label, sort] of [["home", patch.homeSort], ["chat", patch.chatSort], ["agent", patch.agentSort], ["trigger", patch.triggerSort]] as const) {
-      if (sort !== undefined && !["last_used", "alphabetical", "custom"].includes(sort)) return reply.code(400).send({ error: `invalid ${label} sort` });
-    }
-    if (patch.projectOrder && (patch.projectOrder.length > 10_000 || patch.projectOrder.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.projectOrder).size !== patch.projectOrder.length)) {
-      return reply.code(400).send({ error: "invalid custom project order" });
-    }
-    for (const [label, order] of [["home", patch.homeOrder], ["chat", patch.chatOrder], ["agent", patch.agentOrder], ["trigger", patch.triggerOrder]] as const) {
-      if (order !== undefined && (!Array.isArray(order) || order.length > 10_000 || order.some((id) => typeof id !== "string" || id.length > 200) || new Set(order).size !== order.length)) {
-        return reply.code(400).send({ error: `invalid custom ${label} order` });
-      }
-    }
-    if (patch.starredProjectIds !== undefined && (!Array.isArray(patch.starredProjectIds) || patch.starredProjectIds.length > 10_000 || patch.starredProjectIds.some((id) => typeof id !== "string" || id.length > 200) || new Set(patch.starredProjectIds).size !== patch.starredProjectIds.length)) {
-      return reply.code(400).send({ error: "invalid starred projects" });
-    }
-    if (patch.starredResourceIds !== undefined && (!Array.isArray(patch.starredResourceIds) || patch.starredResourceIds.length > 10_000 || patch.starredResourceIds.some((id) => typeof id !== "string" || id.length > 240 || !/^(?:project|conversation|agent|trigger):[^:]+$/u.test(id)) || new Set(patch.starredResourceIds).size !== patch.starredResourceIds.length)) {
-      return reply.code(400).send({ error: "invalid starred resources" });
-    }
-    if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
-    if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });
-    if (patch.engineDefaults !== undefined) {
-      if (typeof patch.engineDefaults !== "object" || patch.engineDefaults === null) return reply.code(400).send({ error: "engine defaults must be an object" });
-      for (const [engineId, selection] of Object.entries(patch.engineDefaults)) {
-        const registration = engines.get(engineId);
-        if (!registration || !selection || typeof selection !== "object" || typeof selection.model !== "string" || !selection.model.trim() || (selection.effort !== undefined && typeof selection.effort !== "string")) {
-          return reply.code(400).send({ error: "engine defaults require a configured engine and concrete model" });
-        }
-        const selectionError = runtimeSelectionError(
-          registration.adapter,
-          selection.model,
-          selection.effort,
-          cachedModelOptions(registration.adapter),
-        );
-        if (selectionError) return reply.code(400).send({ error: selectionError });
-      }
-    }
-    if (patch.claudeModelOptions !== undefined) {
-      if (!Array.isArray(patch.claudeModelOptions) ||
-          patch.claudeModelOptions.length > 100 ||
-          patch.claudeModelOptions.some((model) =>
-            !model || typeof model !== "object" ||
-            typeof model.id !== "string" || !model.id.trim() || model.id.length > 200 ||
-            (model.label !== undefined && (typeof model.label !== "string" || model.label.length > 200)) ||
-            (model.resolvedModel !== undefined && (typeof model.resolvedModel !== "string" || model.resolvedModel.length > 200)) ||
-            (model.validatedAt !== undefined && (typeof model.validatedAt !== "string" || !Number.isFinite(Date.parse(model.validatedAt)))) ||
-            (model.availability !== undefined && model.availability !== "available" && model.availability !== "unavailable") ||
-            (model.unavailableReason !== undefined && (typeof model.unavailableReason !== "string" || model.unavailableReason.length > 1_000))) ||
-          new Set(patch.claudeModelOptions.map((model) => model.id.trim())).size !== patch.claudeModelOptions.length) {
-        return reply.code(400).send({ error: "Claude model options require unique validated model records with bounded ids, labels, and availability details" });
-      }
-    }
-    if (patch.globalInstructions !== undefined && typeof patch.globalInstructions !== "string") return reply.code(400).send({ error: "global instructions must be a string" });
-    if (patch.maxConcurrentAgentRuns !== undefined && (!Number.isSafeInteger(patch.maxConcurrentAgentRuns) ||
-        patch.maxConcurrentAgentRuns < MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY ||
-        patch.maxConcurrentAgentRuns > MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY)) {
-      return reply.code(400).send({ error: `maximum concurrent Agent Runs must be an integer from ${MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY} to ${MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY}` });
-    }
-    if (patch.contextRolloverEnabled !== undefined && typeof patch.contextRolloverEnabled !== "boolean") {
-      return reply.code(400).send({ error: "context rollover enabled must be a boolean" });
-    }
-    if (patch.contextRolloverTokens !== undefined &&
-        (typeof patch.contextRolloverTokens !== "number" || !Number.isFinite(patch.contextRolloverTokens))) {
-      return reply.code(400).send({ error: "context rollover tokens must be a finite number" });
-    }
-    if (patch.contextRolloverWindowFraction !== undefined &&
-        (typeof patch.contextRolloverWindowFraction !== "number" || !Number.isFinite(patch.contextRolloverWindowFraction))) {
-      return reply.code(400).send({ error: "context rollover window fraction must be a finite number" });
-    }
-    if (patch.onboardingCompletedAt !== undefined && patch.onboardingCompletedAt !== null &&
-        (typeof patch.onboardingCompletedAt !== "string" || !Number.isFinite(Date.parse(patch.onboardingCompletedAt)))) {
-      return reply.code(400).send({ error: "onboarding completion must be a valid timestamp or null" });
-    }
-    if (patch.profile !== undefined) {
-      const profile = patch.profile;
-      const handle = profile?.handle?.replace(/^#/, "").toLowerCase();
-      if (!profile || typeof profile.displayName !== "string" || typeof handle !== "string" || !/^[a-z][a-z0-9_-]{1,31}$/.test(handle) || ["broadcast", "everyone", "user"].includes(handle) || typeof profile.avatarId !== "string") {
-        return reply.code(400).send({ error: "profile requires a display name, picture, and an available 2–32 character handle" });
-      }
-      if (!catalogOperatorAvatarIds.has(profile.avatarId) && (!isManagedOperatorAvatarId(profile.avatarId) || !await readOperatorProfileImage(opts.dataDir, profile.avatarId))) return reply.code(400).send({ error: "profile picture is not a durable managed upload or generated choice" });
-      patch.profile = { ...profile, handle };
-    }
-    const previousPreferences = workspace.getPreferences();
-    const globalInstructionsChanged = patch.globalInstructions !== undefined && patch.globalInstructions !== previousPreferences.globalInstructions;
-    const profileChanged = patch.profile !== undefined && JSON.stringify(patch.profile) !== JSON.stringify(previousPreferences.profile);
-    const cursor = workspace.cursor();
-    const preferences = workspace.updatePreferences(patch);
-    if (patch.claudeModelOptions !== undefined) {
-      applyOperatorModelOptions();
-      for (const entry of engineModelCatalogCache.values()) entry.expiresAt = 0;
-    }
-    if (preferences.maxConcurrentAgentRuns !== previousPreferences.maxConcurrentAgentRuns) {
-      coordinationV3Scheduler.setMaxConcurrentRuns(preferences.maxConcurrentAgentRuns);
-    }
-    publishWorkspaceSince(cursor);
-    if (globalInstructionsChanged || profileChanged) for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
-      organizationEnvelopeStates.delete(agent.id);
-      if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
-      else {
-        clearAgentResumeSession(agent.id, "request_context_rollover");
-        const runtime = persistentRuntimeForTermination(agent.id);
-        if (runtime) await teardownPersistentRuntime(agent.id, runtime, "workspace policy update", project.id);
-      }
-    }
-    return preferences;
+  registerWorkspacePreferenceRoutes(app, {
+    opts, store, workspace, engines, activeRuns, scheduledSessionRollovers,
+    organizationEnvelopeStates, engineModelCatalogCache, cachedModelOptions,
+    applyOperatorModelOptions, publishWorkspaceSince,
+    setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
+    clearAgentResumeSession, persistentRuntimeForTermination, teardownPersistentRuntime,
   });
 
   registerDraftRoutes(
