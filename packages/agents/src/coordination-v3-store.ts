@@ -24,7 +24,6 @@ import {
   type TriggerSourceConfig,
   type TriggerSourceKind,
   type TriggerRunBudgetDto,
-  type AssetDto,
   type CommunicationActor,
   type CommunicationIntent,
 } from "@ponderosa/core";
@@ -32,17 +31,12 @@ import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
+import { CoordinationV3RuntimeAttachmentAuthority } from "./coordination-v3-runtime-attachment-authority.js";
+import { CoordinationV3RuntimeArtifactAuthority } from "./coordination-v3-runtime-artifact-authority.js";
 import { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { terminalAt } from "./coordination-v3-request-state.js";
 import {
-  RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE,
-  RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES,
-  type RuntimeDispatchAttachmentV3,
-  UUID_PATTERN,
   isIso,
-  runtimeArtifactMetadataIsValid,
-  runtimeCanonicalAttachmentsAreValid,
-  runtimeDispatchAttachmentsAreValid,
 } from "./coordination-v3-runtime-validation.js";
 import { triggerBudgetEndsAt } from "./coordination-v3-trigger-budget.js";
 import type {
@@ -63,7 +57,6 @@ import type {
   RuntimeCommunicationV3View,
   RuntimeArtifactInputV3,
   RuntimeArtifactV3,
-  RuntimeAttachmentAuthorityV3,
   RuntimeAttachmentReservationBindingV3,
   RuntimeAttachmentReservationReceiptV3,
   RuntimeAttachmentAuthorityProviderV3,
@@ -232,6 +225,8 @@ const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
   private readonly readModel: CoordinationV3ReadModel;
+  private readonly runtimeAttachmentAuthority: CoordinationV3RuntimeAttachmentAuthority;
+  private readonly runtimeArtifactAuthority: CoordinationV3RuntimeArtifactAuthority;
   private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority;
 
   constructor(
@@ -239,6 +234,8 @@ export class CoordinationV3Store {
     private readonly options: CoordinationV3StoreOptions = {},
   ) {
     this.readModel = new CoordinationV3ReadModel(sqlite);
+    this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
+    this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
   }
 
@@ -247,7 +244,7 @@ export class CoordinationV3Store {
     const activationInputs = [...(input.activation ? [input.activation] : []), ...(input.activations ?? [])];
     if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
     this.requireProject(input.projectId);
-    const preparedAttachments = this.bindRuntimeAttachments(
+    const preparedAttachments = this.runtimeAttachmentAuthority.bindRuntimeAttachments(
       input.projectId,
       input.payload,
       activationInputs.map((item) => item.agentId),
@@ -255,7 +252,11 @@ export class CoordinationV3Store {
     const payload = preparedAttachments.payload;
     const activationScopeKeys = activationInputs.map((activation) =>
       input.scopeKey ?? this.runtimeScopeAuthority.communicationScopeKey(payload, activation.agentId));
-    const artifacts = this.resolveRuntimeArtifacts(input.projectId, input.artifacts, "runtime communication");
+    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
+      input.projectId,
+      input.artifacts,
+      "runtime communication",
+    );
     if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
       projectId: input.projectId,
       sender: input.sender,
@@ -301,7 +302,11 @@ export class CoordinationV3Store {
           : undefined;
         if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
         this.requireProject(input.projectId);
-        this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
+        this.runtimeArtifactAuthority.requireRuntimeArtifacts(
+          input.projectId,
+          artifacts,
+          "runtime communication",
+        );
         if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
           projectId: input.projectId,
           sender: input.sender,
@@ -396,7 +401,7 @@ export class CoordinationV3Store {
             // committed replay owns its association across this failure.
             const compensationReceipt = insertedCommunication
               ? reservationReceipt
-              : this.compensationReceiptForCommittedRuntimeCommunication(
+              : this.runtimeAttachmentAuthority.compensationReceiptForCommittedRuntimeCommunication(
                 reservationReceipt, committed, input.projectId, hash,
               );
             if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
@@ -422,7 +427,7 @@ export class CoordinationV3Store {
             const committed = this.sqlite.prepare(`
               SELECT project_id, payload_hash, payload_json FROM runtime_communications WHERE id = ?
             `).get(input.id) as { project_id: string; payload_hash: string; payload_json: string } | undefined;
-            const compensationReceipt = this.compensationReceiptForCommittedRuntimeCommunication(
+            const compensationReceipt = this.runtimeAttachmentAuthority.compensationReceiptForCommittedRuntimeCommunication(
               reservationReceipt!, committed, input.projectId, hash,
             );
             if (compensationReceipt) attachmentAuthority.compensateCommunication(compensationReceipt);
@@ -442,7 +447,10 @@ export class CoordinationV3Store {
     // callers must not project the canonical Communication when immutable bytes
     // disappeared or changed in that crash window. The scheduler row remains an
     // idempotent recovery boundary and an exact-byte restore can retry safely.
-    this.revalidateRuntimeAttachments(input.projectId, preparedAttachments.bindings);
+    this.runtimeAttachmentAuthority.revalidateRuntimeAttachments(
+      input.projectId,
+      preparedAttachments.bindings,
+    );
     return result;
   }
 
@@ -1083,14 +1091,24 @@ export class CoordinationV3Store {
     if (!input.idempotencyKey.trim()) throw new Error("edit idempotency key is required");
     const now = input.now ?? new Date().toISOString();
     const resolvedArtifact = input.artifact
-      ? this.resolveRuntimeArtifacts(input.projectId, [input.artifact], "queued edit")[0]
+      ? this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
+        input.projectId,
+        [input.artifact],
+        "queued edit",
+      )[0]
       : undefined;
     const hash = payloadHash({
       activationId: input.activationId,
       requestText: input.requestText,
     });
     return this.sqlite.transaction(() => {
-      if (resolvedArtifact) this.requireRuntimeArtifacts(input.projectId, [resolvedArtifact], "queued edit");
+      if (resolvedArtifact) {
+        this.runtimeArtifactAuthority.requireRuntimeArtifacts(
+          input.projectId,
+          [resolvedArtifact],
+          "queued edit",
+        );
+      }
       const replay = this.idempotentReplay<{ edited: boolean; status: "edited" | "delivery_started" }>(
         input.projectId, "user:local-operator", "edit_activation", input.idempotencyKey, hash,
       );
@@ -2245,7 +2263,11 @@ export class CoordinationV3Store {
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
     const now = input.now ?? new Date().toISOString();
     const initialRequest = this.getRequestRow(input.requestId);
-    const artifacts = this.resolveRuntimeArtifacts(initialRequest.project_id, input.artifacts, "request update");
+    const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
+      initialRequest.project_id,
+      input.artifacts,
+      "request update",
+    );
     const replayPayload = {
       requestId: input.requestId,
       kind: input.kind,
@@ -2317,7 +2339,11 @@ export class CoordinationV3Store {
         `).get(input.runAuthorization.runId, input.runAuthorization.agentId,
           input.runAuthorization.fencingToken, request.id, request.id, request.id);
         if (!authorized) throw new Error("late result is not authorized by the original outcome-unknown run");
-        this.requireRuntimeArtifacts(request.project_id, artifacts, "late request result");
+        this.runtimeArtifactAuthority.requireRuntimeArtifacts(
+          request.project_id,
+          artifacts,
+          "late request result",
+        );
         this.sqlite.prepare(`
           INSERT INTO coordination_request_late_results (
             id, request_id, kind, actor_agent_id, payload_json, payload_hash, created_at
@@ -2362,7 +2388,11 @@ export class CoordinationV3Store {
           throw new Error("request is not attached to the authoritative run");
         }
       }
-      this.requireRuntimeArtifacts(request.project_id, artifacts, "request update");
+      this.runtimeArtifactAuthority.requireRuntimeArtifacts(
+        request.project_id,
+        artifacts,
+        "request update",
+      );
 
       this.authorizeUpdate(request, input.kind, input.actor);
       const ownsUnresolvedJoin = Boolean(this.sqlite.prepare(`
@@ -3949,339 +3979,6 @@ export class CoordinationV3Store {
     `).get(conversationId, agentId)) {
       throw new Error("every coordination participant must be an active member of this Team Chat");
     }
-  }
-
-  private bindRuntimeAttachments(
-    projectId: string,
-    payloadValue: unknown,
-    activationAgentIds: string[],
-  ): {
-    payload: unknown;
-    bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>;
-  } {
-    const payload = payloadValue && typeof payloadValue === "object" && !Array.isArray(payloadValue)
-      ? payloadValue as Record<string, unknown>
-      : undefined;
-    if (!payload) return { payload: payloadValue, bindings: [] };
-    const embedded = payload.communication && typeof payload.communication === "object" && !Array.isArray(payload.communication)
-      ? payload.communication as Record<string, unknown>
-      : undefined;
-    const communication = embedded ?? (Object.prototype.hasOwnProperty.call(payload, "schemaVersion") ? payload : undefined);
-    const dispatch = payload.dispatch && typeof payload.dispatch === "object" && !Array.isArray(payload.dispatch)
-      ? payload.dispatch as Record<string, unknown>
-      : undefined;
-    const hasCanonicalAttachments = Boolean(communication && Object.prototype.hasOwnProperty.call(communication, "attachments"));
-    const hasTopLevelAttachments = Boolean(dispatch && Object.prototype.hasOwnProperty.call(dispatch, "attachments"));
-    const recipients = dispatch && Object.prototype.hasOwnProperty.call(dispatch, "recipients")
-      ? dispatch.recipients
-      : undefined;
-    const hasRecipientAttachments = Array.isArray(recipients) && recipients.some((candidate) =>
-      candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
-      Object.prototype.hasOwnProperty.call(candidate, "attachments"));
-    if (!hasCanonicalAttachments && !hasTopLevelAttachments && !hasRecipientAttachments) {
-      return { payload: payloadValue, bindings: [] };
-    }
-
-    if (hasCanonicalAttachments && !runtimeCanonicalAttachmentsAreValid(communication!.attachments)) {
-      throw new Error("runtime communication attachments are invalid");
-    }
-    if (hasTopLevelAttachments && !runtimeDispatchAttachmentsAreValid(dispatch!.attachments)) {
-      throw new Error("runtime communication attachments are invalid");
-    }
-    if (recipients !== undefined && !Array.isArray(recipients)) {
-      throw new Error("runtime communication attachments are invalid");
-    }
-
-    const authority = this.options.attachmentAuthority;
-    const canonicalAttachments = hasCanonicalAttachments
-      ? communication!.attachments as AssetDto[]
-      : [];
-    const canonicalOwnerById = new Map(canonicalAttachments.map((attachment) =>
-      [attachment.id, attachment.agentId] as const));
-    const targets = [...new Set(activationAgentIds)];
-    const topLevelAttachments = hasTopLevelAttachments
-      ? dispatch!.attachments as RuntimeDispatchAttachmentV3[]
-      : [];
-    const canonicalTargets = [...new Set(topLevelAttachments.flatMap((attachment) => {
-      const owner = canonicalOwnerById.get(attachment.id);
-      return owner ? [owner] : [];
-    }))];
-    const topLevelOwner = topLevelAttachments.length === 0
-      ? undefined
-      : targets.length === 1
-        ? targets[0]
-        : targets.length === 0 && canonicalTargets.length === 1 &&
-            topLevelAttachments.every((attachment) => canonicalOwnerById.has(attachment.id))
-          ? canonicalTargets[0]
-          : undefined;
-    if (topLevelAttachments.length > 0 && !topLevelOwner) {
-      throw new Error("runtime communication attachment owner is ambiguous");
-    }
-
-    // Bound structural work before the authority resolver opens or hashes any
-    // file. Canonical and dispatch appearances of the same Project+owner+ID are
-    // one candidate; contradictory owners and dispatch duplicates fail closed.
-    const candidateKeys = new Set<string>();
-    const ownerById = new Map<string, string>();
-    const dispatchIds = new Set<string>();
-    const addCandidate = (agentId: string, attachmentId: string, dispatchAppearance: boolean): void => {
-      if (dispatchAppearance) {
-        if (dispatchIds.has(attachmentId)) throw new Error("runtime communication attachments are invalid");
-        dispatchIds.add(attachmentId);
-      }
-      const priorOwner = ownerById.get(attachmentId);
-      if (priorOwner !== undefined && priorOwner !== agentId) {
-        throw new Error("runtime communication attachment identity conflicts across canonical and dispatch appearances");
-      }
-      ownerById.set(attachmentId, agentId);
-      candidateKeys.add(`${projectId}\0${agentId}\0${attachmentId}`);
-      if (candidateKeys.size > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE) {
-        throw new Error("runtime communication attachments are invalid");
-      }
-    };
-    for (const attachment of canonicalAttachments) addCandidate(attachment.agentId, attachment.id, false);
-    for (const attachment of topLevelAttachments) addCandidate(topLevelOwner!, attachment.id, true);
-    if (Array.isArray(recipients)) {
-      for (const candidate of recipients) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-          if (hasRecipientAttachments) throw new Error("runtime communication attachments are invalid");
-          continue;
-        }
-        const recipient = candidate as Record<string, unknown>;
-        if (!Object.prototype.hasOwnProperty.call(recipient, "attachments")) continue;
-        if (typeof recipient.agentId !== "string" || !UUID_PATTERN.test(recipient.agentId) ||
-            !runtimeDispatchAttachmentsAreValid(recipient.attachments)) {
-          throw new Error("runtime communication attachments are invalid");
-        }
-        for (const attachment of recipient.attachments as RuntimeDispatchAttachmentV3[]) {
-          addCandidate(recipient.agentId, attachment.id, true);
-        }
-      }
-    }
-
-    const resolvedByOwner = new Map<string, RuntimeAttachmentAuthorityV3>();
-    const meaningById = new Map<string, string>();
-    const resolveAuthority = (agentId: string, attachmentId: string): RuntimeAttachmentAuthorityV3 => {
-      const key = `${projectId}\0${agentId}\0${attachmentId}`;
-      const cached = resolvedByOwner.get(key);
-      if (cached) return cached;
-      const resolved = authority?.resolve(projectId, agentId, attachmentId);
-      if (!resolved || resolved.contentHash !== resolved.attachment.sha256 ||
-          resolved.byteLength !== resolved.attachment.size ||
-          !/^[a-f0-9]{64}$/.test(resolved.contentHash) || !resolved.localPath) {
-        throw new Error("runtime communication attachment authority mismatch");
-      }
-      const meaning = stableJson({
-        projectId,
-        agentId,
-        attachment: resolved.attachment,
-        contentHash: resolved.contentHash,
-        byteLength: resolved.byteLength,
-      });
-      const priorMeaning = meaningById.get(attachmentId);
-      if (priorMeaning !== undefined && priorMeaning !== meaning) {
-        throw new Error("runtime communication attachment identity conflicts across canonical and dispatch appearances");
-      }
-      meaningById.set(attachmentId, meaning);
-      resolvedByOwner.set(key, resolved);
-      return resolved;
-    };
-    const resolveCanonical = (attachment: AssetDto): AssetDto => {
-      const resolved = resolveAuthority(attachment.agentId, attachment.id);
-      if (!resolved || stableJson(resolved.attachment) !== stableJson(attachment)) {
-        throw new Error("runtime communication attachment authority mismatch");
-      }
-      return resolved.attachment;
-    };
-    const resolveSnapshot = (attachment: RuntimeDispatchAttachmentV3, agentId: string): RuntimeDispatchAttachmentV3 => {
-      const resolved = resolveAuthority(agentId, attachment.id);
-      if (!resolved || attachment.name !== resolved.attachment.name ||
-          attachment.mediaType !== resolved.attachment.mediaType || attachment.size !== resolved.attachment.size ||
-          (attachment.sha256 !== undefined && attachment.sha256 !== resolved.contentHash) ||
-          (attachment.localPath !== undefined && attachment.localPath !== resolved.localPath)) {
-        throw new Error("runtime communication attachment authority mismatch");
-      }
-      return {
-        id: resolved.attachment.id,
-        name: resolved.attachment.name,
-        mediaType: resolved.attachment.mediaType,
-        size: resolved.attachment.size,
-        sha256: resolved.contentHash,
-        localPath: resolved.localPath,
-      };
-    };
-
-    let nextCommunication = communication;
-    if (hasCanonicalAttachments) {
-      nextCommunication = {
-        ...communication!,
-        attachments: (communication!.attachments as AssetDto[]).map(resolveCanonical),
-      };
-    }
-    let nextDispatch = dispatch;
-    if (dispatch) {
-      nextDispatch = { ...dispatch };
-      if (hasTopLevelAttachments) {
-        nextDispatch.attachments = topLevelAttachments.length
-          ? topLevelAttachments.map((attachment) => resolveSnapshot(attachment, topLevelOwner!))
-          : [];
-      }
-      if (Array.isArray(recipients)) {
-        nextDispatch.recipients = recipients.map((candidate) => {
-          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-            if (hasRecipientAttachments) throw new Error("runtime communication attachments are invalid");
-            return candidate;
-          }
-          const recipient = candidate as Record<string, unknown>;
-          if (!Object.prototype.hasOwnProperty.call(recipient, "attachments")) return candidate;
-          if (typeof recipient.agentId !== "string" || !UUID_PATTERN.test(recipient.agentId) ||
-              !runtimeDispatchAttachmentsAreValid(recipient.attachments)) {
-            throw new Error("runtime communication attachments are invalid");
-          }
-          return {
-            ...recipient,
-            attachments: (recipient.attachments as RuntimeDispatchAttachmentV3[])
-              .map((attachment) => resolveSnapshot(attachment, recipient.agentId as string)),
-          };
-        });
-      }
-    }
-
-    const resolvedAttachments = [...resolvedByOwner.values()];
-    if (resolvedAttachments.length > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE ||
-        resolvedAttachments.reduce((total, resolved) => total + resolved.byteLength, 0) >
-          RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES) {
-      throw new Error("runtime communication attachments are invalid");
-    }
-    const bindings = resolvedAttachments.map((resolved) => ({
-      projectId,
-      agentId: resolved.attachment.agentId,
-      attachmentId: resolved.attachment.id,
-      contentHash: resolved.contentHash,
-      byteLength: resolved.byteLength,
-    }));
-    if (embedded) return { payload: {
-      ...payload,
-      ...(nextCommunication ? { communication: nextCommunication } : {}),
-      ...(nextDispatch ? { dispatch: nextDispatch } : {}),
-    }, bindings };
-    if (communication === payload) return { payload: nextCommunication, bindings };
-    return { payload: nextDispatch ? { ...payload, dispatch: nextDispatch } : payloadValue, bindings };
-  }
-
-  private compensationReceiptForCommittedRuntimeCommunication(
-    receipt: RuntimeAttachmentReservationReceiptV3,
-    committed: { project_id: string; payload_hash: string; payload_json: string } | undefined,
-    expectedProjectId: string,
-    expectedPayloadHash: string,
-  ): RuntimeAttachmentReservationReceiptV3 | undefined {
-    if (!committed) return receipt;
-    if (committed.project_id === expectedProjectId && committed.payload_hash === expectedPayloadHash) {
-      return undefined;
-    }
-    try {
-      const activationAgents = this.sqlite.prepare(`
-        SELECT activation.agent_id agentId
-        FROM agent_activations activation
-        JOIN activation_sources source ON source.activation_id = activation.id
-        WHERE source.source_kind = 'communication' AND source.source_id = ?
-          AND activation.project_id = ?
-        ORDER BY activation.created_at, activation.id
-      `).all(receipt.communicationId, committed.project_id) as Array<{ agentId: string }>;
-      const requiredBindings = this.bindRuntimeAttachments(
-        committed.project_id,
-        JSON.parse(committed.payload_json) as unknown,
-        activationAgents.map((row) => row.agentId),
-      ).bindings;
-      const requiredKeys = new Set(requiredBindings.map((binding) => stableJson(binding)));
-      const unusedBindings = receipt.bindings.filter((binding) => !requiredKeys.has(stableJson({
-        projectId: binding.projectId,
-        agentId: binding.agentId,
-        attachmentId: binding.attachmentId,
-        contentHash: binding.contentHash,
-        byteLength: binding.byteLength,
-      })));
-      return unusedBindings.length ? { ...receipt, bindings: unusedBindings } : undefined;
-    } catch {
-      // A committed payload whose attachment requirements cannot be proven
-      // must not inherit authority from a different failed publication.
-      return receipt;
-    }
-  }
-
-  private revalidateRuntimeAttachments(
-    projectId: string,
-    bindings: Array<{ projectId: string; agentId: string; attachmentId: string; contentHash: string; byteLength: number }>,
-  ): void {
-    if (!bindings.length) return;
-    const authority = this.options.attachmentAuthority;
-    if (!authority) throw new Error("runtime communication attachment authority mismatch");
-    for (const binding of bindings) {
-      const resolved = authority.resolve(projectId, binding.agentId, binding.attachmentId);
-      if (!resolved || binding.projectId !== projectId ||
-          resolved.attachment.agentId !== binding.agentId || resolved.attachment.id !== binding.attachmentId ||
-          resolved.contentHash !== binding.contentHash || resolved.byteLength !== binding.byteLength ||
-          resolved.attachment.sha256 !== binding.contentHash || resolved.attachment.size !== binding.byteLength) {
-        throw new Error("runtime communication attachment authority mismatch after scheduler commit");
-      }
-    }
-  }
-
-  private resolveRuntimeArtifacts(
-    projectId: string,
-    artifacts: RuntimeArtifactInputV3[] | undefined,
-    ownerLabel: string,
-  ): RuntimeArtifactInputV3[] {
-    this.requireRuntimeArtifacts(projectId, artifacts, ownerLabel);
-    if (!artifacts?.length) return [];
-    const authority = this.options.artifactAuthority;
-    if (!authority) throw new Error(`${ownerLabel} artifact authority is unavailable`);
-    const resolvedById = new Map<string, RuntimeArtifactInputV3>();
-    for (const artifact of artifacts) {
-      if (resolvedById.has(artifact.id)) throw new Error(`${ownerLabel} artifact metadata or provenance is invalid`);
-      const resolved = authority(projectId, artifact);
-      if (!resolved || stableJson(resolved.artifact) !== stableJson(artifact) ||
-          resolved.contentHash !== artifact.blobHash || resolved.byteLength !== artifact.byteLength ||
-          !resolved.localPath) {
-        throw new Error(`${ownerLabel} artifact authority mismatch`);
-      }
-      resolvedById.set(artifact.id, resolved.artifact);
-    }
-    return [...resolvedById.values()];
-  }
-
-  private requireRuntimeArtifacts(
-    projectId: string,
-    artifacts: RuntimeArtifactInputV3[] | undefined,
-    ownerLabel: string,
-  ): void {
-    if (artifacts === undefined) return;
-    const ids = new Set<string>();
-    const roles = new Set<string>();
-    if (!Array.isArray(artifacts) || artifacts.length > 2 || artifacts.some((artifact) => {
-      if (!this.runtimeArtifactAgreesWithProject(projectId, artifact) ||
-          ids.has(artifact.id) || roles.has(artifact.role)) return true;
-      ids.add(artifact.id);
-      roles.add(artifact.role);
-      return false;
-    })) {
-      throw new Error(`${ownerLabel} artifact metadata or provenance is invalid`);
-    }
-  }
-
-  private runtimeArtifactAgreesWithProject(projectId: string, artifact: unknown): artifact is RuntimeArtifactInputV3 {
-    if (!runtimeArtifactMetadataIsValid(artifact)) return false;
-    const originAgentId = artifact.originAgentId;
-    const executionId = artifact.executionId;
-    if (originAgentId === undefined && executionId === undefined) return true;
-    if (originAgentId === undefined || executionId === undefined || !this.sqlite.prepare(`
-      SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND archived = 0
-    `).get(originAgentId, projectId)) return false;
-    const run = this.sqlite.prepare(`
-      SELECT agent_id FROM scheduler_runs
-      WHERE id = ? AND project_id = ? AND status IN ('leased', 'running')
-    `).get(executionId, projectId) as { agent_id: string } | undefined;
-    return Boolean(run && run.agent_id === originAgentId);
   }
 
   private settleUnauthorizedPendingActivations(now: string): number {
