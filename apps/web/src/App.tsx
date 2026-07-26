@@ -1,10 +1,5 @@
 import {
-  Alert,
   Box,
-  Button,
-  IconButton,
-  Tooltip,
-  Typography,
   useMediaQuery,
   useTheme,
 } from "@mui/material";
@@ -14,30 +9,15 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { WikiView } from "./components/WikiView";
 import { WorkspaceTabs } from "./components/WorkspaceTabs";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
-import { AllProjectsView } from "./components/WorkspaceOverview";
 import { ProviderStatusFlow } from "./components/ProviderStatusFlow";
 import {
   GlobalChatSearch,
   isGlobalSearchShortcut,
   routeForGlobalSearchSelection,
 } from "./components/GlobalChatSearch";
-import { AllChatView } from "./components/AllChatView";
 import { NotificationPanel } from "./components/NotificationPanel";
-import { HomeView } from "./components/HomeView";
-import { NewWorkspace } from "./components/NewWorkspace";
-import {
-  AllAgentsWorkspace,
-  AllChatsWorkspace,
-  AllTriggersWorkspace,
-  ProviderActivityWorkspace,
-} from "./components/WorkspaceResourceViews";
-import {
-  OperatorProfileWorkspace,
-  WorkspaceSettingsView,
-} from "./components/WorkspaceSettingsView";
 import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
@@ -64,7 +44,7 @@ import {
   useRoute,
   type Route,
 } from "./routing";
-import { assertNeverRoute, isProjectRoute } from "./routeRegistry";
+import { isProjectRoute } from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import { nextProjectAfterDelete } from "./projectLifecycle";
 import {
@@ -107,6 +87,7 @@ import {
 } from "./triggerCreation";
 import { queryKeys } from "./queryKeys";
 import { MobileWorkspaceDrawer, MobileWorkspaceHeader } from "./App.mobile";
+import { WorkspaceRouteOutlet } from "./App.workspace-content";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -742,171 +723,41 @@ export default function App({
               title="This workspace view could not be displayed."
               resetKey={`${activeWorkspaceTabKey}:${JSON.stringify(route)}`}
             >
-              <Box sx={{ minHeight: 0, minWidth: 0, display: "grid" }}>
-                {projectsQuery.isError || enginesQuery.isError ? (
-                  <Box sx={{ p: 2 }}>
-                    <Alert
-                      severity="error"
-                      action={
-                        <Button
-                          color="inherit"
-                          size="small"
-                          onClick={() => {
-                            void projectsQuery.refetch();
-                            void enginesQuery.refetch();
-                          }}
-                        >
-                          Retry
-                        </Button>
-                      }
-                    >
-                      Ponderosa could not load its workspace data. Check the
-                      server connection and try again.
-                    </Alert>
-                  </Box>
-                ) : route.kind === "wiki" ? (
-                  <WikiView
-                    articleId={route.articleId}
-                    navigate={navigateWorkspace}
-                  />
-                ) : route.kind === "new" ? (
-                  <NewWorkspace
-                    initialKind={route.createKind}
-                    onKindChange={createKind =>
-                      navigateWorkspace({ kind: "new", createKind })
-                    }
-                    onCreate={createKind => {
-                      if (createKind === "project") openProjectCreator();
-                      else beginHomeCreate(createKind);
-                    }}
-                  />
-                ) : route.kind === "home" ? (
-                  <HomeView
-                    projects={projects}
-                    engines={engines}
-                    notifications={notificationsQuery.data ?? []}
-                    preferences={preferences}
-                    onNavigate={navigateWorkspace}
-                    onOpenInNewTab={openWorkspaceRouteInBackground}
-                    onPreferences={savePreferences}
-                    onCreateProject={() => openNewWorkspace("project")}
-                    onCreateChat={() => openNewWorkspace("chat")}
-                    onCreateAgent={() => openNewWorkspace("agent")}
-                    onCreateTrigger={() => openNewWorkspace("trigger")}
-                    onOpenInbox={() => setNotificationPanelOpen(true)}
-                  />
-                ) : route.kind === "allChat" ? (
-                  <AllChatView
-                    onNavigate={navigateWorkspace}
-                    notifications={notificationsQuery.data ?? []}
-                  />
-                ) : route.kind === "projects" ? (
-                  <AllProjectsView
-                    projects={projects}
-                    preferences={preferences}
-                    onNavigate={navigateWorkspace}
-                    onOpenInNewTab={openWorkspaceRouteInBackground}
-                    onCreateProject={() => openNewWorkspace("project")}
-                    onManageProject={openProjectSettings}
-                    onPreferences={savePreferences}
-                  />
-                ) : route.kind === "allAgents" ? (
-                  <AllAgentsWorkspace
-                    projects={projects}
-                    engines={engines}
-                    filterProjectId={route.filterProjectId}
-                    preferences={preferences}
-                    onPreferences={savePreferences}
-                    onNavigate={navigateWorkspace}
-                    onOpenInNewTab={openWorkspaceRouteInBackground}
-                    onCreate={(projectId, managerAgentId) =>
-                      projectId
-                        ? createHomeAgent(projectId, false, managerAgentId)
-                        : openNewWorkspace("agent")
-                    }
-                  />
-                ) : route.kind === "allChats" ? (
-                  <AllChatsWorkspace
-                    projects={projects}
-                    filterProjectId={route.filterProjectId}
-                    preferences={preferences}
-                    onPreferences={savePreferences}
-                    onNavigate={navigateWorkspace}
-                    onOpenInNewTab={openWorkspaceRouteInBackground}
-                    onCreate={projectId =>
-                      projectId
-                        ? void createHomeChat(projectId)
-                        : openNewWorkspace("chat")
-                    }
-                  />
-                ) : route.kind === "allTriggers" ? (
-                  <AllTriggersWorkspace
-                    projects={projects}
-                    preferences={preferences}
-                    onPreferences={savePreferences}
-                    onNavigate={navigateWorkspace}
-                    onOpenInNewTab={openWorkspaceRouteInBackground}
-                    onCreate={() => openNewWorkspace("trigger")}
-                  />
-                ) : route.kind === "settings" ? (
-                  <WorkspaceSettingsView
-                    preferences={preferences}
-                    engines={engines}
-                    projects={projects}
-                    colorMode={colorMode}
-                    onToggleColorMode={onToggleColorMode}
-                    onPreferences={savePreferences}
-                    section={route.section}
-                  />
-                ) : route.kind === "profile" ? (
-                  <OperatorProfileWorkspace
-                    preferences={preferences}
-                    onPreferences={savePreferences}
-                  />
-                ) : route.kind === "usage" ? (
-                  <ProviderActivityWorkspace
-                    projects={projects}
-                    projectId={route.projectId}
-                  />
-                ) : isProjectRoute(route) ? (
-                  selectedProjectId ? (
-                    <ProjectShell
-                      projectId={selectedProjectId}
-                      project={
-                        projects.find(
-                          project => project.id === selectedProjectId,
-                        )!
-                      }
-                      route={route}
-                      engines={engines}
-                      notifications={notificationsQuery.data ?? []}
-                      preferences={preferences}
-                      onPreferences={savePreferences}
-                      onManageProject={openProjectSettings}
-                      onRenameConversation={conversation =>
-                        openSidebarConversationAction("rename", conversation)
-                      }
-                      onDeleteConversation={conversation =>
-                        openSidebarConversationAction("delete", conversation)
-                      }
-                      onOpenEngineStatus={() => setEngineStatusOpen(true)}
-                      navigate={navigateWorkspace}
-                      browserRequest={projectBrowserRequest}
-                      onBrowserRequestHandled={requestId =>
-                        setProjectBrowserRequest(current =>
-                          consumeProjectBrowserRequest(current, requestId),
-                        )
-                      }
-                      openInNewTab={openWorkspaceRouteInBackground}
-                      onResourceDeleted={removeWorkspaceView}
-                    />
-                  ) : (
-                    <Box />
+              <WorkspaceRouteOutlet
+                route={route}
+                selectedProjectId={selectedProjectId}
+                projects={projects}
+                engines={engines}
+                notifications={notificationsQuery.data ?? []}
+                preferences={preferences}
+                colorMode={colorMode}
+                projectBrowserRequest={projectBrowserRequest}
+                loadError={projectsQuery.isError || enginesQuery.isError}
+                onRetryLoad={() => {
+                  void projectsQuery.refetch();
+                  void enginesQuery.refetch();
+                }}
+                onNavigate={navigateWorkspace}
+                onOpenInNewTab={openWorkspaceRouteInBackground}
+                onPreferences={savePreferences}
+                onCreateProject={() => openProjectCreator()}
+                onBeginHomeCreate={beginHomeCreate}
+                onCreateHomeChat={projectId => void createHomeChat(projectId)}
+                onCreateHomeAgent={(projectId, managerAgentId) =>
+                  createHomeAgent(projectId, false, managerAgentId)
+                }
+                onOpenInbox={() => setNotificationPanelOpen(true)}
+                onManageProject={openProjectSettings}
+                onConversationAction={openSidebarConversationAction}
+                onOpenEngineStatus={() => setEngineStatusOpen(true)}
+                onBrowserRequestHandled={requestId =>
+                  setProjectBrowserRequest(current =>
+                    consumeProjectBrowserRequest(current, requestId),
                   )
-                ) : (
-                  assertNeverRoute(route)
-                )}
-              </Box>
+                }
+                onResourceDeleted={removeWorkspaceView}
+                onToggleColorMode={onToggleColorMode}
+              />
             </WorkspaceErrorBoundary>
           </Box>
         </Box>
