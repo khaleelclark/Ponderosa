@@ -28,7 +28,7 @@ import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
 import type { ActivityStreamEntry } from "./activityStream";
 import { ResponseFileActivity } from "./ResponseFileActivity";
 
-const ACTIVITY_TITLE_COLOR = "success.main";
+const ACTIVITY_TITLE_COLOR = "var(--ponderosa-activity-label)";
 const ACTIVITY_TITLE_FONT_SIZE = 15;
 const RESPONSE_TITLE_FONT_SIZE = 16;
 const RUN_TITLE_FONT_SIZE = 17;
