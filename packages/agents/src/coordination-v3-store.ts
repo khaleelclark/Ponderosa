@@ -26,17 +26,13 @@ import {
   type TriggerRunBudgetDto,
   type AssetDto,
   type CommunicationActor,
-  type CommunicationAudience,
   type CommunicationIntent,
-  type CommunicationEvent,
-  isCommunicationActor,
-  isCommunicationAudience,
-  isCommunicationEvent,
 } from "@ponderosa/core";
 import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./coordination-v3-activation.js";
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
+import { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { terminalAt } from "./coordination-v3-request-state.js";
 import {
   RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE,
@@ -236,12 +232,14 @@ const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
   private readonly readModel: CoordinationV3ReadModel;
+  private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority;
 
   constructor(
     private readonly sqlite: Database.Database,
     private readonly options: CoordinationV3StoreOptions = {},
   ) {
     this.readModel = new CoordinationV3ReadModel(sqlite);
+    this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
   }
 
   recordRuntimeCommunication(input: RuntimeCommunicationV3Input): RuntimeCommunicationV3Result {
@@ -256,9 +254,9 @@ export class CoordinationV3Store {
     );
     const payload = preparedAttachments.payload;
     const activationScopeKeys = activationInputs.map((activation) =>
-      input.scopeKey ?? this.communicationScopeKey(payload, activation.agentId));
+      input.scopeKey ?? this.runtimeScopeAuthority.communicationScopeKey(payload, activation.agentId));
     const artifacts = this.resolveRuntimeArtifacts(input.projectId, input.artifacts, "runtime communication");
-    if (!this.runtimeCommunicationAuthorityAgrees({
+    if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
       projectId: input.projectId,
       sender: input.sender,
       intent: input.intent,
@@ -304,7 +302,7 @@ export class CoordinationV3Store {
         if (input.runAuthorization) this.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
         this.requireProject(input.projectId);
         this.requireRuntimeArtifacts(input.projectId, artifacts, "runtime communication");
-        if (!this.runtimeCommunicationAuthorityAgrees({
+        if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
           projectId: input.projectId,
           sender: input.sender,
           intent: input.intent,
@@ -598,7 +596,7 @@ export class CoordinationV3Store {
       } catch {
         continue;
       }
-      if (!this.runtimeCommunicationAuthorityAgrees({
+      if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
         projectId,
         sender,
         intent: activation.intent,
@@ -660,7 +658,7 @@ export class CoordinationV3Store {
         state,
         updatedAt: recovery?.updated_at ?? injection?.updated_at ?? activation.updated_at,
         attemptCount,
-        ...((state === "undelivered" || state === "failed") && this.recipientAuthorizedForActivationScope(
+        ...((state === "undelivered" || state === "failed") && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
           activation.project_id,
           activation.agent_id,
           activation.scope_key,
@@ -724,7 +722,7 @@ export class CoordinationV3Store {
         if (source.runtime_project_id !== input.projectId || !source.sender_json || !source.intent ||
           !source.audience_json || !source.payload_json) return false;
         try {
-          return this.runtimeCommunicationAuthorityAgrees({
+          return this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees({
             projectId: input.projectId,
             sender: JSON.parse(source.sender_json) as unknown,
             intent: source.intent,
@@ -751,7 +749,7 @@ export class CoordinationV3Store {
       if (!authoredByOperator) return {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "not_operator_message",
       };
-      if (!this.recipientAuthorizedForActivationScope(
+      if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         input.projectId,
         original.agent_id,
         original.scope_key,
@@ -1437,7 +1435,7 @@ export class CoordinationV3Store {
         this.createActivation({
           projectId: input.projectId,
           agentId: request.recipientAgentId,
-          scopeKey: this.coordinationScopeKey(input.conversationId ?? null, request.recipientAgentId),
+          scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(input.conversationId ?? null, request.recipientAgentId),
           kind: "coordination_request",
           priority: PRIORITY.request,
           dedupeKey: `request:${requestId}:created`,
@@ -2339,7 +2337,7 @@ export class CoordinationV3Store {
         );
         if (request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) this.createActivation({
           projectId: request.project_id, agentId: request.requester_agent_id,
-          scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
+          scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
           kind: "coordination_late_result", priority: PRIORITY.actionable,
           dedupeKey: `request:${request.id}:late-result:${input.updateId}`,
           payload: {
@@ -2968,7 +2966,7 @@ export class CoordinationV3Store {
                 : triggerId(activation) === undefined))
             .slice(0, limit);
       if (activations.length === 0) return undefined;
-      if (!this.recipientAuthorizedForActivationScope(
+      if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         candidate.project_id,
         candidate.agent_id,
         candidate.scope_key,
@@ -3087,7 +3085,7 @@ export class CoordinationV3Store {
         ORDER BY priority DESC, created_at, id LIMIT ?
       `).all(candidate.agent_id, candidate.scope_key, now, limit) as ActivationRow[];
       if (activations.length === 0) return undefined;
-      if (!this.recipientAuthorizedForActivationScope(
+      if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         candidate.project_id,
         candidate.agent_id,
         candidate.scope_key,
@@ -4286,245 +4284,6 @@ export class CoordinationV3Store {
     return Boolean(run && run.agent_id === originAgentId);
   }
 
-  private coordinationScopeKey(conversationId: string | null, agentId: string): string {
-    return conversationId ? `conversation:${conversationId}` : `agent:${agentId}`;
-  }
-
-  private communicationScopeKey(payload: unknown, agentId: string): string {
-    if (payload && typeof payload === "object") {
-      const root = payload as Record<string, unknown>;
-      const communication = root.communication && typeof root.communication === "object"
-        ? root.communication as Record<string, unknown>
-        : root;
-      if (typeof communication.conversationId === "string" && communication.conversationId) {
-        return `conversation:${communication.conversationId}`;
-      }
-    }
-    return `agent:${agentId}`;
-  }
-
-  /** Runtime communication rows, their actionable deliveries, and every
-   * structured identity they reference must remain inside one Project. */
-  private runtimeCommunicationAuthorityAgrees(input: {
-    projectId: string;
-    sender: unknown;
-    intent: string;
-    audience: unknown;
-    payload: unknown;
-    activations: Array<{ agentId: string; kind?: string; scopeKey: string }>;
-  }, requireCurrentAuthorization = true): boolean {
-    const record = (value: unknown): Record<string, unknown> | undefined =>
-      value && typeof value === "object" && !Array.isArray(value)
-        ? value as Record<string, unknown>
-        : undefined;
-    if (!isCommunicationActor(input.sender) || !isCommunicationAudience(input.audience)) return false;
-    const sender = input.sender;
-    const audience = input.audience;
-    const payloadRecord = record(input.payload);
-    if (!payloadRecord) return false;
-    const runtimePayload = payloadRecord as Record<string, unknown>;
-    const hasOwn = (key: string): boolean => Object.prototype.hasOwnProperty.call(payloadRecord, key);
-    if (hasOwn("communication") && !isCommunicationEvent(payloadRecord.communication)) return false;
-    if (hasOwn("dispatch") && !record(payloadRecord.dispatch)) return false;
-    const directCanonicalPayload = !hasOwn("communication") &&
-      (Object.prototype.hasOwnProperty.call(payloadRecord, "schemaVersion") ||
-        Object.prototype.hasOwnProperty.call(payloadRecord, "eventId"));
-    if (directCanonicalPayload && !isCommunicationEvent(payloadRecord)) return false;
-    const communication = hasOwn("communication")
-      ? (payloadRecord as Record<string, unknown>).communication as CommunicationEvent
-      : directCanonicalPayload ? payloadRecord as unknown as CommunicationEvent : undefined;
-    if (communication) {
-      const expectedIntent = input.intent === "correction" ? "user_dm"
-        : input.intent === "managed_child_failure" ? undefined
-          : input.intent;
-      if (!expectedIntent || communication.projectId !== input.projectId || communication.intent !== expectedIntent ||
-          stableJson(communication.sender) !== stableJson(input.sender) ||
-          !this.communicationAudiencesAgree(communication.audience, input.audience)) return false;
-      if (communication.schemaVersion === 2 && communication.intent === "user_dm") {
-        const targetAgentIds = this.communicationAudienceAgentIds(communication.audience);
-        if (communication.sender.kind === "system" ||
-            (communication.sender.kind === "user" &&
-              communication.sender.userId !== communication.audience.userId) ||
-            (communication.sender.kind === "agent" &&
-              (targetAgentIds.length !== 1 || targetAgentIds[0] !== communication.sender.agentId))) return false;
-      }
-    } else if (input.intent === "correction") return false;
-
-    const intentAudienceAgrees = input.intent === "broadcast"
-      ? audience.kind === "organization"
-      : input.intent === "direct_to_user"
-        ? audience.kind === "user"
-        : input.intent === "user_dm"
-          ? audience.kind === "user_agent" || audience.kind === "user_agents"
-          : input.intent === "collaboration"
-            ? audience.kind === "agents"
-            : input.intent === "correction"
-              ? (audience.kind === "user_agent" || audience.kind === "user_agents") && sender.kind === "user"
-              : input.intent === "managed_child_failure" &&
-                audience.kind === "agents" && sender.kind === "system";
-    if (!intentAudienceAgrees) return false;
-    if (audience.kind === "organization" && audience.organizationId !== input.projectId) return false;
-    if (input.intent === "managed_child_failure" &&
-        (sender.kind !== "system" || sender.component !== "runtime-supervisor" ||
-          audience.kind !== "agents" || audience.agentIds.length !== 1 ||
-          typeof runtimePayload.text !== "string" || !runtimePayload.text.trim() ||
-          typeof runtimePayload.childAgentId !== "string" || !runtimePayload.childAgentId ||
-          typeof runtimePayload.executionId !== "string" || !runtimePayload.executionId ||
-          typeof runtimePayload.failure !== "string" || !runtimePayload.failure.trim() ||
-          input.activations.length !== 1)) return false;
-
-    const audienceAgentIds = new Set(this.communicationAudienceAgentIds(audience));
-    const identityAgentIds = new Set(audienceAgentIds);
-    if (sender.kind === "agent") {
-      identityAgentIds.add(sender.agentId);
-    }
-    if (communication && Object.prototype.hasOwnProperty.call(communication, "attachments")) {
-      if (!runtimeCanonicalAttachmentsAreValid(communication.attachments)) return false;
-      for (const attachment of communication.attachments) {
-        identityAgentIds.add(attachment.agentId);
-        if (audience.kind !== "organization" && !audienceAgentIds.has(attachment.agentId)) return false;
-      }
-    }
-    const childAgentId = (payloadRecord as Record<string, unknown>).childAgentId;
-    if (childAgentId !== undefined) {
-      if (typeof childAgentId !== "string" || !childAgentId) return false;
-      identityAgentIds.add(childAgentId);
-    }
-
-    const conversationIds = new Set<string>();
-    const addConversationId = (value: unknown): boolean => {
-      if (value === undefined || value === null) return true;
-      if (typeof value !== "string" || !value) return false;
-      conversationIds.add(value);
-      return true;
-    };
-    if (!addConversationId(communication?.conversationId)) return false;
-    const dispatch = record((payloadRecord as Record<string, unknown>).dispatch);
-    if (!addConversationId(dispatch?.conversationId) ||
-      !addConversationId(dispatch?.sourceConversationId)) return false;
-    for (const activation of input.activations) {
-      const prefix = "conversation:";
-      if (activation.scopeKey.startsWith(prefix) && !addConversationId(activation.scopeKey.slice(prefix.length))) {
-        return false;
-      }
-    }
-    if (conversationIds.size > 1) return false;
-    const conversationId = [...conversationIds][0];
-
-    if (dispatch?.communicationEventId !== undefined &&
-        (typeof dispatch.communicationEventId !== "string" || !communication ||
-          dispatch.communicationEventId !== communication.eventId)) return false;
-    if (dispatch?.targetAuthorAgentId !== undefined) {
-      if (typeof dispatch.targetAuthorAgentId !== "string" || !dispatch.targetAuthorAgentId) return false;
-      identityAgentIds.add(dispatch.targetAuthorAgentId);
-      if (audience.kind !== "organization" && !audienceAgentIds.has(dispatch.targetAuthorAgentId)) return false;
-    }
-    if (dispatch && Object.prototype.hasOwnProperty.call(dispatch, "attachments") &&
-        !runtimeDispatchAttachmentsAreValid(dispatch.attachments)) return false;
-    if (dispatch?.recipients !== undefined) {
-      if (!Array.isArray(dispatch.recipients)) return false;
-      for (const candidate of dispatch.recipients) {
-        const recipient = record(candidate);
-        if (!recipient || typeof recipient.agentId !== "string" || !recipient.agentId) return false;
-        if (Object.prototype.hasOwnProperty.call(recipient, "attachments") &&
-            !runtimeDispatchAttachmentsAreValid(recipient.attachments)) return false;
-        identityAgentIds.add(recipient.agentId);
-        if (audience.kind !== "organization" && !audienceAgentIds.has(recipient.agentId)) return false;
-      }
-    }
-
-    for (const agentId of identityAgentIds) {
-      if (!this.sqlite.prepare(`
-        SELECT 1 FROM agents WHERE id = ? AND project_id = ?
-          AND (? = 0 OR archived = 0)
-      `).get(agentId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
-      if (conversationId && requireCurrentAuthorization && !this.sqlite.prepare(`
-        SELECT 1 FROM agent_conversation_memberships
-        WHERE conversation_id = ? AND agent_id = ?
-      `).get(conversationId, agentId)) return false;
-    }
-    for (const conversationId of conversationIds) {
-      if (!this.sqlite.prepare(`
-        SELECT 1 FROM conversations
-        WHERE id = ? AND project_id = ? AND (? = 0 OR archived = 0)
-      `).get(conversationId, input.projectId, requireCurrentAuthorization ? 1 : 0)) return false;
-    }
-
-    const audienceIsOrganization = audience.kind === "organization";
-    for (const activation of input.activations) {
-      if (input.intent === "managed_child_failure" && activation.kind !== input.intent) return false;
-      if (input.intent === "correction" && activation.kind !== "message_correction") return false;
-      if (!audienceIsOrganization && !audienceAgentIds.has(activation.agentId)) return false;
-      if (conversationId
-        ? activation.scopeKey !== `conversation:${conversationId}`
-        : activation.scopeKey !== `agent:${activation.agentId}`) return false;
-      if (requireCurrentAuthorization) {
-        if (!this.recipientAuthorizedForActivationScope(
-          input.projectId,
-          activation.agentId,
-          activation.scopeKey,
-        )) return false;
-      } else if (activation.scopeKey !== `agent:${activation.agentId}`) {
-        const conversationPrefix = "conversation:";
-        if (!activation.scopeKey.startsWith(conversationPrefix)) return false;
-        const conversationId = activation.scopeKey.slice(conversationPrefix.length);
-        if (!conversationId || !this.sqlite.prepare(`
-          SELECT 1 FROM conversations WHERE id = ? AND project_id = ?
-        `).get(conversationId, input.projectId)) return false;
-      }
-    }
-    return true;
-  }
-
-  private communicationAudienceAgentIds(audience: CommunicationAudience): string[] {
-    if (audience.kind === "agents" || audience.kind === "user_agents") return audience.agentIds;
-    if (audience.kind === "user_agent") return [audience.agentId];
-    return [];
-  }
-
-  private communicationAudiencesAgree(left: CommunicationAudience, right: CommunicationAudience): boolean {
-    if (left.kind !== right.kind) return false;
-    if (left.kind === "organization" && right.kind === "organization") {
-      return left.organizationId === right.organizationId;
-    }
-    if (left.kind === "user" && right.kind === "user") return left.userId === right.userId;
-    if (left.kind === "user_agent" && right.kind === "user_agent") {
-      return left.userId === right.userId && left.agentId === right.agentId;
-    }
-    if (left.kind === "user_agents" && right.kind === "user_agents") {
-      return left.userId === right.userId &&
-        stableJson([...new Set(left.agentIds)].sort()) === stableJson([...new Set(right.agentIds)].sort());
-    }
-    return left.kind === "agents" && right.kind === "agents" &&
-      stableJson([...new Set(left.agentIds)].sort()) === stableJson([...new Set(right.agentIds)].sort());
-  }
-
-  /** One fail-closed authority boundary for every Activation consumer. */
-  private recipientAuthorizedForActivationScope(
-    projectId: string,
-    agentId: string,
-    scopeKey: string,
-  ): boolean {
-    const activeAgent = this.sqlite.prepare(`
-      SELECT 1 FROM agents
-      WHERE id = ? AND project_id = ? AND archived = 0
-    `).get(agentId, projectId);
-    if (!activeAgent) return false;
-    if (scopeKey === `agent:${agentId}`) return true;
-    const conversationPrefix = "conversation:";
-    if (!scopeKey.startsWith(conversationPrefix)) return false;
-    const conversationId = scopeKey.slice(conversationPrefix.length);
-    if (!conversationId) return false;
-    return Boolean(this.sqlite.prepare(`
-      SELECT 1
-      FROM conversations conversation
-      JOIN agent_conversation_memberships membership
-        ON membership.conversation_id = conversation.id
-      WHERE conversation.id = ? AND conversation.project_id = ?
-        AND conversation.archived = 0 AND membership.agent_id = ?
-    `).get(conversationId, projectId, agentId));
-  }
-
   private settleUnauthorizedPendingActivations(now: string): number {
     const pending = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, scope_key
@@ -4542,7 +4301,7 @@ export class CoordinationV3Store {
     `);
     let settled = 0;
     for (const activation of pending) {
-      if (this.recipientAuthorizedForActivationScope(
+      if (this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         activation.project_id,
         activation.agent_id,
         activation.scope_key,
@@ -4707,7 +4466,7 @@ export class CoordinationV3Store {
     if (kind === "question" && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
-        scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
+        scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
         kind: "coordination_question", priority: PRIORITY.urgent,
         dedupeKey: `request:${request.id}:question:${updateId}`,
         payload: { requestId: request.id, inReplyToUpdateId: updateId, update: updatePayload ?? null },
@@ -4718,7 +4477,7 @@ export class CoordinationV3Store {
     if ((kind === "answer" || kind === "dependency_resolved") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
-        scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
+        scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: kind === "answer" ? "coordination_answer" : "coordination_dependency_resolved",
         priority: kind === "answer" ? PRIORITY.urgent : PRIORITY.actionable,
         dedupeKey: `request:${request.id}:${kind}:${updateId}`,
@@ -4731,7 +4490,7 @@ export class CoordinationV3Store {
     if ((kind === "cancelled" || kind === "superseded") && this.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
-        scopeKey: this.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
+        scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
         kind: `coordination_${kind}`, priority: PRIORITY.urgent,
         ...(kind === "cancelled" ? { dispatchPolicy: "steer_or_run" as const } : {}),
         dedupeKey: `request:${request.id}:${kind}`,
@@ -4748,7 +4507,7 @@ export class CoordinationV3Store {
     if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && !recordOnly && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
-        scopeKey: this.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
+        scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
         kind: "coordination_outcome",
         priority: nextState === "completed" ? PRIORITY.satisfied : PRIORITY.actionable,
         dedupeKey: `request:${request.id}:terminal`,
@@ -4862,7 +4621,7 @@ export class CoordinationV3Store {
     const activationId = this.createActivation({
       projectId: join.project_id,
       agentId: join.owner_agent_id,
-      scopeKey: this.coordinationScopeKey(join.conversation_id, join.owner_agent_id),
+      scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(join.conversation_id, join.owner_agent_id),
       kind: isProgress ? "coordination_join_progress" : `coordination_join_${state}`,
       priority: state === "satisfied" ? PRIORITY.satisfied : PRIORITY.actionable,
       dedupeKey: isProgress ? `join:${join.id}:progress:${progressRequestId}` : `join:${join.id}:terminal`,
@@ -5677,7 +5436,7 @@ export class CoordinationV3Store {
     for (const row of rows) if (this.agentSurvives(row.owner_agent_id)) this.createActivation({
       projectId: row.project_id,
       agentId: row.owner_agent_id,
-      scopeKey: this.coordinationScopeKey(row.conversation_id, row.owner_agent_id),
+      scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(row.conversation_id, row.owner_agent_id),
       kind: "coordination_question",
       priority: PRIORITY.urgent,
       dedupeKey: `request:${row.request_id}:question:${row.question_update_id}:released:${dependencyKind}:${dependencyId}`,
