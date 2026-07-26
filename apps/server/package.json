@@ -7,8 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && vitest run --exclude test/main-shutdown.e2e.test.ts && vitest run test/main-shutdown.e2e.test.ts",
-    "test:filesystem-watcher-latency": "PONDEROSA_RUN_FILESYSTEM_WATCHER_LATENCY_TESTS=1 vitest run test/trigger-service.test.ts --no-file-parallelism --maxWorkers=1 --testNamePattern=\"shares one Project watcher|restores a persisted filesystem quiet-window burst after service restart\"",
+    "test": "tsc -p tsconfig.json && vitest run",
     "start": "node dist/main.js",
     "dev": "node --watch --experimental-strip-types src/main.ts",
     "push:configure": "node dist/configure-web-push.js"

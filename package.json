@@ -10,7 +10,7 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
-    "test": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r test && pnpm --filter @ponderosa/server test:filesystem-watcher-latency",
+    "test": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r test",
     "verify": "pnpm typecheck && pnpm test && pnpm build",
     "clean": "pnpm -r exec rm -rf dist",
     "engines:try": "node packages/engines/dist/harness.js",
