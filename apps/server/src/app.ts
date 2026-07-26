@@ -81,6 +81,8 @@ import type {
   TeamDirectoryDto,
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
+  ProviderUsageCenterDto,
+  ProviderUsageStateDto,
   PutConversationDraftRequest,
   DraftAttachmentDto,
   UpdateWorkspacePreferencesRequest,
@@ -166,6 +168,7 @@ import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
 import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
+import { ProviderUsageCache, type ProviderUsageTarget } from "./provider-usage-cache.js";
 import {
   descriptorRelativeFilesystemCapability,
   readWorkspaceArtifactFile,
@@ -2176,6 +2179,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const organizationEnvelopeStates = new Map<string, { sessionId: string; hash: string }>();
   const engineAuthStatuses = new EngineAuthStatusCache();
   const engineAvailability = new EngineAvailabilityStore(opts.dataDir);
+  const providerUsage = new ProviderUsageCache(opts.dataDir);
   const providerEnabled = (engineId: string): boolean => workspace.getPreferences().providerAvailability[engineId] !== false;
   const createOperationalNotification = (input: {
     dedupeKey: string;
@@ -2700,6 +2704,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return {
       id: adapter.id,
       displayName: adapter.displayName,
+      ...(adapter.providerUsageCommand ? { providerUsageCommand: adapter.providerUsageCommand.name } : {}),
       models: models.map((model) => ({
         ...model,
         ...(model.efforts !== undefined
@@ -2718,6 +2723,45 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       enabled: providerEnabled(adapter.id),
       ...status,
     };
+  };
+  const providerUsageTarget = async (registration: EngineRegistration): Promise<ProviderUsageTarget> => {
+    const auth = registration.authStatus
+      ? await engineAuthStatuses.get(registration.adapter.id, registration.authStatus)
+      : { authenticated: true, detail: "authenticated provider" };
+    const detail = auth.detail?.trim();
+    const accountMatch = detail ? /^logged in as (.+?)(?:\s+\(subscription\))?$/iu.exec(detail) : undefined;
+    return {
+      adapter: registration.adapter,
+      displayName: registration.adapter.displayName,
+      authenticated: auth.authenticated,
+      accountKey: detail || (auth.authenticated ? "authenticated" : "unauthenticated"),
+      ...(accountMatch?.[1] ? { accountLabel: accountMatch[1].trim() }
+        : auth.authenticated && detail ? { accountLabel: detail } : {}),
+    };
+  };
+  const providerUsageState = async (
+    registration: EngineRegistration,
+    refresh: "none" | "stale" | "force" = "none",
+  ): Promise<ProviderUsageStateDto> => {
+    const target = await providerUsageTarget(registration);
+    return refresh === "none"
+      ? providerUsage.state(target)
+      : providerUsage.refresh(target, refresh === "force");
+  };
+  const providerUsageCenter = async (
+    refresh: "none" | "stale" = "none",
+  ): Promise<ProviderUsageCenterDto> => ({
+    providers: await Promise.all([...engines.values()].map((registration) =>
+      providerUsageState(registration, refresh)
+    )),
+  });
+  const refreshProviderUsageAfterRun = (engineId: string): void => {
+    if (closed) return;
+    const registration = engines.get(engineId);
+    if (!registration?.adapter.readProviderUsage) return;
+    void providerUsageState(registration, "stale").catch((error) => {
+      app.log.warn({ err: error, engineId }, "provider usage refresh after Run failed");
+    });
   };
   const engineCapabilityCacheTtlMs = 60_000;
   const engineCapabilityCache = new Map<string, {
@@ -5273,7 +5317,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const schedulerRuns = coordinationV3.activeRunCount();
     const localRuns = activeRuns.size;
     const authorities = [...runtimeAuthorities.values()];
-    const providerAuthorities = authorities.reduce((total, authority) => total + pendingRuntimeAuthorityCount(authority), 0);
+    const providerAuthorities = authorities.reduce((total, authority) => total + pendingRuntimeAuthorityCount(authority), 0)
+      + providerUsage.pendingCount();
     const runtimeCleanupOperations = authorities.reduce((total, authority) =>
       total + Number(Boolean(authority.closing)) + authority.oneShots.size +
       Number(Boolean(authority.opening?.terminationOperation)), 0);
@@ -5977,6 +6022,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         drainProviderRuntimeAuthority("server_shutdown"),
         drainEngineCapabilityDiscoveries(),
         drainEngineModelCatalogDiscoveries(),
+        providerUsage.shutdown(),
       ]);
       const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, "Provider runtime authority shutdown did not complete");
@@ -6082,6 +6128,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const event = stored.event;
     const category = workspaceAgentEventCategory(event);
     if (event.type === "turn_done") {
+      refreshProviderUsageAfterRun(agent.activeEngine);
       appendWorkspace({
         type: "usage_changed",
         projectId: agent.projectId,
@@ -11735,7 +11782,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
         if (!command || command.status !== "available") {
           return reply.code(409).send({
-            error: command?.unavailableReason ?? `the active provider does not advertise /${providerSlash[1]}`,
+            error: command?.unavailableReason ?? `the active provider does not expose /${providerSlash[1]}`,
             catalogVersion: catalog.catalogVersion,
           });
         }
@@ -13201,6 +13248,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
               executionId: runId,
             });
             publish(agent.id, terminal);
+            refreshProviderUsageAfterRun(runtimeEngineId);
             if (rolloverSucceeded) {
               clearAgentResumeSession(agent.id, "explicit_compaction");
               organizationEnvelopeStates.delete(agent.id);
@@ -14126,13 +14174,21 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     const engineId = request.body?.engineId?.trim() ?? "";
     const engine = engines.get(engineId);
     if (!engine) return reply.code(400).send({ error: "unknown engine" });
-    if (!engine.adapter.openSession) {
-      return reply.code(409).send({ error: "this provider cannot open a command-only session" });
-    }
     const name = request.body?.name?.trim().replace(/^\/+/, "") ?? "";
     const argumentsText = request.body?.argumentsText?.trim();
     if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
       return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
+    }
+    if (engine.adapter.providerUsageCommand?.name === name) {
+      if (argumentsText) return reply.code(400).send({ error: `/${name} does not accept arguments` });
+      return {
+        invoked: true,
+        name,
+        usage: await providerUsageState(engine, "stale"),
+      };
+    }
+    if (!engine.adapter.openSession) {
+      return reply.code(409).send({ error: "this provider cannot open a command-only session" });
     }
     const selection = concreteRuntimeSelection(engine.adapter, [
       { model: request.body?.model, effort: request.body?.effort },
@@ -14183,7 +14239,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
         throw new Error("this provider does not support structured runtime commands");
       }
       if (!command || command.invocation !== "runtime" || command.status !== "available") {
-        const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
+        const error = new Error(command?.unavailableReason ?? `/${name} is no longer available`);
         Object.assign(error, { catalogVersion: catalog.catalogVersion });
         throw error;
       }
@@ -14233,6 +14289,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       if (!name || (request.body?.argumentsText !== undefined && typeof request.body.argumentsText !== "string")) {
         return reply.code(400).send({ error: "provider command name and optional argumentsText are required" });
       }
+      if (engine.adapter.providerUsageCommand?.name === name) {
+        if (argumentsText) return reply.code(400).send({ error: `/${name} does not accept arguments` });
+        return {
+          invoked: true,
+          name,
+          usage: await providerUsageState(engine, "stale"),
+        };
+      }
       const invoke = async (session: RuntimeSession): Promise<{ catalog: EngineCapabilities; message?: string }> => {
         const catalog = session.capabilities
           ? await session.capabilities()
@@ -14251,7 +14315,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
           throw new Error("this provider does not support structured runtime commands");
         }
         if (!command || command.invocation !== "runtime" || command.status !== "available") {
-          const error = new Error(command?.unavailableReason ?? `the provider no longer advertises /${name}`);
+          const error = new Error(command?.unavailableReason ?? `/${name} is no longer available`);
           Object.assign(error, { catalogVersion: catalog.catalogVersion });
           throw error;
         }
@@ -15075,6 +15139,47 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
     return Promise.all(Array.from(engines.values()).map(engineDto));
   });
+
+  app.get<{ Querystring: { refresh?: string } }>(
+    "/api/provider-usage",
+    async (request, reply): Promise<ProviderUsageCenterDto | FastifyReply> => {
+      if (request.query.refresh !== undefined && request.query.refresh !== "stale") {
+        return reply.code(400).send({ error: "refresh must be stale when provided" });
+      }
+      return providerUsageCenter(request.query.refresh === "stale" ? "stale" : "none");
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/provider-usage/:id/refresh",
+    async (request, reply): Promise<ProviderUsageStateDto | FastifyReply> => {
+      const registration = engines.get(request.params.id);
+      if (!registration) return reply.code(404).send({ error: "unknown engine" });
+      if (!registration.adapter.readProviderUsage) {
+        return reply.code(409).send({ error: "this provider does not expose subscription usage" });
+      }
+      return providerUsageState(registration, "force");
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
+    "/api/agents/:id/provider-usage",
+    async (request, reply): Promise<ProviderUsageStateDto | FastifyReply> => {
+      const agent = store.getAgent(request.params.id);
+      if (!agent) return reply.code(404).send({ error: "agent not found" });
+      const registration = engines.get(agent.activeEngine);
+      if (!registration?.adapter.readProviderUsage) {
+        return reply.code(409).send({ error: "this provider does not expose subscription usage" });
+      }
+      if (request.query.refresh !== undefined && request.query.refresh !== "stale") {
+        return reply.code(400).send({ error: "refresh must be stale when provided" });
+      }
+      return providerUsageState(
+        registration,
+        request.query.refresh === "stale" ? "stale" : "none",
+      );
+    },
+  );
 
   app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/engines/:id", async (request, reply) => {
     const registration = engines.get(request.params.id);

@@ -74,6 +74,8 @@ import type {
   ProjectDto,
   ProjectEngineModelCatalogDto,
   ProjectEngineCapabilitiesDto,
+  ProviderUsageCenterDto,
+  ProviderUsageStateDto,
   ReadinessDto,
   ProjectFolderOptionsDto,
   PutConversationDraftRequest,
@@ -231,6 +233,15 @@ export const realApi = {
     const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
+  },
+  getProviderUsage(refreshStale = false): Promise<ProviderUsageCenterDto> {
+    return requestJson<ProviderUsageCenterDto>(`/api/provider-usage${refreshStale ? "?refresh=stale" : ""}`);
+  },
+  refreshProviderUsage(providerId: string): Promise<ProviderUsageStateDto> {
+    return requestJson<ProviderUsageStateDto>(`/api/provider-usage/${encodeURIComponent(providerId)}/refresh`, { method: "POST" });
+  },
+  getAgentProviderUsage(agentId: string, refreshStale = false): Promise<ProviderUsageStateDto> {
+    return requestJson<ProviderUsageStateDto>(`/api/agents/${encodeURIComponent(agentId)}/provider-usage${refreshStale ? "?refresh=stale" : ""}`);
   },
   searchGlobalChats(query: string, limit?: number): Promise<GlobalChatSearchResponseDto> {
     return requestJson<GlobalChatSearchResponseDto>(`/api/search${toQuery({ q: query, limit })}`);
@@ -587,13 +598,13 @@ export const realApi = {
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string }> {
+  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; usage?: ProviderUsageStateDto }> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  invokeProjectProviderCommand(projectId: string, request: { engineId: string; model?: string; effort?: string; name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string }> {
+  invokeProjectProviderCommand(projectId: string, request: { engineId: string; model?: string; effort?: string; name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; usage?: ProviderUsageStateDto }> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),

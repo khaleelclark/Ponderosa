@@ -20,6 +20,8 @@ import type {
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
+  ProviderUsage,
+  ProviderUsageReadOptions,
   RuntimeProcessHandle,
   RuntimeSession,
   SeedOptions,
@@ -30,6 +32,7 @@ import { streamProcess, type SpawnFn } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
 import { ClaudeStreamSession } from "./claude-stream-session.js";
 import { ClaudeModelCatalogProbe } from "./claude-models.js";
+import { readClaudeProviderUsage } from "./provider-usage.js";
 
 export interface ClaudeAdapterOptions {
   /** Path/name of the claude binary. Default: "claude". */
@@ -127,6 +130,10 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
   readonly displayName = "Claude";
+  readonly providerUsageCommand = {
+    name: "usage",
+    description: "Show Claude subscription usage",
+  };
 
   private readonly bin: string;
   private readonly spawnFn: SpawnFn;
@@ -240,13 +247,22 @@ export class ClaudeAdapter implements Adapter {
 
   async capabilities(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities> {
     const mcpServers = await discoverCliMcps(this.bin, ["mcp", "list"], cwd, parseClaudeMcpList, context, this.killGraceMs, this.spawnFn);
+    const commands = [{
+      name: this.providerUsageCommand.name,
+      description: this.providerUsageCommand.description,
+      source: "adapter-implemented" as const,
+      acceptsArguments: false,
+      insertText: `/${this.providerUsageCommand.name}`,
+      status: "available" as const,
+      invocation: "runtime" as const,
+    }];
     return {
       steering: true,
       persistentSessions: true,
       ...(context?.model ? { model: context.model } : {}),
-      commands: [],
+      commands,
       mcpServers,
-      composerCapabilities: composerCapabilities([], [], mcpServers, "/"),
+      composerCapabilities: composerCapabilities(commands, [], mcpServers, "/"),
     };
   }
 
@@ -258,6 +274,15 @@ export class ClaudeAdapter implements Adapter {
       permissionMode: this.permissionMode,
       killGraceMs: this.killGraceMs,
     }));
+  }
+
+  readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
+    return readClaudeProviderUsage({
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      killGraceMs: this.killGraceMs,
+      options,
+    });
   }
 
   /** Flags shared by seed + continue. */

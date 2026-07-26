@@ -201,6 +201,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
@@ -269,7 +270,10 @@ export function useWorkspaceStream(): void {
         }
         if (event.category === "usage") void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
       }
-      else if (event.type === "usage_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+      else if (event.type === "usage_changed") {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
+      }
       else if (event.type === "runtime_capabilities_changed") {
         void invalidateWorkspaceCapabilities(queryClient, { kind: "runtime-change", projectId: event.projectId });
       }

@@ -117,6 +117,7 @@ import {
   triggerAgentDestinations,
 } from "./triggerCreation";
 import { queryKeys } from "./queryKeys";
+import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -217,6 +218,11 @@ export default function App({
     staleTime: 30_000,
   });
   const projectAgentQueries = useProjectAgents(projects);
+  const preferredQuotaProvider = route.kind === "agent"
+    ? projectAgentQueries[
+        projects.findIndex((project) => project.id === route.projectId)
+      ]?.data?.find((agent) => agent.id === route.agentId)?.activeEngine
+    : undefined;
   const triggerAgentOptions = triggerAgentDestinations(
     projects,
     projectAgentQueries.map(query => query.data),
@@ -698,6 +704,10 @@ export default function App({
                 Ponderosa
               </Typography>
             </Box>
+            <ProviderQuotaIndicator
+              preferredProvider={preferredQuotaProvider}
+              mobile
+            />
             <Tooltip
               title={`${engineAvailability.label}. Click for provider details.`}
               arrow
@@ -840,6 +850,7 @@ export default function App({
                 onCloseOthers={closeOtherWorkspaceViews}
                 onRename={renameWorkspaceView}
                 onReorder={reorderWorkspaceViews}
+                preferredProvider={preferredQuotaProvider}
               />
             ) : null}
             <WorkspaceErrorBoundary

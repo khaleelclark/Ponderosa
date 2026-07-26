@@ -482,7 +482,7 @@ export class CodexAppServerSession implements RuntimeSession {
     if (argumentsText?.trim()) throw new Error(`/${name} does not accept arguments`);
     const command = (await this.capabilities()).commands.find((candidate) => candidate.name === name);
     if (!command || command.status !== "available" || command.invocation !== "runtime") {
-      throw new Error(command?.unavailableReason ?? `Codex no longer advertises /${name}`);
+      throw new Error(command?.unavailableReason ?? `/${name} is unavailable in the Codex command catalog`);
     }
     if (name === "compact") {
       await this.rpc.request("thread/compact/start", { threadId: this.engineAgentId });
