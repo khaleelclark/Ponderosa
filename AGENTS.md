@@ -2,13 +2,6 @@
 
 Rules for anyone working in this repository.
 
-Read the governing documents before changing behavior:
-
-- [VISION.md](./VISION.md): product direction
-- [VOCABULARY.md](./VOCABULARY.md): canonical terminology
-- [COMMUNICATION.md](./COMMUNICATION.md): communication routing
-- [COMMUNICATION_V3.md](./COMMUNICATION_V3.md): scheduler and coordination contract
-
 ## Mission
 
 Ponderosa is a self-hosted interface for AI agents running through the user’s existing Codex or Claude subscriptions.
