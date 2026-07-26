@@ -907,7 +907,6 @@ export function Composer({
       elevation={0}
       sx={{
         position: "relative",
-        zIndex: 3,
         border: 1,
         borderColor: "divider",
         borderRadius: { xs: 2, sm: 2.25 },
@@ -918,8 +917,6 @@ export function Composer({
           xl: "min(1240px, calc(100% - 64px))",
         },
         mx: "auto",
-        mt: { xs: 0.75, sm: 1 },
-        mb: { xs: 1, sm: 1.5 },
         minWidth: 0,
         maxWidth: "100%",
         overflow: "hidden",
@@ -927,10 +924,6 @@ export function Composer({
         px: { xs: 1, sm: 1.5 },
         pt: { xs: 1, sm: 1.25 },
         pb: "max(10px, env(safe-area-inset-bottom))",
-        boxShadow: theme =>
-          theme.palette.mode === "dark"
-            ? "0 10px 30px rgba(3,8,6,.18)"
-            : "0 10px 30px rgba(33,45,38,.09)",
       }}
     >
       {guidance ? (
