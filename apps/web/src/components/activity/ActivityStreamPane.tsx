@@ -9,6 +9,7 @@ import { useMemo } from "react";
 import { chatStateKey } from "../../chatState";
 import { ChatSurface } from "../chat/ChatSurface";
 import {
+  CommandGroupRow,
   CommandRow,
   CompactActivityRow,
   FileRow,
@@ -18,6 +19,39 @@ import {
   ToolRow,
 } from "./ActivityRows";
 import { buildActivityStream } from "./activityStream";
+import type { ActivityStreamEntry } from "./activityStream";
+
+type CommandEntry = Extract<ActivityStreamEntry, { kind: "command" }>;
+type ActivityDisplayEntry =
+  | ActivityStreamEntry
+  | { kind: "command_group"; id: string; entries: CommandEntry[] };
+
+function groupConsecutiveCommands(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
+  const grouped: ActivityDisplayEntry[] = [];
+  let commands: CommandEntry[] = [];
+  const flush = () => {
+    if (commands.length >= 3) {
+      grouped.push({
+        kind: "command_group",
+        id: `command-group:${commands[0]!.id}`,
+        entries: commands,
+      });
+    } else {
+      grouped.push(...commands);
+    }
+    commands = [];
+  };
+  for (const entry of entries) {
+    if (entry.kind === "command" && !entry.internal && entry.result) {
+      commands.push(entry);
+      continue;
+    }
+    flush();
+    grouped.push(entry);
+  }
+  flush();
+  return grouped;
+}
 
 export function ActivityStreamPane({
   agentId,
@@ -60,6 +94,7 @@ export function ActivityStreamPane({
     runs,
     ...(activeExecutionId ? { activeExecutionId } : {}),
   }), [activity, runOutput, runs, activeExecutionId]);
+  const displayEntries = useMemo(() => groupConsecutiveCommands(entries), [entries]);
   const last = entries.at(-1);
   const layoutKey = last ? `${entries.length}:${last.id}:${last.seq}` : "0";
   return <ChatSurface
@@ -82,7 +117,13 @@ export function ActivityStreamPane({
     empty="Thinking, responses, commands, tool calls, file changes, and browser actions will appear here."
     scrollTestId="activity-scroll-region"
   >
-    {entries.map((entry) => {
+    {displayEntries.map((entry) => {
+      if (entry.kind === "command_group") return <CommandGroupRow
+        key={entry.id}
+        entries={entry.entries}
+        focusId={focusId}
+        projectRoot={projectRoot}
+      />;
       if (entry.kind === "run_header") return <RunHeaderRow key={entry.id} entry={entry} />;
       if (entry.kind === "thinking") return <ThinkingRow key={entry.id} entry={entry} focusId={focusId} />;
       if (entry.kind === "response") return <ResponseRow

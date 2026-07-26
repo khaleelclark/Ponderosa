@@ -142,6 +142,52 @@ export function CommandRow({
   </Row>;
 }
 
+export function CommandGroupRow({
+  entries,
+  focusId,
+  projectRoot,
+}: {
+  entries: Array<Extract<ActivityStreamEntry, { kind: "command" }>>;
+  focusId?: string;
+  projectRoot?: string;
+}): JSX.Element {
+  const hasErrors = entries.some((entry) => entry.result?.isError);
+  const containsFocus = entries.some((entry) => entry.id === focusId);
+  const [expanded, setExpanded] = useState(hasErrors || containsFocus);
+  useEffect(() => {
+    if (hasErrors || containsFocus) setExpanded(true);
+  }, [containsFocus, hasErrors]);
+  const failureCount = entries.filter((entry) => entry.result?.isError).length;
+  return <Box data-activity-kind="command_group">
+    <Stack
+      direction="row"
+      spacing={1}
+      sx={{ py: 1.25, alignItems: "center", borderBottom: 1, borderColor: "divider" }}
+    >
+      <Button
+        size="small"
+        color="inherit"
+        startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${entries.length} commands`}
+        onClick={() => setExpanded((value) => !value)}
+        sx={{ color: ACTIVITY_TITLE_COLOR, fontWeight: 700, px: 0.5 }}
+      >
+        Ran {entries.length} commands
+      </Button>
+      {failureCount ? <Typography variant="caption" color="error.main">
+        {failureCount} failed
+      </Typography> : null}
+    </Stack>
+    {expanded ? entries.map((entry) => <CommandRow
+      key={entry.id}
+      entry={entry}
+      focusId={focusId}
+      projectRoot={projectRoot}
+    />) : null}
+  </Box>;
+}
+
 function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const lines = value.split("\n");
