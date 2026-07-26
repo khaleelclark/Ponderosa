@@ -3,11 +3,6 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
-import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
-import SearchIcon from "@mui/icons-material/Search";
-import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
-import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
-import NotificationsNoneOutlinedIcon from "@mui/icons-material/NotificationsNoneOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -15,13 +10,11 @@ import {
   Box,
   Chip,
   IconButton,
-  InputAdornment,
   List,
   ListItemButton,
   ListItemIcon,
   ListItemText,
   Stack,
-  TextField,
   Tooltip,
   Typography,
 } from "@mui/material";
@@ -62,15 +55,17 @@ import {
   SIDEBAR_PANEL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
   projectSnapshots,
-  railSurface,
   sidebarSurface,
   starColor,
 } from "./WorkspaceSidebar.helpers";
 import {
-  RailButton,
   SharedSidebarPanel,
-  SidebarSectionHeading,
 } from "./WorkspaceSidebar.parts";
+import {
+  SettingsSidebarPanel,
+  WikiSidebarPanel,
+  WorkspaceSidebarRail,
+} from "./WorkspaceSidebar.chrome";
 import {
   useWorkspaceSidebarNavigation,
   useWorkspaceSidebarResize,
@@ -199,101 +194,25 @@ export function WorkspaceSidebar({
     });
   };
 
-  const rail = (
-    <Box
-      component="nav"
-      aria-label={drawer ? "Primary navigation drawer" : "Primary navigation"}
-      sx={{
-        width: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
-        minWidth: drawer ? 64 : SIDEBAR_RAIL_WIDTH,
-        minHeight: 0,
-        borderRight: 1,
-        borderColor: "var(--ponderosa-rail-border)",
-        bgcolor: railSurface,
-        display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr) auto",
-        justifyItems: "center",
-        py: 1.5,
-      }}
-    >
-      <Stack spacing={0.4} sx={{ alignItems: "center" }}>
-        <Tooltip title="Ponderosa" placement="right">
-          <Box
-            component="img"
-            src="/icons/app-icon.png"
-            alt="Ponderosa"
-            sx={{
-              width: 42,
-              height: 42,
-              mb: 3.25,
-              p: 0.25,
-              borderRadius: 1,
-              objectFit: "cover",
-            }}
-          />
-        </Tooltip>
-        <RailButton label="Home" selected={showingHome} onClick={showHome}>
-          <HomeOutlinedIcon />
-        </RailButton>
-        <Box
-          aria-hidden
-          sx={{
-            width: 40,
-            borderTop: 1,
-            borderColor: "var(--ponderosa-rail-border)",
-            my: 0.5,
-          }}
-        />
-        <RailButton
-          label="Projects"
-          selected={showingProjects}
-          onClick={showProjects}
-        >
-          <FolderOutlinedIcon />
-        </RailButton>
-        <RailButton label="Chats" selected={showingChats} onClick={showChats}>
-          <ChatBubbleOutlineIcon />
-        </RailButton>
-        <RailButton
-          label="Agents"
-          selected={showingAgents}
-          badge={counts.running || undefined}
-          badgeColor="info"
-          onClick={showAgents}
-        >
-          <SmartToyOutlinedIcon />
-        </RailButton>
-        <RailButton
-          label="Triggers"
-          selected={showingTriggers}
-          onClick={showTriggers}
-        >
-          <BoltOutlinedIcon />
-        </RailButton>
-      </Stack>
-      <Box />
-      <Stack spacing={0.65} sx={{ alignItems: "center" }}>
-        <Box
-          aria-hidden
-          sx={{
-            width: 40,
-            borderTop: 1,
-            borderColor: "var(--ponderosa-rail-border)",
-            mb: 0.25,
-          }}
-        />
-        <RailButton label="Wiki" selected={showingWiki} onClick={showWiki}>
-          <MenuBookOutlinedIcon />
-        </RailButton>
-        <RailButton
-          label="Settings"
-          selected={showingSettings}
-          onClick={() => revealSection("settings")}
-        >
-          <SettingsOutlinedIcon />
-        </RailButton>
-      </Stack>
-    </Box>
+    const rail = (
+    <WorkspaceSidebarRail
+      drawer={drawer}
+      runningCount={counts.running}
+      showingAgents={showingAgents}
+      showingChats={showingChats}
+      showingHome={showingHome}
+      showingProjects={showingProjects}
+      showingSettings={showingSettings}
+      showingTriggers={showingTriggers}
+      showingWiki={showingWiki}
+      onShowAgents={showAgents}
+      onShowChats={showChats}
+      onShowHome={showHome}
+      onShowProjects={showProjects}
+      onShowSettings={() => revealSection("settings")}
+      onShowTriggers={showTriggers}
+      onShowWiki={showWiki}
+    />
   );
 
   const starredResourceIds = starredWorkspaceResources(preferences);
@@ -1100,184 +1019,27 @@ export function WorkspaceSidebar({
     route.kind === "wiki"
       ? (route.articleId ?? wikiIndexQuery.data?.sections[0]?.articles[0]?.id)
       : undefined;
-  const wikiPanel = (
-    <Box
-      sx={{
-        minHeight: 0,
-        minWidth: 0,
-        display: "grid",
-        gridTemplateRows: "auto auto minmax(0, 1fr)",
-        bgcolor: sidebarSurface,
+    const wikiPanel = (
+    <WikiSidebarPanel
+      activeArticleId={activeWikiArticleId}
+      drawer={drawer}
+      filter={filter}
+      isError={wikiIndexQuery.isError}
+      isLoading={wikiIndexQuery.isLoading}
+      sections={wikiSections}
+      onFilterChange={setFilter}
+      onNavigateArticle={articleId => {
+        setFilter("");
+        onNavigate({ kind: "wiki", articleId });
       }}
-    >
-      <Stack
-        direction="row"
-        sx={{
-          alignItems: "center",
-          pl: 2.25,
-          pr: drawer ? 7 : 2.25,
-          pt: 2,
-          pb: 1.25,
-        }}
-      >
-        <IconTitle icon={<MenuBookOutlinedIcon />} title="Wiki" />
-      </Stack>
-      <Box sx={{ px: 1.75, pb: 1.5 }}>
-        <TextField
-          fullWidth
-          size="small"
-          value={filter}
-          onChange={event => setFilter(event.target.value)}
-          placeholder="Search Wiki"
-          inputProps={{ "aria-label": "Search Wiki" }}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchIcon />
-              </InputAdornment>
-            ),
-          }}
-        />
-      </Box>
-      <Box
-        component="nav"
-        aria-label="Wiki navigation"
-        data-testid="workspace-navigation-scroll"
-        className="ponderosa-scroll"
-        sx={{ minHeight: 0, overflowY: "auto", px: 1.25, pb: 2 }}
-      >
-        {wikiIndexQuery.isLoading ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            Loading Wiki…
-          </Typography>
-        ) : null}
-        {wikiIndexQuery.isError ? (
-          <Typography variant="body2" color="error" sx={{ p: 1 }}>
-            Wiki navigation could not be loaded.
-          </Typography>
-        ) : null}
-        {wikiSections.map(section => (
-          <Box component="section" key={section.id} sx={{ mb: 2 }}>
-            <SidebarSectionHeading>{section.title}</SidebarSectionHeading>
-            <List dense disablePadding>
-              {section.articles.map(article => (
-                <ListItemButton
-                  key={article.id}
-                  selected={article.id === activeWikiArticleId}
-                  onClick={() => {
-                    setFilter("");
-                    onNavigate({ kind: "wiki", articleId: article.id });
-                  }}
-                  onContextMenu={event => {
-                    event.preventDefault();
-                    openResourceMenu(event.currentTarget, {
-                      kind: "wiki",
-                      articleId: article.id,
-                    });
-                  }}
-                  sx={{ borderRadius: 1.25, mb: 0.25 }}
-                >
-                  <ListItemText
-                    primary={article.title}
-                    primaryTypographyProps={{
-                      fontSize: 13,
-                      fontWeight:
-                        article.id === activeWikiArticleId ? 800 : 600,
-                    }}
-                  />
-                </ListItemButton>
-              ))}
-            </List>
-          </Box>
-        ))}
-        {!wikiIndexQuery.isLoading && wikiSections.length === 0 ? (
-          <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-            {filter.trim()
-              ? `No Wiki articles match “${filter.trim()}”.`
-              : "No Wiki articles are available."}
-          </Typography>
-        ) : null}
-      </Box>
-    </Box>
+      onOpenArticleMenu={(anchor, articleId) => {
+        openResourceMenu(anchor, { kind: "wiki", articleId });
+      }}
+    />
   );
 
-  const settingsPanel = (
-    <Box
-      sx={{
-        minHeight: 0,
-        display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr)",
-        bgcolor: sidebarSurface,
-      }}
-    >
-      <Stack
-        direction="row"
-        sx={{ alignItems: "center", px: 2.25, pt: 2, pb: 1.25 }}
-      >
-        <IconTitle icon={<SettingsOutlinedIcon />} title="Settings" />
-      </Stack>
-      <List sx={{ px: 1.25 }}>
-        <ListItemButton
-          selected={
-            route.kind === "settings" &&
-            (route.section ?? "general") === "general"
-          }
-          onClick={() => onNavigate({ kind: "settings", section: "general" })}
-          sx={{ borderRadius: 1.25 }}
-        >
-          <ListItemIcon>
-            <SettingsOutlinedIcon />
-          </ListItemIcon>
-          <ListItemText
-            primary="General"
-            secondary="Appearance and Agent defaults"
-          />
-        </ListItemButton>
-        <ListItemButton
-          selected={route.kind === "settings" && route.section === "providers"}
-          onClick={() => onNavigate({ kind: "settings", section: "providers" })}
-          sx={{ borderRadius: 1.25 }}
-        >
-          <ListItemIcon>
-            <SmartToyOutlinedIcon />
-          </ListItemIcon>
-          <ListItemText
-            primary="AI Providers"
-            secondary="Availability, models, and reasoning"
-          />
-        </ListItemButton>
-        <ListItemButton
-          selected={
-            route.kind === "settings" && route.section === "notifications"
-          }
-          onClick={() =>
-            onNavigate({ kind: "settings", section: "notifications" })
-          }
-          sx={{ borderRadius: 1.25 }}
-        >
-          <ListItemIcon>
-            <NotificationsNoneOutlinedIcon />
-          </ListItemIcon>
-          <ListItemText
-            primary="Notifications"
-            secondary="In-app and browser attention"
-          />
-        </ListItemButton>
-        <ListItemButton
-          selected={route.kind === "usage"}
-          onClick={() => onNavigate({ kind: "usage" })}
-          sx={{ borderRadius: 1.25 }}
-        >
-          <ListItemIcon>
-            <DataUsageOutlinedIcon />
-          </ListItemIcon>
-          <ListItemText
-            primary="Provider Activity"
-            secondary="Tokens and Run telemetry"
-          />
-        </ListItemButton>
-      </List>
-    </Box>
+    const settingsPanel = (
+    <SettingsSidebarPanel route={route} onNavigate={onNavigate} />
   );
   const panel = showingAgents
     ? agentsPanel
