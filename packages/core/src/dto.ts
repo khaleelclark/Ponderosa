@@ -11,6 +11,13 @@ import type {
 } from "./adapter.js";
 import type { AgentEvent, BrowserControlOwner, BrowserSessionStatus, TokenUsage, WorkItemStatus } from "./events.js";
 import type { CommunicationDocumentReference, VerifiedCitationRecord } from "./communication.js";
+import type {
+  AgentLifecycleReason,
+  AgentLifecycleStatus,
+  AgentRunStatus,
+  HistoryPageDto,
+  HistoryWindowDto,
+} from "./dto/common.js";
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 
@@ -669,19 +676,6 @@ export interface CollaborationViewDto {
   history?: HistoryWindowDto;
   /** Team operational activity is paged independently from human messages. */
   operationHistory?: HistoryWindowDto;
-}
-
-export interface HistoryWindowDto {
-  limit: number;
-  hasMore: boolean;
-  /** Opaque keyset cursor for the next older page. Absent at the beginning of history. */
-  cursor?: string;
-}
-
-/** A stable keyset page. Items are returned oldest-first for direct timeline prepend. */
-export interface HistoryPageDto<T> {
-  items: T[];
-  history: HistoryWindowDto;
 }
 
 export interface TeamOperationalEventDto {
@@ -1848,18 +1842,6 @@ export interface HealthDto {
   revision: string;
 }
 
-/** Manager-facing lifecycle vocabulary. Some runtimes cannot yet emit every state. */
-export type AgentLifecycleStatus = "idle" | "running" | "stalled" | "interrupted" | "waiting" | "blocked" | "compacting" | "cancelled" | "completed" | "failed";
-export type AgentRunStatus = Exclude<AgentLifecycleStatus, "idle">;
-
-export type AgentLifecycleReason =
-  | "no_active_work" | "active_run" | "work_item_waiting_approval" | "queued_delivery"
-  | "awaiting_reports"
-  | "work_item_completed" | "turn_completed" | "runtime_error"
-  | "session_rollover_scheduled" | "agent_cancelled"
-  | "execution_lease_expired" | "execution_interrupted" | "runtime_event_consumer_stalled"
-  | "manager_report_missing";
-
 export interface AgentHealthDto {
   /** Stable agent identity; titles and mention handles are presentation only. */
   agentId: string;
@@ -2029,3 +2011,5 @@ export interface AllChatPageDto {
   decisions?: AllChatDecisionEventDto[];
   history: HistoryWindowDto;
 }
+
+export * from "./dto/common.js";
