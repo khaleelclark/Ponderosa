@@ -1,5 +1,5 @@
-import type { AgentStore } from "@ponderosa/agents";
-import type { AgentDetailDto, AssetLimitsDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
+import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import type { AgentDetailDto, AssetLimitsDto, GlobalChatSearchResponseDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
 import type { documentationReferences } from "./documentation-reference/index.js";
 
 export interface ServerContext {
@@ -20,9 +20,11 @@ export interface ServerContext {
     | "getActivityPage"
     | "getAgent"
     | "getAgentDetail"
+    | "getAllChatPage"
     | "getArtifactPage"
     | "getChangedFileDetail"
     | "getChangedFilePage"
+    | "getConversation"
     | "getProject"
     | "getRunOutputPage"
     | "getRunPage"
@@ -32,4 +34,9 @@ export interface ServerContext {
     scope: { type: "overall" } | { type: "project" | "agent"; id: string },
     range?: TokenUsageRangeDto,
   ) => TokenUsageSummaryDto;
+}
+
+export interface SearchRoutesContext extends ServerContext {
+  readonly globalChatSearch: (query: { q?: string; limit?: string | number }) => GlobalChatSearchResponseDto;
+  readonly workspace: Pick<WorkspaceStore, "listDecisionEventPage">;
 }
