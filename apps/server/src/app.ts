@@ -233,9 +233,6 @@ import {
 export {
   parseGitStatus,
 } from "./git-status.js";
-import {
-  parseTokenUsageRange,
-} from "./token-usage.js";
 export {
   parseTokenUsageRange,
 } from "./token-usage.js";
@@ -254,6 +251,7 @@ import {
 import { registerHealthRoutes } from "./routes/health.js";
 import { registerLimitsRoutes } from "./routes/limits.js";
 import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
+import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import type { ServerContext } from "./server-context.js";
 import {
@@ -3966,7 +3964,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   }) as unknown as PonderosaServer;
   const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
-  const serverContext: ServerContext = { opts, documentationReferences, limits };
+  const serverContext: ServerContext = { opts, documentationReferences, limits, store, tokenUsage };
   app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
@@ -8100,16 +8098,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return sendInspectorJson(reply, request.headers["accept-encoding"], result);
   });
 
-  app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
-    try { return tokenUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
+  registerUsageRoutes(app, serverContext);
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -10195,11 +10184,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(201).send(response);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    try { return tokenUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
+  registerAgentUsageRoute(app, serverContext);
 
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",
