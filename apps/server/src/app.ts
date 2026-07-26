@@ -4,7 +4,6 @@ import { type Socket } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import { Readable, Transform } from "node:stream";
-import { gzipSync } from "node:zlib";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -192,7 +191,6 @@ export {
   rewritePortableArtifactReferences,
 } from "./artifact-refs.js";
 import {
-  acceptsGzip,
   utf8Page,
   utf8PageEnd,
   boundedUtf8Preview,
@@ -288,6 +286,7 @@ import {
   recipientCollaborationMessages,
   organizationalMasterMessages,
 } from "./communication-scoping.js";
+import { sendInspectorJson } from "./inspector-response.js";
 export {
   PROVIDER_TOOL_CONTRACT_HASH,
   providerSessionContractHash,
@@ -316,14 +315,6 @@ type LinkPreviewRegistration = {
   httpConnections: Set<AbortController>;
   reconnectAttempts: number[];
 };
-
-function sendInspectorJson(reply: FastifyReply, acceptEncoding: string | string[] | undefined, value: unknown): FastifyReply {
-  const body = JSON.stringify(value);
-  reply.type("application/json").header("vary", "Accept-Encoding");
-  return acceptsGzip(acceptEncoding)
-    ? reply.header("content-encoding", "gzip").send(gzipSync(body))
-    : reply.send(body);
-}
 
 export interface EngineRegistration {
   adapter: Adapter;
