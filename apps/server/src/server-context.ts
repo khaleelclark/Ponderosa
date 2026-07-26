@@ -1,5 +1,5 @@
 import type { AgentStore } from "@ponderosa/agents";
-import type { AssetLimitsDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
+import type { AgentDetailDto, AssetLimitsDto, TokenUsageRangeDto, TokenUsageSummaryDto } from "@ponderosa/core";
 import type { documentationReferences } from "./documentation-reference/index.js";
 
 export interface ServerContext {
@@ -10,7 +10,24 @@ export interface ServerContext {
   };
   documentationReferences: typeof documentationReferences;
   limits: Readonly<AssetLimitsDto & { maxAttachmentsPerMessage: number }>;
-  readonly store: Pick<AgentStore, "getAgentDetail" | "getProject">;
+  readonly agentDetail: (
+    agentId: string,
+    input?: { limit?: number; cursor?: string; focusId?: string },
+  ) => AgentDetailDto | undefined;
+  readonly store: Pick<
+    AgentStore,
+    | "getActivityOutputPage"
+    | "getActivityPage"
+    | "getAgent"
+    | "getAgentDetail"
+    | "getArtifactPage"
+    | "getChangedFileDetail"
+    | "getChangedFilePage"
+    | "getProject"
+    | "getRunOutputPage"
+    | "getRunPage"
+    | "getWorkItemPage"
+  >;
   readonly tokenUsage: (
     scope: { type: "overall" } | { type: "project" | "agent"; id: string },
     range?: TokenUsageRangeDto,
