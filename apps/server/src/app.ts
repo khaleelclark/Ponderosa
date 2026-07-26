@@ -34,7 +34,6 @@ import type {
   WorkspaceFileViewDto,
   CreateProjectRequest,
   UpdateProjectRequest,
-  HealthDto,
   ReadinessDto,
   ConversationMessageDto,
   ConversationDetailDto,
@@ -257,6 +256,7 @@ import {
   derivedRunActionKey,
   secretEqual,
 } from "./security.js";
+import { registerHealthRoutes } from "./routes/health.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -7725,12 +7725,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { scheduled: true, afterRunId: capability.runId, handoffId };
   });
 
-  app.get("/api/health", async (): Promise<HealthDto> => ({
-    status: "ok",
-    service: "ponderosa",
-    version: opts.buildVersion?.trim() || "0.0.0",
-    revision: opts.buildRevision?.trim() || "development",
-  }));
+  registerHealthRoutes(app, { opts });
 
   app.get("/api/launcher/status", async () => ({
     service: "ponderosa",
