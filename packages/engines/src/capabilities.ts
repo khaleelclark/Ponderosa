@@ -302,9 +302,9 @@ export interface CodexProviderDiscovery {
   configuredMcps?: EngineMcpServer[];
 }
 
-/** Normalize only provider-owned app-server responses. No docs/TUI command
- * catalog is copied into Ponderosa. Structured actions are limited to Codex
- * operations that the app-server can execute without terminal UI state. */
+/** Normalize provider-owned app-server responses plus the adapter's explicit
+ * structured actions. No docs/TUI command catalog is copied into Ponderosa.
+ * Adapter actions are labeled separately from provider-advertised commands. */
 export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): EngineCapabilities {
   const installedPlugins = new Map<string, { label: string; description: string }>();
   for (const marketplace of array(record(input.plugins)?.marketplaces)) {
@@ -380,7 +380,7 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
   commands.set("compact", {
     name: "compact",
     description: "Compact the active Codex thread",
-    source: "built-in",
+    source: "adapter-implemented",
     acceptsArguments: false,
     insertText: "/compact",
     status: compactUnavailable ? "unavailable" : "available",
@@ -390,7 +390,7 @@ export function normalizeCodexProviderDiscovery(input: CodexProviderDiscovery): 
   commands.set("status", {
     name: "status",
     description: "Show Codex session configuration, context usage, and subscription limits",
-    source: "built-in",
+    source: "adapter-implemented",
     acceptsArguments: false,
     insertText: "/status",
     status: "available",
@@ -462,17 +462,20 @@ export function normalizeClaudeInitCapabilities(init: unknown, selectedModel?: s
     if (!name || commands.has(name)) continue;
     const declaredSource = string(advertised?.source);
     const pluginName = string(advertised?.plugin_name) ?? [...pluginNames].find((plugin) => name.startsWith(`${plugin}:`));
-    const source: EngineCommand["source"] = declaredSource === "plugin" || pluginName
-      ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "built-in";
-    if (source === "built-in" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
+    const advertisedSource: EngineCommand["source"] = declaredSource === "plugin" || pluginName
+      ? "plugin" : declaredSource === "skill" || skillNames.has(name) ? "skill" : "provider-advertised";
+    if (advertisedSource === "provider-advertised" && !CLAUDE_HEADLESS_BUILT_IN_COMMANDS.has(name)) continue;
+    const adapterImplemented = name === "usage" && advertisedSource === "provider-advertised";
     commands.set(name, {
       name,
-      description: string(advertised?.description) ?? "Claude-advertised command",
-      source,
-      acceptsArguments: advertised?.accepts_arguments !== false,
-      insertText: `/${name}${advertised?.accepts_arguments === false ? "" : " "}`,
+      description: adapterImplemented
+        ? "Show Claude subscription usage"
+        : string(advertised?.description) ?? "Claude-advertised command",
+      source: adapterImplemented ? "adapter-implemented" : advertisedSource,
+      acceptsArguments: adapterImplemented ? false : advertised?.accepts_arguments !== false,
+      insertText: `/${name}${adapterImplemented || advertised?.accepts_arguments === false ? "" : " "}`,
       status: "available",
-      invocation: "prompt",
+      invocation: adapterImplemented ? "runtime" : "prompt",
       ...(pluginName ? { pluginName } : {}),
     });
   }

@@ -128,6 +128,10 @@ export const queryKeys = {
       rangeKey: "24h" | "7d" | "30d" | "all",
     ) => ["token-usage", scope, scopeId, rangeKey] as const,
   },
+  providerUsage: {
+    all: ["provider-usage"] as const,
+    agent: (agentId: string | undefined) => ["provider-usage", "agent", agentId] as const,
+  },
   globalSearch: {
     all: ["global-search"] as const,
     results: (query: string) => ["global-search", query] as const,

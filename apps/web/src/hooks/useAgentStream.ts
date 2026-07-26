@@ -410,6 +410,7 @@ export function useAgentStream(agentId: string | undefined): StreamState {
           void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
           void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
           void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
         }
         if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
           void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });

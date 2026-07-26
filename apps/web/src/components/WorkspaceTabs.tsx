@@ -42,6 +42,7 @@ import {
 } from "../routeRegistry";
 import type { WorkspaceTabState } from "../workspaceTabs";
 import { OperatorAvatar, operatorInitials } from "./OperatorAvatar";
+import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
 const TAB_ICONS = {
   add: AddIcon,
@@ -88,6 +89,7 @@ export function WorkspaceTabs({
   onCloseOthers,
   onRename,
   onReorder,
+  preferredProvider,
 }: {
   tabs: WorkspaceTabState[];
   projects: ProjectDto[];
@@ -103,6 +105,7 @@ export function WorkspaceTabs({
   onCloseOthers(key: string): void;
   onRename(key: string, title: string): void;
   onReorder(draggedKey: string, targetKey: string): void;
+  preferredProvider?: string;
 }): JSX.Element {
   const [contextMenu, setContextMenu] = useState<{
     anchor: HTMLElement;
@@ -422,6 +425,7 @@ export function WorkspaceTabs({
           flexShrink: 0,
         }}
       >
+        <ProviderQuotaIndicator preferredProvider={preferredProvider} />
         <Tooltip title="Search">
           <IconButton
             aria-label="Search Ponderosa"

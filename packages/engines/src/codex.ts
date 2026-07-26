@@ -21,6 +21,8 @@ import type {
   EffortOption,
   ModelOption,
   OpenRuntimeSessionOptions,
+  ProviderUsage,
+  ProviderUsageReadOptions,
   RuntimeProcessHandle,
   RuntimeSession,
   SeedOptions,
@@ -30,6 +32,7 @@ import { streamProcess, type RuntimeProcessFaults, type SpawnFn } from "./proces
 import { discoverCliMcps, parseCodexMcpList } from "./capabilities.js";
 import { CodexAppServerSession, discoverCodexAppServerCapabilities } from "./codex-app-server.js";
 import { renderSeedPrompt } from "./seed-history.js";
+import { readCodexProviderUsage } from "./provider-usage.js";
 
 export type { SpawnFn };
 
@@ -138,6 +141,10 @@ export { renderSeedPrompt } from "./seed-history.js";
 export class CodexAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Codex";
+  readonly providerUsageCommand = {
+    name: "status",
+    description: "Show Codex subscription limits",
+  };
   readonly modelSpecificEfforts = true;
 
   private readonly bin: string;
@@ -215,6 +222,16 @@ export class CodexAdapter implements Adapter {
       spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
+    });
+  }
+
+  readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
+    return readCodexProviderUsage({
+      bin: this.bin,
+      spawnFn: this.spawnFn,
+      sandboxMode: this.sandboxMode,
+      killGraceMs: this.killGraceMs,
+      options,
     });
   }
 

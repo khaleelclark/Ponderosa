@@ -1454,6 +1454,21 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   wakeCauses: Array<{ cause: string; runs: number; activations: number }>;
 }
 
+/** One provider's current quota-cache projection. A failed refresh retains the
+ * last successful reading and reports the error alongside it. */
+export interface ProviderUsageStateDto {
+  provider: EngineId;
+  displayName: string;
+  authenticated: boolean;
+  reading?: import("./adapter.js").ProviderUsage;
+  refreshing: boolean;
+  error?: string;
+}
+
+export interface ProviderUsageCenterDto {
+  providers: ProviderUsageStateDto[];
+}
+
 /** Optional engine-reported progress inside a Run; never a Run itself. */
 export interface WorkItemDto {
   id: string;
@@ -1750,6 +1765,8 @@ export interface CommunicationDocumentContentDto extends CommunicationDocumentRe
 export interface EngineDto {
   id: EngineId;
   displayName: string;
+  /** Ponderosa-dispatched command that opens this provider's quota card. */
+  providerUsageCommand?: string;
   models: ModelOption[];
   /** Model pins configured by the provider environment, excluding built-in aliases. */
   configuredModels?: ModelOption[];

@@ -178,6 +178,7 @@ export function Composer({
   const [draftAttachmentVersion, setDraftAttachmentVersion] = useState(0);
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
+  const [sending, setSending] = useState(false);
   const [caret, setCaret] = useState(0);
   const [highlighted, setHighlighted] = useState(0);
   const [suppressMenu, setSuppressMenu] = useState(false);
@@ -320,6 +321,7 @@ export function Composer({
     !conversationDraftId ||
     files.every(file => draftAttachmentIds.current.has(file));
   const canSend =
+    !sending &&
     !destinationError &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
@@ -824,6 +826,7 @@ export function Composer({
       return;
     }
     sendingRef.current = true;
+    setSending(true);
     setSendError(undefined);
     const stagedIds = files
       .map(file => draftAttachmentIds.current.get(file))
@@ -860,6 +863,7 @@ export function Composer({
       )
       .finally(() => {
         sendingRef.current = false;
+        setSending(false);
       });
   };
   const steer = () => submit(onSend);

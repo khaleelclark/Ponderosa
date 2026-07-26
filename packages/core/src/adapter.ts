@@ -191,7 +191,8 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   /** Provider rate-limit lines already available through this authenticated
    * runtime transport. Implementations must not add an out-of-band API call. */
   rateLimitStatus?(): Promise<string[]>;
-  /** Live provider-owned catalog for this exact authenticated session. */
+  /** Live effective catalog for this authenticated session, with explicit
+   * provenance for provider-advertised and adapter-implemented commands. */
   capabilities?(): Promise<EngineCapabilities>;
   /** Invoke a provider command that is represented by a structured runtime
    * method rather than by ordinary prompt text. */
@@ -233,7 +234,10 @@ export interface OpenRuntimeSessionOptions {
 export interface EngineCommand {
   name: string;
   description: string;
-  source: "built-in" | "skill" | "plugin";
+  /** Provenance of the effective command implementation. Provider-advertised
+   * commands are transported exactly as the provider exposes them; adapter
+   * implementations dispatch a Ponderosa-owned action over provider data. */
+  source: "provider-advertised" | "adapter-implemented" | "skill" | "plugin";
   acceptsArguments: boolean;
   /** Exact provider syntax inserted when this item is selected from the slash
    * discovery menu. Codex skills, for example, use `$name` even though `/`
@@ -309,6 +313,33 @@ export interface EngineModelDiscoveryOptions {
   onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
 }
 
+export interface ProviderUsageWindow {
+  id: string;
+  label: string;
+  usedPercent?: number;
+  resetsAt?: string;
+}
+
+/** Provider-account quota read through the authenticated subscription CLI.
+ * This surface is provider scoped: it never creates an Agent Run or prompt. */
+export interface ProviderUsage {
+  provider: EngineId;
+  windows: ProviderUsageWindow[];
+  accountLabel?: string;
+  source: "provider-command" | "provider-rpc";
+  fetchedAt: string;
+  stale?: boolean;
+}
+
+export interface ProviderUsageReadOptions {
+  /** Neutral host cwd for CLIs that require one; quota reads are not Project scoped. */
+  cwd: string;
+  signal: AbortSignal;
+  /** Registered synchronously for every provider helper process. */
+  onRuntimeSpawned: (handle: RuntimeProcessHandle) => void;
+  timeoutMs?: number;
+}
+
 /**
  * The engine adapter. Adding an engine = implementing this, nothing else.
  * Both methods return a live stream of normalized {@link AgentEvent}s.
@@ -316,6 +347,8 @@ export interface EngineModelDiscoveryOptions {
 export interface Adapter {
   id: EngineId; // "codex" | "claude"
   displayName: string;
+  /** Ponderosa-dispatched slash command that opens this adapter's quota reader. */
+  readonly providerUsageCommand?: { name: string; description: string };
   /** True when effort compatibility varies by model and missing metadata means unknown. */
   readonly modelSpecificEfforts?: boolean;
   listModels(): ModelOption[];
@@ -343,6 +376,9 @@ export interface Adapter {
   /** Discover engine-native commands, skills/plugins, structured actions, and
    * MCP state for the selected provider/model boundary. */
   capabilities?(cwd: string, context: EngineCapabilityDiscoveryOptions): Promise<EngineCapabilities>;
+
+  /** Read provider-account quota without creating a Run or sending model text. */
+  readProviderUsage?(options: ProviderUsageReadOptions): Promise<ProviderUsage>;
 
   /**
    * Continue the agent's ACTIVE session with the next user message. Resume by

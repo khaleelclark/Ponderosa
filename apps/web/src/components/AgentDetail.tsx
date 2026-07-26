@@ -51,6 +51,7 @@ import type {
   ConversationDto,
   MessageDto,
   ProjectEngineCapabilitiesDto,
+  ProviderUsageStateDto,
   ResponseFileActivityDto,
   SendMessageRequest,
   SendMessageResponse,
@@ -120,6 +121,7 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { formatExecutionElapsed, formatFinalizedWorkDuration } from "../time";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import { AgentProviderUsageCard } from "./ProviderUsageCenter";
 
 type AgentTab = AgentDetailView;
 
@@ -438,6 +440,8 @@ export function AgentDetail({
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<
     string | undefined
   >();
+  const [providerUsageState, setProviderUsageState] =
+    useState<ProviderUsageStateDto>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
     text: string;
@@ -497,6 +501,7 @@ export function AgentDetail({
     );
     setOlderMessages(undefined);
     setOlderTelemetry({});
+    setProviderUsageState(undefined);
     focusedMessage.current = undefined;
     focusedTelemetryRef.current = undefined;
   }, [agentId, initialView]);
@@ -2120,6 +2125,13 @@ export function AgentDetail({
             {String((sendMessage.error ?? cancelRun.error) as Error)}
           </Alert>
         ) : null}
+        {providerUsageState ? (
+          <AgentProviderUsageCard
+            agentId={agentId}
+            initialState={providerUsageState}
+            onClose={() => setProviderUsageState(undefined)}
+          />
+        ) : null}
         <QueuedMessageTray
           messages={queuedMessagesQuery.data ?? []}
           busy={
@@ -2178,19 +2190,42 @@ export function AgentDetail({
               draftOwnerId,
             );
           }}
-          onCommand={(command, argumentsText) =>
-            api
-              .invokeProviderCommand(agentId, {
-                name: command.name,
-                ...(argumentsText ? { argumentsText } : {}),
-              })
-              .then(result =>
-                setQueuedMessageNotice(
-                  result.message ??
-                    `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`,
-                ),
-              )
-          }
+          onCommand={async (command, argumentsText) => {
+            if (command.name === engine?.providerUsageCommand) {
+              const loading: ProviderUsageStateDto = {
+                provider: engine.id,
+                displayName: engine.displayName,
+                authenticated: engine.authenticated,
+                refreshing: true,
+                ...(providerUsageState?.reading ? { reading: providerUsageState.reading } : {}),
+              };
+              setProviderUsageState(loading);
+              queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), loading);
+              try {
+                const next = await api.getAgentProviderUsage(agentId, true);
+                setProviderUsageState(next);
+                queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), next);
+              } catch (error) {
+                const failed = {
+                  ...loading,
+                  refreshing: false,
+                  error: error instanceof Error ? error.message : String(error),
+                };
+                setProviderUsageState(failed);
+                queryClient.setQueryData(queryKeys.providerUsage.agent(agentId), failed);
+                throw error;
+              }
+              return;
+            }
+            const result = await api.invokeProviderCommand(agentId, {
+              name: command.name,
+              ...(argumentsText ? { argumentsText } : {}),
+            });
+            setQueuedMessageNotice(
+              result.message ??
+                `/${command.name} invoked through ${engine?.displayName ?? "the provider"}.`,
+            );
+          }}
           onQueue={runtimeActivity ? submitAgentMessage("queue") : undefined}
           preferQueue={(queuedMessagesQuery.data?.length ?? 0) > 0}
           onCancel={() => stopActiveRun()}
