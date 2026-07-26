@@ -91,6 +91,10 @@ function GeneralSettingsSection({
   onPreferences,
   onInstructions,
   onLimit,
+  onSaveAgentDefaults,
+  agentDefaultsSaving,
+  agentDefaultsSaved,
+  agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
 }: {
@@ -104,6 +108,10 @@ function GeneralSettingsSection({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onInstructions(value: string): void;
   onLimit(value: string): void;
+  onSaveAgentDefaults(): void;
+  agentDefaultsSaving: boolean;
+  agentDefaultsSaved: boolean;
+  agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
 }): JSX.Element {
@@ -693,6 +701,8 @@ export function WorkspaceSettingsView({
                   : "Agent defaults could not be saved."
                 : undefined
             }
+            onRolloverTokens={setRolloverTokens}
+            onRolloverFraction={setRolloverFraction}
           />
         ) : null}
         {section === "notifications" ? (

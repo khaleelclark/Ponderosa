@@ -1282,6 +1282,23 @@ export function AgentDetail({
   const lineageAgent = spawningAgent ?? organizationalParent;
   const lineageAgentId = detail.agent.spawnedByAgentId ?? detail.agent.managerAgentId;
   const lineageLabel = detail.agent.spawnedByAgentId ? "Created by" : "Delegated under";
+  const delegatedAgentIds = new Set<string>();
+  const delegatedChildrenByManager = new Map<string, AgentDto[]>();
+  for (const candidate of agents) {
+    if (!candidate.managerAgentId || candidate.archived) continue;
+    delegatedChildrenByManager.set(candidate.managerAgentId, [
+      ...(delegatedChildrenByManager.get(candidate.managerAgentId) ?? []),
+      candidate,
+    ]);
+  }
+  const collectDelegatedAgents = (managerAgentId: string) => {
+    for (const candidate of delegatedChildrenByManager.get(managerAgentId) ?? []) {
+      if (delegatedAgentIds.has(candidate.id)) continue;
+      delegatedAgentIds.add(candidate.id);
+      collectDelegatedAgents(candidate.id);
+    }
+  };
+  collectDelegatedAgents(detail.agent.id);
   const agentRuntimeControls = <ComposerRuntimeSelector
     engine={engine?.id ?? ""}
     engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
@@ -2129,7 +2146,7 @@ export function AgentDetail({
           guidance={
             runtimeActivity
               ? "Send steers the active response. Choose Queue to deliver the draft after it finishes. Use @ to reference a project file."
-              : "Use @ to reference a project file."
+              : undefined
           }
           placeholder={
             runtimeActivity
