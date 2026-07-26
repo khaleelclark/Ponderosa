@@ -215,6 +215,7 @@ import {
   registerQueuedMessageRoutes,
   type QueuedEditRevisionOutboxPayload,
 } from "./routes/queued-messages.js";
+import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
 import {
@@ -7664,140 +7665,22 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   registerUsageRoutes(app, serverContext);
 
-  app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return teamDirectory(request.params.id);
-  });
-
-  app.get<{ Params: { id: string } }>("/api/projects/:id/conversations", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return store.listConversations(request.params.id);
-  });
-
-  app.post<{
-    Params: { id: string };
-    Body: { title: string; defaultEngine?: string; defaultModel?: string; defaultEffort?: string };
-  }>("/api/projects/:id/conversations", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    const title = request.body?.title?.trim() || "New Chat";
-    if (request.body.defaultEngine && !engines.has(request.body.defaultEngine)) {
-      return reply.code(400).send({ error: "unknown engine" });
-    }
-    if (!request.body.defaultEngine && (request.body.defaultModel || request.body.defaultEffort)) {
-      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
-    }
-    const defaultEngine = request.body.defaultEngine ?? project.defaultEngine;
-    const registration = engines.get(defaultEngine);
-    if (!registration) return reply.code(400).send({ error: "unknown engine" });
-    const projectModelOptions = cachedModelOptions(registration.adapter, project.id);
-    const selectionError = runtimeSelectionError(
-      registration.adapter,
-      request.body.defaultModel,
-      request.body.defaultEffort,
-      projectModelOptions,
-    );
-    if (selectionError) return reply.code(400).send({ error: selectionError });
-    const resolved = concreteRuntimeSelection(registration.adapter, [
-      { model: request.body.defaultModel, effort: request.body.defaultEffort },
-      project.defaultEngine === defaultEngine ? { model: project.defaultModel, effort: project.defaultEffort } : undefined,
-      workspace.getPreferences().engineDefaults?.[defaultEngine],
-    ], projectModelOptions);
-    const conversation = store.createConversation(request.params.id, {
-      title,
-      defaultEngine,
-      ...resolved,
-    });
-    appendWorkspace({ type: "conversation_changed", projectId: request.params.id, conversationId: conversation.id, action: "created" });
-    appendWorkspace({ type: "project_changed", projectId: request.params.id, action: "used" });
-    return conversation;
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/conversations/:id", async (request, reply) => {
-    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    try {
-      const detail = conversationDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
-      return detail ?? reply.code(404).send({ error: "conversation not found" });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
-    }
-  });
-
-  app.post<{ Params: { id: string } }>("/api/conversations/:id/generate-title", async (request, reply) => {
-    if (!store.getConversation(request.params.id)) return reply.code(404).send({ error: "conversation not found" });
-    return generateConversationTitle(request.params.id);
-  });
-
-  app.get<{ Params: { id: string } }>("/api/conversations/:id/agent-health", async (request, reply) => {
-    const master = store.getConversation(request.params.id);
-    if (!master) return reply.code(404).send({ error: "conversation not found" });
-    const agents = store.listAgents(master.projectId).filter((agent) => agent.conversationIds.includes(master.id));
-    return agentHealth({ type: "conversation", id: master.id }, agents);
-  });
-
-  app.patch<{
-    Params: { id: string };
-    Body: {
-      title?: string;
-      defaultEngine?: string | null;
-      defaultModel?: string | null;
-      defaultEffort?: string | null;
-      archived?: boolean;
-    };
-  }>("/api/conversations/:id", async (request, reply) => {
-    const current = store.getConversation(request.params.id);
-    if (!current) return reply.code(404).send({ error: "conversation not found" });
-    if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {
-      return reply.code(400).send({ error: "unknown engine" });
-    }
-    const defaultEngine = request.body.defaultEngine === null ? undefined : request.body.defaultEngine ?? current.defaultEngine;
-    const defaultModel = request.body.defaultModel === null ? undefined : request.body.defaultModel ?? current.defaultModel;
-    const defaultEffort = request.body.defaultEffort === null ? undefined : request.body.defaultEffort ?? current.defaultEffort;
-    if (!defaultEngine && (defaultModel || defaultEffort)) {
-      return reply.code(400).send({ error: "default engine is required when selecting a model or effort" });
-    }
-    if (defaultEngine) {
-      const configuredDefaultEngine = engines.get(defaultEngine);
-      if (!configuredDefaultEngine) return reply.code(400).send({ error: "unknown engine" });
-      const selectionError = runtimeSelectionError(
-        configuredDefaultEngine.adapter,
-        defaultModel,
-        defaultEffort,
-        cachedModelOptions(configuredDefaultEngine.adapter, current.projectId),
-      );
-      if (selectionError) return reply.code(400).send({ error: selectionError });
-    }
-    const conversation = store.updateConversation(request.params.id, request.body ?? {});
-    if (conversation) {
-      if (request.body?.archived !== undefined) await triggerSources.refresh();
-      appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
-    }
-    return conversation;
-  });
-
-  app.delete<{ Params: { id: string } }>("/api/conversations/:id", async (request, reply) => {
-    const current = store.getConversation(request.params.id);
-    if (current) {
-      const linkedAgents = store.listAgents(current.projectId).filter((agent) => agent.conversationIds.includes(current.id));
-      const active = linkedAgents.some((agent) => activeRuns.has(agent.id));
-      if (active) return reply.code(409).send({ error: "stop active agents before deleting this Project chat" });
-    }
-    const deleted = store.deleteConversation(request.params.id, (agentId, conversationId) => {
-      coordinationV3.handleAgentConversationRemoval(agentId, conversationId);
-    });
-    if (deleted && current) {
-      await triggerSources.refresh();
-      const cursor = workspace.cursor();
-      workspace.deleteDraft(current.id);
-      workspace.deleteDraft(`collaboration:${current.id}`);
-      await Promise.allSettled([
-        fs.rm(draftAttachmentSurfaceDir(current.id), { recursive: true, force: true }),
-        fs.rm(draftAttachmentSurfaceDir(`collaboration:${current.id}`), { recursive: true, force: true }),
-      ]);
-      workspace.append({ type: "conversation_changed", projectId: current.projectId, conversationId: current.id, action: "deleted" });
-      publishWorkspaceSince(cursor);
-    }
-    return deleted ? { deleted: true } : reply.code(404).send({ error: "conversation not found" });
+  registerConversationRoutes(app, {
+    store,
+    workspace,
+    engines,
+    cachedModelOptions,
+    appendWorkspace,
+    publishWorkspaceSince,
+    generateConversationTitle,
+    conversationDetail,
+    agentHealth,
+    teamDirectory,
+    hasActiveRun: agentId => activeRuns.has(agentId),
+    handleAgentConversationRemoval: (agentId, conversationId) =>
+      coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+    refreshTriggers: () => triggerSources.refresh(),
+    draftAttachmentSurfaceDir,
   });
 
   registerConversationDeliveryRoutes(app, {

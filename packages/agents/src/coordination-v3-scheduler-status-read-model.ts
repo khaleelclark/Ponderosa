@@ -142,4 +142,3 @@ export class CoordinationV3SchedulerStatusReadModel {
   }
 
 }
-

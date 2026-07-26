@@ -22,7 +22,6 @@ interface RequestRow {
   created_at: string;
   updated_at: string;
 }
-
 export class CoordinationV3RequestReadModel {
   constructor(private readonly sqlite: Database.Database) {}
 
@@ -121,4 +120,3 @@ export class CoordinationV3RequestReadModel {
   }
 
 }
-
