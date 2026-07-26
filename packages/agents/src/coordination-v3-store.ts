@@ -1,13 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
-  REQUEST_UPDATE_AUTHORIZATION,
   TERMINAL_REQUEST_STATES,
   activationRetryDisposition,
   evaluateCoordinationJoin,
   joinTransitionNeedsActivation,
   reduceCoordinationRequest,
-  type CoordinationActorClass,
   type CoordinationJoinMode,
   type CoordinationJoinWakePolicy,
   type CoordinationReplyAuthority,
@@ -16,14 +14,13 @@ import {
   type CoordinationRequestUpdateKind,
   type MessageDeliveryReceiptDto,
   type RetryMessageDeliveryResponse,
-  type RequestLifetime,
   type DerivedAgentAvailability,
   type TriggerDefinitionDto,
   type TriggerOccurrenceDto,
   type TriggerSourceConfig,
   type TriggerSourceKind,
 } from "@ponderosa/core";
-import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./coordination-v3-activation.js";
+import { PendingActivationCapacityError, PRIORITY } from "./coordination-v3-activation.js";
 import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
 import { CoordinationV3ReadModel } from "./coordination-v3-read-model.js";
 import { CoordinationV3RequestReadModel } from "./coordination-v3-request-read-model.js";
@@ -40,6 +37,13 @@ import {
   CoordinationV3RuntimeCommunicationAuthority,
   type CreateActivationV3Input,
 } from "./coordination-v3-runtime-communication-authority.js";
+import { CoordinationV3ActivationFactory } from "./coordination-v3-activation-factory.js";
+import { CoordinationV3ActivationLifecycleAuthority } from "./coordination-v3-activation-lifecycle-authority.js";
+import {
+  CoordinationV3StoreSupport,
+  type RequestRow,
+} from "./coordination-v3-store-support.js";
+import { CoordinationV3DeletionAuthority } from "./coordination-v3-deletion-authority.js";
 import { CoordinationV3TriggerRegistry } from "./coordination-v3-trigger-registry.js";
 import { terminalAt } from "./coordination-v3-request-state.js";
 import {
@@ -47,7 +51,6 @@ import {
 } from "./coordination-v3-runtime-validation.js";
 import type {
   Actor,
-  RunAuthorizationV3,
   CoordinateV3Input,
   CoordinateV3Result,
   UpdateRequestV3Input,
@@ -122,23 +125,6 @@ export type {
   CoordinationV3StoreOptions,
 } from "./coordination-v3-types.js";
 
-interface RequestRow {
-  id: string;
-  project_id: string;
-  conversation_id: string | null;
-  requester_agent_id: string | null;
-  recipient_agent_id: string;
-  state: CoordinationRequestState;
-  version: number;
-  lifetime_kind: RequestLifetime["kind"];
-  deadline_at: string | null;
-  open_question_update_id: string | null;
-  payload_json: string;
-  reply_authority_json: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
 interface JoinRow {
   id: string;
   project_id: string;
@@ -174,7 +160,6 @@ interface ActivationRow {
   updated_at: string;
 }
 
-const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
 const DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT = 1_000;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
 
@@ -194,24 +179,40 @@ export class CoordinationV3Store {
   private readonly schedulerStatusReadModel: CoordinationV3SchedulerStatusReadModel;
   private readonly operationalOutboxAuthority: CoordinationV3OperationalOutboxAuthority;
   private readonly triggerRegistry: CoordinationV3TriggerRegistry;
+  private readonly activationFactory: CoordinationV3ActivationFactory;
+  private readonly activationLifecycle: CoordinationV3ActivationLifecycleAuthority;
+  private readonly support: CoordinationV3StoreSupport;
+  private readonly deletionAuthority: CoordinationV3DeletionAuthority;
 
   constructor(
     private readonly sqlite: Database.Database,
     private readonly options: CoordinationV3StoreOptions = {},
   ) {
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
+    this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
+    this.support = new CoordinationV3StoreSupport(sqlite);
     this.readModel = new CoordinationV3ReadModel(sqlite);
     this.requestReadModel = new CoordinationV3RequestReadModel(sqlite);
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
     this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
+    this.activationLifecycle = new CoordinationV3ActivationLifecycleAuthority(
+      sqlite,
+      this.runtimeScopeAuthority,
+      input => this.updateRequest(input),
+      (activationIds, now) =>
+        this.settleQuestionsForFailedActivations(activationIds, now),
+    );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
       this.runtimeScopeAuthority,
       this.runtimeArtifactAuthority,
       input => this.createActivation(input),
       (activationIds, now) =>
-        this.settleRequestsForFailedActivations(activationIds, now),
+        this.activationLifecycle.settleRequestsForFailedActivations(
+          activationIds,
+          now,
+        ),
     );
     this.runContextReadModel = new CoordinationV3RunContextReadModel(sqlite);
     this.schedulerStatusReadModel = new CoordinationV3SchedulerStatusReadModel(sqlite);
@@ -227,14 +228,23 @@ export class CoordinationV3Store {
       this.runtimeArtifactAuthority,
       this.runtimeScopeAuthority,
       (authorization, expectedScopeKey) =>
-        this.requireAuthorizedRun(authorization, expectedScopeKey),
-      projectId => this.requireProject(projectId),
+        this.support.requireAuthorizedRun(authorization, expectedScopeKey),
+      projectId => this.support.requireProject(projectId),
       input => this.createActivation(input),
     );
     this.triggerRegistry = new CoordinationV3TriggerRegistry(
       sqlite,
       (triggerId, reason, now) => this.cancelPendingTriggerWork(triggerId, reason, now),
       input => this.recordTriggerOccurrence(input),
+    );
+    this.deletionAuthority = new CoordinationV3DeletionAuthority(
+      sqlite,
+      this.support,
+      input => this.cancelAgentRun(input),
+      (joinId, ownerAgentId, now) =>
+        this.cancelJoin(joinId, ownerAgentId, now),
+      input => this.updateRequest(input),
+      (triggerId, now) => this.deleteTriggerDefinition(triggerId, now),
     );
   }
 
@@ -439,28 +449,28 @@ export class CoordinationV3Store {
     const hash = payloadHash(normalized);
 
     return this.sqlite.transaction(() => {
-      if (input.runAuthorization) this.requireAuthorizedRun(
+      if (input.runAuthorization) this.support.requireAuthorizedRun(
         input.runAuthorization,
         input.conversationId ? `conversation:${input.conversationId}` : undefined,
       );
-      const replay = this.idempotentReplay<CoordinateV3Result>(
+      const replay = this.support.idempotentReplay<CoordinateV3Result>(
         input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash,
       );
       if (replay) return { ...replay, replayed: true };
-      this.requireProject(input.projectId);
-      if (input.requesterAgentId) this.requireAgent(input.projectId, input.requesterAgentId);
+      this.support.requireProject(input.projectId);
+      if (input.requesterAgentId) this.support.requireAgent(input.projectId, input.requesterAgentId);
       if (input.runAuthorization && !input.conversationId) {
         throw new Error("provider coordination requires a Team Chat scope");
       }
       if (input.conversationId) {
-        this.requireConversation(input.projectId, input.conversationId);
-        if (input.requesterAgentId) this.requireConversationMember(input.conversationId, input.requesterAgentId);
+        this.support.requireConversation(input.projectId, input.conversationId);
+        if (input.requesterAgentId) this.support.requireConversationMember(input.conversationId, input.requesterAgentId);
       }
       const requestIds: string[] = [];
       for (const request of input.requests) {
-        this.requireAgent(input.projectId, request.recipientAgentId);
-        if (input.conversationId) this.requireConversationMember(input.conversationId, request.recipientAgentId);
-        this.validateLifetime(request.lifetime, now);
+        this.support.requireAgent(input.projectId, request.recipientAgentId);
+        if (input.conversationId) this.support.requireConversationMember(input.conversationId, request.recipientAgentId);
+        this.support.validateLifetime(request.lifetime, now);
         const replyAuthority = request.replyAuthority ? {
           intent: request.replyAuthority.intent,
           ...(request.replyAuthority.recipientAgentIds
@@ -534,7 +544,7 @@ export class CoordinationV3Store {
         const memberRequestIds = [...new Set([...requestIds, ...existingMemberRequestIds])];
         const continuationRequestIds = [...new Set(input.join.continuationRequestIds ?? [])];
         for (const requestId of continuationRequestIds) {
-          const continuation = this.getRequestRow(requestId);
+          const continuation = this.support.getRequestRow(requestId);
           const isInbound = continuation.recipient_agent_id === input.requesterAgentId
             && !TERMINAL_REQUEST_STATES.has(continuation.state);
           const isOutboundQuestion = continuation.requester_agent_id === input.requesterAgentId
@@ -579,7 +589,7 @@ export class CoordinationV3Store {
         if (equivalent) {
           joinId = equivalent.id;
           const result: CoordinateV3Result = { requestIds, joinId, replayed: false };
-          this.recordIdempotency(input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash, result, now);
+          this.support.recordIdempotency(input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash, result, now);
           return result;
         }
         this.sqlite.prepare(`
@@ -598,7 +608,7 @@ export class CoordinationV3Store {
         `);
         memberRequestIds.forEach((requestId, position) => insertMember.run(joinId, requestId, position));
         const outboundQuestionIds = continuationRequestIds.filter((requestId) => {
-          const continuation = this.getRequestRow(requestId);
+          const continuation = this.support.getRequestRow(requestId);
           return continuation.requester_agent_id === input.requesterAgentId
             && continuation.state === "awaiting_answer"
             && continuation.open_question_update_id !== null;
@@ -607,7 +617,7 @@ export class CoordinationV3Store {
           outboundQuestionIds, input.requesterAgentId, "join", joinId, now,
         );
         for (const requestId of continuationRequestIds) {
-          const continuation = this.getRequestRow(requestId);
+          const continuation = this.support.getRequestRow(requestId);
           if (continuation.state === "open" || continuation.state === "in_progress") this.updateRequest({
             requestId,
             updateId: `join:${joinId}:waiting:${requestId}`,
@@ -621,7 +631,7 @@ export class CoordinationV3Store {
       }
 
       const result: CoordinateV3Result = { requestIds, ...(joinId ? { joinId } : {}), replayed: false };
-      this.recordIdempotency(input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash, result, now);
+      this.support.recordIdempotency(input.projectId, input.actorScope, "coordinate", input.idempotencyKey, hash, result, now);
       return result;
     })();
   }
@@ -629,8 +639,8 @@ export class CoordinationV3Store {
   enqueueMessageActivation(input: EnqueueMessageActivationInput): string {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
-      this.requireProject(input.projectId);
-      this.requireAgent(input.projectId, input.agentId);
+      this.support.requireProject(input.projectId);
+      this.support.requireAgent(input.projectId, input.agentId);
       const continuationQuestions = input.questionDependency
         ? this.questionDependencyContinuations(
             input.questionDependency.kind, input.questionDependency.id,
@@ -792,10 +802,10 @@ export class CoordinationV3Store {
         };
       }
 
-      this.requireProject(definition.project_id);
-      this.requireAgent(definition.project_id, definition.agent_id);
-      this.requireConversation(definition.project_id, definition.conversation_id);
-      this.requireConversationMember(definition.conversation_id, definition.agent_id);
+      this.support.requireProject(definition.project_id);
+      this.support.requireAgent(definition.project_id, definition.agent_id);
+      this.support.requireConversation(definition.project_id, definition.conversation_id);
+      this.support.requireConversationMember(definition.conversation_id, definition.agent_id);
 
       // Occurrence intake is the untrusted edge: a webhook source can post an
       // unbounded number of distinct occurrence keys. The activation cap only
@@ -985,7 +995,7 @@ export class CoordinationV3Store {
 
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
     const now = input.now ?? new Date().toISOString();
-    const initialRequest = this.getRequestRow(input.requestId);
+    const initialRequest = this.support.getRequestRow(input.requestId);
     const artifacts = this.runtimeArtifactAuthority.resolveRuntimeArtifacts(
       initialRequest.project_id,
       input.artifacts,
@@ -1001,7 +1011,7 @@ export class CoordinationV3Store {
     };
     const hash = payloadHash(replayPayload);
     return this.sqlite.transaction(() => {
-      const request = this.getRequestRow(input.requestId);
+      const request = this.support.getRequestRow(input.requestId);
       if (request.project_id !== initialRequest.project_id) throw new Error("request Project changed during artifact admission");
       const existing = this.sqlite.prepare(`
         SELECT request_id, actor_kind, actor_id, payload_hash, resulting_state, resulting_version
@@ -1084,7 +1094,7 @@ export class CoordinationV3Store {
           artifact.blobPath, artifact.blobHash.toLowerCase(), artifact.byteLength,
           artifact.originAgentId ?? null, artifact.executionId ?? null, now,
         );
-        if (request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) this.createActivation({
+        if (request.requester_agent_id && this.support.agentSurvives(request.requester_agent_id)) this.createActivation({
           projectId: request.project_id, agentId: request.requester_agent_id,
           scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
           kind: "coordination_late_result", priority: PRIORITY.actionable,
@@ -1100,7 +1110,7 @@ export class CoordinationV3Store {
       }
 
       if (input.runAuthorization) {
-        this.requireAuthorizedRun(input.runAuthorization);
+        this.support.requireAuthorizedRun(input.runAuthorization);
         const attached = this.requestIdsAttachedToRun(input.runAuthorization.runId, input.runAuthorization.agentId);
         const requesterOwnedTerminalControl =
           (input.kind === "cancelled" || input.kind === "superseded") &&
@@ -1117,7 +1127,7 @@ export class CoordinationV3Store {
         "request update",
       );
 
-      this.authorizeUpdate(request, input.kind, input.actor);
+      this.support.authorizeUpdate(request, input.kind, input.actor);
       const ownsUnresolvedJoin = Boolean(this.sqlite.prepare(`
         SELECT 1 FROM coordination_joins
         WHERE state = 'open'
@@ -1264,7 +1274,7 @@ export class CoordinationV3Store {
           UPDATE coordination_joins SET state = 'expired', updated_at = ?, terminal_at = ?
           WHERE id = ? AND state = 'open'
         `).run(now, now, join.id);
-        if (this.agentSurvives(join.owner_agent_id)) this.createJoinActivation(join, "expired", now);
+        if (this.support.agentSurvives(join.owner_agent_id)) this.createJoinActivation(join, "expired", now);
       }
       return { requests: requests.length, joins: joins.length };
     })();
@@ -1341,58 +1351,7 @@ export class CoordinationV3Store {
   }
 
   handleAgentDeletion(agentId: string, now = new Date().toISOString()): void {
-    this.sqlite.transaction(() => {
-      // This is intentionally idempotent with the server's pre-interrupt call.
-      // Keeping it here makes direct store callers uphold the same fence-first
-      // deletion invariant inside the projection-deletion transaction.
-      this.cancelAgentRun({ agentId, idempotencyKey: `agent-delete:${agentId}`, now });
-      const owned = this.sqlite.prepare(`
-        SELECT id FROM coordination_joins WHERE owner_agent_id = ? AND state = 'open'
-      `).all(agentId) as Array<{ id: string }>;
-      for (const join of owned) {
-        this.sqlite.prepare(`
-          UPDATE coordination_joins SET state = 'cancelled', updated_at = ?, terminal_at = ? WHERE id = ?
-        `).run(now, now, join.id);
-        this.sqlite.prepare(`
-          UPDATE agent_activations SET state = 'cancelled', updated_at = ?
-          WHERE state IN ('pending', 'retry_pending') AND id IN (
-            SELECT activation_id FROM activation_sources WHERE source_kind = 'join' AND source_id = ?
-          )
-        `).run(now, join.id);
-      }
-      const received = this.sqlite.prepare(`
-        SELECT id FROM coordination_requests WHERE recipient_agent_id = ?
-          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      `).all(agentId) as Array<{ id: string }>;
-      for (const request of received) this.updateRequest({
-        requestId: request.id,
-        updateId: `system:recipient-unavailable:${request.id}:${now}`,
-        kind: "recipient_unavailable",
-        actor: { kind: "system", id: "agent-deletion" },
-        now,
-      });
-      const requested = this.sqlite.prepare(`
-        SELECT id FROM coordination_requests WHERE requester_agent_id = ?
-          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      `).all(agentId) as Array<{ id: string }>;
-      for (const request of requested) this.updateRequest({
-        requestId: request.id,
-        updateId: `user:requester-deleted:${request.id}`,
-        kind: "cancelled",
-        actor: { kind: "user", id: "agent-deletion" },
-        payload: { reason: "requester_agent_deleted" },
-        now,
-      });
-      this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'failed', terminal_outcome = 'recipient_unavailable',
-          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
-        WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
-      `).run(now, "activation recipient was deleted", now, agentId);
-      const ownedTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions WHERE agent_id = ?
-      `).all(agentId) as Array<{ id: string }>;
-      for (const trigger of ownedTriggers) this.deleteTriggerDefinition(trigger.id, now);
-    })();
+    this.deletionAuthority.handleAgentDeletion(agentId, now);
   }
 
   /** Revoke one explicit Team Chat capability without affecting the Agent's
@@ -1402,143 +1361,22 @@ export class CoordinationV3Store {
     conversationId: string,
     now = new Date().toISOString(),
   ): void {
-    this.sqlite.transaction(() => {
-      const scopeKey = `conversation:${conversationId}`;
-      const active = this.sqlite.prepare(`
-        SELECT 1 FROM scheduler_runs
-        WHERE agent_id = ? AND scope_key = ? AND status IN ('leased', 'running')
-      `).get(agentId, scopeKey);
-      if (active) this.cancelAgentRun({
-        agentId,
-        idempotencyKey: `conversation-removal:${conversationId}:${agentId}`,
-        now,
-      });
-      const joins = this.sqlite.prepare(`
-        SELECT id FROM coordination_joins
-        WHERE owner_agent_id = ? AND conversation_id = ? AND state = 'open'
-      `).all(agentId, conversationId) as Array<{ id: string }>;
-      for (const join of joins) this.cancelJoin(join.id, agentId, now);
-      const received = this.sqlite.prepare(`
-        SELECT id FROM coordination_requests
-        WHERE recipient_agent_id = ? AND conversation_id = ?
-          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      `).all(agentId, conversationId) as Array<{ id: string }>;
-      for (const request of received) this.updateRequest({
-        requestId: request.id,
-        updateId: `system:conversation-recipient-unavailable:${conversationId}:${request.id}`,
-        kind: "recipient_unavailable",
-        actor: { kind: "system", id: "conversation-membership-removal" },
-        payload: { conversationId },
-        now,
-      });
-      const requested = this.sqlite.prepare(`
-        SELECT id FROM coordination_requests
-        WHERE requester_agent_id = ? AND conversation_id = ?
-          AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      `).all(agentId, conversationId) as Array<{ id: string }>;
-      for (const request of requested) this.updateRequest({
-        requestId: request.id,
-        updateId: `user:conversation-request-cancelled:${conversationId}:${request.id}`,
-        kind: "cancelled",
-        actor: { kind: "user", id: "local-operator" },
-        payload: { conversationId, reason: "requester_removed_from_conversation" },
-        now,
-      });
-      this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'failed', terminal_outcome = 'recipient_unavailable',
-          terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
-        WHERE agent_id = ? AND scope_key = ? AND state IN ('pending', 'retry_pending')
-      `).run(now, "activation recipient is no longer a member of the Team Chat", now, agentId, scopeKey);
-      const scopedTriggers = this.sqlite.prepare(`
-        SELECT id FROM trigger_definitions WHERE agent_id = ? AND conversation_id = ?
-      `).all(agentId, conversationId) as Array<{ id: string }>;
-      for (const trigger of scopedTriggers) this.deleteTriggerDefinition(trigger.id, now);
-    })();
+    this.deletionAuthority.handleAgentConversationRemoval(
+      agentId, conversationId, now,
+    );
   }
 
   /** Fence and settle a whole project before any provider process is stopped.
    * The canonical project still exists during this phase, so a crash leaves a
    * retryable deletion with no live scheduler ownership. */
   prepareProjectDeletion(projectId: string, now = new Date().toISOString()): void {
-    this.sqlite.transaction(() => {
-      this.requireProject(projectId);
-      const activeAgents = this.sqlite.prepare(`
-        SELECT agent_id FROM scheduler_runs
-        WHERE project_id = ? AND status IN ('leased', 'running')
-        ORDER BY agent_id
-      `).all(projectId) as Array<{ agent_id: string }>;
-      for (const { agent_id } of activeAgents) {
-        this.cancelAgentRun({ agentId: agent_id, idempotencyKey: `project-delete:${projectId}:${agent_id}`, now });
-      }
-      this.sqlite.prepare(`
-        UPDATE coordination_joins
-        SET state = 'cancelled', updated_at = ?, terminal_at = ?
-        WHERE project_id = ? AND state = 'open'
-      `).run(now, now, projectId);
-      this.sqlite.prepare(`
-        UPDATE coordination_requests
-        SET state = 'cancelled', version = version + 1, open_question_update_id = NULL,
-            updated_at = ?, terminal_at = ?
-        WHERE project_id = ? AND state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      `).run(now, now, projectId);
-      this.sqlite.prepare(`
-        UPDATE agent_activations SET state = 'cancelled', updated_at = ?
-        WHERE project_id = ? AND state IN ('pending', 'retry_pending', 'attached')
-      `).run(now, projectId);
-      // Trigger sources are fenced by the Project quarantine at the server
-      // boundary. Keep their definitions intact until purgeProject commits in
-      // the canonical Project-deletion transaction, so a failed cleanup retry
-      // cannot partially mutate user-authored automation.
-    })();
+    this.deletionAuthority.prepareProjectDeletion(projectId, now);
   }
 
   /** Remove every authoritative V3 row for a project. Call from the same
    * SQLite transaction that deletes the canonical project projections. */
   purgeProject(projectId: string): void {
-    this.sqlite.transaction(() => {
-      this.sqlite.prepare(`DELETE FROM trigger_filesystem_bursts WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM trigger_definitions WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM trigger_occurrences WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM activation_outbox WHERE activation_id IN (
-        SELECT id FROM agent_activations WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM provider_operation_outbox WHERE run_id IN (
-        SELECT id FROM scheduler_runs WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM scheduler_cancellation_receipts WHERE agent_id IN (
-        SELECT id FROM agents WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM scheduler_prompt_injections WHERE run_id IN (
-        SELECT id FROM scheduler_runs WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM scheduler_run_activations WHERE run_id IN (
-        SELECT id FROM scheduler_runs WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM scheduler_runs WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id IN (
-        SELECT id FROM agent_activations WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM activation_delivery_retry_lineage
-        WHERE root_activation_id IN (
-          SELECT id FROM agent_activations WHERE project_id = ?
-        )
-      `).run(projectId);
-      this.sqlite.prepare(`DELETE FROM agent_activations WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM coordination_join_members WHERE join_id IN (
-        SELECT id FROM coordination_joins WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM coordination_joins WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM coordination_request_updates WHERE request_id IN (
-        SELECT id FROM coordination_requests WHERE project_id = ?
-      )`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM coordination_requests WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM runtime_artifacts WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM runtime_communications WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM coordination_idempotency WHERE project_id = ?`).run(projectId);
-      this.sqlite.prepare(`DELETE FROM scheduler_agent_fences WHERE agent_id IN (
-        SELECT id FROM agents WHERE project_id = ?
-      )`).run(projectId);
-    })();
+    this.deletionAuthority.purgeProject(projectId);
   }
 
   leaseNextRun(input: {
@@ -1559,7 +1397,7 @@ export class CoordinationV3Store {
     return this.sqlite.transaction(() => {
       this.recoverExpiredUninjectedRuns(now);
       this.triggerRegistry.resetExpiredBudgets(now);
-      this.settleUnauthorizedPendingActivations(now);
+      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
@@ -1654,7 +1492,7 @@ export class CoordinationV3Store {
         candidate.agent_id,
         candidate.scope_key,
       )) {
-        this.settleUnauthorizedPendingActivations(now);
+        this.activationLifecycle.settleUnauthorizedPendingActivations(now);
         return undefined;
       }
       if (candidateTriggerId && !candidateBudgetChargeId) {
@@ -1675,7 +1513,7 @@ export class CoordinationV3Store {
           WHERE budget_charge_id IS NULL AND activation_id IN (${activations.map(() => "?").join(", ")})
         `).run(budgetChargeId, now, now, ...activations.map((activation) => activation.id));
       }
-      const fencingToken = this.nextFence(candidate.agent_id);
+      const fencingToken = this.support.nextFence(candidate.agent_id);
       const runId = randomUUID();
       const injectionId = randomUUID();
       const leaseExpiresAt = new Date(Date.parse(now) + leaseMs).toISOString();
@@ -1731,7 +1569,7 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
     return this.sqlite.transaction(() => {
-      this.settleUnauthorizedPendingActivations(now);
+      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key, r.id AS run_id, r.fencing_token, r.provider_session_id
         FROM agent_activations a
@@ -1773,7 +1611,7 @@ export class CoordinationV3Store {
         candidate.agent_id,
         candidate.scope_key,
       )) {
-        this.settleUnauthorizedPendingActivations(now);
+        this.activationLifecycle.settleUnauthorizedPendingActivations(now);
         return undefined;
       }
       const injectionId = randomUUID();
@@ -1831,7 +1669,7 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     const availableAt = new Date(Date.parse(now) + (input.retryDelayMs ?? 0)).toISOString();
     this.sqlite.transaction(() => {
-      this.getFencedRun(input.runId, input.fencingToken);
+      this.support.getFencedRun(input.runId, input.fencingToken);
       const injection = this.sqlite.prepare(`
         SELECT activation_ids_json FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
@@ -1859,7 +1697,7 @@ export class CoordinationV3Store {
   }): void {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
-      this.getFencedRun(input.runId, input.fencingToken);
+      this.support.getFencedRun(input.runId, input.fencingToken);
       const injection = this.sqlite.prepare(`
         SELECT activation_ids_json FROM scheduler_prompt_injections
         WHERE id = ? AND run_id = ? AND state IN ('pending', 'submitted')
@@ -2039,7 +1877,7 @@ export class CoordinationV3Store {
   }
 
   markRunStarted(runId: string, fence: number, now = new Date().toISOString()): void {
-    this.mutateFencedRun(runId, fence, `
+    this.support.mutateFencedRun(runId, fence, `
       UPDATE scheduler_runs SET status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?
       WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
     `, [now, now, runId, fence]);
@@ -2051,7 +1889,7 @@ export class CoordinationV3Store {
     disposition: "fresh_task" | "continued_session" | "reseeded",
     now = new Date().toISOString(),
   ): void {
-    this.mutateFencedRun(runId, fence, `
+    this.support.mutateFencedRun(runId, fence, `
       UPDATE scheduler_runs SET context_disposition = ?, updated_at = ?
       WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
     `, [disposition, now, runId, fence]);
@@ -2069,7 +1907,7 @@ export class CoordinationV3Store {
     now?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
-    const run = this.getFencedRun(input.schedulerRunId, input.fencingToken);
+    const run = this.support.getFencedRun(input.schedulerRunId, input.fencingToken);
     if (run.agent_id !== input.agentId || run.project_id !== input.projectId) {
       throw new Error("provider input scope does not match its scheduler run");
     }
@@ -2096,7 +1934,7 @@ export class CoordinationV3Store {
     const now = input.now ?? new Date().toISOString();
     const hash = createHash("sha256").update(input.prompt).digest("hex");
     this.sqlite.transaction(() => {
-      this.getFencedRun(input.runId, input.fencingToken);
+      this.support.getFencedRun(input.runId, input.fencingToken);
       const row = this.sqlite.prepare(`
         SELECT prompt_hash, state FROM scheduler_prompt_injections WHERE id = ? AND run_id = ?
       `).get(input.injectionId, input.runId) as { prompt_hash: string; state: string } | undefined;
@@ -2122,7 +1960,7 @@ export class CoordinationV3Store {
   }): void {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
-      const run = this.getFencedRun(input.runId, input.fencingToken);
+      const run = this.support.getFencedRun(input.runId, input.fencingToken);
       const unavailableTrigger = this.sqlite.prepare(`
         SELECT occurrence.trigger_id AS trigger_id
         FROM scheduler_run_activations attached
@@ -2158,7 +1996,7 @@ export class CoordinationV3Store {
   }): void {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
-      this.getFencedRun(input.runId, input.fencingToken);
+      this.support.getFencedRun(input.runId, input.fencingToken);
       const changed = this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections
         SET state = 'acknowledged', provider_turn_id = COALESCE(?, provider_turn_id),
@@ -2176,7 +2014,7 @@ export class CoordinationV3Store {
 
   renewLease(runId: string, fence: number, workerId: string, leaseMs = 30_000, now = new Date().toISOString()): string {
     const expires = new Date(Date.parse(now) + leaseMs).toISOString();
-    this.mutateFencedRun(runId, fence, `
+    this.support.mutateFencedRun(runId, fence, `
       UPDATE scheduler_runs SET lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
       WHERE id = ? AND fencing_token = ? AND lease_owner = ? AND status IN ('leased', 'running')
     `, [expires, now, now, runId, fence, workerId]);
@@ -2190,7 +2028,7 @@ export class CoordinationV3Store {
         WHERE run_id = ? AND state IN ('pending', 'submitted')
       `).get(runId) as { count: number }).count;
       if (unsettled > 0) throw new Error("run cannot complete with an unsettled prompt injection");
-      this.mutateFencedRun(runId, fence, `
+      this.support.mutateFencedRun(runId, fence, `
         UPDATE scheduler_runs SET status = 'completed', updated_at = ?, terminal_at = ?
         WHERE id = ? AND fencing_token = ? AND status IN ('leased', 'running')
       `, [now, now, runId, fence]);
@@ -2240,7 +2078,7 @@ export class CoordinationV3Store {
   }): "retry" | "terminal" | "resume_same_run" | "outcome_unknown" {
     const now = input.now ?? new Date().toISOString();
     return this.sqlite.transaction(() => {
-      const run = this.getFencedRun(input.runId, input.fencingToken);
+      const run = this.support.getFencedRun(input.runId, input.fencingToken);
       if (input.failureDetail) this.sqlite.prepare(`
         UPDATE scheduler_runs SET provider_failure_json = ?
         WHERE id = ? AND fencing_token = ?
@@ -2315,7 +2153,7 @@ export class CoordinationV3Store {
           WHERE attached.run_id = ? AND activation.state = 'failed'
             AND activation.terminal_outcome IS NOT NULL
         `).all(input.runId) as Array<{ id: string }>).map((row) => row.id);
-        this.settleRequestsForFailedActivations(terminalActivations, now);
+        this.activationLifecycle.settleRequestsForFailedActivations(terminalActivations, now);
         const pending = (this.sqlite.prepare(`
           SELECT COUNT(*) AS count FROM agent_activations
           WHERE id IN (SELECT activation_id FROM scheduler_run_activations WHERE run_id = ?)
@@ -2323,7 +2161,7 @@ export class CoordinationV3Store {
         `).get(input.runId) as { count: number }).count;
         if (pending === 0) return "terminal";
       } else if (disposition === "resume_same_run") {
-        const nextFence = this.nextFence(run.agent_id as string);
+        const nextFence = this.support.nextFence(run.agent_id as string);
         const leaseExpiresAt = new Date(Date.parse(now) + (input.leaseMs ?? 30_000)).toISOString();
         this.sqlite.prepare(`
           UPDATE scheduler_runs SET status = 'leased', lease_owner = ?, lease_expires_at = ?,
@@ -2379,7 +2217,7 @@ export class CoordinationV3Store {
         `).run(input.agentId, input.idempotencyKey, now);
         return { cancelled: false, replayed: false };
       }
-      const fence = this.nextFence(input.agentId);
+      const fence = this.support.nextFence(input.agentId);
       this.sqlite.prepare(`
         UPDATE scheduler_runs SET status = 'cancelled', fencing_token = ?, updated_at = ?, terminal_at = ?
         WHERE id = ?
@@ -2471,71 +2309,6 @@ export class CoordinationV3Store {
     return this.operationalOutboxAuthority.pruneSettledOutboxes(retain);
   }
 
-  private validateLifetime(lifetime: RequestLifetime, now: string): void {
-    if (lifetime.kind === "deadline" && (!isIso(lifetime.at) || lifetime.at <= now)) {
-      throw new Error("request deadline must be a future ISO timestamp");
-    }
-  }
-
-  private requireProject(projectId: string): void {
-    if (!this.sqlite.prepare(`SELECT 1 FROM projects WHERE id = ?`).get(projectId)) throw new Error("project not found");
-  }
-
-  private requireAgent(projectId: string, agentId: string): void {
-    if (!this.sqlite.prepare(`SELECT 1 FROM agents WHERE id = ? AND project_id = ? AND archived = 0`).get(agentId, projectId)) {
-      throw new Error("agent not found in project");
-    }
-  }
-
-  private requireConversation(projectId: string, conversationId: string): void {
-    if (!this.sqlite.prepare(`
-      SELECT 1 FROM conversations WHERE id = ? AND project_id = ? AND archived = 0
-    `).get(conversationId, projectId)) throw new Error("Team Chat not found in project");
-  }
-
-  private requireConversationMember(conversationId: string, agentId: string): void {
-    if (!this.sqlite.prepare(`
-      SELECT 1 FROM agent_conversation_memberships
-      WHERE conversation_id = ? AND agent_id = ?
-    `).get(conversationId, agentId)) {
-      throw new Error("every coordination participant must be an active member of this Team Chat");
-    }
-  }
-
-  private settleUnauthorizedPendingActivations(now: string): number {
-    const pending = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, scope_key
-      FROM agent_activations
-      WHERE state IN ('pending', 'retry_pending')
-      ORDER BY rowid
-    `).all() as Array<{
-      id: string; project_id: string; agent_id: string; scope_key: string;
-    }>;
-    const fail = this.sqlite.prepare(`
-      UPDATE agent_activations
-      SET state = 'failed', terminal_outcome = 'recipient_unavailable',
-        terminal_at = COALESCE(terminal_at, ?), last_delivery_error = ?, updated_at = ?
-      WHERE id = ? AND state IN ('pending', 'retry_pending')
-    `);
-    let settled = 0;
-    for (const activation of pending) {
-      if (this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
-        activation.project_id,
-        activation.agent_id,
-        activation.scope_key,
-      )) continue;
-      const changed = fail.run(
-        now,
-        "activation recipient is no longer authorized for its scope",
-        now,
-        activation.id,
-      ).changes;
-      settled += changed;
-      if (changed === 1) this.settleRequestsForFailedActivations([activation.id], now);
-    }
-    return settled;
-  }
-
   private cancelPendingRequestWork(
     requestId: string,
     reason: "cancelled" | "superseded" | "expired",
@@ -2558,118 +2331,11 @@ export class CoordinationV3Store {
     `).run(now, `request ${reason} before delivery`, now, requestId, requestId);
   }
 
-  private settleRequestsForFailedActivations(activationIds: string[], now: string): void {
-    if (activationIds.length === 0) return;
-    const placeholders = activationIds.map(() => "?").join(", ");
-    const requests = this.sqlite.prepare(`
-      SELECT DISTINCT request.id, activation.id AS activation_id,
-        activation.terminal_outcome, activation.last_delivery_error
-      FROM agent_activations activation
-      JOIN activation_sources source
-        ON source.activation_id = activation.id AND source.source_kind = 'request'
-      JOIN coordination_requests request ON request.id = source.source_id
-      WHERE activation.id IN (${placeholders})
-        AND activation.state = 'failed'
-        AND activation.terminal_outcome IS NOT NULL
-        AND activation.agent_id = request.recipient_agent_id
-        AND request.state IN ('open', 'in_progress', 'waiting_dependency', 'awaiting_answer')
-      ORDER BY request.created_at, request.id
-    `).all(...activationIds) as Array<{
-      id: string;
-      activation_id: string;
-      terminal_outcome: ActivationTerminalOutcome;
-      last_delivery_error: string | null;
-    }>;
-    for (const request of requests) {
-      const kind: CoordinationRequestUpdateKind = request.terminal_outcome === "recipient_unavailable"
-        ? "recipient_unavailable"
-        : "failed";
-      this.updateRequest({
-        requestId: request.id,
-        updateId: `system:activation-terminal:${request.activation_id}:${request.terminal_outcome}`,
-        kind,
-        actor: request.terminal_outcome === "recipient_unavailable"
-          ? { kind: "system", id: "v3-activation-supervisor" }
-          : { kind: "supervisor", id: "v3-activation-supervisor" },
-        payload: {
-          activationId: request.activation_id,
-          activationOutcome: request.terminal_outcome,
-          reason: request.last_delivery_error ?? "activation could not execute",
-        },
-        now,
-      });
-    }
-    this.settleQuestionsForFailedActivations(activationIds, now);
-  }
-
   private nonterminalInboundRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
     return this.requestIdsAttachedToRun(runId, agentId).filter((requestId) => {
-      const request = this.getRequestRow(requestId);
+      const request = this.support.getRequestRow(requestId);
       return request.recipient_agent_id === agentId && !TERMINAL_REQUEST_STATES.has(request.state);
     });
-  }
-
-  private agentSurvives(agentId: string): boolean {
-    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents WHERE id = ? AND archived = 0`).get(agentId));
-  }
-
-  /** A recipient whose request Activation is consumed and whose Request is
-   * awaiting an answer has no provider work left to stop. Cancelling that
-   * clarification wait is passive; attached or unconsumed work still receives
-   * the urgent control Activation used for steering/interruption. */
-  private isConsumedClarificationWait(request: RequestRow): boolean {
-    if (request.state !== "awaiting_answer") return false;
-    return Boolean(this.sqlite.prepare(`
-      SELECT 1
-      FROM agent_activations activation
-      JOIN activation_sources source ON source.activation_id = activation.id
-      WHERE source.source_kind = 'request' AND source.source_id = ?
-        AND activation.agent_id = ?
-        AND activation.kind = 'coordination_request'
-        AND activation.state = 'consumed'
-        AND NOT EXISTS (
-          SELECT 1
-          FROM scheduler_runs active_run
-          JOIN scheduler_run_activations attached ON attached.run_id = active_run.id
-          JOIN activation_sources active_source ON active_source.activation_id = attached.activation_id
-          LEFT JOIN coordination_request_updates active_update
-            ON active_source.source_kind = 'request_update' AND active_update.id = active_source.source_id
-          WHERE active_run.agent_id = ? AND active_run.status IN ('leased', 'running')
-            AND (
-              (active_source.source_kind = 'request' AND active_source.source_id = ?)
-              OR active_update.request_id = ?
-            )
-        )
-      LIMIT 1
-    `).get(
-      request.id,
-      request.recipient_agent_id,
-      request.recipient_agent_id,
-      request.id,
-      request.id,
-    ));
-  }
-
-  private getRequestRow(requestId: string): RequestRow {
-    const row = this.sqlite.prepare(`SELECT * FROM coordination_requests WHERE id = ?`).get(requestId) as RequestRow | undefined;
-    if (!row) throw new Error("request not found");
-    return row;
-  }
-
-  private authorizeUpdate(request: RequestRow, kind: CoordinationRequestUpdateKind, actor: Actor): void {
-    const authorization: CoordinationActorClass = REQUEST_UPDATE_AUTHORIZATION[kind];
-    const isRecipient = actor.kind === "agent" && actor.id === request.recipient_agent_id;
-    const isRequester = actor.kind === "agent" && actor.id === request.requester_agent_id;
-    const allowed = authorization === "recipient"
-      ? isRecipient
-      : authorization === "recipient_or_supervisor"
-        ? isRecipient || actor.kind === "supervisor"
-      : authorization === "requester_or_user"
-        ? isRequester || actor.kind === "user"
-        : authorization === "system"
-          ? actor.kind === "system"
-          : actor.kind === "system" || actor.kind === "supervisor" || actor.kind === "user";
-    if (!allowed) throw new Error(`actor is not authorized for ${kind}`);
   }
 
   private activateForRequestTransition(
@@ -2681,7 +2347,7 @@ export class CoordinationV3Store {
     updatePayload: unknown,
     now: string,
   ): void {
-    if (kind === "question" && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
+    if (kind === "question" && request.requester_agent_id && this.support.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
         scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
@@ -2692,7 +2358,7 @@ export class CoordinationV3Store {
       });
       return;
     }
-    if ((kind === "answer" || kind === "dependency_resolved") && this.agentSurvives(request.recipient_agent_id)) {
+    if ((kind === "answer" || kind === "dependency_resolved") && this.support.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
         scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
@@ -2704,8 +2370,8 @@ export class CoordinationV3Store {
       });
       return;
     }
-    if (kind === "cancelled" && this.isConsumedClarificationWait(request)) return;
-    if ((kind === "cancelled" || kind === "superseded") && this.agentSurvives(request.recipient_agent_id)) {
+    if (kind === "cancelled" && this.support.isConsumedClarificationWait(request)) return;
+    if ((kind === "cancelled" || kind === "superseded") && this.support.agentSurvives(request.recipient_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.recipient_agent_id,
         scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.recipient_agent_id),
@@ -2722,7 +2388,7 @@ export class CoordinationV3Store {
     const replyAuthority = request.reply_authority_json
       ? JSON.parse(request.reply_authority_json) as CoordinationReplyAuthority
       : undefined;
-    if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && !recordOnly && request.requester_agent_id && this.agentSurvives(request.requester_agent_id)) {
+    if (TERMINAL_REQUEST_STATES.has(nextState) && !joined && !recordOnly && request.requester_agent_id && this.support.agentSurvives(request.requester_agent_id)) {
       this.createActivation({
         projectId: request.project_id, agentId: request.requester_agent_id,
         scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(request.conversation_id, request.requester_agent_id),
@@ -2765,7 +2431,7 @@ export class CoordinationV3Store {
           join.wake_policy === "each_result"
           && changedRequest
           && TERMINAL_REQUEST_STATES.has(changedRequest.state)
-          && this.agentSurvives(join.owner_agent_id)
+          && this.support.agentSurvives(join.owner_agent_id)
         ) {
           this.createJoinActivation(join, "open", now, requestId);
         }
@@ -2775,7 +2441,7 @@ export class CoordinationV3Store {
         UPDATE coordination_joins SET state = ?, updated_at = ?, terminal_at = ?
         WHERE id = ? AND state = 'open'
       `).run(next, now, now, join.id);
-      if (joinTransitionNeedsActivation(join.state, next) && this.agentSurvives(join.owner_agent_id)) {
+      if (joinTransitionNeedsActivation(join.state, next) && this.support.agentSurvives(join.owner_agent_id)) {
         this.createJoinActivation(join, next, now);
       }
     }
@@ -2809,7 +2475,7 @@ export class CoordinationV3Store {
       update_created_at: string | null;
     }>;
     const continuations = (JSON.parse(join.continuation_request_ids_json) as string[]).map((requestId) => {
-      const request = this.getRequestRow(requestId) as RequestRow & { payload_json: string };
+      const request = this.support.getRequestRow(requestId) as RequestRow & { payload_json: string };
       return {
         requestId: request.id,
         state: request.state,
@@ -2942,11 +2608,11 @@ export class CoordinationV3Store {
       `).get(occurrenceId) as { trigger_snapshot_json: string }).trigger_snapshot_json) as {
         id: string; name: string; instructions: string; sourceKind: TriggerSourceKind; fullAccess: true;
       };
-      this.requireProject(row.project_id);
-      this.requireAgent(row.project_id, row.agent_id);
+      this.support.requireProject(row.project_id);
+      this.support.requireAgent(row.project_id, row.agent_id);
       if (config.conversationId) {
-        this.requireConversation(row.project_id, config.conversationId);
-        this.requireConversationMember(config.conversationId, row.agent_id);
+        this.support.requireConversation(row.project_id, config.conversationId);
+        this.support.requireConversationMember(config.conversationId, row.agent_id);
       }
       const activationId = this.createActivation({
         projectId: row.project_id,
@@ -3044,7 +2710,7 @@ export class CoordinationV3Store {
         AND run.prompt_injection_state = 'not_injected'
     `).all(triggerId) as Array<{ id: string; agent_id: string }>;
     for (const run of uninjectedRuns) {
-      const fence = this.nextFence(run.agent_id);
+      const fence = this.support.nextFence(run.agent_id);
       this.sqlite.prepare(`
         UPDATE scheduler_runs
         SET status = 'cancelled', fencing_token = ?, updated_at = ?, terminal_at = ?
@@ -3081,49 +2747,7 @@ export class CoordinationV3Store {
   }
 
   private createActivation(input: CreateActivationV3Input): string {
-    const existing = this.sqlite.prepare(`
-      SELECT id FROM agent_activations WHERE project_id = ? AND agent_id = ? AND dedupe_key = ?
-    `).get(input.projectId, input.agentId, input.dedupeKey) as { id: string } | undefined;
-    if (existing) {
-      this.sqlite.prepare(`
-        INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id) VALUES (?, ?, ?)
-      `).run(existing.id, input.sourceKind, input.sourceId);
-      return existing.id;
-    }
-    if (input.externalIntake) {
-      const maximum = Math.max(1, this.options.maxPendingActivationsPerAgent ?? DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT);
-      const pending = (this.sqlite.prepare(`
-        SELECT COUNT(*) AS count FROM agent_activations
-        WHERE agent_id = ? AND state IN ('pending', 'retry_pending')
-      `).get(input.agentId) as { count: number }).count;
-      if (pending >= maximum) {
-        throw new PendingActivationCapacityError(`pending activation limit reached for Agent (${maximum})`);
-      }
-    }
-    const id = randomUUID();
-    const defaults = activationDefaults(input.kind, input.priority);
-    const inserted = this.sqlite.prepare(`
-      INSERT OR IGNORE INTO agent_activations (
-        id, project_id, agent_id, scope_key, kind, priority, dispatch_policy, prompt_class, state, dedupe_key,
-        payload_json, available_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
-    `).run(
-      id, input.projectId, input.agentId, input.scopeKey, input.kind, input.priority,
-      input.dispatchPolicy ?? defaults.dispatchPolicy,
-      input.promptClass ?? defaults.promptClass,
-      input.dedupeKey, stableJson(input.payload), input.now, input.now, input.now,
-    ).changes;
-    const activationId = inserted === 1 ? id : (this.sqlite.prepare(`
-      SELECT id FROM agent_activations WHERE project_id = ? AND agent_id = ? AND dedupe_key = ?
-    `).get(input.projectId, input.agentId, input.dedupeKey) as { id: string }).id;
-    this.sqlite.prepare(`
-      INSERT OR IGNORE INTO activation_sources (activation_id, source_kind, source_id) VALUES (?, ?, ?)
-    `).run(activationId, input.sourceKind, input.sourceId);
-    if (inserted === 1) this.sqlite.prepare(`
-      INSERT INTO activation_outbox (activation_id, event_kind, payload_json, created_at)
-      VALUES (?, 'activation_ready', ?, ?)
-    `).run(activationId, stableJson({ activationId, agentId: input.agentId, kind: input.kind }), input.now);
-    return activationId;
+    return this.activationFactory.create(input);
   }
 
   private recoverExpiredUninjectedRuns(now: string): void {
@@ -3251,7 +2875,7 @@ export class CoordinationV3Store {
       DO UPDATE SET state = 'open', updated_at = excluded.updated_at, terminal_at = NULL
     `);
     for (const requestId of requestIds) {
-      const request = this.getRequestRow(requestId);
+      const request = this.support.getRequestRow(requestId);
       if (
         request.requester_agent_id !== ownerAgentId
         || request.state !== "awaiting_answer"
@@ -3455,7 +3079,7 @@ export class CoordinationV3Store {
       fencing_token: number;
     }>;
     for (const run of runs) {
-      const replacementFence = this.nextFence(run.agent_id);
+      const replacementFence = this.support.nextFence(run.agent_id);
       const cancelled = this.sqlite.prepare(`
         UPDATE scheduler_runs
         SET status = 'cancelled', fencing_token = ?,
@@ -3570,7 +3194,7 @@ export class CoordinationV3Store {
       project_id: string;
       conversation_id: string | null;
     }>;
-    for (const row of rows) if (this.agentSurvives(row.owner_agent_id)) this.createActivation({
+    for (const row of rows) if (this.support.agentSurvives(row.owner_agent_id)) this.createActivation({
       projectId: row.project_id,
       agentId: row.owner_agent_id,
       scopeKey: this.runtimeScopeAuthority.coordinationScopeKey(row.conversation_id, row.owner_agent_id),
@@ -3593,66 +3217,4 @@ export class CoordinationV3Store {
     `).run(now, now, dependencyKind, dependencyId);
   }
 
-  private nextFence(agentId: string): number {
-    const row = this.sqlite.prepare(`
-      SELECT next_fencing_token FROM scheduler_agent_fences WHERE agent_id = ?
-    `).get(agentId) as { next_fencing_token: number } | undefined;
-    const token = row?.next_fencing_token ?? 1;
-    this.sqlite.prepare(`
-      INSERT INTO scheduler_agent_fences (agent_id, next_fencing_token) VALUES (?, ?)
-      ON CONFLICT(agent_id) DO UPDATE SET next_fencing_token = excluded.next_fencing_token
-    `).run(agentId, token + 1);
-    return token;
-  }
-
-  private requireAuthorizedRun(authorization: RunAuthorizationV3, expectedScopeKey?: string): void {
-    if (!Number.isSafeInteger(authorization.fencingToken) || authorization.fencingToken <= 0) {
-      throw new Error("invalid run fencing token");
-    }
-    const authoritative = this.sqlite.prepare(`
-      SELECT scope_key FROM scheduler_runs
-      WHERE id = ? AND agent_id = ? AND fencing_token = ?
-        AND status IN ('leased', 'running')
-        AND side_effects_fenced_at IS NULL
-    `).get(authorization.runId, authorization.agentId, authorization.fencingToken) as { scope_key: string } | undefined;
-    if (!authoritative) throw new Error("run is no longer authoritative");
-    if (expectedScopeKey && authoritative.scope_key !== expectedScopeKey) {
-      throw new Error("mutation scope does not match the authoritative run");
-    }
-  }
-
-  private getFencedRun(runId: string, fence: number): Record<string, unknown> {
-    const run = this.sqlite.prepare(`SELECT * FROM scheduler_runs WHERE id = ? AND fencing_token = ?`).get(runId, fence) as Record<string, unknown> | undefined;
-    if (!run) throw new Error("stale run fencing token");
-    return run;
-  }
-
-  private mutateFencedRun(runId: string, fence: number, sql: string, values: unknown[]): void {
-    const changed = this.sqlite.prepare(sql).run(...values).changes;
-    if (changed !== 1) throw new Error(`stale run fencing token for ${runId}:${fence}`);
-  }
-
-  private idempotentReplay<T>(
-    projectId: string, actorScope: string, operation: string, key: string, hash: string,
-  ): T | undefined {
-    const row = this.sqlite.prepare(`
-      SELECT payload_hash, result_json FROM coordination_idempotency
-      WHERE project_id = ? AND actor_scope = ? AND operation = ? AND idempotency_key = ?
-    `).get(projectId, actorScope, operation, key) as { payload_hash: string; result_json: string } | undefined;
-    if (!row) return undefined;
-    if (row.payload_hash !== hash) throw new Error("idempotency key collision");
-    return JSON.parse(row.result_json) as T;
-  }
-
-  private recordIdempotency(
-    projectId: string, actorScope: string, operation: string, key: string,
-    hash: string, result: unknown, now: string,
-  ): void {
-    this.sqlite.prepare(`
-      INSERT INTO coordination_idempotency (
-        project_id, actor_scope, operation, idempotency_key,
-        payload_hash, result_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(projectId, actorScope, operation, key, hash, stableJson(result), now);
-  }
 }
