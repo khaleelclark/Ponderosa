@@ -81,6 +81,8 @@ import type {
 } from "@ponderosa/core";
 import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
 import { highlightedSearchSnippet, searchProjectedChatMessages, type ProjectedChatSearchCandidate } from "./chat-search.js";
+import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
+export { AgentDeletionConflictError } from "./store-agent-management.js";
 
 function communicationDocumentReference(projectId: string, document: CommunicationDocumentRecord): CommunicationDocumentReference {
   const { content: _content, ...metadata } = document;
@@ -338,13 +340,6 @@ export interface AgentSpawnOrigin {
   prompt?: string;
 }
 
-export class AgentDeletionConflictError extends Error {
-  constructor(readonly currentPreview: AgentDeletionPreviewDto) {
-    super("Agent organization changed after deletion preview");
-    this.name = "AgentDeletionConflictError";
-  }
-}
-
 type PresetEvent = { type: "upsert"; preset: AgentPresetDto } | { type: "delete"; id: string; at: string };
 const BUILTIN_PRESETS: Array<Omit<CreateAgentPresetRequest, "engine"> & { engine: "codex" }> = [
   { name: "Frontend", description: "Accessible, polished product UI", guidance: "Act as a product-minded frontend engineer. Prioritize responsive UX, accessibility, and tested user flows.", engine: "codex" },
@@ -408,19 +403,6 @@ function writeJson(file: string, data: unknown): void {
     rmSync(temporary, { force: true });
     throw error;
   }
-}
-
-function requireManagementPermissions(value: unknown): AgentDto["managementPermissions"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("management permissions must be an object");
-  const permissions = value as Record<string, unknown>;
-  if (typeof permissions.allowAutomaticDescendantDeletion !== "boolean" ||
-      typeof permissions.allowAutomaticDescendantReorganization !== "boolean") {
-    throw new Error("management permissions must contain exact boolean values");
-  }
-  return {
-    allowAutomaticDescendantDeletion: permissions.allowAutomaticDescendantDeletion,
-    allowAutomaticDescendantReorganization: permissions.allowAutomaticDescendantReorganization,
-  };
 }
 
 export interface AgentDeletionReceipt {
