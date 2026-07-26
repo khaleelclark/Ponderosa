@@ -43,4 +43,3 @@ export interface AgentDetailProps {
   onNewSubagent(managerAgentId: string): void;
   onDeleted(): void;
 }
-
