@@ -16,7 +16,7 @@ export type ProjectBrowserGrant = { agentId: string; runId: string };
 
 interface ActiveProjectBrowserController {
   grant: ProjectBrowserGrant;
-  privateScope?: BrowserScope;
+  privateScope(): BrowserScope | undefined;
 }
 
 interface BrowserRoutesContext {
@@ -178,8 +178,9 @@ export function registerBrowserRoutes(
             "agent",
             request.body.expectedControlEpoch,
           );
-          if (controller.privateScope) {
-            await browserSessions.closeRun(controller.privateScope, "project_browser_granted");
+          const privateScope = controller.privateScope();
+          if (privateScope) {
+            await browserSessions.closeRun(privateScope, "project_browser_granted");
           }
           return projectBrowserDto(projectId, session);
         } catch (error) {
