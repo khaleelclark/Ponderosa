@@ -833,7 +833,7 @@ function normalizeNotifications(input: unknown): NotificationPreferencesDto {
 }
 
 function clampContextRolloverTokens(value: number): number {
-  return Math.max(20_000, Math.min(2_000_000, Math.round(value)));
+  return Math.max(75_000, Math.min(2_000_000, Math.round(value)));
 }
 
 function clampContextRolloverWindowFraction(value: number): number {

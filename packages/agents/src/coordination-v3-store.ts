@@ -565,6 +565,7 @@ export interface CoordinationV3StoreOptions {
 }
 
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
+const DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT = 1_000;
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
 
@@ -2289,6 +2290,26 @@ export class CoordinationV3Store {
       this.requireAgent(definition.project_id, definition.agent_id);
       this.requireConversation(definition.project_id, definition.conversation_id);
       this.requireConversationMember(definition.conversation_id, definition.agent_id);
+
+      // Occurrence intake is the untrusted edge: a webhook source can post an
+      // unbounded number of distinct occurrence keys. The activation cap only
+      // applies once an occurrence is dispatched, so a stalled or rate-limited
+      // Agent would otherwise accumulate pending rows without limit. A replay
+      // of an already-recorded occurrence returned above and is never refused.
+      const maximumPending = Math.max(
+        1,
+        this.options.maxPendingTriggerOccurrencesPerAgent
+          ?? DEFAULT_MAX_PENDING_TRIGGER_OCCURRENCES_PER_AGENT,
+      );
+      const pendingOccurrences = (this.sqlite.prepare(`
+        SELECT COUNT(*) AS count FROM trigger_occurrences
+        WHERE agent_id = ? AND state = 'pending'
+      `).get(definition.agent_id) as { count: number }).count;
+      if (pendingOccurrences >= maximumPending) {
+        throw new PendingActivationCapacityError(
+          `pending trigger occurrence limit reached for Agent (${maximumPending})`,
+        );
+      }
 
       const occurrenceId = randomUUID();
       const initialState: TriggerOccurrenceState = "pending";
@@ -6130,24 +6151,33 @@ export class CoordinationV3Store {
     }
   }
 
+  /**
+   * Two callers already hold a transaction; the scheduler's due-schedule sweep
+   * calls this directly. Own the boundary here so a failure part way through
+   * the loop cannot leave some budget periods rolled over and others not, with
+   * the returned count lost to the exception. better-sqlite3 nests this as a
+   * savepoint for the callers that already have one open.
+   */
   resetExpiredTriggerBudgets(now = new Date().toISOString()): number {
-    const rows = this.sqlite.prepare(`
-      SELECT * FROM trigger_definitions
-      WHERE run_budget_limit IS NOT NULL AND run_budget_period != 'lifetime'
-    `).all() as TriggerDefinitionRow[];
-    let reset = 0;
-    for (const row of rows) {
-      const startedAt = row.run_budget_period_started_at ?? row.created_at;
-      const endsAt = row.run_budget_period ? triggerBudgetEndsAt(row.run_budget_period, startedAt) : undefined;
-      if (!endsAt || endsAt > now) continue;
-      this.sqlite.prepare(`
-        UPDATE trigger_definitions
-        SET run_budget_used = 0, run_budget_allowance = 0, run_budget_period_started_at = ?, updated_at = ?
-        WHERE id = ?
-      `).run(now, now, row.id);
-      reset += 1;
-    }
-    return reset;
+    return this.sqlite.transaction(() => {
+      const rows = this.sqlite.prepare(`
+        SELECT * FROM trigger_definitions
+        WHERE run_budget_limit IS NOT NULL AND run_budget_period != 'lifetime'
+      `).all() as TriggerDefinitionRow[];
+      let reset = 0;
+      for (const row of rows) {
+        const startedAt = row.run_budget_period_started_at ?? row.created_at;
+        const endsAt = row.run_budget_period ? triggerBudgetEndsAt(row.run_budget_period, startedAt) : undefined;
+        if (!endsAt || endsAt > now) continue;
+        this.sqlite.prepare(`
+          UPDATE trigger_definitions
+          SET run_budget_used = 0, run_budget_allowance = 0, run_budget_period_started_at = ?, updated_at = ?
+          WHERE id = ?
+        `).run(now, now, row.id);
+        reset += 1;
+      }
+      return reset;
+    })();
   }
 
   private cancelPendingTriggerWork(triggerId: string, reason: string, now: string): void {

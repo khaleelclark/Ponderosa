@@ -1445,6 +1445,7 @@ export class AgentStore {
       throw error;
     }
     this.communicationEventCache.delete(id);
+    this.communicationRevisionCache.delete(id);
     this.communicationProjectionCache.delete(id);
     this.messageDispatchCache.delete(id);
     for (const agentId of agentIds) {
@@ -2483,10 +2484,17 @@ export class AgentStore {
           createdAt,
         }));
       if (eventsToAppend.length > 0) {
-        appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, authorization.projectId), eventsToAppend);
         for (const event of eventsToAppend) this.client.prepare(`
           UPDATE agents SET manager_agent_id = ?, updated_at = ? WHERE id = ?
         `).run(event.managerAgentId, event.createdAt, event.agentId);
+        // The canonical log append is the last statement in the transaction. A
+        // failing UPDATE now rolls back before anything reaches the log, rather
+        // than leaving a durable record of a reorganization SQLite rejected --
+        // which a later projection rebuild would have replayed as real. The
+        // remaining window, a crash between this append and COMMIT, is the one
+        // setAgentManager already has and resolves the same way: the log is
+        // canonical and the rebuild reapplies it.
+        appendFsyncedJsonl(agentOrganizationEventsPath(this.dataDir, authorization.projectId), eventsToAppend);
       }
       return [...new Set(operations.map((operation) => operation.targetAgentId))];
     })();

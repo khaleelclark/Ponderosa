@@ -362,7 +362,7 @@ describe("WorkspaceSidebar public behavior", () => {
     client.clear();
   });
 
-  it("leaves an active pointer-resize listener attached when unmounted before pointer completion", () => {
+  it("releases an active pointer-resize listener when unmounted before pointer completion", () => {
     const client = workspaceClient();
     const onWidthChange = vi.fn();
     const removeEventListener = vi.spyOn(window, "removeEventListener");
@@ -386,23 +386,18 @@ describe("WorkspaceSidebar public behavior", () => {
         name === "pointermove" ||
         name === "pointerup" ||
         name === "pointercancel");
-    expect(resizeRemovesAtUnmount).toEqual([]);
-
-    fireEvent(window, pointerEvent("pointermove", 180));
-    expect(onWidthChange).toHaveBeenLastCalledWith(480);
-
-    fireEvent(window, pointerEvent("pointercancel", 180));
-    const eventualResizeRemoves = removeEventListener.mock.calls
-      .slice(removeCallStart)
-      .filter(([name]) =>
-        name === "pointermove" ||
-        name === "pointerup" ||
-        name === "pointercancel");
-    expect(eventualResizeRemoves.map(([name]) => name)).toEqual([
+    expect(resizeRemovesAtUnmount.map(([name]) => name)).toEqual([
       "pointermove",
       "pointerup",
       "pointercancel",
     ]);
+
+    // The drag is over because the sidebar is gone: no later pointer event
+    // reaches the width handler.
+    fireEvent(window, pointerEvent("pointermove", 180));
+    expect(onWidthChange).not.toHaveBeenCalled();
+    fireEvent(window, pointerEvent("pointercancel", 180));
+    expect(onWidthChange).not.toHaveBeenCalled();
     client.clear();
   });
 });

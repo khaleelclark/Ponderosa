@@ -295,6 +295,12 @@ export interface CreateConversationMessageRequest {
   role?: "user" | "assistant" | "system";
   text: string;
   attachments?: ImageAttachmentDto[];
+  /** Stable Agent IDs to activate for this organizational Broadcast. */
+  recipientAgentIds?: string[];
+  /** Target-owned asset copies for safe delivery to each activated Agent. */
+  recipientAttachments?: Array<{ agentId: string; attachmentIds: string[] }>;
+  /** Active recipients steer by default; queue preserves an explicit turn boundary. */
+  activeRunDelivery?: "steer" | "queue";
   /** Stable across transport retries; absent is accepted for legacy clients. */
   idempotencyKey?: string;
 }
