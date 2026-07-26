@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Socket } from "node:net";
 import { Readable, Transform } from "node:stream";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
+import type { CreateLinkPreviewRequest, LinkPreviewDto } from "@ponderosa/core";
 import type { AgentStore } from "@ponderosa/agents";
+import type { FastifyInstance } from "fastify";
+import { externalFaviconTarget, loadExternalFavicon } from "./external-content.js";
 import { secretEqual } from "./security.js";
 import type {
   ActiveRun,
@@ -16,10 +20,11 @@ interface LinkPreviewServiceContext {
   store: AgentStore;
   activeRuns: ReadonlyMap<string, ActiveRun>;
   ownsActiveRun(agentId: string, run: ActiveRun): boolean;
+  linkFaviconLoader?: CreateServerOptions["linkFaviconLoader"];
 }
 
 export function createLinkPreviewService(context: LinkPreviewServiceContext) {
-  const { options, store, activeRuns, ownsActiveRun } = context;
+  const { options, store, activeRuns, ownsActiveRun, linkFaviconLoader } = context;
 
   const linkPreviews = new Map<string, LinkPreviewRegistration>();
   const linkPreviewTtlMs = options?.registrationTtlMs ?? 4 * 60 * 60 * 1000;
@@ -272,6 +277,207 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     }
   };
 
+  const registerRoutes = (app: FastifyInstance): void => {
+  app.get<{ Querystring: { url?: string } }>("/api/link-favicon", async (request, reply) => {
+    const target = externalFaviconTarget(request.query.url ?? "");
+    if (!target) return reply.code(400).send({ error: "favicon URL must be a public HTTPS hostname" });
+    try {
+      const favicon = await (linkFaviconLoader ?? loadExternalFavicon)(target);
+      reply.type(favicon.mediaType);
+      reply.header("cache-control", "public, max-age=3600");
+      return reply.send(favicon.body);
+    } catch {
+      // Failures are safe to cache briefly, which bounds repeated DNS/TLS work
+      // without turning a transient outage into a long-lived missing icon.
+      reply.header("cache-control", "public, max-age=60");
+      return reply.code(404).send({ error: "favicon unavailable" });
+    }
+  });
+
+  const loopbackPreviewTarget = (raw: string): URL | undefined => {
+    let target: URL;
+    try { target = new URL(raw); } catch { return undefined; }
+    const hostname = target.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (target.protocol !== "http:" || target.username || target.password || !target.port) return undefined;
+    if (!(hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")) return undefined;
+    const port = Number(target.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    target.hostname = "127.0.0.1";
+    target.hash = "";
+    return target;
+  };
+
+  app.post<{ Body: CreateLinkPreviewRequest }>("/api/link-previews", async (request, reply) => {
+    const target = loopbackPreviewTarget(request.body?.url);
+    if (!target) return reply.code(400).send({ error: "preview URL must be HTTP on an explicit localhost port" });
+    const { projectId, agentId, runId, conversationId } = request.body ?? {};
+    const project = typeof projectId === "string" ? store.getProject(projectId) : undefined;
+    const agent = typeof agentId === "string" ? store.getAgent(agentId) : undefined;
+    const active = agent ? activeRuns.get(agent.id) : undefined;
+    if (!project || !agent || agent.projectId !== project.id || !active || !ownsActiveRun(agent.id, active) ||
+      active.runId !== runId || active.executionId !== runId) {
+      return reply.code(409).send({ error: "preview scope does not match an active agent run" });
+    }
+    if (conversationId !== undefined) {
+      const conversation = store.getConversation(conversationId);
+      if (!conversation || conversation.projectId !== project.id || !agent.conversationIds.includes(conversation.id)) {
+        return reply.code(409).send({ error: "preview conversation is not owned by this agent and project" });
+      }
+    }
+    for (const [key, registration] of linkPreviews) if (registration.expiresAt <= Date.now()) closeLinkPreviewRegistration(key, 1008, "preview expired");
+    const id = randomUUID();
+    const expiresAt = Date.now() + linkPreviewTtlMs;
+    linkPreviews.set(id, {
+      origin: target.origin,
+      expiresAt,
+      projectId,
+      agentId,
+      runId,
+      ...(conversationId ? { conversationId } : {}),
+      connections: new Set(),
+      httpConnections: new Set(),
+      reconnectAttempts: [],
+    });
+    const suffix = `${target.pathname}${target.search}`.replace(/^\//, "");
+    return {
+      id,
+      openUrl: `/api/link-previews/${id}/${suffix}`,
+      targetOrigin: target.origin,
+      expiresAt: new Date(expiresAt).toISOString(),
+    } satisfies LinkPreviewDto;
+  });
+
+  app.get<{ Params: { id: string; "*": string }; Querystring: Record<string, string> }>("/api/link-previews/:id/*", async (request, reply) => {
+    const registration = linkPreviews.get(request.params.id);
+    if (!registration || registration.expiresAt <= Date.now()) {
+      closeLinkPreviewRegistration(request.params.id, 1008, "preview expired");
+      return reply.code(404).send({ error: "preview expired or was not found" });
+    }
+    if (!linkPreviewOwned(registration)) {
+      closeLinkPreviewRegistration(request.params.id, 1008, "preview run is no longer active");
+      return reply.code(404).send({ error: "preview run is no longer active" });
+    }
+    const previewPath = request.params["*"] ?? "";
+    if (previewPath === "__ws" || previewPath.startsWith("__ws/")) {
+      return reply.code(426).header("upgrade", "websocket").send({ error: "this preview path requires a WebSocket upgrade" });
+    }
+    const relativePath = `/${previewPath}`;
+    const target = new URL(relativePath, registration.origin);
+    target.search = new URL(request.raw.url ?? "", "http://ponderosa.invalid").search;
+    if (target.origin !== registration.origin) return reply.code(403).send({ error: "preview target is outside its registered origin" });
+    if (registration.httpConnections.size >= linkPreviewMaxHttpPerRegistration) {
+      return reply.code(429).send({ error: "preview HTTP connection limit reached" });
+    }
+    let upstream: Response;
+    const upstreamController = new AbortController();
+    registration.httpConnections.add(upstreamController);
+    let httpReleased = false;
+    const releaseHttp = (abort = false) => {
+      if (httpReleased) return;
+      httpReleased = true;
+      registration.httpConnections.delete(upstreamController);
+      if (abort) upstreamController.abort();
+      reply.raw.off("close", onClientClose);
+    };
+    const onClientClose = () => releaseHttp(true);
+    reply.raw.once("close", onClientClose);
+    const handshakeTimer = setTimeout(() => upstreamController.abort(), 15_000);
+    handshakeTimer.unref?.();
+    try {
+      upstream = await fetch(target, {
+        redirect: "manual",
+        headers: { accept: request.headers.accept ?? "*/*", "user-agent": "Ponderosa localhost preview" },
+        signal: upstreamController.signal,
+      });
+    } catch {
+      clearTimeout(handshakeTimer);
+      releaseHttp();
+      return reply.code(502).send({ error: "localhost app is unavailable" });
+    }
+    clearTimeout(handshakeTimer);
+    const location = upstream.headers.get("location");
+    if (location) {
+      const redirected = new URL(location, target);
+      if (redirected.origin !== registration.origin) {
+        await upstream.body?.cancel().catch(() => undefined);
+        releaseHttp();
+        return reply.code(502).send({ error: "localhost app redirected outside its registered origin" });
+      }
+      reply.header("location", `/api/link-previews/${request.params.id}${redirected.pathname}${redirected.search}`);
+    }
+    reply.code(upstream.status);
+    const contentType = upstream.headers.get("content-type") ?? "application/octet-stream";
+    reply.type(contentType);
+    reply.header("cache-control", "no-store");
+    if (!upstream.body) {
+      releaseHttp();
+      return reply.send();
+    }
+    if (contentType.includes("text/html")) {
+      const contentLength = Number(upstream.headers.get("content-length"));
+      if (Number.isFinite(contentLength) && contentLength > 5_000_000) {
+        await upstream.body.cancel().catch(() => undefined);
+        releaseHttp();
+        return reply.code(413).send({ error: "preview document is too large" });
+      }
+      const reader = upstream.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > 5_000_000) {
+            await reader.cancel().catch(() => undefined);
+            releaseHttp();
+            return reply.code(413).send({ error: "preview document is too large" });
+          }
+          chunks.push(value);
+        }
+      } catch {
+        releaseHttp();
+        return reply.code(502).send({ error: "localhost app closed the preview response" });
+      }
+      releaseHttp();
+      const html = Buffer.concat(chunks).toString("utf8");
+      const prefix = `/api/link-previews/${request.params.id}`;
+      const base = `<base href="${prefix}${new URL(".", target).pathname}">`;
+      const registrationOrigin = new URL(registration.origin);
+      const bootstrap = `<script>(()=>{const N=window.WebSocket,A=new Set(["vite-hmr","vite-ping"]),H=${JSON.stringify(registrationOrigin.hostname)},P=${JSON.stringify(registrationOrigin.port)},X=${JSON.stringify(`${prefix}/__ws`)},Z=h=>h.replace(/^\\[|\\]$/g,""),C=Z(location.hostname),L=location.port||(location.protocol==="https:"?"443":"80");let W;W=new Proxy(N,{construct(T,a,n){try{const ps=typeof a[1]==="string"?[a[1]]:Array.isArray(a[1])?a[1]:[],u=new URL(String(a[0]),document.baseURI),h=Z(u.hostname),p=u.port||(u.protocol==="wss:"?"443":"80"),v=ps.length===1&&A.has(ps[0]),o=(h===H&&p===P)||(h===C&&p===L),x=u.pathname===X||u.pathname.startsWith(X+"/");if(v&&o&&!x&&!u.username&&!u.password&&!u.hash&&(u.protocol==="ws:"||u.protocol==="wss:"))a[0]=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+X+u.pathname+u.search}catch{}return Reflect.construct(T,a,n===W?T:n)}});window.WebSocket=W})();</script>`;
+      // Root-relative asset references otherwise escape the opaque proxy scope.
+      const scopedHtml = html.replace(/\b(src|href|action)=(['"])\/(?!\/)/gi, `$1=$2${prefix}/`);
+      return reply.send(/<head(?:\s[^>]*)?>/i.test(scopedHtml) ? scopedHtml.replace(/<head(\s[^>]*)?>/i, (head) => `${head}${base}${bootstrap}`) : `${base}${bootstrap}${scopedHtml}`);
+    }
+    const source = Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream, { highWaterMark: 64 * 1024 });
+    source.once("end", () => releaseHttp());
+    source.once("close", () => releaseHttp());
+    source.once("error", () => releaseHttp());
+    if (contentType.includes("text/event-stream")) return reply.send(source);
+    let streamedBytes = 0;
+    const bounded = new Transform({
+      highWaterMark: 64 * 1024,
+      transform(chunk: Buffer, _encoding, callback) {
+        streamedBytes += chunk.byteLength;
+        if (streamedBytes > 50 * 1024 * 1024) {
+          upstreamController.abort();
+          callback(new Error("preview response exceeded 50 MiB"));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    return reply.send(source.pipe(bounded));
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/link-previews/:id", async (request, reply) => {
+    const registration = linkPreviews.get(request.params.id);
+    if (!registration) return reply.code(404).send({ error: "preview was not found" });
+    closeLinkPreviewRegistration(request.params.id, 1001, "preview explicitly closed");
+    return { closed: true };
+  });
+  };
+
   return {
     closeLinkPreviewPair,
     closeLinkPreviewRegistration,
@@ -287,5 +493,6 @@ export function createLinkPreviewService(context: LinkPreviewServiceContext) {
     linkPreviewTtlMs,
     linkPreviewUpgrade,
     linkPreviewWss,
+    registerRoutes,
   };
 }
