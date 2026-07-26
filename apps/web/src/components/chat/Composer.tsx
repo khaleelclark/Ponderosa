@@ -1,9 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArticleIcon from "@mui/icons-material/Article";
-import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CloseIcon from "@mui/icons-material/Close";
-import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Alert,
   Box,
@@ -44,9 +41,15 @@ import {
   removeHandle,
   replaceDestination,
 } from "./Composer.helpers";
-import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
+import {
+  ComposerAttachmentList,
+  ComposerDestinationBar,
+  ComposerGuidance,
+  ComposerMentionStatus,
+  ComposerSendActions,
+} from "./Composer.parts";
 import {
   COMPOSER_MAX_FILE_BYTES,
   COMPOSER_MAX_FILES,
@@ -889,166 +892,28 @@ export function Composer({
             : "0 10px 30px rgba(33,45,38,.09)",
       }}
     >
-      {guidance ? (
-        <Box sx={{ px: 0.25, pb: 0.9, color: "text.secondary" }}>
-          {typeof guidance === "string" ? (
-            <Typography
-              variant="body2"
-              sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}
-            >
-              {guidance}
-            </Typography>
-          ) : (
-            guidance
-          )}
-        </Box>
-      ) : null}
-      {destinationMode === "project-chat" ? (
-        <Stack
-          direction="row"
-          spacing={0.75}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-        >
-          {hasBroadcastDestination ? (
-            <Chip
-              size="small"
-              color="info"
-              icon={<CampaignOutlinedIcon />}
-              label="#broadcast"
-              onDelete={() => clearDestination("broadcast")}
-            />
-          ) : null}
-          {hasEveryoneDestination ? (
-            <Chip
-              size="small"
-              color="secondary"
-              label="#everyone"
-              onDelete={() => clearDestination("everyone")}
-            />
-          ) : null}
-          {projectDestinations.map(destination => (
-            <Chip
-              key={destination.handle.toLocaleLowerCase()}
-              size="small"
-              color="primary"
-              label={`#${destination.handle}`}
-              onDelete={() => clearDestination(destination.handle)}
-            />
-          ))}
-          {!hasBroadcastDestination &&
-          !hasEveryoneDestination &&
-          projectDestinations.length === 0 ? (
-            <Chip size="small" variant="outlined" label="New Agent" />
-          ) : null}
-          {!hasBroadcastDestination &&
-          !hasEveryoneDestination &&
-          projectDestinations.length === 0 &&
-          continueWith ? (
-            <Button
-              size="small"
-              onClick={() => {
-                setDestination(continueWith.handle);
-                window.requestAnimationFrame(() => {
-                  const input = inputRef.current;
-                  if (!input) return;
-                  input.focus();
-                  const end = input.value.length;
-                  input.setSelectionRange(end, end);
-                });
-              }}
-            >
-              Continue with {continueWith.title}
-            </Button>
-          ) : null}
-          <Typography
-            variant="caption"
-            color={destinationError ? "error.main" : "text.secondary"}
-          >
-            {projectDestinationHelper}
-          </Typography>
-          {!destinationError ? (
-            <Tooltip title="Use @ to reference a Project file.">
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ whiteSpace: "nowrap" }}
-              >
-                · @ file
-              </Typography>
-            </Tooltip>
-          ) : null}
-        </Stack>
-      ) : destinationMode === "target-required" ? (
-        <Stack
-          direction="row"
-          spacing={0.75}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-        >
-          {targetRequiredDestinations.map(destination => (
-            <Chip
-              key={destination.handle.toLocaleLowerCase()}
-              size="small"
-              color="primary"
-              label={`#${destination.handle}`}
-              onDelete={() => clearDestination(destination.handle)}
-            />
-          ))}
-          {hasBroadcastDestination ? (
-            <Chip
-              size="small"
-              color="info"
-              icon={<CampaignOutlinedIcon />}
-              label="#broadcast"
-              onDelete={() => clearDestination("broadcast")}
-            />
-          ) : null}
-          {targetRequiredDestinations.length === 0 &&
-          !hasBroadcastDestination ? (
-            <Chip size="small" variant="outlined" label="Choose an Agent" />
-          ) : null}
-          <Typography
-            variant="caption"
-            color={destinationError ? "error.main" : "text.secondary"}
-          >
-            {targetRequiredHelper}
-          </Typography>
-        </Stack>
-      ) : destinationMode === "fixed" && fixedRecipientTitle ? (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", px: 0.25, pb: 0.75 }}
-        >
-          {fixedRecipientTitle} will receive this.
-        </Typography>
-      ) : null}
-      {files.length > 0 ? (
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ mb: 1 }}
-        >
-          {files.map((file, index) => {
-            const upload = draftUploadStates.get(file);
-            return (
-              <ComposerAttachment
-                key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
-                file={file}
-                status={upload?.status}
-                error={upload?.error}
-                onRetry={() => retryDraftUpload(file)}
-                onRemove={() => removeFile(index)}
-              />
-            );
-          })}
-        </Stack>
-      ) : null}
+      <ComposerGuidance guidance={guidance} />
+      <ComposerDestinationBar
+        clearDestination={clearDestination}
+        continueWith={continueWith}
+        destinationError={destinationError}
+        destinationMode={destinationMode}
+        fixedRecipientTitle={fixedRecipientTitle}
+        hasBroadcastDestination={hasBroadcastDestination}
+        hasEveryoneDestination={hasEveryoneDestination}
+        inputRef={inputRef}
+        projectDestinationHelper={projectDestinationHelper}
+        projectDestinations={projectDestinations}
+        setDestination={setDestination}
+        targetRequiredDestinations={targetRequiredDestinations}
+        targetRequiredHelper={targetRequiredHelper}
+      />
+      <ComposerAttachmentList
+        draftUploadStates={draftUploadStates}
+        files={files}
+        removeFile={removeFile}
+        retryDraftUpload={retryDraftUpload}
+      />
       {pastedText ? (
         <Paper
           variant="outlined"
@@ -1492,30 +1357,11 @@ export function Composer({
               }
             }}
           />
-          {mentionedHandles.length > 0 &&
-          destinationMode !== "project-chat" &&
-          destinationMode !== "target-required" ? (
-            <Typography
-              variant="caption"
-              color={
-                mentionedBusyHandles.length > 0
-                  ? "warning.main"
-                  : "text.secondary"
-              }
-            >
-              {mentionedHandles.some(
-                handle => handle.toLocaleLowerCase() === "broadcast",
-              )
-                ? "Adding durable shared context without starting an agent"
-                : mentionedBusyHandles.length > 0
-                  ? `${mentionedBusyHandles.map(handle => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
-                  : mentionedHandles.some(
-                        handle => handle.toLocaleLowerCase() === "everyone",
-                      )
-                    ? "Notifying every active agent in this conversation"
-                    : `Messaging ${mentionedHandles.map(handle => `#${handle}`).join(", ")}`}
-            </Typography>
-          ) : null}
+          <ComposerMentionStatus
+            destinationMode={destinationMode}
+            mentionedBusyHandles={mentionedBusyHandles}
+            mentionedHandles={mentionedHandles}
+          />
           <Popper
             open={menuOpen}
             anchorEl={anchorRef.current}
@@ -1626,94 +1472,22 @@ export function Composer({
             </ClickAwayListener>
           </Popper>
         </Box>
-        {showQueue ? (
-          <Tooltip
-            title={
-              defaultsToQueue
-                ? "Send after the active response finishes"
-                : "Steer the active response"
-            }
-          >
-            <span>
-              <Button
-                size="small"
-                variant="contained"
-                disabled={!canSend}
-                onClick={send}
-                aria-label={
-                  defaultsToQueue ? "Queue message" : "Steer active response"
-                }
-                sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
-              >
-                {defaultsToQueue ? "Queue" : "Steer"}
-              </Button>
-            </span>
-          </Tooltip>
-        ) : null}
-        {showQueue ? (
-          <Tooltip
-            title={
-              defaultsToQueue
-                ? "Steer the active response"
-                : "Send after the active response finishes"
-            }
-          >
-            <span>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={!canSend}
-                onClick={defaultsToQueue ? steer : queue}
-                aria-label={
-                  defaultsToQueue ? "Steer active response" : "Queue message"
-                }
-                sx={{ minHeight: 40, px: 1.5 }}
-              >
-                {defaultsToQueue ? "Steer" : "Queue"}
-              </Button>
-            </span>
-          </Tooltip>
-        ) : null}
-        {canCancel ? (
-          <Tooltip title="Cancel Run">
-            <IconButton
-              color="error"
-              onClick={onCancel}
-              aria-label="Cancel run"
-            >
-              <StopCircleIcon />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        {!showQueue && (!canCancel || allowSendWhileRunning) ? (
-          <Tooltip
-            title={
-              !canSend &&
-              (destinationError ||
-                (destinationMode === "target-required" &&
-                  !targetRequiredRecipientTagged))
-                ? (destinationError ??
-                  recipientRequiredMessage ??
-                  "Choose at least one Agent recipient.")
-                : "Send"
-            }
-          >
-            <span>
-              <IconButton
-                color="primary"
-                disabled={!canSend}
-                onClick={send}
-                aria-label={
-                  mentionedBusyHandles.length > 0
-                    ? "Queue message"
-                    : "Send message"
-                }
-              >
-                <ArrowUpwardIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-        ) : null}
+        <ComposerSendActions
+          allowSendWhileRunning={allowSendWhileRunning}
+          canCancel={canCancel}
+          canSend={canSend}
+          defaultsToQueue={defaultsToQueue}
+          destinationError={destinationError}
+          destinationMode={destinationMode}
+          mentionedBusyHandles={mentionedBusyHandles}
+          onCancel={onCancel}
+          queue={queue}
+          recipientRequiredMessage={recipientRequiredMessage}
+          send={send}
+          showQueue={showQueue}
+          steer={steer}
+          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
+        />
       </Stack>
     </Paper>
   );
