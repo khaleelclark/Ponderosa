@@ -91,14 +91,13 @@ Runtime lifecycle operations must fail closed:
 - Failed teardown remains durable, retryable, and blocks unsafe replacement or deletion.
 - Project deletion fences authority and drains provider and browser processes before deleting canonical data.
 - Shutdown must await Fastify close and runtime cleanup.
-- Follow the detailed lifecycle contract in `COMMUNICATION_V3.md`.
 
 ### Security and portability
 
 - Never commit engine tokens, OAuth secrets, credentials, `.env` contents, or provider profiles.
 - Do not create a password or credential store.
 - Do not couple architecture to Tailscale; it is only one deployment option.
-- Canonical user and provider text must follow the normalization, size, artifact, and transaction rules in `COMMUNICATION_V3.md`.
+- Preserve the normalization, size, artifact, and transaction rules for canonical user and provider text.
 
 ## Architecture
 

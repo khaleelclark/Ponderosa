@@ -5,7 +5,7 @@ summary: Choose Broadcast, Direct Message, or Collaboration by audience; visibil
 section: Conversations
 order: 30
 related: project-chat,agents-and-organization,all-chat
-code: Executable scope matrix|packages/core/src/communication.ts;Scope contract|COMMUNICATION.md
+code: Executable scope matrix|packages/core/src/communication.ts
 assets: Communication surfaces screenshot|docs/wiki/assets/communication-surfaces.png
 ---
 
