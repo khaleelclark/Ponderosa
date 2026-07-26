@@ -80,7 +80,7 @@ export function RunHeaderRow({
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
       <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: ".025em" }}>
         {entry.executionId
-          ? `Run ${entry.run?.title ?? entry.executionId.slice(0, 8)}`
+          ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
           : "Unscoped activity"}
       </Typography>
       {countParts.length ? <Typography variant="caption" color="text.secondary">
