@@ -26,6 +26,9 @@ type ActivityDisplayEntry =
   | ActivityStreamEntry
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
+const MAX_ACTION_GROUP_GAP_MS = 2_000;
+const MAX_ACTION_GROUP_SPAN_MS = 4_000;
+
 function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
   let actions: GroupedActionEntry[] = [];
@@ -44,17 +47,36 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
     }
     actions = [];
   };
+  const append = (entry: GroupedActionEntry) => {
+    const first = actions[0];
+    const previous = actions.at(-1);
+    if (first && previous) {
+      const firstTime = Date.parse(first.createdAt);
+      const previousTime = Date.parse(previous.createdAt);
+      const entryTime = Date.parse(entry.createdAt);
+      const invalidTime = !Number.isFinite(firstTime) ||
+        !Number.isFinite(previousTime) ||
+        !Number.isFinite(entryTime) ||
+        entryTime < previousTime;
+      if (invalidTime ||
+          entryTime - previousTime > MAX_ACTION_GROUP_GAP_MS ||
+          entryTime - firstTime > MAX_ACTION_GROUP_SPAN_MS) {
+        flush();
+      }
+    }
+    actions.push(entry);
+  };
   for (const entry of entries) {
     if (entry.kind === "command" && !entry.internal && entry.result) {
-      actions.push(entry);
+      append(entry);
       continue;
     }
     if (entry.kind === "tool" && entry.result) {
-      actions.push(entry);
+      append(entry);
       continue;
     }
     if (entry.kind === "browser") {
-      actions.push(entry);
+      append(entry);
       continue;
     }
     flush();

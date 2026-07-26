@@ -18,7 +18,8 @@ import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
 import type { ActivityStreamEntry } from "./activityStream";
 import { ResponseFileActivity } from "./ResponseFileActivity";
 
-const ACTIVITY_TITLE_COLOR = "success.main";
+const ACTIVITY_TITLE_COLOR = "text.primary";
+const ACTIVITY_TITLE_FONT_SIZE = 15;
 type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
 
 export function ActivityElapsed({
@@ -81,7 +82,7 @@ export function RunHeaderRow({
     sx={{ mt: 3, pt: 1.5, pb: 0.75, borderTop: 2, borderColor: "divider" }}
   >
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontWeight: 800, letterSpacing: ".025em" }}>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".025em" }}>
         {entry.executionId
           ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
           : "Unscoped activity"}
@@ -112,7 +113,7 @@ export function CommandRow({
     : copyState === "failed" ? "Copy command failed" : "Copy command";
   return <Row entry={entry} focusId={focusId}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ flex: 1, fontWeight: 700 }}>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ flex: 1, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
         {entry.internal ? "Ponderosa communication" : "Command"}
       </Typography>
       {!entry.internal ? <>
@@ -180,7 +181,7 @@ export function ActionGroupRow({
         aria-expanded={expanded}
         aria-label={`${expanded ? "Collapse" : "Expand"} grouped activity`}
         onClick={() => setExpanded((value) => !value)}
-        sx={{ color: ACTIVITY_TITLE_COLOR, fontWeight: 700, px: 0.5 }}
+        sx={{ color: ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.5 }}
       >
         {summary}
       </Button>
@@ -242,7 +243,7 @@ export function ToolRow({
     formatted = String(entry.input);
   }
   return <Row entry={entry} focusId={focusId}>
-    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontWeight: 700 }}>Tool call: {entry.name}</Typography>
+    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>Tool call: {entry.name}</Typography>
     <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
       <CollapsibleCode value={formatted || "null"} maxLines={6} />
     </Box>
@@ -291,7 +292,7 @@ export function FileRow({
       }}
       sx={{ alignItems: "center", minWidth: 0 }}
     >
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontWeight: 700, flexShrink: 0 }}>{verb}</Typography>
+      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>{verb}</Typography>
       <Typography variant="body2" sx={{ fontFamily: "monospace", minWidth: 0, overflowWrap: "anywhere" }}>{entry.path}</Typography>
       {entry.additions !== undefined || entry.deletions !== undefined ? <Typography variant="caption" sx={{ flexShrink: 0 }}>
         <Box component="span" color="success.main">+{entry.additions ?? 0}</Box>{" "}
@@ -353,7 +354,7 @@ export function ThinkingRow({
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
     <Box sx={{ pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
-      <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontWeight: 700 }}>Thinking</Typography>
+      <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>Thinking</Typography>
       <RunOutputFullText segment={entry.segment} render={(text) => <ThinkingText text={text} />} />
     </Box>
   </Row>;
@@ -375,7 +376,7 @@ export function ResponseRow({
   projectId?: string;
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
-    <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontWeight: 700 }}>
+    <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "block", mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
       {entry.segment.completed ? "Response" : "Response · live"}
     </Typography>
     <RunOutputFullText
@@ -423,7 +424,7 @@ export function CompactActivityRow({
         ? browserDescription(entry)
         : { title: entry.title, detail: entry.detail ?? "" };
   return <Row entry={entry} focusId={focusId}>
-    <Typography variant="subtitle2" color={entry.kind === "error" ? "error.main" : ACTIVITY_TITLE_COLOR} sx={{ fontWeight: 700 }}>
+    <Typography variant="subtitle2" color={entry.kind === "error" ? "error.main" : ACTIVITY_TITLE_COLOR} sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
       {content.title}
     </Typography>
     {content.detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
