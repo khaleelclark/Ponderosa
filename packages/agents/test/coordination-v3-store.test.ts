@@ -4423,7 +4423,7 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.getTriggerDefinition("budgeted")).toMatchObject({ budgetState: { used: 2, allowance: 2, held: false } });
   });
 
-  it("keeps every admitted Trigger occurrence pending until activation capacity recovers", () => {
+  it("backpressures Trigger occurrence intake at the configured pending capacity", () => {
     store = new CoordinationV3Store(opened.client, {
       maxPendingActivationsPerAgent: 1,
       maxPendingTriggerOccurrencesPerAgent: 1,
@@ -4443,13 +4443,13 @@ describe("CoordinationV3Store scheduler", () => {
     expect(store.recordTriggerOccurrence({
       ...base, occurrenceKey: "tick-1", now: "2026-07-15T00:00:00.000Z",
     })).toMatchObject({ state: "pending" });
-    expect(store.recordTriggerOccurrence({
+    expect(() => store.recordTriggerOccurrence({
       ...base, occurrenceKey: "tick-2", now: "2026-07-15T00:00:00.000Z",
-    })).toMatchObject({ state: "pending" });
+    })).toThrow("pending trigger occurrence limit reached for Agent (1)");
     expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.002Z"))
-      .toEqual({ activated: 0, pending: 2, deadLettered: 0 });
+      .toEqual({ activated: 0, pending: 1, deadLettered: 0 });
     expect(store.schedulerMetrics()).toMatchObject({
-      pendingTriggerOccurrences: 2,
+      pendingTriggerOccurrences: 1,
       deadLetteredTriggerOccurrences: 0,
       activeRuns: 0,
     });
@@ -4457,12 +4457,10 @@ describe("CoordinationV3Store scheduler", () => {
     acknowledgeLease(occupying);
     store.completeRun(occupying.runId, occupying.fencingToken, "2026-07-15T00:00:00.004Z");
     expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.005Z"))
-      .toEqual({ activated: 1, pending: 1, deadLettered: 0 });
+      .toEqual({ activated: 1, pending: 0, deadLettered: 0 });
     const firstTriggerRun = store.leaseNextRun({ workerId: "worker", now: "2026-07-15T00:00:00.006Z" })!;
     acknowledgeLease(firstTriggerRun);
     store.completeRun(firstTriggerRun.runId, firstTriggerRun.fencingToken, "2026-07-15T00:00:00.007Z");
-    expect(store.processDueTriggerOccurrences("2026-07-15T00:00:00.008Z"))
-      .toEqual({ activated: 1, pending: 0, deadLettered: 0 });
     expect(store.listTriggerOccurrences("timer:tick").every((occurrence) => occurrence.state === "activated")).toBe(true);
   });
 

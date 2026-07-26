@@ -1404,7 +1404,7 @@ describe("AgentStore — append + projection", () => {
     expect(store.getMeteredRuns({ type: "agent", id: agentId })[0]?.providerRequestUsage).toHaveLength(2);
   });
 
-  it("does not manufacture durable Work log responses from transient deltas", () => {
+  it("rebuilds durable Run output from canonical text deltas without publishing Chat messages", () => {
     const { agentId } = seedAgent();
     store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-1" });
     store.appendEvent(agentId, { type: "text", delta: "transient response", executionId: "run-1" });
@@ -1415,7 +1415,15 @@ describe("AgentStore — append + projection", () => {
     store = new AgentStore(dir);
     const detail = store.getAgentDetail(agentId)!;
     expect(detail.messages).toEqual([]);
-    expect(detail.runOutput).toEqual([]);
+    expect(detail.runOutput).toEqual([
+      expect.objectContaining({
+        agentId,
+        executionId: "run-1",
+        kind: "response",
+        text: "transient response",
+        completed: true,
+      }),
+    ]);
     expect(detail.runs).toEqual([expect.objectContaining({ id: "run-1", status: "completed" })]);
   });
 
