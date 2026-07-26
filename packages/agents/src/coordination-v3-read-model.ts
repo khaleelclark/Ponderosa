@@ -494,7 +494,7 @@ export class CoordinationV3ReadModel {
           relate(`request:${row.id}`, `request:${payload.retryOfRequestId}`);
         }
       }
-  
+
       const joinSelection = selection("join", "id");
       const joinRows = trimUnscopedOverflow(this.sqlite.prepare(`
         SELECT id, owner_agent_id, state, created_at, updated_at
@@ -514,7 +514,7 @@ export class CoordinationV3ReadModel {
         agentIds: [row.owner_agent_id], relatedItemIds: [],
         createdAt: row.created_at, updatedAt: row.updated_at,
       });
-  
+
       const activationSelection = selection("activation", "id");
       const activationRows = trimUnscopedOverflow(this.sqlite.prepare(`
         SELECT id, agent_id, kind, state, created_at, updated_at
@@ -539,7 +539,7 @@ export class CoordinationV3ReadModel {
         agentIds: [row.agent_id], relatedItemIds: [],
         createdAt: row.created_at, updatedAt: row.updated_at,
       });
-  
+
       const runSelection = selection("run", "scheduler.id");
       const runRows = trimUnscopedOverflow(this.sqlite.prepare(`
         SELECT scheduler.id, scheduler.agent_id, scheduler.status, scheduler.created_at, scheduler.updated_at,
@@ -568,7 +568,7 @@ export class CoordinationV3ReadModel {
           createdAt: row.started_at ?? row.created_at, updatedAt: row.updated_at,
         });
       }
-  
+
       const triggerSelection = selection("trigger", "occurrence.id");
       const occurrenceRows = trimUnscopedOverflow(this.sqlite.prepare(`
         SELECT occurrence.id, occurrence.trigger_id, occurrence.agent_id, occurrence.state, occurrence.activation_id,
@@ -600,7 +600,7 @@ export class CoordinationV3ReadModel {
         });
         if (row.activation_id) relate(`trigger:${row.id}`, `activation:${row.activation_id}`);
       }
-  
+
       const loadedRequestIds = requestRows.map((row) => row.id);
       const loadedJoinIds = joinRows.map((row) => row.id);
       const loadedActivationIds = activationRows.map((row) => row.id);
@@ -623,7 +623,7 @@ export class CoordinationV3ReadModel {
         }
         return { sql: clauses.length ? `AND (${clauses.join(" OR ")})` : "AND 0", params };
       };
-  
+
       const joinLinkSelection = linkedSelection("member.join_id", loadedJoinIds, "member.request_id", loadedRequestIds);
       const joinLinks = this.sqlite.prepare(`
         SELECT member.join_id, member.request_id
@@ -633,7 +633,7 @@ export class CoordinationV3ReadModel {
           ${joinLinkSelection.sql}
       `).all(input.projectId, input.conversationId ?? null, input.conversationId ?? null, ...joinLinkSelection.params) as Array<{ join_id: string; request_id: string }>;
       for (const row of joinLinks) relate(`join:${row.join_id}`, `request:${row.request_id}`);
-  
+
       const continuationSelection = linkedSelection("join_record.id", loadedJoinIds, "continuation.value", loadedRequestIds);
       const continuationLinks = this.sqlite.prepare(`
         SELECT join_record.id AS join_id, continuation.value AS request_id
@@ -643,7 +643,7 @@ export class CoordinationV3ReadModel {
           ${continuationSelection.sql}
       `).all(input.projectId, input.conversationId ?? null, input.conversationId ?? null, ...continuationSelection.params) as Array<{ join_id: string; request_id: string }>;
       for (const row of continuationLinks) relate(`join:${row.join_id}`, `request:${row.request_id}`);
-  
+
       const activationLinkSelection = linkedSelection("source.activation_id", loadedActivationIds);
       const activationLinks = this.sqlite.prepare(`
         SELECT source.activation_id, source.source_kind, source.source_id,
@@ -667,7 +667,7 @@ export class CoordinationV3ReadModel {
         const activationItem = items.get(`activation:${row.activation_id}`);
         if (activationItem && !activationItem.referenceIds.includes(row.source_id)) activationItem.referenceIds.push(row.source_id);
       }
-  
+
       const recoverySelection = linkedSelection(
         "mapping.source_activation_id", loadedActivationIds,
         "mapping.recovery_activation_id", loadedActivationIds,
@@ -680,7 +680,7 @@ export class CoordinationV3ReadModel {
           ${recoverySelection.sql}
       `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...recoverySelection.params) as Array<{ source_activation_id: string; recovery_activation_id: string }>;
       for (const row of recoveryLinks) relate(`activation:${row.source_activation_id}`, `activation:${row.recovery_activation_id}`);
-  
+
       const runLinkSelection = linkedSelection("attachment.run_id", loadedRunIds, "attachment.activation_id", loadedActivationIds);
       const runLinks = this.sqlite.prepare(`
         SELECT attachment.run_id, attachment.activation_id, provider.execution_id
@@ -691,7 +691,7 @@ export class CoordinationV3ReadModel {
           ${runLinkSelection.sql}
       `).all(input.projectId, scopeKey ?? null, scopeKey ?? null, ...runLinkSelection.params) as Array<{ run_id: string; activation_id: string; execution_id: string | null }>;
       for (const row of runLinks) relate(`run:${row.execution_id ?? row.run_id}`, `activation:${row.activation_id}`);
-  
+
       for (const item of items.values()) {
         item.relatedItemIds = [...(relationSets.get(item.id) ?? [])].filter((id) => items.has(id)).sort();
       }
