@@ -23,7 +23,6 @@ import type {
   EngineDto,
   EngineModelOption,
   EngineModelValidationDto,
-  ProjectEngineCapabilitiesDto,
   ProjectEngineModelCatalogDto,
   CreateProjectRequest,
   UpdateProjectRequest,
@@ -255,6 +254,7 @@ import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./route
 import { registerSearchRoutes } from "./routes/search.js";
 import { registerArtifactRoutes } from "./routes/artifacts.js";
 import { registerBrowserRoutes } from "./routes/browsers.js";
+import { registerEngineRoutes } from "./routes/engines.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
 import { ProjectFileAuthority, registerProjectFileRoutes } from "./routes/project-files.js";
 import { registerTriggerRoutes } from "./routes/triggers.js";
@@ -1984,6 +1984,50 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       return Promise.resolve({ ...cached.value, refreshing: true });
     }
     return operation;
+  };
+  const validateEngineModel = async (
+    project: { id: string; hostPath: string },
+    adapter: Adapter,
+    modelId: string,
+  ): Promise<EngineModelValidationDto> => {
+    const authority: ModelCatalogDiscoveryAuthority = {
+      projectId: project.id,
+      engineId: adapter.id,
+      key: `validation\0${project.id}\0${adapter.id}\0${randomUUID()}`,
+      controller: new AbortController(),
+      processes: new Set(),
+      settled: false,
+    };
+    engineModelCatalogDiscoveryAuthorities.add(authority);
+    const registerProcess = (handle: RuntimeProcessHandle): void => {
+      const state: CapabilityDiscoveryProcess = { handle };
+      authority.processes.add(state);
+      if (closed || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
+        void closeCapabilityDiscoveryProcess(state).catch((error) => {
+          app.log.error(
+            { err: error, projectId: project.id, engineId: adapter.id },
+            "late model-validation cleanup remains pending",
+          );
+        });
+      }
+    };
+    const operation = adapter.validateModel!(project.hostPath, modelId, {
+      signal: authority.controller.signal,
+      onRuntimeSpawned: registerProcess,
+    });
+    authority.operation = operation;
+    try {
+      return await operation;
+    } catch (error) {
+      return {
+        valid: false,
+        errorCode: "provider_error",
+        error: error instanceof Error ? error.message : "Claude model validation failed",
+      };
+    } finally {
+      authority.settled = true;
+      await closeModelCatalogDiscoveryAuthority(authority);
+    }
   };
   const markEngineModelUnavailable = (
     project: { id: string; hostPath: string },
@@ -12520,217 +12564,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   registerLegacyWorkspaceRoutes(app, serverContext);
 
-  app.get("/api/engines", async (): Promise<EngineDto[]> => {
-    return Promise.all(Array.from(engines.values()).map(engineDto));
+  registerEngineRoutes(app, {
+    engines,
+    store,
+    workspace,
+    engineDto,
+    providerUsageCenter,
+    providerUsageState,
+    publishWorkspaceSince,
+    notifyScheduler: () => coordinationV3Scheduler.notify(),
+    authStatuses: engineAuthStatuses,
+    availability: engineAvailability,
+    createOperationalNotification,
+    resolveOperationalNotification,
+    projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
+    discoverModelCatalog: discoverEngineModelCatalog,
+    validateModel: validateEngineModel,
+    runtimeSession: (agentId) => activeRuns.get(agentId)?.runtimeSession ?? reusableRuntime(agentId)?.session,
+    discoverCapabilities: discoverEngineCapabilities,
   });
-
-  app.get<{ Querystring: { refresh?: string } }>(
-    "/api/provider-usage",
-    async (request, reply): Promise<ProviderUsageCenterDto | FastifyReply> => {
-      if (request.query.refresh !== undefined && request.query.refresh !== "stale") {
-        return reply.code(400).send({ error: "refresh must be stale when provided" });
-      }
-      return providerUsageCenter(request.query.refresh === "stale" ? "stale" : "none");
-    },
-  );
-
-  app.post<{ Params: { id: string } }>(
-    "/api/provider-usage/:id/refresh",
-    async (request, reply): Promise<ProviderUsageStateDto | FastifyReply> => {
-      const registration = engines.get(request.params.id);
-      if (!registration) return reply.code(404).send({ error: "unknown engine" });
-      if (!registration.adapter.readProviderUsage) {
-        return reply.code(409).send({ error: "this provider does not expose subscription usage" });
-      }
-      return providerUsageState(registration, "force");
-    },
-  );
-
-  app.get<{ Params: { id: string }; Querystring: { refresh?: string } }>(
-    "/api/agents/:id/provider-usage",
-    async (request, reply): Promise<ProviderUsageStateDto | FastifyReply> => {
-      const agent = store.getAgent(request.params.id);
-      if (!agent) return reply.code(404).send({ error: "agent not found" });
-      const registration = engines.get(agent.activeEngine);
-      if (!registration?.adapter.readProviderUsage) {
-        return reply.code(409).send({ error: "this provider does not expose subscription usage" });
-      }
-      if (request.query.refresh !== undefined && request.query.refresh !== "stale") {
-        return reply.code(400).send({ error: "refresh must be stale when provided" });
-      }
-      return providerUsageState(
-        registration,
-        request.query.refresh === "stale" ? "stale" : "none",
-      );
-    },
-  );
-
-  app.patch<{ Params: { id: string }; Body: { enabled?: boolean } }>("/api/engines/:id", async (request, reply) => {
-    const registration = engines.get(request.params.id);
-    if (!registration) return reply.code(404).send({ error: "unknown engine" });
-    if (typeof request.body?.enabled !== "boolean") return reply.code(400).send({ error: "enabled must be a boolean" });
-    const cursor = workspace.cursor();
-    workspace.updatePreferences({
-      providerAvailability: { ...workspace.getPreferences().providerAvailability, [request.params.id]: request.body.enabled },
-    });
-    publishWorkspaceSince(cursor);
-    if (request.body.enabled) coordinationV3Scheduler.notify();
-    return engineDto(registration);
-  });
-
-  app.post<{ Params: { id: string } }>("/api/engines/:id/recheck", async (request, reply) => {
-    const registration = engines.get(request.params.id);
-    if (!registration) return reply.code(404).send({ error: "unknown engine" });
-    engineAuthStatuses.invalidate(request.params.id);
-    const auth = registration.authStatus
-      ? await engineAuthStatuses.get(request.params.id, registration.authStatus)
-      : { authenticated: true };
-    if (!auth.authenticated) return engineDto(registration);
-    if (!registration.availabilityProbe) {
-      return reply.code(409).send({ error: "this runtime does not provide an entitlement probe" });
-    }
-    let result: EngineAvailabilityStatus;
-    try {
-      result = await registration.availabilityProbe();
-    } catch (error) {
-      result = { available: false, detail: error instanceof Error ? error.message : String(error) };
-    }
-    engineAvailability.record({
-      engineId: request.params.id,
-      available: result.available,
-      ...(result.detail ? { detail: result.detail } : {}),
-      source: "operator_probe",
-    });
-    if (result.available) {
-      resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
-      coordinationV3Scheduler.notify();
-    } else createOperationalNotification({
-      dedupeKey: `provider:${request.params.id}:unavailable`,
-      category: "provider",
-      severity: "attention",
-      title: `${registration.adapter.displayName} is unavailable`,
-      body: result.detail ?? "The provider rejected the explicit access test. Queued work remains held.",
-      action: { kind: "open_settings", targetId: request.params.id },
-    });
-    return engineDto(registration);
-  });
-
-  app.get<{
-    Params: { id: string; engineId: string };
-    Querystring: { refresh?: string };
-  }>("/api/projects/:id/engine-models/:engineId", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    const registration = engines.get(request.params.engineId);
-    if (!registration) return reply.code(404).send({ error: "unknown engine" });
-    if (!registration.adapter.discoverModelCatalog) {
-      return reply.code(404).send({ error: "this engine does not provide model discovery" });
-    }
-    try {
-      return await discoverEngineModelCatalog(
-        project,
-        registration.adapter,
-        request.query.refresh === "true" || request.query.refresh === "1",
-      );
-    } catch (error) {
-      return reply.code(503).send({
-        error: error instanceof Error ? error.message : "model discovery failed",
-      });
-    }
-  });
-
-  app.post<{
-    Params: { id: string; engineId: string };
-    Body: { modelId?: string };
-  }>("/api/projects/:id/engine-models/:engineId/validate", async (request, reply): Promise<EngineModelValidationDto | FastifyReply> => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    const registration = engines.get(request.params.engineId);
-    if (!registration) return reply.code(404).send({ error: "unknown engine" });
-    if (!registration.adapter.validateModel) {
-      return reply.code(404).send({ error: "this engine does not provide model validation" });
-    }
-    const modelId = request.body?.modelId?.trim() ?? "";
-    if (!modelId || modelId.length > 200) {
-      return reply.code(400).send({ error: "modelId must be a non-empty string of at most 200 characters" });
-    }
-    const authority: ModelCatalogDiscoveryAuthority = {
-      projectId: project.id,
-      engineId: registration.adapter.id,
-      key: `validation\0${project.id}\0${registration.adapter.id}\0${randomUUID()}`,
-      controller: new AbortController(),
-      processes: new Set(),
-      settled: false,
-    };
-    engineModelCatalogDiscoveryAuthorities.add(authority);
-    const registerProcess = (handle: RuntimeProcessHandle): void => {
-      const state: CapabilityDiscoveryProcess = { handle };
-      authority.processes.add(state);
-      if (closed || deletingProjectIds.has(project.id) || authority.controller.signal.aborted) {
-        void closeCapabilityDiscoveryProcess(state).catch((error) => {
-          app.log.error({ err: error, projectId: project.id, engineId: registration.adapter.id }, "late model-validation cleanup remains pending");
-        });
-      }
-    };
-    const operation = registration.adapter.validateModel(project.hostPath, modelId, {
-      signal: authority.controller.signal,
-      onRuntimeSpawned: registerProcess,
-    });
-    authority.operation = operation;
-    try {
-      return await operation;
-    } catch (error) {
-      return {
-        valid: false,
-        errorCode: "provider_error",
-        error: error instanceof Error ? error.message : "Claude model validation failed",
-      };
-    } finally {
-      authority.settled = true;
-      await closeModelCatalogDiscoveryAuthority(authority);
-    }
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { engineId?: string; model?: string; agentId?: string; refresh?: string } }>(
-    "/api/projects/:id/engine-capabilities",
-    async (request, reply): Promise<ProjectEngineCapabilitiesDto[] | FastifyReply> => {
-      const project = store.getProject(request.params.id);
-      if (!project) return reply.code(404).send({ error: "project not found" });
-      if (deletingProjectIds.has(project.id)) return reply.code(409).send({ error: "Project deletion is in progress" });
-      const scopedAgent = request.query.agentId ? store.getAgent(request.query.agentId) : undefined;
-      if (request.query.agentId && (!scopedAgent || scopedAgent.projectId !== project.id)) {
-        return reply.code(404).send({ error: "agent not found in project" });
-      }
-      if (request.query.engineId && !engines.has(request.query.engineId)) {
-        return reply.code(400).send({ error: "unknown engine" });
-      }
-      const forceRefresh = request.query.refresh === "true" || request.query.refresh === "1";
-      return Promise.all([...engines.values()].map(async ({ adapter }) => {
-        const selectedModel = adapter.id === request.query.engineId || adapter.id === scopedAgent?.activeEngine
-          ? request.query.model?.trim() || undefined
-          : undefined;
-        const liveSession = scopedAgent?.activeEngine === adapter.id
-          ? activeRuns.get(scopedAgent.id)?.runtimeSession ?? reusableRuntime(scopedAgent.id)?.session
-          : undefined;
-        const capabilities = liveSession?.capabilities
-          ? await liveSession.capabilities()
-          : await discoverEngineCapabilities(
-            project.id,
-            project.hostPath,
-            adapter,
-            selectedModel,
-            forceRefresh,
-          );
-        return {
-          engineId: adapter.id,
-          ...capabilities,
-          commands: capabilities.commands,
-        };
-      }));
-    },
-  );
 
   if (opts.webDist) {
     app.get("/*", async (request, reply) => {
