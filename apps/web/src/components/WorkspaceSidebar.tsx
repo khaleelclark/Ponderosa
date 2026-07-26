@@ -32,8 +32,6 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import {
@@ -42,11 +40,6 @@ import {
   useProjectConversations,
 } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
-import {
-  routeInitialSidebarSection,
-  routeSynchronizedSidebarSection,
-  type RouteSidebarSection,
-} from "../routeRegistry";
 import type { Route } from "../routing";
 import {
   reorderStableIds,
@@ -63,10 +56,7 @@ import {
   type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
-import {
-  ResourceContextMenu,
-  type ResourceContextMenuState,
-} from "./ResourceContextMenu";
+import { ResourceContextMenu } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
 import {
   SIDEBAR_PANEL_WIDTH,
@@ -81,6 +71,10 @@ import {
   SharedSidebarPanel,
   SidebarSectionHeading,
 } from "./WorkspaceSidebar.parts";
+import {
+  useWorkspaceSidebarNavigation,
+  useWorkspaceSidebarResize,
+} from "./useWorkspaceSidebarState";
 
 export function WorkspaceSidebar({
   projects,
@@ -133,33 +127,17 @@ export function WorkspaceSidebar({
     healthQueries.map(query => query.data),
   );
   const counts = workspaceCounts(snapshots, notifications);
-  const [sidebarSection, setSidebarSection] =
-    useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
-  const [filter, setFilter] = useState("");
-  const [draggedResource, setDraggedResource] = useState<{
-    kind: "home" | "chat" | "agent" | "trigger";
-    id: string;
-  }>();
-  type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
-  const [menu, setMenu] =
-    useState<ResourceContextMenuState<SidebarMenuResource>>();
-  const openResourceMenu = (
-    anchor: HTMLElement,
-    route: Route,
-    conversation?: ConversationDto,
-  ) =>
-    setMenu({
-      anchor,
-      resource: { route, ...(conversation ? { conversation } : {}) },
-    });
-  useEffect(() => {
-    // Directory workplaces are destinations, not sidebar-section commands.
-    // Keep the operator's current panel, filter, and scroll state when one opens.
-    const section = routeSynchronizedSidebarSection(route);
-    if (!section) return;
-    setSidebarSection(section);
-    setFilter("");
-  }, [route.kind]);
+  const {
+    sidebarSection,
+    setSidebarSection,
+    filter,
+    setFilter,
+    draggedResource,
+    setDraggedResource,
+    menu,
+    setMenu,
+    openResourceMenu,
+  } = useWorkspaceSidebarNavigation(route);
 
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const showingAgents = sidebarSection === "agents";
@@ -1321,27 +1299,10 @@ export function WorkspaceSidebar({
             : showingProjects
               ? projectsPanel
               : homePanel;
-  const [resizing, setResizing] = useState(false);
-  const resizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!onWidthChange) return;
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = width;
-    setResizing(true);
-    const move = (next: PointerEvent) =>
-      onWidthChange(
-        clampWorkspaceSidebarWidth(startWidth + next.clientX - startX),
-      );
-    const stop = () => {
-      setResizing(false);
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-    window.addEventListener("pointercancel", stop);
-  };
+  const { resizing, resizeStart } = useWorkspaceSidebarResize(
+    width,
+    onWidthChange,
+  );
 
   return (
     <Box
