@@ -1,25 +1,9 @@
-import AddIcon from "@mui/icons-material/Add";
-import ArticleIcon from "@mui/icons-material/Article";
-import CloseIcon from "@mui/icons-material/Close";
 import {
-  Alert,
   Box,
-  Button,
-  Chip,
-  CircularProgress,
-  ClickAwayListener,
-  Divider,
-  IconButton,
-  MenuItem,
-  MenuList,
   Paper,
-  Popper,
   Stack,
-  TextField,
-  Tooltip,
-  Typography,
 } from "@mui/material";
-import { LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
+import { utf8ByteLength } from "@ponderosa/core";
 import type {
   ConversationDraftConflictDto,
   DraftAttachmentDto,
@@ -35,37 +19,32 @@ import { readChatState, writeChatState } from "../../chatState";
 import { createClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
-import {
-  compactPreviewText,
-  removeHandle,
-  replaceDestination,
-} from "./Composer.helpers";
+import { removeHandle, replaceDestination } from "./Composer.helpers";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
   ComposerGuidance,
-  ComposerMentionStatus,
   ComposerSendActions,
 } from "./Composer.parts";
 import {
-  COMPOSER_MAX_FILE_BYTES,
-  COMPOSER_MAX_FILES,
+  ComposerAutocompleteMenu,
+  ComposerCapabilityPicker,
+  ComposerNotices,
+  ComposerTextInput,
+  type ComposerMenuSuggestion,
+} from "./Composer.controls";
+import {
   canSubmitComposerText,
   composerAttachmentReducer,
-  composerCapabilityDisabledReason,
   composerSubmissionText,
   engineCommandDisabledReason,
-  filesFromClipboard,
   insertComposerCapability,
   matchingComposerCapabilities,
   matchingEngineCommands,
   providerSlashSubmission,
   selectComposerFiles,
-  shouldExtractLongPaste,
-  shouldIgnoreComposerKey,
-  shouldSendComposerKey,
   shouldShowQueueControl,
 } from "./composerUtils";
 import {
@@ -74,6 +53,7 @@ import {
   useComposerInsertTextRequest,
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
+import { composerSurfaceSx } from "./Composer.styles";
 
 export type { ComposerProps } from "./Composer.types";
 
@@ -648,7 +628,7 @@ export function Composer({
     slashMatch && commands
       ? matchingEngineCommands(commands, slashMatch[1]!)
       : [];
-  const menuSuggestions =
+  const menuSuggestions: ComposerMenuSuggestion[] =
     commandSuggestions.length > 0
       ? commandSuggestions.map(command => ({
           kind: "command" as const,
@@ -842,33 +822,7 @@ export function Composer({
     <Paper
       className="ponderosa-composer"
       elevation={0}
-      sx={{
-        position: "relative",
-        zIndex: 3,
-        border: 1,
-        borderColor: "divider",
-        borderRadius: { xs: 2, sm: 2.25 },
-        width: {
-          xs: "calc(100% - 16px)",
-          sm: "calc(100% - 32px)",
-          md: "min(1180px, calc(100% - 48px))",
-          xl: "min(1240px, calc(100% - 64px))",
-        },
-        mx: "auto",
-        mt: { xs: 0.75, sm: 1 },
-        mb: { xs: 1, sm: 1.5 },
-        minWidth: 0,
-        maxWidth: "100%",
-        overflow: "hidden",
-        bgcolor: "background.paper",
-        px: { xs: 1, sm: 1.5 },
-        pt: { xs: 1, sm: 1.25 },
-        pb: "max(10px, env(safe-area-inset-bottom))",
-        boxShadow: theme =>
-          theme.palette.mode === "dark"
-            ? "0 10px 30px rgba(3,8,6,.18)"
-            : "0 10px 30px rgba(33,45,38,.09)",
-      }}
+      sx={composerSurfaceSx}
     >
       <ComposerGuidance guidance={guidance} />
       <ComposerDestinationBar
@@ -892,286 +846,55 @@ export function Composer({
         removeFile={removeFile}
         retryDraftUpload={retryDraftUpload}
       />
-      {pastedText ? (
-        <Paper
-          variant="outlined"
-          sx={{
-            mb: 1,
-            px: 1,
-            py: 0.75,
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-            maxWidth: 360,
-          }}
-        >
-          <ArticleIcon color="action" fontSize="small" />
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography variant="body2" noWrap>
-              Pasted text
-            </Typography>
-            <Button
-              size="small"
-              sx={{ p: 0, minWidth: 0, textTransform: "none" }}
-              onClick={() => {
-                update(composerSubmissionText(text, pastedText));
-                setPastedText(undefined);
-                requestAnimationFrame(() => inputRef.current?.focus());
-              }}
-            >
-              Show in Text Field
-            </Button>
-          </Box>
-          <Typography variant="caption" color="text.secondary">
-            {utf8ByteLength(pastedText).toLocaleString()} bytes
-          </Typography>
-          <IconButton
-            size="small"
-            aria-label="Remove pasted text"
-            onClick={() => setPastedText(undefined)}
-          >
-            <CloseIcon fontSize="small" />
-          </IconButton>
-        </Paper>
-      ) : null}
-      {(attachments.error ?? sendError) ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
-          Message not sent. {attachments.error ?? sendError}
-        </Alert>
-      ) : null}
-      {draftConflict ? (
-        <Alert
-          severity="warning"
-          sx={{ mb: 1 }}
-          action={
-            <Button
-              size="small"
-              onClick={() => {
-                update(draftConflict.displaced.text);
-                setDraftConflict(undefined);
-                inputRef.current?.focus();
-              }}
-            >
-              Restore
-            </Button>
-          }
-        >
-          This chat changed in another tab. Your displaced draft is preserved: “
-          {compactPreviewText(draftConflict.displaced.text)}”
-        </Alert>
-      ) : null}
+      <ComposerNotices
+        pastedText={pastedText}
+        pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
+        error={attachments.error ?? sendError}
+        displacedDraft={draftConflict?.displaced.text}
+        onShowPastedText={() => {
+          update(composerSubmissionText(text, pastedText ?? ""));
+          setPastedText(undefined);
+          requestAnimationFrame(() => inputRef.current?.focus());
+        }}
+        onRemovePastedText={() => setPastedText(undefined)}
+        onRestoreDraft={() => {
+          if (!draftConflict) return;
+          update(draftConflict.displaced.text);
+          setDraftConflict(undefined);
+          inputRef.current?.focus();
+        }}
+      />
       <Stack
         direction="row"
         spacing={{ xs: 0.25, sm: 0.5 }}
         useFlexGap
         sx={{ alignItems: "center", flexWrap: "wrap" }}
       >
-        <input
-          ref={fileInput}
-          hidden
-          type="file"
-          accept="image/png,image/jpeg,image/webp,application/pdf,text/plain,application/json,application/zip,.txt,.md,.csv,.log,.json,.zip,.pdf"
-          multiple
-          onChange={event => {
-            addFiles(Array.from(event.target.files ?? []));
-            event.target.value = "";
+        <ComposerCapabilityPicker
+          fileInput={fileInput}
+          disabled={disabled || composerLocked}
+          menuAnchor={capabilityMenuAnchor}
+          listId={capabilityListId}
+          filter={capabilityFilter}
+          attachmentsEnabled={attachmentsEnabled}
+          attachmentsUnavailableReason={attachmentsUnavailableReason}
+          fileCount={files.length}
+          assetLimits={assetLimits}
+          capabilities={capabilities}
+          visibleCapabilities={visibleCapabilities}
+          onFiles={addFiles}
+          onOpen={anchor => {
+            setCapabilityFilter("");
+            setCapabilityMenuAnchor(anchor);
+            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
           }}
+          onClose={() => {
+            setCapabilityMenuAnchor(null);
+            setCapabilityFilter("");
+          }}
+          onFilterChange={setCapabilityFilter}
+          onApplyCapability={applyCapability}
         />
-        <Tooltip title="Add an image, file, skill, plugin, or connector">
-          <span>
-            <IconButton
-              aria-label="Add attachment or capability"
-              aria-haspopup="menu"
-              aria-expanded={Boolean(capabilityMenuAnchor)}
-              aria-controls={
-                capabilityMenuAnchor ? capabilityListId : undefined
-              }
-              disabled={disabled || composerLocked}
-              onClick={event => {
-                setCapabilityFilter("");
-                setCapabilityMenuAnchor(event.currentTarget);
-                void Promise.resolve(onCapabilitiesOpen?.()).catch(
-                  () => undefined,
-                );
-              }}
-            >
-              <AddIcon />
-            </IconButton>
-          </span>
-        </Tooltip>
-        <Popper
-          open={Boolean(capabilityMenuAnchor)}
-          anchorEl={capabilityMenuAnchor}
-          placement="top-start"
-          style={{ zIndex: 1400 }}
-        >
-          <ClickAwayListener
-            onClickAway={() => {
-              setCapabilityMenuAnchor(null);
-              setCapabilityFilter("");
-            }}
-          >
-            <Paper
-              elevation={5}
-              sx={{
-                mb: 0.5,
-                width: "min(420px, calc(100vw - 24px))",
-                maxHeight: "min(52vh, 390px)",
-                overflow: "hidden",
-              }}
-            >
-              <Box sx={{ p: 1, borderBottom: 1, borderColor: "divider" }}>
-                <TextField
-                  autoFocus
-                  fullWidth
-                  size="small"
-                  value={capabilityFilter}
-                  onChange={event => setCapabilityFilter(event.target.value)}
-                  placeholder="Find a skill, plugin, or connector"
-                  inputProps={{ "aria-label": "Filter runtime capabilities" }}
-                />
-              </Box>
-              <MenuList
-                dense
-                id={capabilityListId}
-                aria-label="Add attachment or runtime capability"
-                sx={{
-                  maxHeight: "min(38vh, 300px)",
-                  overflowY: "auto",
-                  overscrollBehavior: "contain",
-                }}
-              >
-                <MenuItem
-                  disabled={
-                    !attachmentsEnabled ||
-                    files.length >=
-                      (assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES)
-                  }
-                  onClick={() => {
-                    setCapabilityMenuAnchor(null);
-                    fileInput.current?.click();
-                  }}
-                  sx={{
-                    whiteSpace: "normal",
-                    alignItems: "flex-start",
-                    minHeight: 54,
-                  }}
-                >
-                  <Box>
-                    <Typography variant="body2">
-                      Upload image or file
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {!attachmentsEnabled
-                        ? (attachmentsUnavailableReason ??
-                          "Attachments are not supported in this chat.")
-                        : files.length >=
-                            (assetLimits?.maxAssetsPerMessage ??
-                              COMPOSER_MAX_FILES)
-                          ? "Remove an attachment before adding another."
-                          : `Up to ${assetLimits?.maxAssetsPerMessage ?? COMPOSER_MAX_FILES} PNG, JPEG, WebP, PDF, text, JSON, or ZIP files · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
-                    </Typography>
-                  </Box>
-                </MenuItem>
-                <Divider />
-                {(capabilities ?? []).length === 0 ? (
-                  <MenuItem disabled sx={{ whiteSpace: "normal" }}>
-                    <Typography variant="caption">
-                      No runtime skills, plugins, or connectors are currently
-                      available.
-                    </Typography>
-                  </MenuItem>
-                ) : visibleCapabilities.length === 0 ? (
-                  <MenuItem disabled>
-                    <Typography variant="caption">
-                      No capabilities match “{capabilityFilter.trim()}”.
-                    </Typography>
-                  </MenuItem>
-                ) : (
-                  visibleCapabilities.map(capability => {
-                    const reason = composerCapabilityDisabledReason(capability);
-                    const automatic =
-                      capability.status === "available" &&
-                      !capability.insertText;
-                    return (
-                      <MenuItem
-                        key={capability.id}
-                        disabled={Boolean(reason)}
-                        onClick={() => applyCapability(capability)}
-                        sx={{
-                          whiteSpace: "normal",
-                          alignItems: "flex-start",
-                          minHeight: 58,
-                          py: 0.75,
-                          ...(automatic
-                            ? {
-                                "&.Mui-disabled": {
-                                  opacity: 1,
-                                  cursor: "default",
-                                },
-                              }
-                            : {}),
-                        }}
-                      >
-                        <Box sx={{ minWidth: 0, width: "100%" }}>
-                          <Stack
-                            direction="row"
-                            spacing={0.75}
-                            sx={{ alignItems: "center", minWidth: 0 }}
-                          >
-                            <Typography
-                              variant="body2"
-                              noWrap
-                              sx={{
-                                flex: 1,
-                                fontWeight: 650,
-                                color: automatic ? "text.primary" : undefined,
-                              }}
-                            >
-                              {capability.label}
-                            </Typography>
-                            <Chip
-                              size="small"
-                              variant="outlined"
-                              color={automatic ? "success" : "default"}
-                              label={capability.kind}
-                            />
-                          </Stack>
-                          <Typography
-                            variant="caption"
-                            color="text.secondary"
-                            sx={{
-                              display: "-webkit-box",
-                              WebkitLineClamp: 2,
-                              WebkitBoxOrient: "vertical",
-                              overflow: "hidden",
-                              overflowWrap: "anywhere",
-                              lineHeight: 1.35,
-                            }}
-                          >
-                            {capability.description}
-                          </Typography>
-                          {reason ? (
-                            <Typography
-                              variant="caption"
-                              color={
-                                automatic ? "text.secondary" : "text.disabled"
-                              }
-                              noWrap
-                              sx={{ display: "block" }}
-                            >
-                              {reason}
-                            </Typography>
-                          ) : null}
-                        </Box>
-                      </MenuItem>
-                    );
-                  })
-                )}
-              </MenuList>
-            </Paper>
-          </ClickAwayListener>
-        </Popper>
         <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
         {controls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>
@@ -1179,276 +902,60 @@ export function Composer({
           </Box>
         ) : null}
         <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
-          <TextField
-            fullWidth
-            multiline
-            variant="standard"
-            minRows={1}
-            maxRows={5}
-            sx={{
-              "& .MuiInputBase-root": {
-                alignItems: "flex-end",
-                bgcolor: "transparent",
-                px: 0.25,
-                pb: 0.5,
-              },
-              "& textarea": {
-                fontSize: 15,
-                lineHeight: "22px",
-                maxHeight: "110px !important",
-                overflowY: "auto !important",
-              },
-            }}
-            InputProps={{ disableUnderline: true }}
-            value={text}
+          <ComposerTextInput
+            text={text}
             inputRef={inputRef}
-            disabled={disabled || composerLocked}
-            placeholder={
-              composerLocked
-                ? "Agent is working"
-                : (placeholder ?? "Send a message")
-            }
-            inputProps={{
-              "aria-label": "Message",
-              enterKeyHint: "send",
-              role:
-                mentionHandles || commands?.length || projectId
-                  ? "combobox"
-                  : undefined,
-              "aria-autocomplete":
-                mentionHandles || commands?.length || projectId
-                  ? "list"
-                  : undefined,
-              "aria-expanded":
-                mentionHandles || commands?.length || projectId
-                  ? menuOpen
-                  : undefined,
-              "aria-controls": menuOpen ? mentionListId : undefined,
-              "aria-activedescendant": menuOpen
-                ? `${mentionListId}-option-${highlighted}`
-                : undefined,
-            }}
-            onChange={event => {
-              update(event.target.value);
-              setCaret(
-                event.target.selectionStart ?? event.target.value.length,
-              );
+            disabled={disabled}
+            locked={composerLocked}
+            placeholder={placeholder}
+            comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
+            menuOpen={menuOpen}
+            listId={mentionListId}
+            highlighted={highlighted}
+            attachmentsEnabled={attachmentsEnabled}
+            pastedText={pastedText}
+            menuSuggestions={menuSuggestions}
+            destinationMode={destinationMode}
+            requiredRecipient={requiredRecipient}
+            mentionedBusyHandles={mentionedBusyHandles}
+            mentionedHandles={mentionedHandles}
+            canSend={canSend}
+            onTextChange={(value, nextCaret) => {
+              update(value);
+              setCaret(nextCaret);
               setHighlighted(0);
               setSuppressMenu(false);
             }}
-            onPaste={event => {
-              if (disabled || composerLocked) return;
-              if (attachmentsEnabled) {
-                const pasted = filesFromClipboard(
-                  event.clipboardData.items,
-                  event.clipboardData.files,
-                );
-                if (pasted.length > 0) {
-                  event.preventDefault();
-                  addFiles(pasted);
-                  return;
-                }
-              }
-              const pasted = event.clipboardData.getData("text/plain");
-              if (!shouldExtractLongPaste(pasted)) return;
-              event.preventDefault();
-              const combined = composerSubmissionText(pastedText ?? "", pasted);
-              if (utf8ByteLength(combined) > LONG_TEXT_MAX_UTF8_BYTES) {
-                setSendError("Pasted text exceeds the 8 MiB limit.");
-                return;
-              }
-              setPastedText(combined);
+            onFiles={addFiles}
+            onPastedText={value => {
+              setPastedText(value);
               setSendError(undefined);
             }}
-            onClick={event =>
-              setCaret(
-                (event.target as HTMLTextAreaElement).selectionStart ?? 0,
-              )
-            }
-            onKeyUp={event =>
-              setCaret(
-                (event.target as HTMLTextAreaElement).selectionStart ?? 0,
-              )
-            }
-            onKeyDown={event => {
-              if (
-                shouldIgnoreComposerKey({
-                  key: event.key,
-                  isComposing: event.nativeEvent.isComposing,
-                })
-              ) {
-                return;
-              }
-              if (menuOpen && event.key === "ArrowDown") {
-                event.preventDefault();
-                setHighlighted(index => (index + 1) % menuSuggestions.length);
-                return;
-              }
-              if (menuOpen && event.key === "ArrowUp") {
-                event.preventDefault();
-                setHighlighted(
-                  index =>
-                    (index - 1 + menuSuggestions.length) %
-                    menuSuggestions.length,
-                );
-                return;
-              }
-              if (
-                menuOpen &&
-                (event.key === "Enter" || event.key === "Tab") &&
-                !event.metaKey &&
-                !event.ctrlKey
-              ) {
-                event.preventDefault();
-                const selected = menuSuggestions[highlighted]!;
-                if (selected.kind === "mention") applyMention(selected.handle);
-                else if (selected.kind === "file")
-                  applyFileReference(selected.entry);
-                else applyCommand(selected.command);
-                return;
-              }
-              if (menuOpen && event.key === "Escape") {
-                event.preventDefault();
-                setSuppressMenu(true);
-                return;
-              }
-              if (
-                event.key === "Escape" &&
-                destinationMode === "target-required" &&
-                requiredRecipient
-              ) {
-                event.preventDefault();
-                clearRequiredRecipient();
-                return;
-              }
-              if (
-                shouldSendComposerKey({
-                  key: event.key,
-                  shiftKey: event.shiftKey,
-                  isComposing: event.nativeEvent.isComposing,
-                  repeat: event.repeat,
-                }) &&
-                canSend
-              ) {
-                event.preventDefault();
-                send();
-              }
+            onPasteError={setSendError}
+            onCaretChange={setCaret}
+            onHighlightChange={setHighlighted}
+            onSuppressMenu={() => setSuppressMenu(true)}
+            onApplySuggestion={selected => {
+              if (selected.kind === "mention") applyMention(selected.handle);
+              else if (selected.kind === "file") applyFileReference(selected.entry);
+              else applyCommand(selected.command);
+            }}
+            onClearRequiredRecipient={clearRequiredRecipient}
+            onSend={send}
+          />
+          <ComposerAutocompleteMenu
+            open={menuOpen}
+            anchor={anchorRef.current}
+            listId={mentionListId}
+            suggestions={menuSuggestions}
+            highlighted={highlighted}
+            onDismiss={() => setSuppressMenu(true)}
+            onSelect={selected => {
+              if (selected.kind === "mention") applyMention(selected.handle);
+              else if (selected.kind === "file") applyFileReference(selected.entry);
+              else applyCommand(selected.command);
             }}
           />
-          <ComposerMentionStatus
-            destinationMode={destinationMode}
-            mentionedBusyHandles={mentionedBusyHandles}
-            mentionedHandles={mentionedHandles}
-          />
-          <Popper
-            open={menuOpen}
-            anchorEl={anchorRef.current}
-            placement="top-start"
-            style={{ zIndex: 1400 }}
-          >
-            <ClickAwayListener onClickAway={() => setSuppressMenu(true)}>
-              <Paper
-                elevation={4}
-                sx={{
-                  mb: 0.5,
-                  minWidth: 180,
-                  maxWidth: "min(720px, calc(100vw - 24px))",
-                }}
-              >
-                <MenuList
-                  dense
-                  id={mentionListId}
-                  role="listbox"
-                  aria-label={
-                    commandSuggestions.length
-                      ? "Commands"
-                      : suggestions.length
-                        ? "Agent tags"
-                        : "Project files and folders"
-                  }
-                  sx={{
-                    maxHeight: "min(40vh, 360px)",
-                    overflowY: "auto",
-                    overscrollBehavior: "contain",
-                  }}
-                >
-                  {menuSuggestions.map((suggestion, index) =>
-                    (() => {
-                      const commandReason =
-                        suggestion.kind === "command"
-                          ? engineCommandDisabledReason(suggestion.command)
-                          : undefined;
-                      return (
-                        <MenuItem
-                          key={
-                            suggestion.kind === "mention"
-                              ? suggestion.handle
-                              : suggestion.kind === "file"
-                                ? suggestion.entry.path
-                                : suggestion.command.name
-                          }
-                          id={`${mentionListId}-option-${index}`}
-                          role="option"
-                          aria-selected={index === highlighted}
-                          selected={index === highlighted}
-                          disabled={Boolean(commandReason)}
-                          sx={{
-                            whiteSpace: "normal",
-                            alignItems: "flex-start",
-                          }}
-                          onMouseDown={event => {
-                            event.preventDefault();
-                            if (suggestion.kind === "mention")
-                              applyMention(suggestion.handle);
-                            else if (suggestion.kind === "file")
-                              applyFileReference(suggestion.entry);
-                            else applyCommand(suggestion.command);
-                          }}
-                        >
-                          {suggestion.kind === "mention" ? (
-                            `#${suggestion.handle}`
-                          ) : suggestion.kind === "file" ? (
-                            <Box>
-                              <Typography variant="body2">
-                                @{suggestion.entry.path}
-                                {suggestion.entry.kind === "dir" ? "/" : ""}
-                              </Typography>
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                              >
-                                {suggestion.entry.kind === "dir"
-                                  ? "Folder"
-                                  : "File"}
-                              </Typography>
-                            </Box>
-                          ) : (
-                            <Box sx={{ minWidth: 0 }}>
-                              <Typography variant="body2">
-                                {suggestion.command.insertText.trimEnd()}
-                              </Typography>
-                              <Typography
-                                variant="caption"
-                                color="text.secondary"
-                                sx={{
-                                  display: "block",
-                                  overflowWrap: "anywhere",
-                                }}
-                              >
-                                {suggestion.command.source} ·{" "}
-                                {commandReason ??
-                                  suggestion.command.description}
-                              </Typography>
-                            </Box>
-                          )}
-                        </MenuItem>
-                      );
-                    })(),
-                  )}
-                </MenuList>
-              </Paper>
-            </ClickAwayListener>
-          </Popper>
         </Box>
         <ComposerSendActions
           allowSendWhileRunning={allowSendWhileRunning}
