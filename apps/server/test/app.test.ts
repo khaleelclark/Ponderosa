@@ -391,6 +391,109 @@ describe("server public API behavior", () => {
     ]);
   });
 
+  it("exports template packages and validates imports before creating Agents", async () => {
+    const project = store.createProject({
+      label: "Portable",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const source = store.createAgent(project.id, {
+      title: "Source",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    store.setImportedHistory(source.id, "fixture", [{
+      role: "user",
+      text: "Private imported context",
+      createdAt: "2026-07-26T12:00:00.000Z",
+    }]);
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: true,
+        detail: "test override",
+      }),
+    });
+
+    const exported = await app.inject({
+      method: "GET",
+      url: `/api/agents/${source.id}/export?mode=template`,
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.json()).toMatchObject({
+      schema: "ponderosa.agent-package.v1",
+      mode: "template",
+      kind: "agent",
+      rootRef: source.id,
+      agents: [{
+        ref: source.id,
+        title: "Source",
+        engine: "codex",
+      }],
+    });
+    expect(exported.json<{ agents: Array<Record<string, unknown>> }>().agents[0])
+      .not.toHaveProperty("history");
+
+    const portablePackage = {
+      schema: "ponderosa.agent-package.v1",
+      mode: "template",
+      kind: "agent",
+      exportedAt: "2026-07-26T12:00:00.000Z",
+      sourceLabel: "Fixture / Imported",
+      rootRef: "import-root",
+      agents: [{
+        ref: "import-root",
+        title: "Imported",
+        engine: "source-engine",
+        managementPermissions: {
+          allowAutomaticDescendantDeletion: false,
+          allowAutomaticDescendantReorganization: false,
+        },
+      }],
+    };
+    const before = store.listAgents(project.id).length;
+    const missingMapping = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload: {
+        conversationId: project.lastConversationId,
+        engineMapping: {},
+        package: portablePackage,
+      },
+    });
+    expect(missingMapping.statusCode).toBe(409);
+    expect(missingMapping.json()).toEqual({
+      error: "explicit engine mapping is required",
+      requiredEngines: ["source-engine"],
+    });
+    expect(store.listAgents(project.id)).toHaveLength(before);
+
+    const imported = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/import-agents`,
+      payload: {
+        conversationId: project.lastConversationId,
+        engineMapping: { "source-engine": "codex" },
+        package: portablePackage,
+      },
+    });
+    expect(imported.statusCode, imported.body).toBe(201);
+    const response = imported.json<{
+      rootAgentId: string;
+      agentIds: string[];
+    }>();
+    expect(response.agentIds).toEqual([response.rootAgentId]);
+    expect(store.getAgent(response.rootAgentId)).toMatchObject({
+      projectId: project.id,
+      conversationId: project.lastConversationId,
+      title: "Imported",
+      activeEngine: "codex",
+    });
+  });
+
   it("publishes the Core attachment limits through both public routes", async () => {
     const app = server();
     const assetLimits = (await app.inject({
