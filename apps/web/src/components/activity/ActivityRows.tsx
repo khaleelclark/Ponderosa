@@ -30,6 +30,8 @@ import { ResponseFileActivity } from "./ResponseFileActivity";
 
 const ACTIVITY_TITLE_COLOR = "success.main";
 const ACTIVITY_TITLE_FONT_SIZE = 15;
+const RESPONSE_TITLE_FONT_SIZE = 16;
+const RUN_TITLE_FONT_SIZE = 17;
 type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
 
 export function ActivityElapsed({
@@ -92,8 +94,8 @@ export function RunHeaderRow({
     sx={{ mt: 3, pt: 1.5, pb: 0.75, borderTop: 2, borderColor: "divider" }}
   >
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".025em" }}>
-        <PlayCircleOutlineIcon fontSize="small" />
+      <Typography variant="subtitle1" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: RUN_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".015em" }}>
+        <PlayCircleOutlineIcon sx={{ fontSize: 20 }} />
         {entry.executionId
           ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
           : "Unscoped activity"}
@@ -146,8 +148,8 @@ export function CommandRow({
     </Stack>
     {entry.internal
       ? <Typography variant="body2" color="text.secondary">Sent a structured Ponderosa communication or managed-agent event.</Typography>
-      : <Box sx={{ mt: 0.5 }}>
-          <CollapsibleCode value={`$ ${entry.command}`} maxLines={2} fontSize={13.5} />
+      : <Box component="pre" sx={{ m: 0, mt: 0.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13.5, userSelect: "text" }}>
+          $ {entry.command}
         </Box>}
     {!entry.internal && entry.cwd && entry.cwd !== projectRoot ? <Typography variant="caption" color="text.secondary">
       cwd: {entry.cwd}
@@ -218,15 +220,7 @@ export function ActionGroupRow({
   </Box>;
 }
 
-function CollapsibleCode({
-  value,
-  maxLines,
-  fontSize = 12.5,
-}: {
-  value: string;
-  maxLines: number;
-  fontSize?: number;
-}): JSX.Element {
+function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
   const lines = value.split("\n");
   const collapsible = lines.length > maxLines || value.length > 700;
@@ -236,7 +230,7 @@ function CollapsibleCode({
       whiteSpace: "pre-wrap",
       overflowWrap: "anywhere",
       fontFamily: "monospace",
-      fontSize,
+      fontSize: 12.5,
       lineHeight: 1.45,
       ...(!expanded && collapsible ? {
         maxHeight: `${maxLines * 1.45}em`,
@@ -409,8 +403,8 @@ export function ResponseRow({
   projectId?: string;
 }): JSX.Element {
   return <Row entry={entry} focusId={focusId} stream="runOutput">
-    <Typography variant="caption" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.5, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
-      <EditOutlinedIcon fontSize="small" />
+    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, mb: 0.75, fontSize: RESPONSE_TITLE_FONT_SIZE, fontWeight: 800 }}>
+      <EditOutlinedIcon sx={{ fontSize: 19 }} />
       {entry.segment.completed ? "Response" : "Response · live"}
     </Typography>
     <RunOutputFullText
