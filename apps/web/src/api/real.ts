@@ -68,6 +68,7 @@ import type {
   LetCurrentRunFinishResponse,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
+  RunOutputTextDto,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
@@ -473,6 +474,9 @@ export const realApi = {
   },
   getActivityOutput(retrievalUrl: string, cursor?: string): Promise<AgentActivityOutputDto> {
     return requestJson(`${retrievalUrl}${toQuery({ cursor })}`);
+  },
+  getRunOutputText(retrievalUrl: string): Promise<RunOutputTextDto> {
+    return requestJson(retrievalUrl);
   },
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);

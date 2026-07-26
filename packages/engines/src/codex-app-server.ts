@@ -841,7 +841,12 @@ export function mapCodexAppServerNotification(
   const item = params?.item as Record<string, unknown> | undefined;
   if (!item || typeof item.type !== "string") return [];
   if (notification.method === "item/started" && item.type === "commandExecution") {
-    return typeof item.command === "string" ? [{ type: "command", command: item.command, cwd: typeof item.cwd === "string" ? item.cwd : cwd }] : [];
+    return typeof item.command === "string" ? [{
+      type: "command",
+      command: item.command,
+      cwd: typeof item.cwd === "string" ? item.cwd : cwd,
+      ...(typeof item.id === "string" ? { callId: item.id } : {}),
+    }] : [];
   }
   if (notification.method === "item/completed" && item.type === "commandExecution") {
     return [{
@@ -867,6 +872,7 @@ export function mapCodexAppServerNotification(
         path: value.path,
         kind: mapFileChangeKind(typeof value.kind === "string" ? value.kind : undefined),
         ...(typeof value.diff === "string" ? { diff: value.diff } : {}),
+        ...(typeof item.id === "string" ? { callId: item.id } : {}),
       }] : [];
     });
   }

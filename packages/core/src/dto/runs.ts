@@ -41,6 +41,13 @@ export interface AgentRunDto {
   startedAt: string;
   updatedAt: string;
   completedAt?: string;
+  /** Whole-Run activity totals, independent of the loaded telemetry window. */
+  activityCounts?: {
+    commands: number;
+    tools: number;
+    files: number;
+    errors: number;
+  };
   /** Hash and sources of the exact text Ponderosa submitted to the provider. */
   providerInput?: {
     promptHash: string;

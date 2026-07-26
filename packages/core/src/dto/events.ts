@@ -116,8 +116,23 @@ export interface RunOutputDto {
   sourceSeqStart: number;
   sourceSeqEnd: number;
   createdAt: string;
+  /** Present only when `text` is a bounded preview of a larger canonical segment. */
+  textPreview?: {
+    truncated: true;
+    previewUtf8Bytes: number;
+    totalUtf8Bytes: number;
+    retrievalUrl: string;
+  };
   /** Canonical file changes attributed to this exact Run, never a working-tree snapshot. */
   fileActivity?: ResponseFileActivityDto[];
+}
+
+export interface RunOutputTextDto {
+  agentId: string;
+  runOutputId: string;
+  seq: number;
+  text: string;
+  totalUtf8Bytes: number;
 }
 
 /**

@@ -34,7 +34,7 @@ import { agentMentionHandle } from "../mentions";
 import { mobileOperationalStatus } from "../mobileChat";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
-import { ResponseFileActivity } from "./activity/ActivityPane";
+import { ResponseFileActivity } from "./activity/ResponseFileActivity";
 import {
   ChatMessageBody,
   CommunicationDocumentCard,

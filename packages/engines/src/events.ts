@@ -183,7 +183,12 @@ function mapItemStarted(item: RawItem | undefined, ctx: CodexMapContext): AgentE
   switch (item.type) {
     case "command_execution": {
       const it = item as RawCommandExecution;
-      return [{ type: "command", command: it.command ?? "", cwd: ctx.cwd ?? "" }];
+      return [{
+        type: "command",
+        command: it.command ?? "",
+        cwd: ctx.cwd ?? "",
+        ...(it.id ? { callId: it.id } : {}),
+      }];
     }
     case "mcp_tool_call": {
       const it = item as RawMcpToolCall;
@@ -232,6 +237,7 @@ function mapItemCompleted(item: RawItem | undefined, _ctx: CodexMapContext): Age
         type: "file_change" as const,
         path: c.path ?? "",
         kind: mapFileChangeKind(c.kind),
+        ...(it.id ? { callId: it.id } : {}),
       }));
     }
     case "mcp_tool_call": {

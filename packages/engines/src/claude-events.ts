@@ -200,10 +200,10 @@ function mapAssistant(message: RawMessage | undefined, ctx: CodexMapContext): Ag
         const name = b.name ?? "";
         if (name === "Bash") {
           const command = String(b.input?.["command"] ?? "");
-          out.push({ type: "command", command, cwd: ctx.cwd ?? "" });
+          out.push({ type: "command", command, cwd: ctx.cwd ?? "", ...(b.id ? { callId: b.id } : {}) });
         } else if (FILE_TOOLS.has(name)) {
           const path = String(b.input?.["file_path"] ?? b.input?.["path"] ?? "");
-          out.push({ type: "file_change", path, kind: fileChangeKindForTool(name) });
+          out.push({ type: "file_change", path, kind: fileChangeKindForTool(name), ...(b.id ? { callId: b.id } : {}) });
         } else {
           out.push({
             type: "tool_call",
