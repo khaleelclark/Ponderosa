@@ -11864,14 +11864,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                     usage.usedTokens >= preferences.contextRolloverTokens;
                   const windowThreshold = usage?.windowTokens === undefined
                     ? undefined
-                    : usage.windowTokens * preferences.contextRolloverWindowFraction;
+                    : Math.max(
+                        75_000,
+                        usage.windowTokens * preferences.contextRolloverWindowFraction,
+                      );
                   const windowThresholdReached = usage !== undefined &&
                     windowThreshold !== undefined &&
                     usage.usedTokens >= windowThreshold;
+                  const effectiveThreshold = windowThreshold === undefined
+                    ? preferences.contextRolloverTokens
+                    : Math.min(preferences.contextRolloverTokens, windowThreshold);
                   if (usage && (absoluteThresholdReached || windowThresholdReached)) {
-                    const threshold = absoluteThresholdReached
-                      ? preferences.contextRolloverTokens
-                      : windowThreshold!;
                     const providerSessionId = store.resumeSessionId(agent.id);
                     if (providerSessionId) {
                       contextRolloverPending.set(agent.id, {
@@ -11883,14 +11886,14 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
                         type: "context_rollover_triggered",
                         executionId: runId,
                         usedTokens: usage.usedTokens,
-                        threshold,
+                        threshold: effectiveThreshold,
                       });
                       app.log.info({
                         agentId: agent.id,
                         runId,
                         providerSessionId,
                         usedTokens: usage.usedTokens,
-                        threshold,
+                        threshold: effectiveThreshold,
                       }, "provider context rollover marked for the next Run");
                     }
                   }
