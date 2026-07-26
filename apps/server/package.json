@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsc -p tsconfig.json && vitest run --exclude test/main-shutdown.e2e.test.ts && vitest run test/main-shutdown.e2e.test.ts",
+    "test": "tsc -p tsconfig.json && vitest run",
     "start": "node dist/main.js",
     "dev": "node --watch --experimental-strip-types src/main.ts",
     "push:configure": "node dist/configure-web-push.js"

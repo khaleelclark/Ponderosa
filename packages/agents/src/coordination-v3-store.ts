@@ -25,9 +25,6 @@ import {
   type TriggerSourceKind,
   type TriggerRunBudgetDto,
   type AssetDto,
-  ASSET_MEDIA_TYPES,
-  DEFAULT_ASSET_LIMITS,
-  LONG_TEXT_MAX_UTF8_BYTES,
   type CommunicationActor,
   type CommunicationAudience,
   type CommunicationIntent,
@@ -36,40 +33,23 @@ import {
   isCommunicationAudience,
   isCommunicationEvent,
 } from "@ponderosa/core";
+import { PendingActivationCapacityError, PRIORITY, activationDefaults } from "./coordination-v3-activation.js";
+import { TRIGGER_CANONICAL_JSON_LIMITS, payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
+import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
+import { terminalAt } from "./coordination-v3-request-state.js";
+import {
+  RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE,
+  RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES,
+  type RuntimeDispatchAttachmentV3,
+  UUID_PATTERN,
+  isIso,
+  runtimeArtifactMetadataIsValid,
+  runtimeCanonicalAttachmentsAreValid,
+  runtimeDispatchAttachmentsAreValid,
+} from "./coordination-v3-runtime-validation.js";
+import { triggerBudgetEndsAt } from "./coordination-v3-trigger-budget.js";
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
-
-function triggerBudgetEndsAt(period: TriggerRunBudgetDto["period"], startedAt: string): string | undefined {
-  if (period === "lifetime") return undefined;
-  const start = new Date(startedAt);
-  if (period === "month") {
-    start.setUTCMonth(start.getUTCMonth() + 1);
-    return start.toISOString();
-  }
-  start.setUTCDate(start.getUTCDate() + (period === "week" ? 7 : 1));
-  return start.toISOString();
-}
-
-function inspectorJson(value: string | null | undefined): string | undefined {
-  if (!value) return undefined;
-  let rendered: string;
-  try {
-    rendered = JSON.stringify(JSON.parse(value));
-  } catch {
-    rendered = value;
-  }
-  return rendered.length > 4_000 ? `${rendered.slice(0, 4_000)}… (truncated in inspector)` : rendered;
-}
-
-function inspectorDetails(...values: Array<[string, unknown]>): Array<{ label: string; value: string }> {
-  return values.flatMap(([label, value]) => value === undefined || value === null || value === ""
-    ? []
-    : [{ label, value: typeof value === "string" ? value : JSON.stringify(value) }]);
-}
-
-function inspectorWakePolicy(value: CoordinationJoinWakePolicy): string {
-  return value === "each_result" ? "Each result" : "Final only";
-}
 
 export interface RunAuthorizationV3 {
   runId: string;
@@ -587,214 +567,6 @@ export interface CoordinationV3StoreOptions {
 const DEFAULT_MAX_PENDING_ACTIVATIONS_PER_AGENT = 1_000;
 const DEFAULT_MAX_OUTBOX_ATTEMPTS = 8;
 const DEFAULT_MAX_TRIGGER_ATTEMPTS = 8;
-
-class PendingActivationCapacityError extends Error {}
-
-const PRIORITY = {
-  human: 100,
-  urgent: 90,
-  actionable: 80,
-  satisfied: 70,
-  request: 60,
-  ordinary: 50,
-} as const;
-
-function activationDefaults(kind: string, priority: number): {
-  dispatchPolicy: ActivationDispatchPolicy;
-  promptClass: ActivationPromptClass;
-} {
-  if (kind === "human_message" || kind === "urgent_message" || kind.includes("question") || kind.includes("block")) {
-    return {
-      dispatchPolicy: "steer_or_run",
-      promptClass: kind === "human_message" ? "human" : "blocker",
-    };
-  }
-  return {
-    dispatchPolicy: "next_run",
-    promptClass: priority >= PRIORITY.actionable ? "blocker"
-      : kind.startsWith("coordination_") ? "coordination"
-        : "ordinary",
-  };
-}
-
-const DEFAULT_CANONICAL_JSON_LIMITS = { maxDepth: 512, maxNodes: 1_000_000 } as const;
-const TRIGGER_CANONICAL_JSON_LIMITS = { maxDepth: 64, maxNodes: 250_000 } as const;
-
-/** Deterministic JSON without recursive descent. External signed JSON can be
- * deeply nested even under the byte limit, so canonicalization is explicitly
- * bounded by both structure depth and visited nodes. */
-function stableJson(
-  value: unknown,
-  limits: { maxDepth: number; maxNodes: number } = DEFAULT_CANONICAL_JSON_LIMITS,
-): string {
-  type Task = { kind: "value"; value: unknown; depth: number } | { kind: "text"; value: string };
-  const tasks: Task[] = [{ kind: "value", value, depth: 0 }];
-  const output: string[] = [];
-  let nodes = 0;
-  let scheduledNodes = 1;
-  while (tasks.length) {
-    const task = tasks.pop()!;
-    if (task.kind === "text") {
-      output.push(task.value);
-      continue;
-    }
-    nodes += 1;
-    if (nodes > limits.maxNodes) {
-      throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
-    }
-    if (task.depth > limits.maxDepth) {
-      throw new Error(`canonical JSON exceeds maximum depth ${limits.maxDepth}`);
-    }
-    if (Array.isArray(task.value)) {
-      if (scheduledNodes + task.value.length > limits.maxNodes) {
-        throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
-      }
-      scheduledNodes += task.value.length;
-      tasks.push({ kind: "text", value: "]" });
-      for (let index = task.value.length - 1; index >= 0; index -= 1) {
-        tasks.push({
-          kind: "value",
-          value: task.value[index] === undefined ? null : task.value[index],
-          depth: task.depth + 1,
-        });
-        if (index > 0) tasks.push({ kind: "text", value: "," });
-      }
-      tasks.push({ kind: "text", value: "[" });
-      continue;
-    }
-    if (task.value && typeof task.value === "object") {
-      const record = task.value as Record<string, unknown>;
-      const keys = Object.keys(record).filter((key) => record[key] !== undefined).sort();
-      if (scheduledNodes + keys.length > limits.maxNodes) {
-        throw new Error(`canonical JSON exceeds ${limits.maxNodes} nodes`);
-      }
-      scheduledNodes += keys.length;
-      tasks.push({ kind: "text", value: "}" });
-      for (let index = keys.length - 1; index >= 0; index -= 1) {
-        const key = keys[index]!;
-        tasks.push({ kind: "value", value: record[key], depth: task.depth + 1 });
-        tasks.push({ kind: "text", value: ":" });
-        tasks.push({ kind: "text", value: JSON.stringify(key) });
-        if (index > 0) tasks.push({ kind: "text", value: "," });
-      }
-      tasks.push({ kind: "text", value: "{" });
-      continue;
-    }
-    output.push(JSON.stringify(task.value) ?? "null");
-  }
-  return output.join("");
-}
-
-function payloadHash(
-  value: unknown,
-  limits?: { maxDepth: number; maxNodes: number },
-): string {
-  return createHash("sha256").update(stableJson(value, limits)).digest("hex");
-}
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-const RUNTIME_ATTACHMENT_MEDIA_TYPES = new Set<string>(ASSET_MEDIA_TYPES);
-const RUNTIME_ATTACHMENT_FIELDS = new Set(["id", "name", "mediaType", "size", "sha256", "localPath"]);
-const RUNTIME_CANONICAL_ATTACHMENT_FIELDS = new Set([
-  "id", "agentId", "name", "mediaType", "size", "width", "height", "sha256",
-  "state", "createdAt", "url", "downloadUrl", "previewUrl",
-]);
-const RUNTIME_ARTIFACT_FIELDS = new Set([
-  "id", "role", "title", "mediaType", "blobPath", "blobHash", "byteLength",
-  "originAgentId", "executionId",
-]);
-const RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE = DEFAULT_ASSET_LIMITS.maxAssetsPerMessage;
-const RUNTIME_MAX_ATTACHMENT_BYTES = DEFAULT_ASSET_LIMITS.maxFileBytes;
-const RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES = DEFAULT_ASSET_LIMITS.maxMessageBytes;
-const RUNTIME_MAX_ARTIFACT_BYTES = LONG_TEXT_MAX_UTF8_BYTES;
-
-interface RuntimeDispatchAttachmentV3 {
-  id: string;
-  name: string;
-  mediaType: string;
-  size: number;
-  sha256?: string;
-  localPath?: string;
-}
-
-function runtimeArtifactMetadataIsValid(artifact: unknown): artifact is RuntimeArtifactInputV3 {
-  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) return false;
-  const candidate = artifact as Record<string, unknown>;
-  const hasOrigin = Object.prototype.hasOwnProperty.call(candidate, "originAgentId") && candidate.originAgentId !== undefined;
-  const hasExecution = Object.prototype.hasOwnProperty.call(candidate, "executionId") && candidate.executionId !== undefined;
-  return !Object.keys(candidate).some((field) => !RUNTIME_ARTIFACT_FIELDS.has(field)) &&
-    typeof candidate.id === "string" && /^text-[a-f0-9]{64}$/.test(candidate.id) &&
-    (candidate.role === "long_text" || candidate.role === "document") &&
-    typeof candidate.blobPath === "string" && candidate.blobPath === candidate.id &&
-    typeof candidate.title === "string" && Boolean(candidate.title.trim()) &&
-    candidate.mediaType === "text/markdown" &&
-    typeof candidate.blobHash === "string" && /^[a-f0-9]{64}$/.test(candidate.blobHash) &&
-    Number.isSafeInteger(candidate.byteLength) && (candidate.byteLength as number) > 0 &&
-    (candidate.byteLength as number) <= RUNTIME_MAX_ARTIFACT_BYTES &&
-    hasOrigin === hasExecution &&
-    (!hasOrigin || (typeof candidate.originAgentId === "string" && UUID_PATTERN.test(candidate.originAgentId) &&
-      typeof candidate.executionId === "string" && UUID_PATTERN.test(candidate.executionId)));
-}
-
-function runtimeDispatchAttachmentsAreValid(value: unknown): value is RuntimeDispatchAttachmentV3[] {
-  if (!Array.isArray(value) || value.length > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE) return false;
-  const ids = new Set<string>();
-  let bytes = 0;
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    const attachment = item as Record<string, unknown>;
-    if (Object.keys(attachment).some((field) => !RUNTIME_ATTACHMENT_FIELDS.has(field)) ||
-        typeof attachment.id !== "string" || !UUID_PATTERN.test(attachment.id) || ids.has(attachment.id) ||
-        typeof attachment.name !== "string" || !attachment.name.trim() ||
-        typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
-        !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||
-        (attachment.size as number) > RUNTIME_MAX_ATTACHMENT_BYTES ||
-        (attachment.sha256 !== undefined &&
-          (typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(attachment.sha256))) ||
-        (attachment.localPath !== undefined &&
-          (typeof attachment.localPath !== "string" || !attachment.localPath.trim()))) return false;
-    ids.add(attachment.id);
-    bytes += attachment.size as number;
-  }
-  return bytes <= RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES;
-}
-
-function runtimeCanonicalAttachmentsAreValid(value: unknown): value is AssetDto[] {
-  if (!Array.isArray(value) || value.length > RUNTIME_MAX_ATTACHMENTS_PER_MESSAGE) return false;
-  const ids = new Set<string>();
-  let totalBytes = 0;
-  for (const item of value) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
-    const attachment = item as Record<string, unknown>;
-    if (Object.keys(attachment).some((field) => !RUNTIME_CANONICAL_ATTACHMENT_FIELDS.has(field)) ||
-        typeof attachment.id !== "string" || !UUID_PATTERN.test(attachment.id) || ids.has(attachment.id) ||
-        typeof attachment.agentId !== "string" || !UUID_PATTERN.test(attachment.agentId) ||
-        typeof attachment.name !== "string" || !attachment.name.trim() ||
-        typeof attachment.mediaType !== "string" || !RUNTIME_ATTACHMENT_MEDIA_TYPES.has(attachment.mediaType) ||
-        !Number.isSafeInteger(attachment.size) || (attachment.size as number) < 1 ||
-        (attachment.size as number) > RUNTIME_MAX_ATTACHMENT_BYTES ||
-        typeof attachment.url !== "string" || !attachment.url.trim() ||
-        (attachment.width !== undefined && (!Number.isSafeInteger(attachment.width) || (attachment.width as number) < 1)) ||
-        (attachment.height !== undefined && (!Number.isSafeInteger(attachment.height) || (attachment.height as number) < 1)) ||
-        (attachment.sha256 !== undefined && (typeof attachment.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(attachment.sha256))) ||
-        (attachment.state !== undefined && attachment.state !== "staged" && attachment.state !== "associated") ||
-        (attachment.createdAt !== undefined && (typeof attachment.createdAt !== "string" || !isIso(attachment.createdAt))) ||
-        (attachment.downloadUrl !== undefined && (typeof attachment.downloadUrl !== "string" || !attachment.downloadUrl)) ||
-        (attachment.previewUrl !== undefined && (typeof attachment.previewUrl !== "string" || !attachment.previewUrl))) return false;
-    ids.add(attachment.id);
-    totalBytes += attachment.size as number;
-    if (totalBytes > RUNTIME_MAX_MESSAGE_ATTACHMENT_BYTES) return false;
-  }
-  return true;
-}
-
-function isIso(value: string): boolean {
-  return Number.isFinite(Date.parse(value));
-}
-
-function terminalAt(state: CoordinationRequestState, now: string): string | null {
-  return TERMINAL_REQUEST_STATES.has(state) ? now : null;
-}
 
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */

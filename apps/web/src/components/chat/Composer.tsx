@@ -1,9 +1,6 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import ArticleIcon from "@mui/icons-material/Article";
-import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import CloseIcon from "@mui/icons-material/Close";
-import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
   Alert,
   Box,
@@ -39,9 +36,20 @@ import { createClientId } from "../../clientId";
 import { managerBroadcastText } from "../../conversationRouting";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
-import { ComposerAttachment } from "./ComposerAttachment";
+import {
+  compactPreviewText,
+  removeHandle,
+  replaceDestination,
+} from "./Composer.helpers";
 import type { DraftUploadStatus } from "./ComposerAttachment";
-import type { ChatComposerContract } from "./composerContracts";
+import type { ComposerProps } from "./Composer.types";
+import {
+  ComposerAttachmentList,
+  ComposerDestinationBar,
+  ComposerGuidance,
+  ComposerMentionStatus,
+  ComposerSendActions,
+} from "./Composer.parts";
 import {
   COMPOSER_MAX_FILE_BYTES,
   COMPOSER_MAX_FILES,
@@ -61,37 +69,14 @@ import {
   shouldSendComposerKey,
   shouldShowQueueControl,
 } from "./composerUtils";
+import {
+  useComposerDraftStorageReset,
+  useComposerDraftStorageWrite,
+  useComposerInsertTextRequest,
+  useComposerMentionedHandlesChange,
+} from "./useComposerTextEffects";
 
-export interface ComposerProps extends ChatComposerContract {
-  /** Keep the composer available while other Agents in this shared chat are working. */
-  allowSendWhileRunning?: boolean;
-  placeholder?: string;
-  projectId?: string;
-  mentionHandles?: string[];
-  mentionSuggestionHandles?: string[];
-  ambiguousMentionHandles?: string[];
-  onCapabilitiesOpen?(): Promise<unknown> | unknown;
-  attachmentsEnabled?: boolean;
-  attachmentsUnavailableReason?: string;
-  busyMentionHandles?: string[];
-  allowUnmentionedSend?: boolean;
-  preferQueue?: boolean;
-  queuedMentionHandles?: string[];
-  agentResponding?: boolean;
-  onCancel?(): void;
-  draftStorageKey?: string;
-  conversationDraftId?: string;
-  insertTextRequest?: { id: string; text: string };
-  /** Project Chat exposes its deliberate fresh-agent default as a destination. */
-  destinationMode?: "project-chat" | "fixed" | "target-required";
-  fixedRecipientTitle?: string;
-  requiredRecipient?: { handle: string; title: string; onClear(): void };
-  recipientRequiredMessage?: string;
-  removeTextRequest?: { id: string; text: string };
-  onMentionedHandlesChange?(handles: string[]): void;
-  continueWith?: { handle: string; title: string };
-  destinationTitleForHandle?(handle: string): string | undefined;
-}
+export type { ComposerProps } from "./Composer.types";
 
 export function Composer({
   disabled,
@@ -253,29 +238,10 @@ export function Composer({
             : destinationMode === "target-required" && unresolvedAmbiguousTarget
               ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
               : undefined;
-  const replaceDestination = (value: string, nextHandle?: string) =>
-    value.replace(
-      /(?:^|\s)#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])/gu,
-      (match, handle: string) => {
-        if (["broadcast", "everyone"].includes(handle.toLocaleLowerCase()))
-          return match;
-        return nextHandle ? ` #${nextHandle}` : " ";
-      },
-    );
   const setDestination = (handle: string) =>
     update(current =>
       `#${handle} ${replaceDestination(current, undefined).trimStart()}`.trimEnd(),
     );
-  const removeHandle = (value: string, handle: string) =>
-    value
-      .replace(
-        new RegExp(
-          `(?:^|\\s)#${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|\\s|[.,!?;:])`,
-          "iu",
-        ),
-        " ",
-      )
-      .replace(/^\s+/u, "");
   const clearDestination = (handle: string) =>
     update(current => removeHandle(current, handle));
   const clearRequiredRecipient = () => {
@@ -342,45 +308,18 @@ export function Composer({
     staleTime: 0,
   });
 
-  useEffect(() => {
-    if (
-      !insertTextRequest ||
-      appliedInsertRequest.current === insertTextRequest.id
-    )
-      return;
-    if (conversationDraftId && !draftReady.current && !draftQuery.isError)
-      return;
-    appliedInsertRequest.current = insertTextRequest.id;
-    setText(current => {
-      const requested = insertTextRequest.text.trim();
-      if (
-        requested &&
-        current.toLocaleLowerCase().includes(requested.toLocaleLowerCase())
-      )
-        return current;
-      if (
-        destinationMode === "target-required" &&
-        /^#[\p{L}\p{N}_-]+$/u.test(requested)
-      ) {
-        return `${requested} ${replaceDestination(current, undefined).trimStart()}`.trimEnd();
-      }
-      const prefix = current && !/\s$/u.test(current) ? " " : "";
-      return `${current}${prefix}${insertTextRequest.text} `;
-    });
-    const frame = window.requestAnimationFrame(() => {
-      inputRef.current?.focus();
-      const end = inputRef.current?.value.length ?? 0;
-      inputRef.current?.setSelectionRange(end, end);
-      setCaret(end);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [
+  useComposerInsertTextRequest({
+    appliedInsertRequest,
     conversationDraftId,
     destinationMode,
-    draftQuery?.isError,
+    draftQuery,
+    draftReady,
     draftReadyVersion,
+    inputRef,
     insertTextRequest,
-  ]);
+    setCaret,
+    setText,
+  });
 
   const update = (next: string | ((current: string) => string)) => {
     draftEditVersion.current += 1;
@@ -388,9 +327,10 @@ export function Composer({
     setText(next);
   };
 
-  useEffect(() => {
-    onMentionedHandlesChange?.(mentionedHandles);
-  }, [mentionedHandles, onMentionedHandlesChange]);
+  useComposerMentionedHandlesChange({
+    mentionedHandles,
+    onMentionedHandlesChange,
+  });
 
   useEffect(() => {
     if (
@@ -404,13 +344,12 @@ export function Composer({
     update(current => removeHandle(current, handle));
   }, [removeTextRequest]);
 
-  useEffect(() => {
-    if (previousDraftStorageKey.current !== draftStorageKey) {
-      previousDraftStorageKey.current = draftStorageKey;
-      setText(draftStorageKey ? (readChatState(draftStorageKey) ?? "") : "");
-      setPastedText(undefined);
-    }
-  }, [draftStorageKey]);
+  useComposerDraftStorageReset({
+    draftStorageKey,
+    previousDraftStorageKey,
+    setPastedText,
+    setText,
+  });
 
   useEffect(() => {
     const changed = previousConversationDraftId.current !== conversationDraftId;
@@ -501,9 +440,10 @@ export function Composer({
     };
   }, [conversationDraftId, draftQuery.data, draftStorageKey]);
 
-  useEffect(() => {
-    if (draftStorageKey) writeChatState(draftStorageKey, text);
-  }, [draftStorageKey, text]);
+  useComposerDraftStorageWrite({
+    draftStorageKey,
+    text,
+  });
 
   useEffect(() => {
     if (
@@ -932,166 +872,28 @@ export function Composer({
             : "0 10px 30px rgba(33,45,38,.09)",
       }}
     >
-      {guidance ? (
-        <Box sx={{ px: 0.25, pb: 0.9, color: "text.secondary" }}>
-          {typeof guidance === "string" ? (
-            <Typography
-              variant="body2"
-              sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}
-            >
-              {guidance}
-            </Typography>
-          ) : (
-            guidance
-          )}
-        </Box>
-      ) : null}
-      {destinationMode === "project-chat" ? (
-        <Stack
-          direction="row"
-          spacing={0.75}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-        >
-          {hasBroadcastDestination ? (
-            <Chip
-              size="small"
-              color="info"
-              icon={<CampaignOutlinedIcon />}
-              label="#broadcast"
-              onDelete={() => clearDestination("broadcast")}
-            />
-          ) : null}
-          {hasEveryoneDestination ? (
-            <Chip
-              size="small"
-              color="secondary"
-              label="#everyone"
-              onDelete={() => clearDestination("everyone")}
-            />
-          ) : null}
-          {projectDestinations.map(destination => (
-            <Chip
-              key={destination.handle.toLocaleLowerCase()}
-              size="small"
-              color="primary"
-              label={`#${destination.handle}`}
-              onDelete={() => clearDestination(destination.handle)}
-            />
-          ))}
-          {!hasBroadcastDestination &&
-          !hasEveryoneDestination &&
-          projectDestinations.length === 0 ? (
-            <Chip size="small" variant="outlined" label="New Agent" />
-          ) : null}
-          {!hasBroadcastDestination &&
-          !hasEveryoneDestination &&
-          projectDestinations.length === 0 &&
-          continueWith ? (
-            <Button
-              size="small"
-              onClick={() => {
-                setDestination(continueWith.handle);
-                window.requestAnimationFrame(() => {
-                  const input = inputRef.current;
-                  if (!input) return;
-                  input.focus();
-                  const end = input.value.length;
-                  input.setSelectionRange(end, end);
-                });
-              }}
-            >
-              Continue with {continueWith.title}
-            </Button>
-          ) : null}
-          <Typography
-            variant="caption"
-            color={destinationError ? "error.main" : "text.secondary"}
-          >
-            {projectDestinationHelper}
-          </Typography>
-          {!destinationError ? (
-            <Tooltip title="Use @ to reference a Project file.">
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                sx={{ whiteSpace: "nowrap" }}
-              >
-                · @ file
-              </Typography>
-            </Tooltip>
-          ) : null}
-        </Stack>
-      ) : destinationMode === "target-required" ? (
-        <Stack
-          direction="row"
-          spacing={0.75}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-        >
-          {targetRequiredDestinations.map(destination => (
-            <Chip
-              key={destination.handle.toLocaleLowerCase()}
-              size="small"
-              color="primary"
-              label={`#${destination.handle}`}
-              onDelete={() => clearDestination(destination.handle)}
-            />
-          ))}
-          {hasBroadcastDestination ? (
-            <Chip
-              size="small"
-              color="info"
-              icon={<CampaignOutlinedIcon />}
-              label="#broadcast"
-              onDelete={() => clearDestination("broadcast")}
-            />
-          ) : null}
-          {targetRequiredDestinations.length === 0 &&
-          !hasBroadcastDestination ? (
-            <Chip size="small" variant="outlined" label="Choose an Agent" />
-          ) : null}
-          <Typography
-            variant="caption"
-            color={destinationError ? "error.main" : "text.secondary"}
-          >
-            {targetRequiredHelper}
-          </Typography>
-        </Stack>
-      ) : destinationMode === "fixed" && fixedRecipientTitle ? (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ display: "block", px: 0.25, pb: 0.75 }}
-        >
-          {fixedRecipientTitle} will receive this.
-        </Typography>
-      ) : null}
-      {files.length > 0 ? (
-        <Stack
-          direction="row"
-          spacing={1}
-          useFlexGap
-          flexWrap="wrap"
-          sx={{ mb: 1 }}
-        >
-          {files.map((file, index) => {
-            const upload = draftUploadStates.get(file);
-            return (
-              <ComposerAttachment
-                key={`${file.name}-${file.size}-${file.lastModified}-${index}`}
-                file={file}
-                status={upload?.status}
-                error={upload?.error}
-                onRetry={() => retryDraftUpload(file)}
-                onRemove={() => removeFile(index)}
-              />
-            );
-          })}
-        </Stack>
-      ) : null}
+      <ComposerGuidance guidance={guidance} />
+      <ComposerDestinationBar
+        clearDestination={clearDestination}
+        continueWith={continueWith}
+        destinationError={destinationError}
+        destinationMode={destinationMode}
+        fixedRecipientTitle={fixedRecipientTitle}
+        hasBroadcastDestination={hasBroadcastDestination}
+        hasEveryoneDestination={hasEveryoneDestination}
+        inputRef={inputRef}
+        projectDestinationHelper={projectDestinationHelper}
+        projectDestinations={projectDestinations}
+        setDestination={setDestination}
+        targetRequiredDestinations={targetRequiredDestinations}
+        targetRequiredHelper={targetRequiredHelper}
+      />
+      <ComposerAttachmentList
+        draftUploadStates={draftUploadStates}
+        files={files}
+        removeFile={removeFile}
+        retryDraftUpload={retryDraftUpload}
+      />
       {pastedText ? (
         <Paper
           variant="outlined"
@@ -1535,30 +1337,11 @@ export function Composer({
               }
             }}
           />
-          {mentionedHandles.length > 0 &&
-          destinationMode !== "project-chat" &&
-          destinationMode !== "target-required" ? (
-            <Typography
-              variant="caption"
-              color={
-                mentionedBusyHandles.length > 0
-                  ? "warning.main"
-                  : "text.secondary"
-              }
-            >
-              {mentionedHandles.some(
-                handle => handle.toLocaleLowerCase() === "broadcast",
-              )
-                ? "Adding durable shared context without starting an agent"
-                : mentionedBusyHandles.length > 0
-                  ? `${mentionedBusyHandles.map(handle => `#${handle}`).join(", ")} ${mentionedBusyHandles.length > 1 ? "are" : "is"} working — your message will steer the active turn when supported.`
-                  : mentionedHandles.some(
-                        handle => handle.toLocaleLowerCase() === "everyone",
-                      )
-                    ? "Notifying every active agent in this conversation"
-                    : `Messaging ${mentionedHandles.map(handle => `#${handle}`).join(", ")}`}
-            </Typography>
-          ) : null}
+          <ComposerMentionStatus
+            destinationMode={destinationMode}
+            mentionedBusyHandles={mentionedBusyHandles}
+            mentionedHandles={mentionedHandles}
+          />
           <Popper
             open={menuOpen}
             anchorEl={anchorRef.current}
@@ -1669,102 +1452,23 @@ export function Composer({
             </ClickAwayListener>
           </Popper>
         </Box>
-        {showQueue ? (
-          <Tooltip
-            title={
-              defaultsToQueue
-                ? "Send after the active response finishes"
-                : "Steer the active response"
-            }
-          >
-            <span>
-              <Button
-                size="small"
-                variant="contained"
-                disabled={!canSend}
-                onClick={send}
-                aria-label={
-                  defaultsToQueue ? "Queue message" : "Steer active response"
-                }
-                sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
-              >
-                {defaultsToQueue ? "Queue" : "Steer"}
-              </Button>
-            </span>
-          </Tooltip>
-        ) : null}
-        {showQueue ? (
-          <Tooltip
-            title={
-              defaultsToQueue
-                ? "Steer the active response"
-                : "Send after the active response finishes"
-            }
-          >
-            <span>
-              <Button
-                size="small"
-                variant="outlined"
-                disabled={!canSend}
-                onClick={defaultsToQueue ? steer : queue}
-                aria-label={
-                  defaultsToQueue ? "Steer active response" : "Queue message"
-                }
-                sx={{ minHeight: 40, px: 1.5 }}
-              >
-                {defaultsToQueue ? "Steer" : "Queue"}
-              </Button>
-            </span>
-          </Tooltip>
-        ) : null}
-        {canCancel ? (
-          <Tooltip title="Cancel Run">
-            <IconButton
-              color="error"
-              onClick={onCancel}
-              aria-label="Cancel run"
-            >
-              <StopCircleIcon />
-            </IconButton>
-          </Tooltip>
-        ) : null}
-        {!showQueue && (!canCancel || allowSendWhileRunning) ? (
-          <Tooltip
-            title={
-              !canSend &&
-              (destinationError ||
-                (destinationMode === "target-required" &&
-                  !targetRequiredRecipientTagged))
-                ? (destinationError ??
-                  recipientRequiredMessage ??
-                  "Choose at least one Agent recipient.")
-                : "Send"
-            }
-          >
-            <span>
-              <IconButton
-                color="primary"
-                disabled={!canSend}
-                onClick={send}
-                aria-label={
-                  mentionedBusyHandles.length > 0
-                    ? "Queue message"
-                    : "Send message"
-                }
-              >
-                <ArrowUpwardIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-        ) : null}
+        <ComposerSendActions
+          allowSendWhileRunning={allowSendWhileRunning}
+          canCancel={canCancel}
+          canSend={canSend}
+          defaultsToQueue={defaultsToQueue}
+          destinationError={destinationError}
+          destinationMode={destinationMode}
+          mentionedBusyHandles={mentionedBusyHandles}
+          onCancel={onCancel}
+          queue={queue}
+          recipientRequiredMessage={recipientRequiredMessage}
+          send={send}
+          showQueue={showQueue}
+          steer={steer}
+          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
+        />
       </Stack>
     </Paper>
   );
-}
-
-function compactPreviewText(text: string, maxLength = 240): string {
-  const compact = text.trim().replace(/\s+/g, " ") || "Draft unavailable";
-  return compact.length <= maxLength
-    ? compact
-    : `${compact.slice(0, maxLength - 1).trimEnd()}…`;
 }

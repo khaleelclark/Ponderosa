@@ -1,13 +1,9 @@
-import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
-import { execFile } from "node:child_process";
-import { promises as dns } from "node:dns";
-import { request as httpsRequest } from "node:https";
-import { BlockList, isIP, type Socket } from "node:net";
+import { type Socket } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import os from "node:os";
 import { Readable, Transform } from "node:stream";
-import { gzipSync } from "node:zlib";
 import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
@@ -21,7 +17,6 @@ import type {
   CommunicationRevisionEvent,
   AgentHealthProjectionDto,
   ArtifactDto,
-  ArtifactContentDto,
   ChatMessage,
   EngineAuthStatus,
   EngineAvailabilityStatus,
@@ -35,14 +30,9 @@ import type {
   HostFolderCreateDto,
   ProjectFolderOptionsDto,
   HostFolderBrowseDto,
-  WorkspaceChangeDto,
-  WorkspaceFileReviewDto,
   WorkspaceFileViewDto,
-  WorkspaceStatusDto,
   CreateProjectRequest,
   UpdateProjectRequest,
-  FilesResponse,
-  HealthDto,
   ReadinessDto,
   ConversationMessageDto,
   ConversationDetailDto,
@@ -67,8 +57,6 @@ import type {
   SteerQueuedMessageResponse,
   CorrectConversationMessageRequest,
   CorrectConversationMessageResponse,
-  SseEventEnvelope,
-  AgentStreamEvent,
   SendAgentMessageRequest,
   AgentDto,
   MessageDto,
@@ -99,7 +87,6 @@ import type {
   CreateLinkPreviewRequest,
   LinkPreviewDto,
   GlobalChatSearchResponseDto,
-  AllChatPageDto,
   BrowserControlRequest,
   BrowserOperatorInputRequest,
   ProjectBrowserSessionDto,
@@ -116,7 +103,6 @@ import type {
   AgentWorkInspectorDto,
   AgentWorkItemDto,
   AgentWorkItemDetailsDto,
-  AgentTelemetryStream,
   AgentPortablePackageDto,
   AgentExportMode,
   ImportAgentPackageRequest,
@@ -146,7 +132,6 @@ import {
   PONDEROSA_DECISION_TOOL,
   PONDEROSA_MANAGE_TOOL,
   PONDEROSA_BROWSER_TOOLS,
-  PONDEROSA_RUNTIME_TOOLS,
   shouldBackTextWithArtifact,
   truncateUnicodeCodePoints,
   TERMINAL_REQUEST_STATES,
@@ -167,7 +152,7 @@ import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService, normalizeTriggerSourceConfig } from "./trigger-service.js";
 import { documentationReferences } from "./documentation-reference/index.js";
-import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, OperatorProfileImageError, readOperatorProfileImage, storeOperatorProfileImage } from "./operator-profile-images.js";
+import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, readOperatorProfileImage } from "./operator-profile-images.js";
 import { ProviderUsageCache, type ProviderUsageTarget } from "./provider-usage-cache.js";
 import {
   descriptorRelativeFilesystemCapability,
@@ -181,6 +166,149 @@ import {
   type BrowserDriverFactory,
   type BrowserScope,
 } from "./browser-session-manager.js";
+import {
+  RESULT_PAGE_MIN_BYTES,
+  RESULT_PAGE_DEFAULT_BYTES,
+  RESULT_PAGE_MAX_BYTES,
+  encodeTimelineCursor,
+  decodeTimelineCursor,
+  encodeResultCursor,
+  decodeResultCursor,
+  parseResultRef,
+} from "./cursors.js";
+import {
+  CANONICAL_ARTIFACT_ID,
+  collectReachableArtifactIds,
+  portableAgentTopologyError,
+  rewritePortableArtifactReferences,
+} from "./artifact-refs.js";
+export {
+  collectReachableArtifactIds,
+  rewritePortableArtifactReferences,
+} from "./artifact-refs.js";
+import {
+  utf8Page,
+  utf8PageEnd,
+  boundedUtf8Preview,
+  contentTypeForStatic,
+  cacheControlForStatic,
+  contentTypeForArtifact,
+} from "./static-content.js";
+import {
+  workspaceAgentEventCategory,
+  notificationKindForCommunication,
+  notificationPreferenceMatches,
+} from "./notification-routing.js";
+export {
+  workspaceAgentEventCategory,
+  notificationKindForCommunication,
+  notificationPreferenceMatches,
+} from "./notification-routing.js";
+import {
+  conciseConversationTitle,
+  semanticConversationTitle,
+} from "./conversation-titles.js";
+export {
+  conciseConversationTitle,
+  semanticConversationTitle,
+} from "./conversation-titles.js";
+import {
+  MAX_FILE_BYTES,
+  pathExists,
+  safeRelativePath,
+  isProjectFileReferenceAllowed,
+} from "./project-files.js";
+export {
+  isProjectFileReferenceAllowed,
+} from "./project-files.js";
+export {
+  parseGitStatus,
+} from "./git-status.js";
+export {
+  parseTokenUsageRange,
+} from "./token-usage.js";
+import {
+  externalFaviconTarget,
+  loadExternalFavicon,
+  normalizeExternalCitations,
+} from "./external-content.js";
+export {
+  normalizeExternalCitations,
+} from "./external-content.js";
+import {
+  derivedRunActionKey,
+  secretEqual,
+} from "./security.js";
+import { registerHealthRoutes } from "./routes/health.js";
+import { registerLimitsRoutes } from "./routes/limits.js";
+import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
+import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes/agent-audit.js";
+import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
+import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
+import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
+import { registerSearchRoutes } from "./routes/search.js";
+import { registerWikiRoutes } from "./routes/wiki.js";
+import type { ServerContext } from "./server-context.js";
+import {
+  MAX_AGENT_MENTION_REPLAY_WINDOW,
+  agentMentionHandle,
+  mentionRelayFingerprint,
+  advanceMentionTrail,
+  mentionedAgents,
+  hasEveryoneMention,
+  stripLeadingScopeTag,
+  renderScopedMessage,
+  inboundContext,
+} from "./agent-mentions.js";
+import {
+  MAX_SEED_HISTORY_MESSAGES,
+  boundedContinuationHistory,
+  boundedHistoryOmitted,
+  boundedSeedHistory,
+  byteBoundScopedContext,
+  contextSection,
+  continuationPrompt,
+  conversationPrompt,
+  directUserRequestCompletionPrompt,
+  individualChatPrompt,
+  managerRelationshipPrompt,
+  mergeScopedContextSources,
+  olderContextPrompt,
+  runtimeIdentityPrompt,
+  sharedBroadcastContextPrompt,
+  sharedRequestCompletionPrompt,
+  teamDirectoryPrompt,
+  type ScopedContextMessage,
+} from "./prompts.js";
+export {
+  boundedContinuationHistory,
+  boundedSeedHistory,
+  runtimeIdentityPrompt,
+} from "./prompts.js";
+import {
+  isAgentStreamEvent,
+  envelope,
+  writeSse,
+} from "./sse.js";
+import {
+  communicationV3Prompt,
+  PROVIDER_DYNAMIC_TOOLS,
+  PROVIDER_TOOL_CONTRACT_HASH,
+  providerSessionContractHash,
+  runtimeSelectionError,
+  normalizedRuntimeSelection,
+  concreteRuntimeSelection,
+} from "./runtime-selection.js";
+import {
+  canonicalAudienceIncludes,
+  recipientCollaborationMessages,
+  organizationalMasterMessages,
+} from "./communication-scoping.js";
+import { sendInspectorJson } from "./inspector-response.js";
+export {
+  PROVIDER_TOOL_CONTRACT_HASH,
+  providerSessionContractHash,
+} from "./runtime-selection.js";
 
 type RuntimeOwnershipState = "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
 
@@ -205,294 +333,6 @@ type LinkPreviewRegistration = {
   httpConnections: Set<AbortController>;
   reconnectAttempts: number[];
 };
-
-function acceptsGzip(value: string | string[] | undefined): boolean {
-  const preferences = String(value ?? "").split(",").map((entry) => {
-    const [encoding, ...parameters] = entry.trim().toLowerCase().split(";");
-    const quality = parameters.map((parameter) => /^q\s*=\s*([0-9.]+)$/.exec(parameter.trim())?.[1])
-      .find((candidate) => candidate !== undefined);
-    return { encoding, quality: quality === undefined ? 1 : Number(quality) };
-  });
-  const explicit = preferences.find((preference) => preference.encoding === "gzip");
-  if (explicit) return explicit.quality > 0;
-  return Boolean(preferences.find((preference) => preference.encoding === "*" && preference.quality > 0));
-}
-
-const RESULT_PAGE_MIN_BYTES = 4 * 1024;
-const RESULT_PAGE_DEFAULT_BYTES = 64 * 1024;
-const RESULT_PAGE_MAX_BYTES = 256 * 1024;
-
-interface ResultCursorState {
-  runId: string;
-  refsHash: string;
-  versionsHash: string;
-  maxBytes: number;
-  itemIndex: number;
-  byteOffset: number;
-}
-
-interface ActivityOutputCursorState {
-  v: 1;
-  agentId: string;
-  seq: number;
-  sha256: string;
-  byteOffset: number;
-}
-
-function encodeTimelineCursor(stream: string, scope: string, createdAt: string, id: string): string {
-  return Buffer.from(JSON.stringify({ v: 2, stream, scope, createdAt, id }), "utf8").toString("base64url");
-}
-
-function decodeTimelineCursor(value: string, stream: string, scope: string): { createdAt: string; id: string } {
-  try {
-    const decoded = Buffer.from(value, "base64url");
-    if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
-    const parsed = JSON.parse(decoded.toString("utf8")) as Record<string, unknown>;
-    if (parsed.v !== 2 || parsed.stream !== stream || parsed.scope !== scope ||
-        typeof parsed.createdAt !== "string" || typeof parsed.id !== "string") throw new Error("invalid cursor scope");
-    return { createdAt: parsed.createdAt, id: parsed.id };
-  } catch {
-    throw new Error("invalid history cursor");
-  }
-}
-
-function encodeActivityOutputCursor(state: Omit<ActivityOutputCursorState, "v">): string {
-  return Buffer.from(JSON.stringify({ v: 1, ...state } satisfies ActivityOutputCursorState), "utf8").toString("base64url");
-}
-
-function decodeActivityOutputCursor(value: string, agentId: string, seq: number): ActivityOutputCursorState {
-  try {
-    const decoded = Buffer.from(value, "base64url");
-    if (decoded.toString("base64url") !== value) throw new Error("non-canonical cursor");
-    const parsed = JSON.parse(decoded.toString("utf8")) as Partial<ActivityOutputCursorState>;
-    if (parsed.v !== 1 || parsed.agentId !== agentId || parsed.seq !== seq ||
-        typeof parsed.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(parsed.sha256) ||
-        !Number.isSafeInteger(parsed.byteOffset) || parsed.byteOffset! < 0) {
-      throw new Error("invalid cursor scope");
-    }
-    return parsed as ActivityOutputCursorState;
-  } catch {
-    throw new Error("invalid activity output cursor");
-  }
-}
-
-function utf8Page(content: string, start: number, maximum: number): {
-  output: string;
-  pageUtf8Bytes: number;
-  endUtf8Byte: number;
-  totalUtf8Bytes: number;
-} {
-  const bytes = Buffer.from(content, "utf8");
-  if (start > bytes.length || (start < bytes.length && (bytes[start]! & 0xc0) === 0x80)) {
-    throw new Error("activity output cursor is not on a UTF-8 boundary");
-  }
-  let end = Math.min(bytes.length, start + maximum);
-  while (end > start && end < bytes.length && (bytes[end]! & 0xc0) === 0x80) end -= 1;
-  const output = bytes.subarray(start, end).toString("utf8");
-  return { output, pageUtf8Bytes: end - start, endUtf8Byte: end, totalUtf8Bytes: bytes.length };
-}
-
-function encodeResultCursor(state: ResultCursorState, secret: Buffer): string {
-  const payload = Buffer.from(JSON.stringify(state)).toString("base64url");
-  const signature = createHmac("sha256", secret).update(payload).digest("base64url");
-  return `${payload}.${signature}`;
-}
-
-function decodeResultCursor(value: string, secret: Buffer): ResultCursorState | undefined {
-  const [payload, suppliedSignature, extra] = value.split(".");
-  if (!payload || !suppliedSignature || extra !== undefined) return undefined;
-  const expectedSignature = createHmac("sha256", secret).update(payload).digest();
-  let supplied: Buffer;
-  let payloadBytes: Buffer;
-  try {
-    supplied = Buffer.from(suppliedSignature, "base64url");
-    payloadBytes = Buffer.from(payload, "base64url");
-  }
-  catch { return undefined; }
-  // Node accepts alternate Base64URL spellings whose unused trailing bits
-  // decode to the same bytes. Cursors have one stable textual identity.
-  if (supplied.toString("base64url") !== suppliedSignature || payloadBytes.toString("base64url") !== payload) return undefined;
-  if (supplied.length !== expectedSignature.length || !timingSafeEqual(supplied, expectedSignature)) return undefined;
-  try {
-    const parsed = JSON.parse(payloadBytes.toString("utf8")) as Partial<ResultCursorState>;
-    if (typeof parsed.runId !== "string" || typeof parsed.refsHash !== "string" ||
-        typeof parsed.versionsHash !== "string" || !Number.isSafeInteger(parsed.maxBytes) ||
-        !Number.isSafeInteger(parsed.itemIndex) || !Number.isSafeInteger(parsed.byteOffset) ||
-        (parsed.itemIndex ?? -1) < 0 || (parsed.byteOffset ?? -1) < 0) return undefined;
-    return parsed as ResultCursorState;
-  } catch {
-    return undefined;
-  }
-}
-
-function parseResultRef(ref: string): { kind: "activation" | "artifact"; id: string } | undefined {
-  const match = /^ponderosa:\/\/(activation|artifact)\/([^/]+)$/.exec(ref);
-  return match ? { kind: match[1] as "activation" | "artifact", id: match[2]! } : undefined;
-}
-
-const CANONICAL_ARTIFACT_ID_SOURCE = "[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,254}[A-Za-z0-9])?";
-const CANONICAL_ARTIFACT_ID = new RegExp(`^${CANONICAL_ARTIFACT_ID_SOURCE}$`, "u");
-const CANONICAL_ARTIFACT_REFERENCE = new RegExp(
-  `ponderosa:\\/\\/artifact\\/(${CANONICAL_ARTIFACT_ID_SOURCE})`,
-  "gu",
-);
-const CANONICAL_ARTIFACT_ID_CHARACTER = /[A-Za-z0-9._:-]/u;
-
-function canonicalArtifactReferenceMatches(text: string): Array<{
-  reference: string;
-  artifactId: string;
-  index: number;
-}> {
-  const matches: Array<{ reference: string; artifactId: string; index: number }> = [];
-  const matcher = new RegExp(CANONICAL_ARTIFACT_REFERENCE.source, CANONICAL_ARTIFACT_REFERENCE.flags);
-  for (let match = matcher.exec(text); match; match = matcher.exec(text)) {
-    const reference = match[0];
-    const artifactId = match[1]!;
-    const index = match.index!;
-    const followingCharacter = text[index + reference.length];
-    if (artifactId.length === 256 && followingCharacter !== undefined &&
-        CANONICAL_ARTIFACT_ID_CHARACTER.test(followingCharacter)) {
-      while (matcher.lastIndex < text.length &&
-          CANONICAL_ARTIFACT_ID_CHARACTER.test(text[matcher.lastIndex]!)) {
-        matcher.lastIndex += 1;
-      }
-      continue;
-    }
-    matches.push({ reference, artifactId, index });
-  }
-  return matches;
-}
-
-export function collectReachableArtifactIds(value: unknown, found = new Set<string>()): Set<string> {
-  if (typeof value === "string") {
-    for (const match of canonicalArtifactReferenceMatches(value)) {
-      found.add(match.artifactId);
-    }
-    return found;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectReachableArtifactIds(item, found);
-    return found;
-  }
-  if (!value || typeof value !== "object") return found;
-  for (const [key, item] of Object.entries(value)) {
-    if (key === "artifactId" && typeof item === "string" && item.trim()) found.add(item);
-    collectReachableArtifactIds(item, found);
-  }
-  return found;
-}
-
-function portableAgentTopologyError(portablePackage: AgentPortablePackageDto): string | undefined {
-  if (portablePackage.kind !== "agent" && portablePackage.kind !== "organization") {
-    return "Agent package kind must match its organization shape";
-  }
-  if (typeof portablePackage.rootRef !== "string" || !portablePackage.rootRef.trim()) {
-    return "Agent package rootRef must identify the unique organization root";
-  }
-  if ((portablePackage.kind === "agent") !== (portablePackage.agents.length === 1)) {
-    return "Agent package kind must match its organization shape";
-  }
-
-  const nodes = new Map<string, { managerRef?: string }>();
-  for (const candidate of portablePackage.agents as unknown[]) {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      return "Agent package nodes must have a consistent organization shape";
-    }
-    const node = candidate as { ref?: unknown; managerRef?: unknown };
-    if (typeof node.ref !== "string" || !node.ref.trim() ||
-        (node.managerRef !== undefined && (typeof node.managerRef !== "string" || !node.managerRef.trim()))) {
-      return "Agent package nodes must have non-empty string refs";
-    }
-    if (nodes.has(node.ref)) return "Agent package refs must be unique";
-    if (node.managerRef === node.ref) return "organization package contains a self manager reference";
-    nodes.set(node.ref, node.managerRef === undefined ? {} : { managerRef: node.managerRef as string });
-  }
-  if (!nodes.has(portablePackage.rootRef)) return "Agent package rootRef must identify the unique organization root";
-  for (const node of nodes.values()) {
-    if (node.managerRef && !nodes.has(node.managerRef)) {
-      return "organization package contains an external manager reference";
-    }
-  }
-
-  const roots = [...nodes].filter(([, node]) => node.managerRef === undefined).map(([ref]) => ref);
-  if (roots.length !== 1 || roots[0] !== portablePackage.rootRef) {
-    return "Agent package rootRef must identify the unique organization root";
-  }
-  const children = new Map<string, string[]>();
-  for (const [ref, node] of nodes) {
-    if (!node.managerRef) continue;
-    const siblings = children.get(node.managerRef) ?? [];
-    siblings.push(ref);
-    children.set(node.managerRef, siblings);
-  }
-  const reachable = new Set<string>();
-  const pending = [portablePackage.rootRef];
-  while (pending.length) {
-    const ref = pending.pop()!;
-    if (reachable.has(ref)) return "every imported Agent must be reachable exactly once from rootRef";
-    reachable.add(ref);
-    pending.push(...(children.get(ref) ?? []));
-  }
-  if (reachable.size !== nodes.size) {
-    return "every imported Agent must be reachable exactly once from rootRef";
-  }
-  return undefined;
-}
-
-export function rewritePortableArtifactReferences(text: string, artifactRefMap: ReadonlyMap<string, string>): string {
-  let rewritten = "";
-  let copiedThrough = 0;
-  for (const match of canonicalArtifactReferenceMatches(text)) {
-    const destinationId = artifactRefMap.get(match.artifactId);
-    rewritten += text.slice(copiedThrough, match.index);
-    rewritten += destinationId && destinationId !== match.artifactId
-      ? `ponderosa://artifact/${destinationId}`
-      : match.reference;
-    copiedThrough = match.index + match.reference.length;
-  }
-  return rewritten + text.slice(copiedThrough);
-}
-
-function utf8PageEnd(content: Buffer, start: number, maximumEnd: number): number {
-  let end = Math.min(content.length, maximumEnd);
-  if (end >= content.length) return end;
-  while (end > start && (content[end]! & 0xc0) === 0x80) end -= 1;
-  return end > start ? end : Math.min(content.length, maximumEnd);
-}
-
-/** Return one bounded, code-point-aligned UTF-8 prefix. Validation decodes the
- * prefix exactly once; malformed content fails into the caller's binary path. */
-function boundedUtf8Preview(content: Buffer, maximumBytes: number): Buffer | undefined {
-  let end = Math.min(content.length, maximumBytes);
-  if (end < content.length && end > 0) {
-    let lead = end - 1;
-    while (lead >= Math.max(0, end - 4) && (content[lead]! & 0xc0) === 0x80) lead -= 1;
-    if (lead < 0) end = 0;
-    else {
-      const byte = content[lead]!;
-      const expectedBytes = byte < 0x80 ? 1
-        : (byte & 0xe0) === 0xc0 ? 2
-          : (byte & 0xf0) === 0xe0 ? 3
-            : (byte & 0xf8) === 0xf0 ? 4
-              : 1;
-      if (lead + expectedBytes > end) end = lead;
-    }
-  }
-  const candidate = content.subarray(0, end);
-  try {
-    return Buffer.from(new TextDecoder("utf-8", { fatal: true }).decode(candidate), "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-function sendInspectorJson(reply: FastifyReply, acceptEncoding: string | string[] | undefined, value: unknown): FastifyReply {
-  const body = JSON.stringify(value);
-  reply.type("application/json").header("vary", "Accept-Encoding");
-  return acceptsGzip(acceptEncoding)
-    ? reply.header("content-encoding", "gzip").send(gzipSync(body))
-    : reply.send(body);
-}
 
 export interface EngineRegistration {
   adapter: Adapter;
@@ -666,63 +506,6 @@ export interface CreateServerOptions {
   };
 }
 
-const nonPublicFaviconAddresses = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
-  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
-  ["192.0.2.0", 24], ["192.88.99.0", 24], ["198.18.0.0", 15], ["198.51.100.0", 24],
-  ["203.0.113.0", 24], ["224.0.0.0", 4], ["240.0.0.0", 4],
-] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv4");
-for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["::ffff:0:0", 96], ["64:ff9b::", 96], ["100::", 64],
-  ["2001::", 32], ["2001:db8::", 32], ["2002::", 16], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
-] as const) nonPublicFaviconAddresses.addSubnet(network, prefix, "ipv6");
-
-function externalFaviconTarget(raw: string): URL | undefined {
-  let target: URL;
-  try { target = new URL(raw); } catch { return undefined; }
-  const hostname = target.hostname.toLowerCase();
-  if (target.protocol !== "https:" || target.username || target.password || (target.port && target.port !== "443")
-    || !hostname || hostname === "localhost" || hostname.endsWith(".local") || isIP(hostname)) return undefined;
-  return new URL(`https://${hostname}/favicon.ico`);
-}
-
-async function loadExternalFavicon(target: URL): Promise<{ body: Buffer; mediaType: string }> {
-  const addresses = await dns.lookup(target.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some(({ address, family }) => nonPublicFaviconAddresses.check(address, family === 6 ? "ipv6" : "ipv4"))) {
-    throw new Error("favicon host does not resolve exclusively to public addresses");
-  }
-  const selected = addresses[0]!;
-  return await new Promise((resolve, reject) => {
-    const request = httpsRequest({
-      protocol: "https:", hostname: target.hostname, port: 443, path: "/favicon.ico", method: "GET",
-      servername: target.hostname,
-      headers: { accept: "image/png,image/x-icon,image/vnd.microsoft.icon,image/gif,image/webp,image/jpeg", "user-agent": "Ponderosa favicon fetch" },
-      lookup: (_hostname, _options, callback) => callback(null, selected.address, selected.family),
-    }, (response) => {
-      const mediaType = (response.headers["content-type"] ?? "").split(";", 1)[0]!.trim().toLowerCase();
-      const allowed = new Set(["image/png", "image/x-icon", "image/vnd.microsoft.icon", "image/gif", "image/webp", "image/jpeg"]);
-      if (response.statusCode !== 200 || !allowed.has(mediaType)) {
-        response.resume();
-        reject(new Error("favicon response was unavailable or unsafe"));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      let size = 0;
-      response.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > 64 * 1024) request.destroy(new Error("favicon exceeds 64 KiB"));
-        else chunks.push(chunk);
-      });
-      response.on("end", () => resolve({ body: Buffer.concat(chunks), mediaType }));
-      response.on("error", reject);
-    });
-    request.setTimeout(5_000, () => request.destroy(new Error("favicon request timed out")));
-    request.on("error", reject);
-    request.end();
-  });
-}
-
 interface ActiveRun {
   runId: string;
   startedAt: string;
@@ -832,57 +615,6 @@ interface AgentRuntimeAuthority {
   retryInProgress?: boolean;
 }
 
-/**
- * Collaboration room projections are a display timeline, not an authorization
- * boundary. Runtime context must be selected from the canonical audience:
- * stable-ID collaboration recipients see their deliveries, while organization
- * broadcasts are deliberately shared project context. Missing/unrecognized
- * canonical events fail closed instead of falling back to rendered mentions.
- */
-function canonicalAudienceIncludes(
-  event: CommunicationEvent | undefined,
-  projectId: string,
-  recipientAgentId: string,
-): boolean {
-  if (!event) return false;
-  const behavior = deriveCommunicationBehavior(event);
-  return (behavior.contextPolicy === "organizational" && event.projectId === projectId) ||
-    behavior.deliveryRecipients.some((recipient) => recipient.kind === "agent" && recipient.agentId === recipientAgentId);
-}
-
-function recipientCollaborationMessages(
-  messages: ConversationMessageDto[],
-  events: CommunicationEvent[],
-  projectId: string,
-  recipientAgentId: string,
-): ConversationMessageDto[] {
-  const eventsById = new Map(events.map((event) => [event.eventId, event]));
-  return messages.filter((message) => {
-    if (!message.communicationEventId) return false;
-    return canonicalAudienceIncludes(eventsById.get(message.communicationEventId), projectId, recipientAgentId);
-  });
-}
-
-/**
- * Future room context contains only canonical organizational communication.
- * Rendered tags are display affordances and never narrow or widen context.
- */
-function organizationalMasterMessages(
-  messages: ConversationMessageDto[],
-  events: CommunicationEvent[],
-  projectId: string,
-  _recipientAgentId: string,
-  _agents: AgentDto[],
-): ConversationMessageDto[] {
-  const eventsById = new Map(events.map((event) => [event.eventId, event]));
-  return messages.filter((message) => {
-    if (!message.communicationEventId) return false;
-    const event = eventsById.get(message.communicationEventId);
-    if (!event || event.projectId !== projectId) return false;
-    return deriveCommunicationBehavior(event).contextPolicy === "organizational";
-  });
-}
-
 /** A deferred user or agent turn.  Queues are per-agent and FIFO. */
 interface PendingTurn {
   text: string;
@@ -918,449 +650,14 @@ interface AgentMessageCapability {
   reachableArtifactIds: string[];
 }
 
-interface InboundMessageContext {
-  channel: AgentMessageChannel;
-  author: string;
-  mentionedAgents: string[];
-  addressedToCurrentAgent: boolean;
-}
-
 type Subscriber = (stored: StoredLogEvent) => void;
 
-// Keep only a bounded replay-detection window. This is deliberately not a total
-// collaboration-hop limit: a healthy organization may have a long-running
-// exchange, while exact repeated handoffs still need cycle protection.
-const MAX_AGENT_MENTION_REPLAY_WINDOW = 64;
 const MAX_TEXT_LENGTH = 64 * 1024;
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
 const MAX_ATTACHMENTS_PER_MESSAGE = ASSET_LIMITS.maxAssetsPerMessage;
 const MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 1;
 const MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY = 64;
 const CONTEXT_ROLLOVER_INSTRUCTION = "Your provider session is approaching its practical context limit. Before ending this Run, call `ponderosa_rollover` once with a 300–500 word handoff for the fresh session that will replace you. The handoff must explicitly separate: (1) the objective; (2) work completed; (3) unblocked work that should continue now; (4) blocked work and what blocks it; (5) the exact next action; (6) verified facts versus assumptions; (7) references to relevant files and artifacts. Do not summarize the whole conversation — carry only working state the next session needs. Then finish or safely stop your current work as normal.";
-
-function derivedRunActionKey(runId: string, action: string, payload: unknown): string {
-  return `auto:${createHash("sha256").update(`${runId}\0${action}\0${JSON.stringify(payload)}`).digest("hex")}`;
-}
-
-function secretEqual(provided: string | undefined, expected: string): boolean {
-  if (provided === undefined) return false;
-  const actual = Buffer.from(provided);
-  const wanted = Buffer.from(expected);
-  return actual.length === wanted.length && timingSafeEqual(actual, wanted);
-}
-
-function isAgentStreamEvent(event: StoredLogEvent["event"]): event is AgentStreamEvent {
-  return event.type !== "user_message";
-}
-
-function agentMentionHandle(title: string): string {
-  return title
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/[^\p{L}\p{N}_-]/gu, "");
-}
-
-function mentionRelayFingerprint(authorAgentId: string, targetAgentId: string, text: string): string {
-  return createHash("sha256")
-    .update(authorAgentId)
-    .update("\0")
-    .update(targetAgentId)
-    .update("\0")
-    .update(text.trim().replace(/\s+/g, " ").toLocaleLowerCase())
-    .digest("hex");
-}
-
-function advanceMentionTrail(mentionTrail: string[], messageFingerprint: string): string[] {
-  return [...mentionTrail, messageFingerprint].slice(-MAX_AGENT_MENTION_REPLAY_WINDOW);
-}
-
-function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string): AgentDto[] {
-  const byHandle = new Map(
-    agents.map((agent) => [agentMentionHandle(agent.title).toLocaleLowerCase(), agent]),
-  );
-  const mentioned = new Map<string, AgentDto>();
-  for (const match of text.matchAll(/(?:^|\s)#([\p{L}\p{N}_-]+)/gu)) {
-    const handle = match[1]!.toLocaleLowerCase();
-    if (handle === "broadcast" || handle === "user" || handle === "everyone") continue;
-    const agent = byHandle.get(handle);
-    if (agent && agent.id !== authorAgentId) mentioned.set(agent.id, agent);
-  }
-  return [...mentioned.values()];
-}
-
-function hasEveryoneMention(text: string): boolean {
-  return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
-}
-
-function stripLeadingScopeTag(text: string, tag: "broadcast" | "user"): string {
-  return text.replace(new RegExp(`^#${tag}(?=$|\\s)\\s*`, "iu"), "").trim();
-}
-
-function renderScopedMessage(tag: "broadcast" | "user", text: string): string {
-  return `#${tag} ${stripLeadingScopeTag(text, tag)}`.trimEnd();
-}
-
-function inboundContext(
-  channel: AgentMessageChannel,
-  author: string,
-  text: string,
-  agents: AgentDto[],
-  currentAgentId: string,
-): InboundMessageContext {
-  const mentioned = mentionedAgents(text, agents, "");
-  return {
-    channel,
-    author,
-    mentionedAgents: mentioned.map((agent) => `#${agentMentionHandle(agent.title)}`),
-    addressedToCurrentAgent: mentioned.some((agent) => agent.id === currentAgentId),
-  };
-}
-
-function messageContextPrompt(context: InboundMessageContext): string[] {
-  return [
-    "[ROUTING · CURRENT TURN | AUTHORITATIVE]",
-    `- channel: ${context.channel}`,
-    `- author: ${context.author}`,
-    `- tagged agents: ${context.mentionedAgents.join(", ") || "none"}`,
-    `- you were tagged: ${context.addressedToCurrentAgent ? "yes" : "no"}`,
-    "Use this metadata to distinguish a direct request from a message aimed at someone else.",
-  ];
-}
-
-const MAX_SEED_HISTORY_CHARS = 24_000;
-const MAX_SEED_HISTORY_MESSAGES = 40;
-
-/**
- * Runtime sessions retain their own context. This budget applies only when a
- * session boundary forces Ponderosa to seed again; canonical history remains on
- * disk and can still be queried explicitly.
- */
-export function boundedSeedHistory<T extends { text: string }>(
-  messages: T[],
-  maxChars = MAX_SEED_HISTORY_CHARS,
-  maxMessages = MAX_SEED_HISTORY_MESSAGES,
-): T[] {
-  const selected: T[] = [];
-  let remaining = maxChars;
-  for (let index = messages.length - 1; index >= 0 && selected.length < maxMessages && remaining > 0; index -= 1) {
-    const message = messages[index]!;
-    const messageLength = unicodeCodePointLength(message.text);
-    if (messageLength <= remaining) {
-      selected.push(message);
-      remaining -= messageLength;
-      continue;
-    }
-    const marker = "[Earlier content omitted at session boundary]\n";
-    const markerLength = unicodeCodePointLength(marker);
-    const clipped = remaining > markerLength
-      ? `${marker}${[...message.text].slice(-(remaining - markerLength)).join("")}`
-      : [...message.text].slice(-remaining).join("");
-    selected.push({ ...message, text: clipped });
-    remaining = 0;
-  }
-  return selected.reverse();
-}
-
-/**
- * Continued provider sessions consume new canonical room history in FIFO
- * pages. Unlike a seed (which intentionally selects the newest tail), a
- * continuation must never jump over an older unseen message merely to fit the
- * prompt budget. Canonical messages larger than the entire page are represented
- * by a bounded preview; their complete content remains available through the
- * older-context/artifact retrieval surface.
- */
-export function boundedContinuationHistory<T extends { text: string }>(
-  messages: T[],
-  maxChars = MAX_SEED_HISTORY_CHARS,
-  maxMessages = MAX_SEED_HISTORY_MESSAGES,
-): T[] {
-  const selected: T[] = [];
-  let remaining = maxChars;
-  for (const message of messages) {
-    if (selected.length >= maxMessages || remaining <= 0) break;
-    const messageLength = unicodeCodePointLength(message.text);
-    if (messageLength <= remaining) {
-      selected.push(message);
-      remaining -= messageLength;
-      continue;
-    }
-    if (selected.length > 0) break;
-    const marker = "\n[Remaining content is available from the older-context reference]";
-    const available = Math.max(0, remaining - unicodeCodePointLength(marker));
-    selected.push({
-      ...message,
-      text: available > 0
-        ? `${truncateUnicodeCodePoints(message.text, available)}${marker}`
-        : truncateUnicodeCodePoints(message.text, remaining),
-    });
-    remaining = 0;
-  }
-  return selected;
-}
-
-function contextSection(
-  name: string,
-  priority: "AUTHORITATIVE" | "ACTION REQUIRED" | "RELEVANT BACKGROUND" | "ON-DEMAND REFERENCE",
-  lines: string[],
-): string {
-  return [`[${name} | ${priority}]`, ...lines].join("\n");
-}
-
-/**
- * Bind every turn to one canonical agent/execution identity. Runtime sessions
- * may be resumed and display names may be reused, so neither provider memory
- * nor the visible-agent roster is allowed to answer "who am I?".
- */
-export function runtimeIdentityPrompt(
-  agent: Pick<AgentDto, "id" | "title" | "projectId">,
-  executionId: string,
-): string {
-  return contextSection("IDENTITY · CURRENT RUN", "AUTHORITATIVE", [
-    `- your agent id: ${agent.id}`,
-    `- your display name: ${agent.title}`,
-    `- your project id: ${agent.projectId}`,
-    `- your execution id: ${executionId}`,
-    `You are exactly ${agent.title} (${agent.id}). Never claim another visible agent's name or identity.`,
-    "Visible-agent metadata describes possible recipients, not alternate identities for you.",
-  ]);
-}
-
-function communicationV3Prompt(): string[] {
-  return [
-    "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
-    "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
-    "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
-    "A new Request is ordinary next-Run work and never interrupts an active recipient. Never create another Request just to tell a busy Agent to stop.",
-    "To end work you requested, cancel the exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}). To enforceably stop an active descendant Run, use ponderosa_manage stop_agent.",
-    "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
-    "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
-    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission.",
-    "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
-    "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
-    "Do not poll or sleep. End the turn after creating a Join when no independent work remains.",
-    "Live Team identities are retrievable with ponderosa_team_directory. Retrieve overflow Activation or artifact references with ponderosa_result({refs:[ref]}); continue only with the returned nextCursor.",
-    "Version-controlled product documentation is advertised as stable references and retrieved only when needed with ponderosa_docs({refs:[ref]}).",
-    "When bounded context omits older scoped material, the current Run receives a separate on-demand reference for it.",
-    "When this provider session should be replaced, call ponderosa_rollover({handoff}) once with bounded working state; the next fresh session receives it as non-authoritative continuation context.",
-    "Visible workers/reviewers/Agents are created only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team.",
-    "Discover stable teammate IDs with ponderosa_team_directory({}).",
-  ];
-}
-
-const PROVIDER_DYNAMIC_TOOLS = PONDEROSA_RUNTIME_TOOLS;
-
-export const PROVIDER_TOOL_CONTRACT_HASH = createHash("sha256").update(JSON.stringify({
-  tools: PROVIDER_DYNAMIC_TOOLS,
-  providerDefinitions: {
-    codexAppServer: PROVIDER_DYNAMIC_TOOLS.map((tool) => ({
-      type: "function", name: tool.name, description: tool.description, inputSchema: tool.inputSchema,
-    })),
-    claudeMcp: PROVIDER_DYNAMIC_TOOLS.map((tool) => ({
-      name: tool.name.replace(/^ponderosa_/, ""), description: tool.description, inputSchema: tool.inputSchema,
-    })),
-  },
-  promptContract: communicationV3Prompt(),
-})).digest("hex");
-
-export function providerSessionContractHash(
-  engine: string,
-  model?: string,
-  effort?: string,
-): string {
-  return createHash("sha256").update(JSON.stringify({
-    toolContractHash: PROVIDER_TOOL_CONTRACT_HASH,
-    engine,
-    model: model?.trim() || null,
-    effort: effort?.trim() || null,
-  })).digest("hex");
-}
-
-function runtimeSelectionError(
-  adapter: Adapter,
-  model?: string,
-  effort?: string,
-  additionalModels: ModelOption[] = [],
-): string | undefined {
-  const selectedModel = model?.trim() || undefined;
-  const selectedEffort = effort?.trim() || undefined;
-  const models = [...adapter.listModels()];
-  const knownModelIds = new Set(models.map((option) => option.id));
-  for (const option of additionalModels) {
-    if (!knownModelIds.has(option.id)) models.push(option);
-  }
-  const concreteModels = models.filter((option) => option.id);
-  const matchedModel = selectedModel ? concreteModels.find((option) => option.id === selectedModel) : undefined;
-  // A missing/unreadable provider cache is unknown availability, not evidence
-  // that an already-configured model disappeared.
-  if (selectedModel && concreteModels.length > 0 && !matchedModel) return "model is not available for engine";
-  const knownEfforts = selectedModel
-    ? matchedModel?.efforts ?? (adapter.modelSpecificEfforts ? undefined : adapter.listEfforts(selectedModel))
-    : adapter.listEfforts();
-  if (selectedEffort && knownEfforts && !knownEfforts.some((option) => option.id === selectedEffort)) {
-    return selectedModel ? "effort is not available for model" : "effort is not available for engine";
-  }
-}
-
-function normalizedRuntimeSelection(
-  adapter: Adapter,
-  model?: string,
-  effort?: string,
-  additionalModels: ModelOption[] = [],
-): { model?: string; effort?: string } {
-  const selectedModel = model?.trim() || undefined;
-  const selectedEffort = effort?.trim() || undefined;
-  const modelIsStale = selectedModel && runtimeSelectionError(adapter, selectedModel, undefined, additionalModels)?.startsWith("model ");
-  const normalizedModel = modelIsStale ? undefined : selectedModel;
-  const effortIsStale = selectedEffort && runtimeSelectionError(adapter, normalizedModel, selectedEffort, additionalModels)?.startsWith("effort ");
-  return {
-    ...(normalizedModel ? { model: normalizedModel } : {}),
-    ...(selectedEffort && !effortIsStale ? { effort: selectedEffort } : {}),
-  };
-}
-
-function concreteRuntimeSelection(
-  adapter: Adapter,
-  layers: Array<{ model?: string; effort?: string } | undefined>,
-  additionalModels: ModelOption[] = [],
-): { model?: string; effort?: string } {
-  const models = [...adapter.listModels()];
-  const knownModelIds = new Set(models.map((option) => option.id));
-  for (const option of additionalModels) {
-    if (!knownModelIds.has(option.id)) models.push(option);
-  }
-  const model = layers.map((layer) => layer?.model?.trim()).find((candidate) => candidate && !runtimeSelectionError(adapter, candidate, undefined, additionalModels))
-    ?? adapter.defaultModel?.()
-    ?? models.find((option) => option.id)?.id;
-  const modelDefaultEffort = models.find((option) => option.id === model)?.defaultEffort;
-  const modelCatalogUnknown = models.length > 0 && !models.some((option) => Boolean(option.id));
-  const effort = !model && (adapter.modelSpecificEfforts || modelCatalogUnknown) ? undefined : [
-    ...layers.map((layer) => layer?.effort?.trim()),
-    modelDefaultEffort,
-    adapter.defaultEffort?.(model),
-    adapter.listEfforts(model)[0]?.id,
-  ].find((candidate) => candidate && !runtimeSelectionError(adapter, model, candidate, additionalModels));
-  return { ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
-}
-
-function sharedRequestCompletionPrompt(): string {
-  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
-    "Before this Run ends, call ponderosa_message({text: \"<final answer>\"}) exactly once with the completed result or material blocker.",
-    "Ponderosa will publish this shared Project-chat reply as a Broadcast. Ordinary runtime output remains Work log only.",
-  ]);
-}
-
-function directUserRequestCompletionPrompt(): string {
-  return contextSection("RESPONSE CONTRACT", "ACTION REQUIRED", [
-    "Before this Run ends, call ponderosa_message({text: \"<reply>\"}) exactly once with the answer, question, completed result, or material blocker.",
-    "Ponderosa will keep this reply private to the user and this Agent. Ordinary runtime output remains Work log only.",
-  ]);
-}
-
-function teamDirectoryPrompt(directory: TeamDirectoryDto): string {
-  return contextSection("TEAM DIRECTORY", "ON-DEMAND REFERENCE", [
-    `${directory.agents.length} visible Agent${directory.agents.length === 1 ? "" : "s"} are currently in scope.`,
-    "Fetch current identities, reporting lines, and status only when needed with ponderosa_team_directory({}).",
-  ]);
-}
-
-function olderContextPrompt(): string {
-  return contextSection("OLDER SCOPED CONTEXT", "ON-DEMAND REFERENCE", [
-    "Earlier messages in this Agent's current scoped history were omitted from the bounded provider input.",
-    "Fetch them only if the current request needs that history with ponderosa_context({}).",
-  ]);
-}
-
-function boundedHistoryOmitted<T extends { text: string }>(source: T[], selected: T[]): boolean {
-  if (source.length !== selected.length) return true;
-  return source.some((message, index) => message.text !== selected[index]?.text);
-}
-
-type ScopedContextMessage = MessageDto | ConversationMessageDto;
-
-function mergeScopedContextSources(
-  sources: Array<{ items: ScopedContextMessage[]; hasMore: boolean }>,
-  limit: number,
-): { newest: ScopedContextMessage[]; hasMore: boolean } {
-  const deduped = new Map<string, ScopedContextMessage>();
-  for (const source of sources) for (const message of source.items) {
-    const key = message.communicationEventId ?? `${message.createdAt}\0${message.role}\0${message.text}`;
-    const current = deduped.get(key);
-    if (!current || message.id > current.id) deduped.set(key, message);
-  }
-  const ordered = [...deduped.values()].sort((left, right) =>
-    right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id));
-  return {
-    newest: ordered.slice(0, limit),
-    hasMore: sources.some((source) => source.hasMore) || ordered.length > limit,
-  };
-}
-
-// Reserve response-envelope room so the complete serialized tool page remains
-// below 64 KiB, not merely the sum of message bodies.
-const MAX_CONTEXT_PAGE_UTF8_BYTES = 60 * 1024;
-
-function byteBoundScopedContext(
-  newest: ScopedContextMessage[],
-  maximumBytes = MAX_CONTEXT_PAGE_UTF8_BYTES,
-): { messages: ScopedContextMessage[]; consumed: number; truncated: boolean } {
-  const selected: ScopedContextMessage[] = [];
-  let used = 0;
-  for (const message of newest) {
-    const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
-    if (used + bytes <= maximumBytes) {
-      selected.push(message);
-      used += bytes;
-      continue;
-    }
-    if (selected.length > 0) break;
-    const marker = "\n[Content clipped to keep this context page byte-bounded]";
-    const shellBytes = Buffer.byteLength(JSON.stringify({ ...message, text: marker }), "utf8");
-    const allowance = Math.max(0, maximumBytes - shellBytes);
-    const source = Buffer.from(message.text, "utf8");
-    let end = Math.min(source.length, allowance);
-    while (end > 0) {
-      try {
-        const prefix = new TextDecoder("utf-8", { fatal: true }).decode(source.subarray(0, end));
-        const clipped = { ...message, text: `${prefix}${marker}` };
-        const serializedBytes = Buffer.byteLength(JSON.stringify(clipped), "utf8");
-        if (serializedBytes <= maximumBytes) {
-          selected.push(clipped);
-          break;
-        }
-        end = Math.max(0, end - (serializedBytes - maximumBytes) - 1);
-      } catch { end -= 1; }
-    }
-    if (selected.length === 0) selected.push({ ...message, text: marker.trim() });
-    return { messages: selected, consumed: 1, truncated: true };
-  }
-  return { messages: selected, consumed: selected.length, truncated: selected.length < newest.length };
-}
-
-function sharedBroadcastContextPrompt(messages: ConversationMessageDto[], agents: AgentDto[]): string {
-  const names = new Map(agents.map((agent) => [agent.id, agent.title]));
-  return [
-    "[SHARED PROJECT HISTORY | RELEVANT BACKGROUND]",
-    ...(messages.length ? messages.map((message) => {
-      const author = message.authorAgentId ? names.get(message.authorAgentId) ?? "Agent" : "User";
-      return `${author}: ${message.text}`;
-    }) : ["(No Broadcasts yet.)"]),
-  ].join("\n");
-}
-
-function managerRelationshipPrompt(agent: Pick<AgentDto, "managerAgentId">): string[] {
-  if (!agent.managerAgentId) {
-    return ["[REPORTING RELATIONSHIP | AUTHORITATIVE]", "You are a top-level Agent. You report to the user and may publish intentional organizational Broadcasts."];
-  }
-  return [
-    "[REPORTING RELATIONSHIP | AUTHORITATIVE]",
-    `You are a managed agent. Your direct manager is the stable agent id ${agent.managerAgentId}.`,
-    "That relationship defines accountability, escalation, creation, and lifecycle ownership; it does not restrict who you may contact.",
-    "Send work directly to the agent or user who requested it, decisions to affected owners, and questions to whoever can answer them. Contact your manager when the manager owns the outcome or must resolve priority, scope, ownership, resource, or escalation questions.",
-    "You may Direct Message the user when the user needs the answer, decision, question, or genuinely private update. Do not send routine acknowledgments or duplicate summaries to either the user or your manager.",
-    "You may collaborate directly with any relevant agent in the project, including agents in other reporting branches. Do not Broadcast; top-level agents own organizational synthesis and publication.",
-  ];
-}
 
 function agentMessageEndpoint(
   _request: { protocol: string; headers: Record<string, unknown> },
@@ -1370,420 +667,6 @@ function agentMessageEndpoint(
   // Capabilities are injected into host-local runtimes. Never let an external
   // Host/X-Forwarded-* header choose where those bearer tokens are sent.
   return "http://127.0.0.1:8787/api/agent-messages";
-}
-
-/**
- * Give a conversation agent the shared room context and a lightweight teammate
- * response contract. This is intentionally part of the next user prompt (rather
- * than engine-specific configuration) so new and resumed agents behave alike.
- */
-function conversationPrompt(
-  messages: ConversationMessageDto[],
-  agents: AgentDto[],
-  currentRequest: string,
-  context: InboundMessageContext,
-  replyScope: "broadcast" | "direct_to_user",
-  currentMessageId?: string,
-  incremental = false,
-  routingMetadata?: string,
-): string {
-  const names = new Map(agents.map((agent) => [agent.id, agent.title]));
-  const transcript = messages
-    .map((message) => {
-      const speaker = message.authorAgentId
-        ? names.get(message.authorAgentId) ?? "Agent"
-        : message.role === "user"
-          ? "Manager"
-          : "Team";
-      const document = message.document ? ` [document: ${message.document.title}; id: ${message.document.id}]` : "";
-      return `${speaker}: ${message.text}${document} [message id: ${message.id}]`;
-    })
-    .join("\n");
-
-  const staticInstructions = incremental ? [] : [
-    "[CONVERSATION CONTRACT | AUTHORITATIVE]",
-    "You are handling a manager request that originated in Project chat.",
-    replyScope === "broadcast"
-      ? "The latest plain Project-chat request is shared work. The inferred reply publishes its completed answer to the Project."
-      : "The latest request is a Direct Message. The inferred reply remains private.",
-    "Agent-to-agent discussion belongs in Collaboration and requires explicit stable agent IDs.",
-    "Send the new result once; do not recap the entire history or send an acknowledgment-only message.",
-  ];
-  return [
-    ...staticInstructions,
-    ...(routingMetadata ? [routingMetadata] : []),
-    ...messageContextPrompt(context),
-    "",
-    incremental ? "[NEW PROJECT MESSAGES | RELEVANT BACKGROUND]" : "[PROJECT HISTORY | RELEVANT BACKGROUND]",
-    transcript || (incremental ? "(No new room messages.)" : "(No earlier messages.)"),
-    `Context injection accounting: room_messages=${messages.length}; room_characters=${messages.reduce((sum, message) => sum + unicodeCodePointLength(message.text), 0)}`,
-    "",
-    ...(currentMessageId ? [`Latest message id: ${currentMessageId}`] : []),
-    "[CURRENT REQUEST | ACTION REQUIRED]",
-    currentRequest,
-  ].join("\n");
-}
-
-function individualChatPrompt(currentRequest: string, context: InboundMessageContext): string {
-  return [
-    "[CONVERSATION CONTRACT | AUTHORITATIVE]",
-    "You are replying in your individual Ponderosa Agent chat.",
-    ...messageContextPrompt(context),
-    "",
-    "[CURRENT REQUEST | ACTION REQUIRED]",
-    currentRequest,
-  ].join("\n");
-}
-
-/** Minimal turn prompt for a session that already received the full protocol. */
-function continuationPrompt(currentRequest: string, context: InboundMessageContext): string {
-  const channelRule = context.channel === "collaboration"
-    ? "If this uncorrelated Collaboration turn needs a response, ponderosa_message({text}) replies to its sender. Use explicit recipients only when someone else must act."
-    : context.channel === "main"
-      ? "ponderosa_message({text}) inherits whether this Project-chat request is shared or private."
-      : "ponderosa_message({text}) replies privately to the user when this activation has an unambiguous user origin.";
-  return [
-    ...messageContextPrompt(context),
-    channelRule,
-    "[CURRENT REQUEST | ACTION REQUIRED]",
-    currentRequest,
-  ].join("\n");
-}
-
-function envelope(agentId: string, stored: StoredLogEvent, replayed = false): SseEventEnvelope | undefined {
-  if (!isAgentStreamEvent(stored.event)) return undefined;
-  return { agentId, seq: stored.seq, ts: stored.ts, event: stored.event, ...(replayed ? { replayed: true } : {}) };
-}
-
-function writeSse(res: NodeJS.WritableStream, name: string, id: number | undefined, data: unknown): void {
-  if (id !== undefined) res.write(`id: ${id}\n`);
-  res.write(`event: ${name}\n`);
-  res.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-function contentTypeForStatic(file: string): string {
-  if (file.endsWith(".html")) return "text/html; charset=utf-8";
-  if (file.endsWith(".js")) return "text/javascript; charset=utf-8";
-  if (file.endsWith(".css")) return "text/css; charset=utf-8";
-  if (file.endsWith(".json") || file.endsWith(".webmanifest")) return "application/json; charset=utf-8";
-  if (file.endsWith(".svg")) return "image/svg+xml";
-  if (file.endsWith(".png")) return "image/png";
-  if (file.endsWith(".jpg") || file.endsWith(".jpeg")) return "image/jpeg";
-  if (file.endsWith(".webp")) return "image/webp";
-  if (file.endsWith(".pdf")) return "application/pdf";
-  if (file.endsWith(".ico")) return "image/x-icon";
-  if (file.endsWith(".woff")) return "font/woff";
-  if (file.endsWith(".woff2")) return "font/woff2";
-  return "application/octet-stream";
-}
-
-function cacheControlForStatic(file: string): string {
-  const base = path.basename(file);
-  if (base === "index.html" || base === "sw.js" || base === "register-sw.js" || base === "manifest.webmanifest") return "no-cache";
-  if (file.includes(`${path.sep}static${path.sep}`)) return "public, max-age=31536000, immutable";
-  return "public, max-age=3600";
-}
-
-function contentTypeForArtifact(file: string): ArtifactContentDto["contentType"] {
-  if (file.endsWith(".md")) return "markdown";
-  if (file.endsWith(".patch") || file.endsWith(".diff")) return "diff";
-  return "text";
-}
-
-async function pathExists(file: string): Promise<boolean> {
-  try {
-    await fs.access(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function safeRelativePath(input: string | undefined): string {
-  const value = input ?? "";
-  const normalized = path.posix.normalize(value.replaceAll("\\", "/"));
-  if (normalized === "." || normalized === "/") return "";
-  if (normalized.startsWith("../") || normalized === ".." || path.isAbsolute(value)) {
-    throw new Error("path escapes project");
-  }
-  return normalized;
-}
-
-const FILE_REFERENCE_IGNORED_SEGMENTS = new Set([
-  "node_modules", "vendor", "dist", "build", "coverage", "__pycache__",
-  ".git", ".hg", ".svn", ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
-]);
-
-/** File mentions are model context, so credential-ish and generated paths fail closed. */
-export function isProjectFileReferenceAllowed(relativePath: string): boolean {
-  const segments = relativePath.replaceAll("\\", "/").split("/").filter(Boolean);
-  return segments.every((segment) =>
-    !FILE_REFERENCE_IGNORED_SEGMENTS.has(segment) &&
-    !segment.startsWith(".") &&
-    !/(?:^|[-_.])(secret|secrets|credential|credentials|token|tokens|password|passwd|oauth)(?:$|[-_.])/iu.test(segment),
-  );
-}
-
-async function readScopedPath(root: string, relInput: string | undefined): Promise<FilesResponse> {
-  const rel = safeRelativePath(relInput);
-  if (rel && !isProjectFileReferenceAllowed(rel)) throw new Error("path is excluded from project references");
-  const rootReal = await fs.realpath(root);
-  const target = path.resolve(rootReal, rel);
-  const targetReal = await fs.realpath(target);
-  if (targetReal !== rootReal && !targetReal.startsWith(rootReal + path.sep)) {
-    throw new Error("path escapes project");
-  }
-
-  const stat = await fs.stat(targetReal);
-  if (stat.isDirectory()) {
-    const entries = await fs.readdir(targetReal, { withFileTypes: true });
-    return {
-      kind: "dir",
-      path: rel,
-      entries: entries
-        .filter((entry) => (entry.isDirectory() || entry.isFile()) && isProjectFileReferenceAllowed(path.posix.join(rel, entry.name)))
-        .map((entry) => ({
-          name: entry.name,
-          path: path.posix.join(rel, entry.name),
-          kind: entry.isDirectory() ? ("dir" as const) : ("file" as const),
-        }))
-        .sort((a, b) => Number(a.kind === "file") - Number(b.kind === "file") || a.name.localeCompare(b.name)),
-    };
-  }
-
-  if (stat.size > MAX_FILE_BYTES) throw new Error("file exceeds 2 MiB browser limit");
-  const buffer = await fs.readFile(targetReal);
-  return isUtf8(buffer)
-    ? { kind: "file", path: rel, content: buffer.toString("utf8"), encoding: "utf-8" }
-    : { kind: "file", path: rel, content: buffer.toString("base64"), encoding: "base64" };
-}
-
-const WORKSPACE_REVIEW_MAX_BYTES = 2 * 1024 * 1024;
-
-function isWorkspaceReviewPathAllowed(relativePath: string): boolean {
-  const segments = relativePath.replaceAll("\\", "/").split("/").filter(Boolean);
-  return segments.every((segment) =>
-    !FILE_REFERENCE_IGNORED_SEGMENTS.has(segment) &&
-    !/^\.env(?:\.|$)/iu.test(segment) &&
-    !/(?:^|[-_.])(secret|secrets|credential|credentials|token|tokens|password|passwd|oauth)(?:$|[-_.])/iu.test(segment),
-  );
-}
-
-interface GitResult { stdout: string; stderr: string; exitCode: number }
-
-function runGit(root: string, args: string[]): Promise<GitResult> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      ["-c", "color.ui=false", ...args],
-      { cwd: root, encoding: "utf8", timeout: 8_000, maxBuffer: WORKSPACE_REVIEW_MAX_BYTES },
-      (error, stdout, stderr) => {
-        if (error && typeof error.code === "string") return reject(error);
-        resolve({ stdout, stderr, exitCode: typeof error?.code === "number" ? error.code : 0 });
-      },
-    );
-  });
-}
-
-export function parseGitStatus(output: string): WorkspaceChangeDto[] {
-  const records = output.split("\0");
-  const changes: WorkspaceChangeDto[] = [];
-  for (let index = 0; index < records.length; index += 1) {
-    const record = records[index];
-    if (!record || record.length < 4) continue;
-    const x = record[0]!;
-    const y = record[1]!;
-    const pathValue = record.slice(3);
-    const renamed = x === "R" || y === "R" || x === "C" || y === "C";
-    const previousPath = renamed ? records[index += 1] : undefined;
-    if (!isWorkspaceReviewPathAllowed(pathValue)) continue;
-    const combined = `${x}${y}`;
-    changes.push({
-      path: pathValue,
-      ...(previousPath && isWorkspaceReviewPathAllowed(previousPath) ? { previousPath } : {}),
-      kind: renamed ? "rename" : combined.includes("D") ? "delete" : combined === "??" || combined.includes("A") ? "create" : "edit",
-      staged: x !== " " && x !== "?",
-      unstaged: y !== " " && y !== "?",
-      untracked: combined === "??",
-    });
-  }
-  return changes.sort((a, b) => a.path.localeCompare(b.path));
-}
-
-async function workspaceStatus(projectId: string, root: string): Promise<WorkspaceStatusDto> {
-  const generatedAt = new Date().toISOString();
-  try {
-    const inside = await runGit(root, ["rev-parse", "--is-inside-work-tree"]);
-    if (inside.exitCode !== 0 || inside.stdout.trim() !== "true") return { projectId, isGitRepository: false, generatedAt, changes: [] };
-    const [status, branch, head] = await Promise.all([
-      runGit(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
-      runGit(root, ["rev-parse", "--abbrev-ref", "HEAD"]),
-      runGit(root, ["rev-parse", "--short", "HEAD"]),
-    ]);
-    return {
-      projectId,
-      isGitRepository: true,
-      branch: branch.stdout.trim() || undefined,
-      head: head.stdout.trim() || undefined,
-      generatedAt,
-      changes: parseGitStatus(status.stdout),
-    };
-  } catch {
-    return { projectId, isGitRepository: false, generatedAt, changes: [] };
-  }
-}
-
-async function workspaceFile(projectId: string, root: string, input: string | undefined): Promise<WorkspaceFileReviewDto> {
-  const relativePath = safeRelativePath(input);
-  if (!relativePath || !isWorkspaceReviewPathAllowed(relativePath)) throw new Error("path is excluded from workspace review");
-  const rootReal = await fs.realpath(root);
-  const candidate = path.resolve(rootReal, relativePath);
-  if (!candidate.startsWith(`${rootReal}${path.sep}`)) throw new Error("path escapes project");
-
-  const [staged, unstaged] = await Promise.all([
-    runGit(rootReal, ["diff", "--cached", "--no-ext-diff", "--unified=3", "--", relativePath]),
-    runGit(rootReal, ["diff", "--no-ext-diff", "--unified=3", "--", relativePath]),
-  ]);
-  let exists = false;
-  let content: string | undefined;
-  let truncated = staged.stdout.length + unstaged.stdout.length >= WORKSPACE_REVIEW_MAX_BYTES;
-  try {
-    const resolved = await fs.realpath(candidate);
-    if (resolved !== rootReal && !resolved.startsWith(`${rootReal}${path.sep}`)) throw new Error("path escapes project");
-    const stat = await fs.stat(resolved);
-    exists = stat.isFile();
-    if (exists && stat.size <= MAX_FILE_BYTES) {
-      const body = await fs.readFile(resolved);
-      if (isUtf8(body)) content = body.toString("utf8");
-    } else if (exists) {
-      truncated = true;
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-  const stagedDiff = staged.stdout;
-  const unstagedDiff = unstaged.stdout;
-  let diff = [stagedDiff, unstagedDiff].filter(Boolean).join("\n");
-  if (!diff && exists && content !== undefined) {
-    const lines = content.split("\n");
-    diff = [`--- /dev/null`, `+++ b/${relativePath}`, `@@ -0,0 +1,${lines.length} @@`, ...lines.map((line) => `+${line}`)].join("\n");
-    if (diff.length > WORKSPACE_REVIEW_MAX_BYTES) {
-      diff = diff.slice(0, WORKSPACE_REVIEW_MAX_BYTES);
-      truncated = true;
-    }
-  }
-  return { projectId, path: relativePath, exists, ...(content !== undefined ? { content } : {}), diff, stagedDiff, unstagedDiff, truncated };
-}
-
-export function parseTokenUsageRange(query: { from?: string; to?: string }): TokenUsageRangeDto {
-  const range: TokenUsageRangeDto = {};
-  for (const key of ["from", "to"] as const) {
-    const value = query[key];
-    if (value === undefined) continue;
-    const timestamp = new Date(value);
-    if (!value.trim() || Number.isNaN(timestamp.valueOf())) throw new Error(`${key} must be a valid ISO timestamp`);
-    range[key] = timestamp.toISOString();
-  }
-  if (range.from && range.to && range.from >= range.to) throw new Error("from must be earlier than to");
-  return range;
-}
-
-/**
- * The workspace stream is a coarse invalidation bus, not a second copy of every
- * agent's execution stream. High-frequency output stays on the per-agent SSE
- * channel and in the canonical agent log.
- */
-export function workspaceAgentEventCategory(event: LogEvent): Extract<WorkspaceEvent, { type: "agent_event" }>["category"] | undefined {
-  switch (event.type) {
-    case "agent_lifecycle": return "lifecycle";
-    case "file_change": return "file";
-    case "command":
-    case "work_item_update":
-    case "test_result":
-    case "browser_session":
-    case "browser_action":
-    case "browser_console":
-    case "context_rollover_triggered": return "task";
-    case "browser_screenshot": return "artifact";
-    case "session":
-    case "session_reset": return "state";
-    case "communication_projection": return "message";
-    default: return undefined;
-  }
-}
-
-export function notificationKindForCommunication(event: CommunicationEvent): WorkspaceNotificationDto["kind"] | undefined {
-  if (event.sender.kind !== "agent") return undefined;
-  if (event.intent === "broadcast") return "broadcasts";
-  if (event.schemaVersion === 2 && event.intent === "user_dm") return "direct_responses";
-  if (event.audienceSelector === "everyone") return "everyone";
-  if (event.intent === "collaboration") return "collaboration";
-  return undefined;
-}
-
-export function notificationPreferenceMatches(
-  preference: NotificationPreference | NotificationPreferencesDto,
-  event: CommunicationEvent,
-  kind: WorkspaceNotificationDto["kind"],
-): boolean {
-  if (typeof preference === "object") {
-    if (preference.allMessages) return true;
-    if (kind === "direct_responses") return preference.directReplies;
-    if (kind === "project_responses") return preference.projectChatMessages && event.intent === "broadcast" && Boolean(event.conversationId);
-    if (kind === "broadcasts" || kind === "everyone") return preference.broadcasts;
-    if (kind === "mentions") return preference.mentions;
-    return false;
-  }
-  if (preference === "none") return false;
-  if (preference === "all_messages") return true;
-  if (preference === "project_responses") return event.intent === "broadcast" && Boolean(event.conversationId);
-  // #user is represented structurally as an agent-to-user DM, never inferred
-  // from rendered text. It is the only current communication that mentions the operator.
-  if (preference === "mentions") return kind === "direct_responses";
-  return preference === kind;
-}
-
-export function conciseConversationTitle(text: string): string | undefined {
-  const normalized = text
-    .replace(/^\s*(?:#(?:broadcast|everyone|user|[\w-]+)\s+)+/i, "")
-    .replace(/https?:\/\/\S+/g, "")
-    .replace(/[`*_#>\[\](){}]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return undefined;
-  const words = normalized.split(" ").filter(Boolean).slice(0, 5);
-  if (words.length < 2) return undefined;
-  return words.join(" ").replace(/[\s,.;:!?-]+$/g, "").slice(0, 48).trim() || undefined;
-}
-
-/** Deterministic title used when no provider title service is available.
- * The conversation belongs to the operator's request, not a keyword mash of
- * an agent's response. */
-export function semanticConversationTitle(operatorText: string, agentText: string): string | undefined {
-  void agentText;
-  return conciseConversationTitle(operatorText);
-}
-
-export function normalizeExternalCitations(value: unknown, verifiedAt = new Date().toISOString()): VerifiedCitationDto[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.length > 10) throw new Error("citations must be an array of at most 10 sources");
-  const result = new Map<string, VerifiedCitationDto>();
-  for (const item of value) {
-    const source = item as { url?: unknown; title?: unknown };
-    const title = typeof source?.title === "string" ? source.title.trim().replace(/\s+/g, " ") : "";
-    if (!title || title.length > 240 || typeof source?.url !== "string" || source.url.length > 2048) {
-      throw new Error("each citation requires a URL and a title of at most 240 characters");
-    }
-    let url: URL;
-    try { url = new URL(source.url); } catch { throw new Error("citation URL is invalid"); }
-    const hostname = url.hostname.toLowerCase();
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || hostname === "localhost" || hostname.endsWith(".local") || /^(?:127\.|10\.|192\.168\.|169\.254\.|0\.|::1$|fc|fd)/i.test(hostname)) {
-      throw new Error("citation URL must be an external HTTP(S) address without credentials");
-    }
-    url.hash = "";
-    result.set(url.toString(), { url: url.toString(), title, verifiedAt });
-  }
-  return [...result.values()];
 }
 
 export interface PonderosaServer extends FastifyInstance {
@@ -5075,6 +3958,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
+  const serverContext: ServerContext = { opts, documentationReferences, limits, agentDetail, store, tokenUsage };
   app.server.on("upgrade", linkPreviewUpgrade);
   const coordinationV3Scheduler = new CoordinationV3Scheduler(
     coordinationV3,
@@ -8323,12 +7208,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { scheduled: true, afterRunId: capability.runId, handoffId };
   });
 
-  app.get("/api/health", async (): Promise<HealthDto> => ({
-    status: "ok",
-    service: "ponderosa",
-    version: opts.buildVersion?.trim() || "0.0.0",
-    revision: opts.buildRevision?.trim() || "development",
-  }));
+  registerHealthRoutes(app, serverContext);
 
   app.get("/api/launcher/status", async () => ({
     service: "ponderosa",
@@ -9213,16 +8093,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return sendInspectorJson(reply, request.headers["accept-encoding"], result);
   });
 
-  app.get<{ Querystring: { from?: string; to?: string } }>("/api/usage", async (request, reply) => {
-    try { return tokenUsage({ type: "overall" }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/projects/:id/usage", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    try { return tokenUsage({ type: "project", id: request.params.id }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
+  registerUsageRoutes(app, serverContext);
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/team-directory", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -10802,94 +9673,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     }
   });
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string } }>("/api/agents/:id", async (request, reply) => {
-    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    try {
-      const detail = agentDetail(request.params.id, { limit, cursor: request.query.cursor, focusId: request.query.focusId });
-      return detail ?? reply.code(404).send({ error: "agent not found" });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
-    }
-  });
-
-  app.get<{
-    Params: { id: string; stream: AgentTelemetryStream };
-    Querystring: { limit?: string; cursor?: string; focusId?: string };
-  }>("/api/agents/:id/history/:stream", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts"]);
-    if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
-    try {
-      const input = { limit, cursor: request.query.cursor, focusId: request.query.focusId };
-      switch (request.params.stream) {
-        case "runOutput": return { stream: "runOutput" as const, ...store.getRunOutputPage(request.params.id, input) };
-        case "activity": return { stream: "activity" as const, ...store.getActivityPage(request.params.id, input) };
-        case "changedFiles": return { stream: "changedFiles" as const, ...store.getChangedFilePage(request.params.id, input) };
-        case "runs": return { stream: "runs" as const, ...store.getRunPage(request.params.id, input) };
-        case "workItems": return { stream: "workItems" as const, ...store.getWorkItemPage(request.params.id, input) };
-        case "artifacts": return { stream: "artifacts" as const, ...store.getArtifactPage(request.params.id, input) };
-      }
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
-    }
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
-    "/api/agents/:id/changed-file",
-    async (request, reply) => {
-      if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-      const path = request.query.path;
-      if (!path || path.length > 4_096 || path.includes("\0")) return reply.code(400).send({ error: "valid path is required" });
-      return store.getChangedFileDetail(request.params.id, path)
-        ?? reply.code(404).send({ error: "changed file not found" });
-    },
-  );
-
-  app.get<{
-    Params: { id: string; seq: string };
-    Querystring: { cursor?: string; maxBytes?: string };
-  }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    const seq = Number(request.params.seq);
-    if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
-    try {
-      const cursor = request.query.cursor
-        ? decodeActivityOutputCursor(request.query.cursor, request.params.id, seq)
-        : undefined;
-      const requestedBytes = Number(request.query.maxBytes ?? RESULT_PAGE_DEFAULT_BYTES);
-      const maxBytes = Math.min(
-        RESULT_PAGE_MAX_BYTES,
-        Math.max(RESULT_PAGE_MIN_BYTES, Number.isFinite(requestedBytes) ? Math.floor(requestedBytes) : RESULT_PAGE_DEFAULT_BYTES),
-      );
-      const startUtf8Byte = cursor?.byteOffset ?? 0;
-      const page = store.getActivityOutputPage(request.params.id, seq, startUtf8Byte, maxBytes);
-      if (!page) return reply.code(404).send({ error: "tool output not found" });
-      if (cursor && cursor.sha256 !== page.sha256) throw new Error("activity output changed after the cursor was issued");
-      const endUtf8Byte = startUtf8Byte + page.pageUtf8Bytes;
-      return {
-        agentId: page.agentId,
-        activityId: page.activityId,
-        seq: page.seq,
-        output: page.output,
-        pageUtf8Bytes: page.pageUtf8Bytes,
-        startUtf8Byte,
-        endUtf8Byte,
-        totalUtf8Bytes: page.totalUtf8Bytes,
-        sha256: page.sha256,
-        ...(endUtf8Byte < page.totalUtf8Bytes ? {
-          nextCursor: encodeActivityOutputCursor({
-            agentId: page.agentId,
-            seq: page.seq,
-            sha256: page.sha256,
-            byteOffset: endUtf8Byte,
-          }),
-        } : {}),
-      };
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid activity output cursor" });
-    }
-  });
+  registerAgentAuditRoutes(app, serverContext);
 
   app.get<{ Params: { id: string }; Querystring: { mode?: AgentExportMode; organization?: string } }>("/api/agents/:id/export", async (request, reply) => {
     const root = store.getAgent(request.params.id);
@@ -11308,11 +10092,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return reply.code(201).send(response);
   });
 
-  app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>("/api/agents/:id/usage", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
-    try { return tokenUsage({ type: "agent", id: request.params.id }, parseTokenUsageRange(request.query)); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid usage range" }); }
-  });
+  registerAgentUsageRoute(app, serverContext);
 
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",
@@ -11468,119 +10248,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return store.searchGlobalChats({ query: q, limit, notifications: workspace.listNotifications() });
   };
 
-  app.get("/api/wiki", async () => documentationReferences.index());
+  registerWikiRoutes(app, serverContext);
 
-  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/wiki/search", async (request, reply) => {
-    const query = request.query.q?.trim() ?? "";
-    const limit = request.query.limit === undefined ? 20 : Number(request.query.limit);
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) return reply.code(400).send({ error: "limit must be an integer from 1 to 50" });
-    return documentationReferences.search(query, limit);
-  });
-
-  app.get<{ Params: { id: string } }>("/api/wiki/articles/:id", async (request, reply) => {
-    const article = documentationReferences.article(request.params.id);
-    return article ?? reply.code(404).send({ error: "wiki article not found" });
-  });
-
-  app.get<{ Params: { name: string } }>("/api/wiki/assets/:name", async (request, reply) => {
-    const asset = documentationReferences.asset(request.params.name);
-    if (!asset) return reply.code(404).send({ error: "wiki asset not found" });
-    return reply.type(asset.mediaType).header("cache-control", "public, max-age=3600").send(asset.body);
-  });
-
-  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search", async (request, reply) => {
-    try {
-      return globalChatSearch(request.query);
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
-    }
-  });
-
-  app.get<{ Querystring: { limit?: string; cursor?: string } }>("/api/all-chat", async (request, reply) => {
-    const requestedLimit = Number(request.query.limit ?? 50);
-    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(100, Math.floor(requestedLimit))) : 50;
-    if (request.query.cursor !== undefined && (!request.query.cursor || request.query.cursor.length > 4096)) {
-      return reply.code(400).send({ error: "cursor must be a non-empty opaque string of at most 4096 characters" });
-    }
-    try {
-      type CombinedCursor = {
-        v: 1;
-        messages?: string;
-        messagesDone?: boolean;
-        decisions?: { createdAt: string; id: string };
-        decisionsDone?: boolean;
-      };
-      let combined: CombinedCursor | undefined;
-      if (request.query.cursor) {
-        try {
-          const parsed = JSON.parse(Buffer.from(request.query.cursor, "base64url").toString("utf8")) as Partial<CombinedCursor>;
-          if (parsed.v === 1) combined = parsed as CombinedCursor;
-        } catch {
-          // A pre-composite cursor remains a valid message cursor.
-        }
-      }
-      const messagePage = combined?.messagesDone
-        ? { items: [], history: { limit, hasMore: false } }
-        : store.getAllChatPage({ limit, cursor: combined ? combined.messages : request.query.cursor });
-      const decisionPage = combined?.decisionsDone
-        ? { events: [], hasMore: false as const }
-        : workspace.listDecisionEventPage({ limit, before: combined?.decisions });
-      const decisions = decisionPage.events
-        .flatMap((event) => {
-          const decision = event.decision;
-          const project = store.getProject(decision.projectId);
-          const conversation = decision.conversationId ? store.getConversation(decision.conversationId) : undefined;
-          if (!project || !conversation) return [];
-          return [{
-            kind: event.kind,
-            id: event.id,
-            createdAt: event.createdAt,
-            decision,
-            project: { id: project.id, label: project.label },
-            source: { kind: "project" as const, conversationId: conversation.id, title: conversation.title },
-          }];
-        });
-      const oldestDecisionEvent = decisionPage.events.at(-1);
-      const hasMore = messagePage.history.hasMore || decisionPage.hasMore;
-      const nextCursor: CombinedCursor = {
-        v: 1,
-        ...(messagePage.history.hasMore && messagePage.history.cursor
-          ? { messages: messagePage.history.cursor }
-          : { messagesDone: true }),
-        ...(decisionPage.hasMore && oldestDecisionEvent
-          ? { decisions: { createdAt: oldestDecisionEvent.createdAt, id: oldestDecisionEvent.id } }
-          : { decisionsDone: true }),
-      };
-      return {
-        items: messagePage.items,
-        decisions,
-        history: {
-          limit,
-          hasMore,
-          ...(hasMore ? { cursor: Buffer.from(JSON.stringify(nextCursor)).toString("base64url") } : {}),
-        },
-      } satisfies AllChatPageDto;
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid All Chat cursor" });
-    }
-  });
-
-  // Keep the former agent-search URL useful for old clients while returning the
-  // same shared DTO and projection semantics as global search.
-  app.get<{ Params: { id: string }; Querystring: { q?: string; limit?: string } }>("/api/agents/:id/search", async (request, reply) => {
-    const agent = store.getAgent(request.params.id);
-    if (!agent) return reply.code(404).send({ error: "agent not found" });
-    try {
-      const response = globalChatSearch(request.query);
-      return {
-        ...response,
-        results: response.results.filter((result) => result.chat.kind === "agent" && result.chat.id === agent.id),
-        recentChats: response.recentChats.filter((recent) => recent.chat.kind === "agent" && recent.chat.id === agent.id),
-      };
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid search query" });
-    }
-  });
+  registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
 
   async function assetMetadata(agentId: string, id: string) {
     const agent = store.getAgent(agentId);
@@ -11589,9 +10259,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return metadata && await assets.content(agent.projectId, agent.id, id, false) ? metadata : undefined;
   }
 
-  const limits = { ...ASSET_LIMITS, maxAttachmentsPerMessage: ASSET_LIMITS.maxAssetsPerMessage };
-  app.get("/api/attachment-limits", async () => limits);
-  app.get("/api/asset-limits", async () => ASSET_LIMITS);
+  registerLimitsRoutes(app, serverContext);
 
   app.post<{ Params: { id: string }; Body: Buffer }>("/api/agents/:id/attachments", async (request, reply) => {
     const agent = store.getAgent(request.params.id);
@@ -13417,25 +12085,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
 
   const catalogOperatorAvatarIds = new Set(["default-user", "sunset", "river", "mountain", "fox", "owl"]);
 
-  app.post<{ Body: Buffer }>("/api/workspace/profile-images", { bodyLimit: MAX_OPERATOR_AVATAR_BYTES }, async (request, reply) => {
-    if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "profile image body is required" });
-    try {
-      const uploaded = await storeOperatorProfileImage(opts.dataDir, request.body, request.headers["content-type"]);
-      return reply.code(201).send(uploaded);
-    } catch (error) {
-      if (error instanceof OperatorProfileImageError) return reply.code(error.statusCode).send({ error: error.message });
-      throw error;
-    }
-  });
-
-  app.get<{ Params: { avatarId: string } }>("/api/workspace/profile-images/:avatarId", async (request, reply) => {
-    const image = await readOperatorProfileImage(opts.dataDir, request.params.avatarId);
-    if (!image) return reply.code(404).send({ error: "profile image not found" });
-    return reply.type(image.mediaType)
-      .header("cache-control", "private, max-age=31536000, immutable")
-      .header("content-disposition", "inline")
-      .send(image.body);
-  });
+  registerOperatorProfileImageRoutes(app, opts);
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
 
@@ -14437,12 +13087,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     return { compacted: clearAgentResumeSession(request.params.id, "explicit_compaction") };
   });
 
-  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string } }>("/api/agents/:id/runs", async (request, reply) => {
-    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
-    const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    try { return store.getRunPage(request.params.id, { limit, cursor: request.query.cursor }); }
-    catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" }); }
-  });
+  registerAgentRunHistoryRoute(app, serverContext);
 
   app.get<{ Params: { id: string }; Querystring: { exact?: string } }>("/api/runs/:id/provider-input", async (request, reply) => {
     const input = store.getProviderInput(request.params.id, request.query.exact === "1");
@@ -14515,27 +13160,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  app.get<{ Params: { projectId: string; documentId: string } }>(
-    "/api/projects/:projectId/communication-documents/:documentId",
-    async (request, reply) => {
-      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
-      if (!found) return reply.code(404).send({ error: "document not found" });
-      const { content, ...metadata } = found.document;
-      const root = `/api/projects/${encodeURIComponent(request.params.projectId)}/communication-documents/${encodeURIComponent(found.document.id)}`;
-      return { ...metadata, previewUrl: root, downloadUrl: `${root}/download`, content };
-    },
-  );
-
-  app.get<{ Params: { projectId: string; documentId: string } }>(
-    "/api/projects/:projectId/communication-documents/:documentId/download",
-    async (request, reply) => {
-      const found = authoritativeCommunicationDocument(request.params.projectId, request.params.documentId);
-      if (!found) return reply.code(404).send({ error: "document not found" });
-      return reply.type("text/markdown; charset=utf-8")
-        .header("Content-Disposition", contentDisposition(`${found.document.title}.md`))
-        .send(found.document.content);
-    },
-  );
+  registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
 
   async function generatedFile(
     projectId: string,
@@ -14839,17 +13464,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  app.get<{ Querystring: { projectId?: string; path?: string } }>("/api/files", async (request, reply) => {
-    const projectId = request.query.projectId;
-    if (!projectId) return reply.code(400).send({ error: "projectId is required" });
-    const project = store.getProject(projectId);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    try {
-      return await readScopedPath(project.hostPath, request.query.path);
-    } catch (err) {
-      return reply.code(400).send({ error: err instanceof Error ? err.message : "invalid path" });
-    }
-  });
+  registerLegacyFilesRoute(app, serverContext);
 
   const PROJECT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
   const PROJECT_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
@@ -15120,21 +13735,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     },
   );
 
-  app.get<{ Params: { id: string } }>("/api/projects/:id/workspace", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    return workspaceStatus(project.id, project.hostPath);
-  });
-
-  app.get<{ Params: { id: string }; Querystring: { path?: string } }>("/api/projects/:id/workspace/file", async (request, reply) => {
-    const project = store.getProject(request.params.id);
-    if (!project) return reply.code(404).send({ error: "project not found" });
-    try {
-      return await workspaceFile(project.id, project.hostPath, request.query.path);
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid workspace path" });
-    }
-  });
+  registerLegacyWorkspaceRoutes(app, serverContext);
 
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
     return Promise.all(Array.from(engines.values()).map(engineDto));
