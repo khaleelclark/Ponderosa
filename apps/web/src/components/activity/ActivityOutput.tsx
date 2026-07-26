@@ -15,9 +15,11 @@ function byteLabel(bytes: number): string {
 export function ActivityOutput({
   result,
   label = "Output",
+  collapsedLines = 10,
 }: {
   result: ActivityStreamResult;
   label?: string;
+  collapsedLines?: number;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [additionalPages, setAdditionalPages] = useState<AgentActivityOutputDto[]>([]);
@@ -44,7 +46,7 @@ export function ActivityOutput({
   const canonicalOutput = pages.map((page) => page.output).join("");
   const output = open && canonicalOutput ? canonicalOutput : result.output;
   const lineCount = result.output.split("\n").length;
-  const collapsible = lineCount > 10 || result.output.length > 800 || Boolean(reference);
+  const collapsible = lineCount > collapsedLines || result.output.length > 800 || Boolean(reference);
   const totalBytes = reference?.totalUtf8Bytes ?? new TextEncoder().encode(result.output).byteLength;
 
   return <Box sx={{ mt: 0.75 }}>
@@ -54,7 +56,7 @@ export function ActivityOutput({
     <Box sx={{
       position: "relative",
       ...(!open && collapsible ? {
-        maxHeight: "14.5em",
+        maxHeight: `${collapsedLines * 1.45}em`,
         overflow: "hidden",
         maskImage: "linear-gradient(to bottom, black calc(100% - 2.5em), transparent)",
       } : {}),

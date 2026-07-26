@@ -136,7 +136,7 @@ export function CommandRow({
     {!entry.internal && entry.cwd && entry.cwd !== projectRoot ? <Typography variant="caption" color="text.secondary">
       cwd: {entry.cwd}
     </Typography> : null}
-    {entry.result ? <ActivityOutput result={entry.result} label="Command output" /> : null}
+    {entry.result ? <ActivityOutput result={entry.result} label="Command output" collapsedLines={5} /> : null}
   </Row>;
 }
 
@@ -194,13 +194,11 @@ export function FileRow({
   focusId,
   onOpenFile,
   onOpenFileInNewTab,
-  onViewAll,
 }: {
   entry: Extract<ActivityStreamEntry, { kind: "file" }>;
   focusId?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
-  onViewAll?(): void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [menu, setMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
@@ -256,10 +254,9 @@ export function FileRow({
         hideHeader
         maxHeight={{ xs: "38vh", md: "46vh" }}
       />
-      <Stack direction="row" spacing={1} sx={{ mt: 0.5 }}>
-        {onOpenFile ? <Button size="small" color="inherit" onClick={() => onOpenFile(file)}>Open focused diff</Button> : null}
-        {onViewAll ? <Button size="small" color="inherit" onClick={onViewAll}>Files & Results</Button> : null}
-      </Stack>
+      {onOpenFile ? <Button size="small" color="inherit" onClick={() => onOpenFile(file)} sx={{ mt: 0.5 }}>
+        Open focused diff
+      </Button> : null}
     </Box> : null}
     {entry.result ? <ActivityOutput result={entry.result} label="File tool output" /> : null}
     <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
