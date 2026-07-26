@@ -718,6 +718,15 @@ export function WorkspaceSettingsView({
       );
     },
   });
+  useEffect(() => {
+    if (!saveAgentDefaults.isSuccess) return;
+
+    const timeoutId = window.setTimeout(() => {
+      saveAgentDefaults.reset();
+    }, 3_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [saveAgentDefaults.isSuccess, saveAgentDefaults.reset]);
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
