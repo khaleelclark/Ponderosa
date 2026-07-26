@@ -237,6 +237,7 @@ import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,
   projectedMessageIdForFocus,
+  scrollFocusedMessageIntoView,
 } from "../messageFocus";
 import { mobileOperationalStatus } from "../mobileChat";
 import { notificationTechnicalFocusId } from "../technicalFocus";
@@ -850,7 +851,7 @@ export function ConversationView({
     }
     const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollFocusedMessageIntoView(target);
     target.focus({ preventScroll: true });
     focusedMessageHighlightDisposer.current?.();
     focusedMessageHighlightDisposer.current = highlightFocusedMessage(target);
