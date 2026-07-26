@@ -37,19 +37,9 @@ import {
   isCommunicationEvent,
 } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
+import { triggerBudgetEndsAt } from "./coordination-v3-trigger-budget.js";
 
 type Actor = { kind: "agent" | "user" | "system" | "supervisor"; id?: string };
-
-function triggerBudgetEndsAt(period: TriggerRunBudgetDto["period"], startedAt: string): string | undefined {
-  if (period === "lifetime") return undefined;
-  const start = new Date(startedAt);
-  if (period === "month") {
-    start.setUTCMonth(start.getUTCMonth() + 1);
-    return start.toISOString();
-  }
-  start.setUTCDate(start.getUTCDate() + (period === "week" ? 7 : 1));
-  return start.toISOString();
-}
 
 export interface RunAuthorizationV3 {
   runId: string;
