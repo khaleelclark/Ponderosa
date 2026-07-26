@@ -216,6 +216,8 @@ import {
   type QueuedEditRevisionOutboxPayload,
 } from "./routes/queued-messages.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { registerConversationCorrectionRoutes } from "./routes/conversation-corrections.js";
+import { registerCollaborationRoutes } from "./routes/collaboration.js";
 import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
 import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
 import {
@@ -7377,344 +7379,33 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     afterQueuedEditSqliteCommit: opts.messageLifecycleFaults?.afterQueuedEditSqliteCommit,
   });
-  app.post<{
-    Params: { id: string; messageId: string };
-    Body: CorrectConversationMessageRequest;
-  }>("/api/conversations/:id/messages/:messageId/corrections", async (request, reply) => {
-    const text = request.body?.text?.trim() ?? "";
-    const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
-    if (!text || text.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "correction text is required" });
-    if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
-    if (request.body?.activeRunDelivery && request.body.activeRunDelivery !== "queue") return reply.code(400).send({ error: "corrections always queue a new turn" });
-    const conversation = store.getConversation(request.params.id);
-    if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const receiptKey = `correction:${conversation.id}:${idempotencyKey}`;
-    const messages = store.getConversationMessages(conversation.id, "main");
-    const requestedOperatorMessage = messages.find((message) => message.id === request.params.messageId && message.role === "user" && !message.authorAgentId);
-    const existingMessage = store.getConversationMessageByReceiptKey(conversation.id, receiptKey);
-    if (!existingMessage && !requestedOperatorMessage) {
-      return reply.code(409).send({ error: "only your own sent messages can be corrected" });
-    }
-    if (!existingMessage && requestedOperatorMessage?.correctedByMessageId) return reply.code(409).send({ error: "this message already has an immutable correction" });
-    const original = existingMessage
-      ? messages.find((message) => message.id === existingMessage.correctionOfMessageId)
-      : requestedOperatorMessage;
-    const originalEventId = original?.communicationEventId;
-    const originalCommunication = originalEventId
-      ? store.getCommunicationEvent(conversation.projectId, originalEventId)
-      : undefined;
-    if (originalCommunication?.intent === "broadcast") {
-      const revisionText = stripLeadingScopeTag(text, "broadcast");
-      const eventId = `communication-edit-${createHash("sha256").update(receiptKey).digest("hex")}`;
-      const revision: CommunicationRevisionEvent = {
-        eventId,
-        schemaVersion: 1,
-        kind: "edit",
-        projectId: conversation.projectId,
-        conversationId: conversation.id,
-        targetEventId: originalCommunication.eventId,
-        sender: { kind: "user", userId: "local-operator" },
-        text: revisionText,
-        createdAt: new Date().toISOString(),
-        idempotencyKey: receiptKey,
-      };
-      try {
-        const stored = store.appendCommunicationRevision(revision);
-        if (!stored.replayed) appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
-        return {
-          originalMessageId: request.params.messageId,
-          correctionMessageId: stored.revision.eventId,
-          replayed: stored.replayed,
-          queued: false,
-        } satisfies CorrectConversationMessageResponse;
-      } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "broadcast edit conflict" });
-      }
-    }
-    const targets = originalEventId
-      ? coordinationV3.communicationRecipientAgentIds(conversation.projectId, originalEventId)
-      : [];
-    if (targets.length !== 1) {
-      return reply.code(409).send({ error: targets.length === 0 ? "message delivery has not been scheduled" : "messages sent to multiple agents cannot be corrected as one turn" });
-    }
-    const target = store.getAgent(targets[0]!);
-    if (!target || target.archived || !target.conversationIds.includes(conversation.id)) return reply.code(409).send({ error: "the original recipient is no longer available" });
-    const eventId = `correction-${createHash("sha256").update(receiptKey).digest("hex")}`;
-    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
-    const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-    const communication: CommunicationEvent = {
-      eventId, schemaVersion: 2, projectId: conversation.projectId, conversationId: conversation.id,
-      sender: { kind: "user", userId: "local-operator" }, intent: "user_dm",
-      audience: { kind: "user_agent", userId: "local-operator", agentId: target.id }, text,
-      createdAt, idempotencyKey: receiptKey, correctionOfEventId: originalEventId,
-    };
-    let intake;
-    try {
-      intake = coordinationV3.recordRuntimeCommunication({
-        id: eventId,
-        projectId: conversation.projectId,
-        sender: { kind: "user", userId: "local-operator" },
-        intent: "correction",
-        audience: communication.audience,
-        payload: {
-          communication,
-          dispatch: {
-            conversationId: conversation.id,
-            text,
-            activeRunDelivery: "queue",
-            correctionOfMessageId: request.params.messageId,
-            correctionOfEventId: originalEventId,
-          },
-        },
-        activation: {
-          agentId: target.id,
-          kind: "message_correction",
-          priority: 100,
-          dispatchPolicy: "next_run",
-          promptClass: "human",
-        },
-        now: createdAt,
-      });
-    } catch (error) {
-      return reply.code(409).send({ error: error instanceof Error ? error.message : "correction conflict" });
-    }
-    recordCommunication(communication);
-    store.appendCommunicationProjection(conversation.projectId, {
-      eventId, surface: "user_inbox", projectionKey: "local-operator", projectedAt: createdAt,
-    });
-    let message = existingMessage;
-    if (!message) {
-      message = store.appendConversationMessage(
-        conversation.id,
-        { text },
-        undefined,
-        "main",
-        [{ targetAgentId: target.id, relayDepth: 0, mentionTrail: [], kind: "direct" }],
-        receiptKey,
-        eventId,
-      );
-    }
-    if (!message) return reply.code(503).send({ error: "correction projection could not be recorded; retry is safe" });
-    publishCoordinationV3Changed(target.id);
-    coordinationV3Scheduler.notify();
-    return {
-      originalMessageId: request.params.messageId,
-      correctionMessageId: message.id,
-      replayed: intake.replayed,
-      queued: true,
-    } satisfies CorrectConversationMessageResponse;
+  registerConversationCorrectionRoutes(app, {
+    store,
+    coordinationV3,
+    recordCommunication,
+    appendWorkspace,
+    publishCoordinationV3Changed,
+    notifyScheduler: () => coordinationV3Scheduler.notify(),
   });
 
-
-  app.get<{ Params: { id: string }; Querystring: { limit?: string; cursor?: string; focusId?: string; operationCursor?: string } }>("/api/conversations/:id/collaboration", async (request, reply) => {
-    const limit = Math.min(1_000, Math.max(1, Number(request.query.limit ?? 100) || 100));
-    try {
-      const detail = collaborationViewDetail(request.params.id, {
-        limit, cursor: request.query.cursor, focusId: request.query.focusId,
-        operationCursor: request.query.operationCursor,
-      });
-      return detail ?? reply.code(404).send({ error: "conversation not found" });
-    } catch (error) {
-      return reply.code(400).send({ error: error instanceof Error ? error.message : "invalid history cursor" });
-    }
-  });
-
-  app.post<{
-    Params: { id: string };
-    Body: CreateCollaborationMessageRequest;
-  }>("/api/conversations/:id/collaboration/messages", async (request, reply) => {
-    const conversation = store.getConversation(request.params.id);
-    if (conversation && deletingProjectIds.has(conversation.projectId)) {
-      return reply.code(409).send({ error: "Project deletion is in progress" });
-    }
-    const text = canonicalizeProviderText(request.body?.text ?? "").trim();
-    const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
-    if (!text && (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.every((item) => !item?.attachmentIds?.length))) {
-      return reply.code(400).send({ error: "text or an attachment is required" });
-    }
-    if (Buffer.byteLength(text, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) return reply.code(413).send({ error: "text exceeds the 8 MiB limit" });
-    const idempotencyKey = request.body?.idempotencyKey?.trim();
-    if (idempotencyKey && idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
-    const detail = collaborationViewDetail(request.params.id);
-    if (!detail) return reply.code(404).send({ error: "conversation not found" });
-
-    let renderedText = text;
-    let routing: { intents: ConversationDeliveryIntent[]; blocked: Array<{ title: string; reason: string }> };
-    if (request.body.recipientAgentIds !== undefined) {
-      const ids = request.body.recipientAgentIds;
-      if (!Array.isArray(ids) || ids.length === 0 || ids.length > 100) {
-        return reply.code(400).send({ error: "collaboration requires 1 to 100 recipientAgentIds" });
-      }
-      const uniqueIds = [...new Set(ids)];
-      const members = new Map(detail.agents.map((agent) => [agent.id, agent]));
-      const targets = uniqueIds.map((id) => members.get(id));
-      if (targets.some((target) => !target || target.archived)) {
-        return reply.code(400).send({ error: "every collaboration recipient must be an active agent in this conversation" });
-      }
-      const recipientPrefix = targets.map((target) => `#${agentMentionHandle(target!.title)}`).join(" ");
-      renderedText = text ? `${recipientPrefix} ${text}` : recipientPrefix;
-      routing = {
-        intents: targets.map((target) => ({
-          targetAgentId: target!.id, relayDepth: 0, mentionTrail: [], kind: "tag", audience: "mention",
-        })),
-        blocked: [],
-      };
-    } else {
-      return reply.code(400).send({ error: "collaboration requires explicit recipientAgentIds" });
-    }
-    if (routing.intents.length === 0) {
-      return reply.code(400).send({ error: "collaboration requires at least one explicit recipient" });
-    }
-    const master = store.getConversation(request.params.id)!;
-    if (!Array.isArray(requestedRecipientAttachments) || requestedRecipientAttachments.length > routing.intents.length) {
-      return reply.code(400).send({ error: "recipientAttachments must match collaboration recipients" });
-    }
-    const attachmentIdsByAgent = new Map<string, string[]>();
-    for (const recipient of requestedRecipientAttachments) {
-      if (!recipient || typeof recipient.agentId !== "string" || attachmentIdsByAgent.has(recipient.agentId) ||
-          !routing.intents.some((intent) => intent.targetAgentId === recipient.agentId) || !Array.isArray(recipient.attachmentIds) ||
-          recipient.attachmentIds.length > MAX_ATTACHMENTS_PER_MESSAGE || new Set(recipient.attachmentIds).size !== recipient.attachmentIds.length) {
-        return reply.code(400).send({ error: `each collaboration recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique owned attachments` });
-      }
-      attachmentIdsByAgent.set(recipient.agentId, recipient.attachmentIds);
-    }
-    const attachmentsByAgent = new Map<string, ImageAttachmentDto[]>();
-    for (const intent of routing.intents) {
-      const ids = attachmentIdsByAgent.get(intent.targetAgentId) ?? [];
-      const attached = await Promise.all(ids.map((id) => assetMetadata(intent.targetAgentId, id)));
-      if (attached.some((item) => !item || item.agentId !== intent.targetAgentId)) return reply.code(404).send({ error: "collaboration attachment not found" });
-      if (attached.reduce((sum, item) => sum + (item?.size ?? 0), 0) > ASSET_LIMITS.maxMessageBytes) return reply.code(413).send({ error: "message asset quota exceeded" });
-      attachmentsByAgent.set(intent.targetAgentId, (attached as NonNullable<(typeof attached)[number]>[]).map((item) => {
-        const { projectId: _projectId, originalFile: _originalFile, previewFile: _previewFile, associatedAt: _associatedAt, ...publicAsset } = item;
-        return { ...publicAsset, state: "associated" as const };
-      }));
-    }
-    const canonicalAttachments = routing.intents
-      .map((intent) => attachmentsByAgent.get(intent.targetAgentId) ?? [])
-      .find((items) => items.length > 0) ?? [];
-    const eventId = idempotencyKey
-        ? `collaboration-${createHash("sha256").update(`${master.id}\0${idempotencyKey}`).digest("hex")}`
-        : randomUUID();
-    const existingRuntime = coordinationV3.runtimeCommunication(eventId);
-    const createdAt = existingRuntime?.createdAt ?? new Date().toISOString();
-    let prepared: Awaited<ReturnType<typeof prepareUserCommunicationText>>;
-    try {
-      prepared = await prepareUserCommunicationText({
-        projectId: master.projectId, communicationId: eventId, text, createdAt,
-      });
-    } catch (error) {
-      const status = error instanceof AssetError ? error.statusCode : 409;
-      return reply.code(status).send({ error: error instanceof Error ? error.message : "long-text artifact staging failed" });
-    }
-    const publishedRenderedText = text
-      ? `${renderedText.slice(0, renderedText.length - text.length)}${prepared.publishedText}`
-      : renderedText;
-    const communication: CommunicationEvent = {
-      eventId,
-      schemaVersion: 2, projectId: master.projectId, conversationId: master.id,
-      sender: { kind: "user", userId: "local-operator" }, intent: "collaboration",
-      audience: { kind: "agents", agentIds: routing.intents.map((item) => item.targetAgentId) as [string, ...string[]] },
-      audienceSelector: routing.intents.some((item) => item.audience === "everyone") ? "everyone" : "mention",
-      text: prepared.publishedText,
-      ...(prepared.document ? { document: prepared.document } : {}),
-      createdAt,
-      ...(canonicalAttachments.length ? { attachments: canonicalAttachments } : {}),
-      ...(idempotencyKey ? { idempotencyKey: `collaboration:${master.id}:${idempotencyKey}` } : {}),
-    };
-    let intake;
-    try {
-      intake = coordinationV3.recordRuntimeCommunication({
-        id: eventId,
-        projectId: master.projectId,
-        sender: communication.sender,
-        intent: communication.intent,
-        audience: communication.audience,
-        payload: {
-          communication,
-          dispatch: {
-            conversationId: master.id,
-            text: publishedRenderedText,
-            ...(prepared.artifact ? {
-              artifactId: prepared.artifact.id,
-              resultRef: `ponderosa://artifact/${prepared.artifact.id}`,
-            } : {}),
-            recipients: routing.intents.map((intent) => ({
-              agentId: intent.targetAgentId,
-              attachments: (attachmentsByAgent.get(intent.targetAgentId) ?? []).map((item) => ({
-                id: item.id, name: item.name, mediaType: item.mediaType, size: item.size,
-              })),
-            })),
-          },
-        },
-        ...(prepared.artifact ? { artifacts: [runtimeArtifactMetadata(prepared.artifact)] } : {}),
-        activations: routing.intents.map((intent, index) => ({
-          agentId: intent.targetAgentId,
-          kind: "human_message",
-          priority: 100,
-          dispatchPolicy: "steer_or_run",
-          promptClass: "human",
-          dedupeKey: `communication:${eventId}:${intent.targetAgentId}:${index}`,
-        })),
-        now: communication.createdAt,
-      });
-      if (prepared.artifact) await opts.messageLifecycleFaults?.afterCommunicationArtifactCommit?.({
-        kind: "communication", ownerId: eventId, artifactIds: [prepared.artifact.id],
-      });
-    } catch (error) {
-      const status = error instanceof AssetError ? error.statusCode : 409;
-      return reply.code(status).send({ error: error instanceof Error ? error.message : "collaboration conflict" });
-    }
-    const canonicalCommunication = recordCommunication(communication);
-    if (intake.replayed) await reconcileRuntimeCommunicationProjections({
-      projectId: communication.projectId,
-      communicationEventId: communication.eventId,
-    });
-    if (prepared.artifact) projectCommunicationArtifact(
-      master.projectId,
-      "local-operator",
-      prepared.artifact,
-      communicationArtifactAccess(canonicalCommunication),
-    );
-    const replayedMessage = detail.messages.find((candidate) => candidate.communicationEventId === communication.eventId);
-    if (replayedMessage && intake.replayed) {
-      return {
-        message: replayedMessage,
-        audience: hasEveryoneMention(text) ? "everyone" : "mention",
-        notifiedAgentIds: routing.intents.map((intent) => intent.targetAgentId),
-      };
-    }
-    let message;
-    message = store.appendConversationMessage(
-      request.params.id,
-      { role: "user", text: publishedRenderedText, attachments: canonicalAttachments },
-      // The canonical chat snapshot uses one copy; per-recipient copies stay in
-      // dispatch/audit data and are never rendered as duplicates.
-      undefined,
-      "collaboration",
-      routing.intents,
-      undefined,
-      communication?.eventId,
-    );
-    const notifiedAgentIds: string[] = [];
-    for (const intent of routing.intents) {
-      store.appendCommunicationProjection(master.projectId, {
-        eventId, surface: "agent_inbox", projectionKey: intent.targetAgentId, projectedAt: communication.createdAt,
-      });
-      const recipientAttachments = attachmentsByAgent.get(intent.targetAgentId) ?? [];
-      if (!intake.replayed && recipientAttachments.length) {
-        await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
-      }
-      projectCommunicationToAgentAudit(intent.targetAgentId, communication, publishedRenderedText, recipientAttachments);
-      publishCoordinationV3Changed(intent.targetAgentId);
-    }
-    if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
-    coordinationV3Scheduler.notify();
-    notifiedAgentIds.push(...routing.intents.map((intent) => intent.targetAgentId));
-    return {
-      message,
-      audience: hasEveryoneMention(text) ? "everyone" : "mention",
-      notifiedAgentIds,
-    };
+  registerCollaborationRoutes(app, {
+    store,
+    coordinationV3,
+    assets,
+    projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+    collaborationViewDetail,
+    assetMetadata,
+    prepareUserCommunicationText,
+    runtimeArtifactMetadata,
+    recordCommunication,
+    reconcileRuntimeCommunicationProjections,
+    projectCommunicationArtifact,
+    communicationArtifactAccess,
+    projectCommunicationToAgentAudit,
+    appendWorkspace,
+    publishCoordinationV3Changed,
+    notifyScheduler: () => coordinationV3Scheduler.notify(),
+    afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
   });
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/agents", async (request, reply) => {
