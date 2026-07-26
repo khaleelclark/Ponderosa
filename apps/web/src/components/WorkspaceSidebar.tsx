@@ -780,13 +780,6 @@ export function WorkspaceSidebar({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ ml: 1, minWidth: 24, textAlign: "right", flexShrink: 0 }}
-            >
-              {snapshot.conversations.filter(item => !item.archived).length}
-            </Typography>
           </ListItemButton>
           <Tooltip
             title={
