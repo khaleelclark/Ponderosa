@@ -239,8 +239,9 @@ export function Composer({
               ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
               : undefined;
   const setDestination = (handle: string) =>
-    update(current =>
-      `#${handle} ${replaceDestination(current, undefined).trimStart()}`.trimEnd(),
+    update(
+      current =>
+        `#${handle} ${replaceDestination(current, undefined).trimStart()}`,
     );
   const clearDestination = (handle: string) =>
     update(current => removeHandle(current, handle));

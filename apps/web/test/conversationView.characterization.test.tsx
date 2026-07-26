@@ -29,7 +29,12 @@ const firstConversationId = "conversation-one";
 const secondConversationId = "conversation-two";
 const engineId = "codex";
 const createdAt = "2026-07-25T10:00:00.000Z";
-const scrollIntoView = vi.fn();
+// A focused message is scrolled either by Element.scrollIntoView or, when it
+// sits inside a .chat-scroll-region, by scrolling that container directly so
+// overflow-hidden workspace ancestors stay put. jsdom implements neither, so
+// both routes report through one spy and these assertions characterize "the
+// focused message was scrolled once" rather than which strategy was chosen.
+const scrollFocusedMessage = vi.fn();
 
 const agent: AgentDto = {
   id: "agent-one",
@@ -282,13 +287,15 @@ class ObservableIntersectionObserver implements IntersectionObserver {
 
 beforeEach(() => {
   localStorage.clear();
-  scrollIntoView.mockClear();
+  scrollFocusedMessage.mockClear();
   ObservableIntersectionObserver.instances = [];
   vi.stubGlobal("IntersectionObserver", ObservableIntersectionObserver);
-  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
-    configurable: true,
-    value: scrollIntoView,
-  });
+  for (const method of ["scrollIntoView", "scrollTo"] as const) {
+    Object.defineProperty(HTMLElement.prototype, method, {
+      configurable: true,
+      value: scrollFocusedMessage,
+    });
+  }
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -297,6 +304,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+  delete (HTMLElement.prototype as Partial<HTMLElement>).scrollTo;
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -430,7 +438,7 @@ describe("ConversationView public behavior", () => {
 
     await waitFor(() => {
       expect(firstArticle.dataset.notificationFocus).toBe("true");
-      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      expect(scrollFocusedMessage).toHaveBeenCalledTimes(1);
     });
 
     result.rerender(
@@ -443,7 +451,7 @@ describe("ConversationView public behavior", () => {
         />,
       ),
     );
-    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    expect(scrollFocusedMessage).toHaveBeenCalledTimes(1);
     expect(firstArticle.dataset.notificationFocus).toBe("true");
 
     result.rerender(
@@ -461,7 +469,7 @@ describe("ConversationView public behavior", () => {
     await waitFor(() => {
       expect(firstArticle.dataset.notificationFocus).toBeUndefined();
       expect(secondArticle.dataset.notificationFocus).toBe("true");
-      expect(scrollIntoView).toHaveBeenCalledTimes(2);
+      expect(scrollFocusedMessage).toHaveBeenCalledTimes(2);
     });
 
     result.unmount();

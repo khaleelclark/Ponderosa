@@ -15,6 +15,7 @@ import { api } from "../api";
 import {
   highlightFocusedMessage,
   projectedMessageIdForFocus,
+  scrollFocusedMessageIntoView,
 } from "../messageFocus";
 import {
   mergeConversationMessages,
@@ -178,7 +179,7 @@ export function useConversationMessageFocusEffect({
     }
     const target = document.getElementById(`master-message-${projectedId}`);
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollFocusedMessageIntoView(target);
     target.focus({ preventScroll: true });
     focusedMessageHighlightDisposer.current?.();
     focusedMessageHighlightDisposer.current = highlightFocusedMessage(target);

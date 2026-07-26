@@ -76,6 +76,7 @@ import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import {
   highlightFocusedMessage,
   projectedMessageIdForFocus,
+  scrollFocusedMessageIntoView,
 } from "../messageFocus";
 import {
   effortSelectionIsCompatible,
@@ -481,7 +482,7 @@ export function AgentDetail({
     }
     const target = document.getElementById(`message-${projectedId}`);
     if (!target) return;
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollFocusedMessageIntoView(target);
     target.focus({ preventScroll: true });
     highlightFocusedMessage(target);
     focusedMessage.current = focusMessageId;
