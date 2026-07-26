@@ -794,7 +794,7 @@ export function AgentsTab({
                   sx={{
                     ml:
                       organizationView === "hierarchy"
-                        ? `${Math.min(depth, 8) * 22}px`
+                        ? `${Math.min(depth, 8) * 28}px`
                         : 0,
                     pl: organizationView === "hierarchy" && depth ? 0.75 : 0,
                     opacity: contextOnly ? 0.62 : 1,
@@ -807,8 +807,14 @@ export function AgentsTab({
                           : "divider",
                       bgcolor:
                         organizationView === "hierarchy" && depth
-                          ? "var(--ponderosa-surface-secondary)"
+                          ? "var(--ponderosa-delegated-surface)"
                           : "background.paper",
+                      "& > button:hover":
+                        organizationView === "hierarchy" && depth
+                          ? {
+                              bgcolor: "var(--ponderosa-delegated-hover)",
+                            }
+                          : undefined,
                     },
                   }}
                 >
