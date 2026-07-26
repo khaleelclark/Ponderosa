@@ -1427,6 +1427,45 @@ describe("AgentStore — append + projection", () => {
     expect(detail.runs).toEqual([expect.objectContaining({ id: "run-1", status: "completed" })]);
   });
 
+  it("returns complete Run output text when the bounded timeline preview is truncated", () => {
+    const { agentId } = seedAgent();
+    const text = `${"response block ".repeat(3_000)}tail`;
+    store.appendEvent(agentId, {
+      type: "text",
+      delta: text,
+      executionId: "run-large-output",
+    });
+
+    const output = store.getRunOutputs(agentId)[0]!;
+    expect(output.textPreview).toMatchObject({
+      truncated: true,
+      previewUtf8Bytes: 32 * 1_024,
+      totalUtf8Bytes: Buffer.byteLength(text),
+    });
+    expect(output.text).toHaveLength(32 * 1_024);
+    expect(store.getRunOutputText(agentId, output.seq)).toEqual({
+      agentId,
+      runOutputId: output.id,
+      seq: output.seq,
+      text,
+      totalUtf8Bytes: Buffer.byteLength(text),
+    });
+  });
+
+  it("rejects Run output retrieval above the canonical 8 MiB boundary", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, {
+      type: "text",
+      delta: "x".repeat(8 * 1_024 * 1_024 + 1),
+      executionId: "run-output-over-limit",
+    });
+
+    const output = store.getRunOutputs(agentId)[0]!;
+    expect(() => store.getRunOutputText(agentId, output.seq)).toThrowError(
+      "run output segment exceeds the 8 MiB retrieval limit",
+    );
+  });
+
   itWithManagedArtifacts("rebuilds chronological activity and per-file execution history after restart", () => {
     const { agentId } = seedAgent();
     store.appendEvent(agentId, { type: "agent_lifecycle", status: "running", reason: "active_run", executionId: "run-a" });

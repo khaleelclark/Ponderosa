@@ -7,7 +7,7 @@ import type {
   ResponseFileActivityDto,
   RunOutputDto,
 } from "@ponderosa/core";
-import { utf8Prefix } from "./store-activity.js";
+import { activityDtoFromProjectionRow, utf8Prefix } from "./store-activity.js";
 import type {
   ActivityProjectionReadRow,
   RunOutputEventRow,
@@ -384,32 +384,11 @@ export class AgentTelemetryReadModel {
         output_total_utf8_bytes, output_sha256
       FROM activity_projection WHERE agent_id = ? ORDER BY seq
     `).all(agentId) as ActivityProjectionReadRow[];
-    return rows.map((row) => this.activityDtoFromProjectionRow(agentId, row));
+    return rows.map((row) => activityDtoFromProjectionRow(agentId, row));
   }
 
   activityDtoFromProjectionRow(agentId: string, row: ActivityProjectionReadRow): AgentActivityDto {
-    const event = JSON.parse(row.event_json) as AgentActivityDto["event"];
-    const base: AgentActivityDto = {
-      id: `${agentId}:activity:${row.seq}`,
-      agentId,
-      ...(row.execution_id ? { executionId: row.execution_id } : {}),
-      seq: row.seq,
-      createdAt: row.created_at,
-      event,
-    };
-    if (event.type !== "tool_result" || row.output_total_utf8_bytes === null ||
-        row.output_preview_utf8_bytes === null || !row.output_sha256 ||
-        row.output_preview_utf8_bytes >= row.output_total_utf8_bytes) return base;
-    return {
-      ...base,
-      outputPreview: {
-        truncated: true,
-        previewUtf8Bytes: row.output_preview_utf8_bytes,
-        totalUtf8Bytes: row.output_total_utf8_bytes,
-        sha256: row.output_sha256,
-        retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/activity/${row.seq}/output`,
-      },
-    };
+    return activityDtoFromProjectionRow(agentId, row);
   }
 
   getActivityPage(
@@ -433,7 +412,7 @@ export class AgentTelemetryReadModel {
     }
     const hasMore = rows.length > limit;
     const selected = rows.slice(0, limit);
-    const items = selected.map((row) => this.activityDtoFromProjectionRow(agentId, row)).reverse();
+    const items = selected.map((row) => activityDtoFromProjectionRow(agentId, row)).reverse();
     const oldest = selected.at(-1);
     return {
       items,

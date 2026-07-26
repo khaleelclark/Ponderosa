@@ -73,13 +73,14 @@ import type {
   UpdateAgentRequest,
   UpdateAgentOrganizationRequest,
 } from "@ponderosa/core";
-import { communicationHasProjectionTarget, deriveCommunicationBehavior, unifiedDiffLineTotals } from "@ponderosa/core";
+import { communicationHasProjectionTarget, deriveCommunicationBehavior } from "@ponderosa/core";
 import {
   AgentChatSearchReadModel,
   type GlobalChatSearchInput,
 } from "./store-chat-search-read-model.js";
 import { healthObservation, utf8Prefix } from "./store-activity.js";
 import { AgentTelemetryReadModel } from "./store-telemetry-read-model.js";
+import { AgentFileActivityReadModel } from "./store-file-activity-read-model.js";
 import { AgentDeletionConflictError, requireManagementPermissions } from "./store-agent-management.js";
 import {
   communicationDocumentReference,
@@ -105,7 +106,6 @@ import type { LogEvent, StoredLogEvent } from "./log-event.js";
 import type {
   ContextReadBoundary,
   ContextSourcePage,
-  ActivityProjectionReadRow,
   ArtifactProjectionReadRow,
   ProjectJson,
   ManagedArtifactAccess,
@@ -205,6 +205,7 @@ export class AgentStore {
   private readonly db: Db;
   private readonly client: Database.Database;
   private readonly telemetry!: AgentTelemetryReadModel;
+  private readonly fileActivity!: AgentFileActivityReadModel;
   private readonly chatSearch!: AgentChatSearchReadModel;
   private readonly logs = new Map<string, EventLog>();
   private readonly states = new Map<string, ProjectionState>();
@@ -241,16 +242,17 @@ export class AgentStore {
       const opened = openDb(dbPath(dataDir));
       this.db = opened.db;
       this.client = opened.client;
+      this.fileActivity = new AgentFileActivityReadModel(
+        this.client,
+        agentId => this.getArtifacts(agentId),
+        (agentId, row) => this.artifactDtoFromProjectionRow(agentId, row),
+      );
       this.telemetry = new AgentTelemetryReadModel(
         this.client,
         (input) => this.encodeHistoryCursor(input),
         (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
         (agentId, status, executionFilter) =>
-          this.responseFileActivityByExecution(
-            agentId,
-            status,
-            executionFilter,
-          ),
+          this.fileActivity.byExecution(agentId, status, executionFilter),
       );
       this.chatSearch = new AgentChatSearchReadModel(this.client);
       // Canonical files are written before their SQLite projections. Rebuilding
@@ -1871,7 +1873,11 @@ export class AgentStore {
     const activityByAgentAndStatus = new Map(
       [...executionScopeByAgentAndStatus].map(([scopeKey, scope]) => [
         scopeKey,
-        this.responseFileActivityByExecution(scope.agentId, scope.status, scope.executionIds),
+        this.fileActivity.byExecution(
+          scope.agentId,
+          scope.status,
+          scope.executionIds,
+        ),
       ] as const),
     );
     return projected.map((message) => {
@@ -2741,67 +2747,7 @@ export class AgentStore {
     executionId: string,
     status: ResponseFileActivityDto["status"],
   ): ResponseFileActivityDto[] {
-    return this.responseFileActivityByExecution(agentId, status).get(executionId) ?? [];
-  }
-
-  private responseFileActivityByExecution(
-    agentId: string,
-    status: ResponseFileActivityDto["status"],
-    executionFilter?: ReadonlySet<string>,
-  ): Map<string, ResponseFileActivityDto[]> {
-    const scopedArtifacts = executionFilter
-      ? executionFilter.size ? (this.client.prepare(`
-          SELECT id, agent_id, execution_id, kind, path, summary, created_at,
-            source_path, media_type, visibility, pinned, size
-          FROM artifacts WHERE agent_id = ? AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
-          ORDER BY created_at, id
-        `).all(agentId, ...executionFilter) as ArtifactProjectionReadRow[]).flatMap((row) => {
-          const artifact = this.artifactDtoFromProjectionRow(agentId, row);
-          return artifact ? [artifact] : [];
-        })
-        : []
-      : this.getArtifacts(agentId);
-    const artifactById = new Map(scopedArtifacts.map((artifact) => [artifact.id, artifact] as const));
-    const generatedByExecutionAndPath = new Map(scopedArtifacts.flatMap((artifact) =>
-      artifact.kind === "generated_file" && artifact.executionId && artifact.sourcePath
-        ? [[`${artifact.executionId}\0${artifact.sourcePath}`, artifact] as const]
-        : []));
-    const byExecution = new Map<string, Map<string, ResponseFileActivityDto>>();
-    const activity = executionFilter
-      ? executionFilter.size ? (this.client.prepare(`
-          SELECT seq, execution_id, event_json, created_at, output_preview_utf8_bytes,
-            output_total_utf8_bytes, output_sha256
-          FROM activity_projection
-          WHERE agent_id = ? AND event_type = 'file_change'
-            AND execution_id IN (${[...executionFilter].map(() => "?").join(", ")})
-          ORDER BY seq
-        `).all(agentId, ...executionFilter) as ActivityProjectionReadRow[])
-          .map((row) => this.telemetry.activityDtoFromProjectionRow(agentId, row))
-        : []
-      : this.getActivity(agentId);
-    for (const item of activity) {
-      if (!item.executionId || item.event.type !== "file_change") continue;
-      if (executionFilter && !executionFilter.has(item.executionId)) continue;
-      const projectedArtifactId = artifactId(agentId, item.seq, 0);
-      const artifact = generatedByExecutionAndPath.get(`${item.executionId}\0${item.event.path}`)
-        ?? artifactById.get(projectedArtifactId);
-      const totals = unifiedDiffLineTotals(item.event.diff);
-      const byPath = byExecution.get(item.executionId) ?? new Map<string, ResponseFileActivityDto>();
-      byPath.set(item.event.path, {
-        path: item.event.path,
-        kind: item.event.kind,
-        status,
-        sourceSeq: item.seq,
-        ...(artifact ? { artifactId: artifact.id, artifactKind: artifact.kind } : {}),
-        previewable: Boolean(item.event.diff && artifact?.kind === "diff"),
-        ...(totals ? totals : {}),
-      });
-      byExecution.set(item.executionId, byPath);
-    }
-    return new Map([...byExecution].map(([executionId, byPath]) => [
-      executionId,
-      [...byPath.values()].sort((a, b) => a.sourceSeq - b.sourceSeq),
-    ]));
+    return this.fileActivity.byExecution(agentId, status).get(executionId) ?? [];
   }
 
   getProjectedAgentMessages(agentId: string, limit?: number): MessageDto[] {

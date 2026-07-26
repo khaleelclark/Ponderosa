@@ -1,5 +1,10 @@
-import type { AgentLifecycleReason, AgentLifecycleStatus } from "@ponderosa/core";
+import type {
+  AgentActivityDto,
+  AgentLifecycleReason,
+  AgentLifecycleStatus,
+} from "@ponderosa/core";
 import type { LogEvent } from "./log-event.js";
+import type { ActivityProjectionReadRow } from "./store-types.js";
 
 function healthObservation(event: LogEvent, timestamp: string): {
   status: AgentLifecycleStatus;
@@ -36,4 +41,38 @@ function utf8Prefix(text: string, maximumBytes: number): string {
   return "";
 }
 
-export { healthObservation, utf8Prefix };
+function activityDtoFromProjectionRow(
+  agentId: string,
+  row: ActivityProjectionReadRow,
+): AgentActivityDto {
+  const event = JSON.parse(row.event_json) as AgentActivityDto["event"];
+  const base: AgentActivityDto = {
+    id: `${agentId}:activity:${row.seq}`,
+    agentId,
+    ...(row.execution_id ? { executionId: row.execution_id } : {}),
+    seq: row.seq,
+    createdAt: row.created_at,
+    event,
+  };
+  if (
+    event.type !== "tool_result" ||
+    row.output_total_utf8_bytes === null ||
+    row.output_preview_utf8_bytes === null ||
+    !row.output_sha256 ||
+    row.output_preview_utf8_bytes >= row.output_total_utf8_bytes
+  ) {
+    return base;
+  }
+  return {
+    ...base,
+    outputPreview: {
+      truncated: true,
+      previewUtf8Bytes: row.output_preview_utf8_bytes,
+      totalUtf8Bytes: row.output_total_utf8_bytes,
+      sha256: row.output_sha256,
+      retrievalUrl: `/api/agents/${encodeURIComponent(agentId)}/activity/${row.seq}/output`,
+    },
+  };
+}
+
+export { activityDtoFromProjectionRow, healthObservation, utf8Prefix };
