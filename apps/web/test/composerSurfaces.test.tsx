@@ -31,3 +31,4 @@ describe("composer surface ownership", () => {
   });
 
 });
+// @vitest-environment node

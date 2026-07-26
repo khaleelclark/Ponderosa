@@ -19,3 +19,4 @@ describe("Ponderosa branding", () => {
     expect(`${app}${sidebar}${build}`).not.toContain('/icons/icon.svg');
   });
 });
+// @vitest-environment node

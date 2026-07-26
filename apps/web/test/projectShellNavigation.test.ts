@@ -26,3 +26,4 @@ describe("agent detail navigation", () => {
   });
 
 });
+// @vitest-environment node

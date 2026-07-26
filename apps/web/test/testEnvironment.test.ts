@@ -9,3 +9,4 @@ describe("web command environments", () => {
     expect(packageJson.scripts.build).toBe("NODE_ENV=production rsbuild build");
   });
 });
+// @vitest-environment node

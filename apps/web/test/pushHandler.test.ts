@@ -68,3 +68,4 @@ describe("Web Push navigation", () => {
     expect(client.focus).toHaveBeenCalledOnce();
   });
 });
+// @vitest-environment node

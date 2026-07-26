@@ -89,3 +89,4 @@ describe("individual chat sender identity", () => {
     expect(html).not.toContain(">Castle Clinton</div>");
   });
 });
+// @vitest-environment node
