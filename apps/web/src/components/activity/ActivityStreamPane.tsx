@@ -148,7 +148,11 @@ export function ActivityStreamPane({
     layout="workspace"
     label="Agent activity"
     layoutKey={layoutKey}
-    follow={{ kind: "latest", storageKey: chatStateKey("scroll", `agent.${agentId}.activity`) }}
+    follow={{
+      kind: "latest",
+      followResizes: false,
+      storageKey: chatStateKey("scroll", `agent.${agentId}.activity`),
+    }}
     history={{
       kind: "cursor",
       hasEarlier,

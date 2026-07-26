@@ -57,6 +57,7 @@ export function ChatSurface({
           minHeight: 0,
           overflowY: "auto",
           overflowX: "hidden",
+          overflowAnchor: follow?.followResizes === false ? "none" : undefined,
           overscrollBehavior: "contain",
           "& > *": { width: `min(${contentWidth}px, 100%)`, alignSelf: "center" },
         }}

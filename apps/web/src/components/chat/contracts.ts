@@ -17,6 +17,9 @@ export interface ChatHistoryPage {
 export interface ChatFollowLatest {
   kind: "latest";
   storageKey?: string;
+  /** Disable automatic repositioning for surfaces whose rows change height
+   * while settling. Explicit layout-key updates still follow the latest item. */
+  followResizes?: boolean;
   onPositionChange?(element: HTMLElement, atLatest: boolean): void;
 }
 
