@@ -79,6 +79,7 @@ import { AgentFileActivityReadModel } from "./store-file-activity-read-model.js"
 import { AgentRunUsageReadModel } from "./store-run-usage-read-model.js";
 import { AgentArtifactCatalog } from "./store-artifact-catalog.js";
 import { AgentEventProjectionStore } from "./store-event-projection.js";
+import { AgentEventSessionAuthority } from "./store-event-session-authority.js";
 import { AgentConversationProjectionReadModel } from "./store-conversation-projection-read-model.js";
 import { AgentCommunicationProjectionLedger } from "./store-communication-projection-ledger.js";
 import { AgentWorkspaceCatalogAuthority } from "./store-workspace-catalog-authority.js";
@@ -186,6 +187,7 @@ export class AgentStore {
   private readonly runUsage!: AgentRunUsageReadModel;
   private readonly artifactCatalog!: AgentArtifactCatalog;
   private readonly eventProjection!: AgentEventProjectionStore;
+  private readonly eventSession!: AgentEventSessionAuthority;
   private readonly conversationProjection!: AgentConversationProjectionReadModel;
   private readonly communicationProjectionLedger!: AgentCommunicationProjectionLedger;
   private readonly workspaceCatalog!: AgentWorkspaceCatalogAuthority;
@@ -260,6 +262,19 @@ export class AgentStore {
         this.client,
         agentId => this.activeEngineOf(agentId),
         artifact => this.artifactCatalog.recordProjectArtifact(artifact),
+      );
+      this.eventSession = new AgentEventSessionAuthority(
+        this.db,
+        this.client,
+        this.eventProjection,
+        agentId => this.getAgent(agentId),
+        agentId => this.projectIdOf(agentId),
+        () => this.listProjects(),
+        projectId => this.listAgents(projectId),
+        (projectId, projection) =>
+          this.communicationProjectionAllowed(projectId, projection),
+        (projectId, projection) =>
+          this.appendCommunicationProjection(projectId, projection),
       );
       this.chatFeed = new AgentChatFeedProjection(
         this.db,
@@ -763,32 +778,7 @@ export class AgentStore {
 
   /** Mark executions whose durable start survived a daemon crash without a terminal record. */
   recoverInterruptedExecutions(): string[] {
-    const recovered: string[] = [];
-    for (const project of this.listProjects()) {
-      for (const agent of this.listAgents(project.id)) {
-        const events = this.readEvents(agent.id);
-        let startedIndex = -1;
-        for (let index = events.length - 1; index >= 0; index -= 1) {
-          const event = events[index]!.event;
-          if (event.type === "agent_lifecycle" && event.status === "running") {
-            startedIndex = index;
-            break;
-          }
-        }
-        if (startedIndex < 0) continue;
-        const start = events[startedIndex]!;
-        const terminal = events.slice(startedIndex + 1).some((stored) =>
-          stored.event.type === "agent_lifecycle" && ["cancelled", "completed", "failed", "interrupted"].includes(stored.event.status));
-        if (terminal) continue;
-        const executionId = start.event.type === "agent_lifecycle" ? start.event.executionId : `recovered:${agent.id}`;
-        this.appendEvent(agent.id, {
-          type: "agent_lifecycle", status: "failed", reason: "execution_interrupted",
-          executionId,
-        });
-        recovered.push(agent.id);
-      }
-    }
-    return recovered;
+    return this.eventSession.recoverInterruptedExecutions();
   }
 
   /** The raw better-sqlite3 handle (read-only queries, PRAGMAs, tests). */
@@ -2052,43 +2042,19 @@ export class AgentStore {
    * event (seq + ts) so the caller can broadcast it over SSE.
    */
   appendEvent(agentId: string, event: LogEvent): StoredLogEvent {
-    if (!this.getAgent(agentId)) throw new Error(`unknown or deleted agent: ${agentId}`);
-    const projectId = this.projectIdOf(agentId);
-    const communicationEventId = event.type === "communication_projection" || event.type === "user_message"
-      ? event.communicationEventId : undefined;
-    if (communicationEventId && !this.communicationProjectionAllowed(projectId, {
-      eventId: communicationEventId,
-      surface: "direct_agent_audit",
-      projectionKey: agentId,
-    })) {
-      // Scope validation must precede the canonical agent append. A rejected
-      // projection may not leave an unprojectable user_message in events.jsonl.
-      throw new Error("communication scope cannot project to requested surface");
-    }
-    const stored = this.eventProjection.append(agentId, projectId, event);
-    const message = communicationMessageProjection(agentId, stored);
-    if (communicationEventId && message) {
-      this.appendCommunicationProjection(projectId, {
-        eventId: communicationEventId,
-        surface: "direct_agent_audit",
-        projectionKey: agentId,
-        projectedAt: stored.ts,
-        message,
-      });
-    }
-    return stored;
+    return this.eventSession.appendEvent(agentId, event);
   }
 
   readEvents(agentId: string): StoredLogEvent[] {
-    return this.eventProjection.readAll(agentId, this.projectIdOf(agentId));
+    return this.eventSession.readEvents(agentId);
   }
 
   readEventsSince(agentId: string, sinceSeq: number): StoredLogEvent[] {
-    return this.eventProjection.readSince(agentId, sinceSeq);
+    return this.eventSession.readEventsSince(agentId, sinceSeq);
   }
 
   lastSeqOf(agentId: string): number {
-    return this.eventProjection.lastSeq(agentId);
+    return this.eventSession.lastSeqOf(agentId);
   }
 
   latestHealthObservation(agentId: string): {
@@ -2097,7 +2063,7 @@ export class AgentStore {
     reason: AgentLifecycleReason;
     executionId?: string;
   } | undefined {
-    return this.eventProjection.latestHealth(agentId);
+    return this.eventSession.latestHealthObservation(agentId);
   }
 
   // ─── Rebuild (SQLite is disposable; the log is truth) ──────────────────────
@@ -2461,94 +2427,36 @@ export class AgentStore {
   continuationHandoffForRun(agentId: string, executionId: string): {
     id: string; executionId: string; text: string; createdAt: string; consumedAt?: string;
   } | undefined {
-    const row = this.db.select().from(continuationHandoffs)
-      .where(and(eq(continuationHandoffs.agentId, agentId), eq(continuationHandoffs.sourceExecutionId, executionId)))
-      .get();
-    return row ? {
-      id: row.id,
-      executionId: row.sourceExecutionId,
-      text: row.text,
-      createdAt: row.createdAt,
-      ...(row.consumedAt ? { consumedAt: row.consumedAt } : {}),
-    } : undefined;
+    return this.eventSession.continuationHandoffForRun(agentId, executionId);
   }
 
   pendingContinuationHandoff(agentId: string): {
     id: string; executionId: string; text: string; createdAt: string;
   } | undefined {
-    const row = this.client.prepare(`
-      SELECT handoff.id, handoff.source_execution_id, handoff.text, handoff.created_at
-      FROM continuation_handoffs handoff
-      JOIN runs source_run ON source_run.id = handoff.source_execution_id
-      WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
-        AND source_run.status = 'completed'
-      ORDER BY handoff.created_at ASC, handoff.id ASC LIMIT 1
-    `).get(agentId) as { id: string; source_execution_id: string; text: string; created_at: string } | undefined;
-    return row ? { id: row.id, executionId: row.source_execution_id, text: row.text, createdAt: row.created_at } : undefined;
+    return this.eventSession.pendingContinuationHandoff(agentId);
   }
 
   consumeContinuationHandoff(agentId: string, handoffId: string, executionId: string): boolean {
-    const pending = this.client.prepare(`
-      SELECT 1 FROM continuation_handoffs
-      WHERE id = ? AND agent_id = ? AND consumed_at IS NULL
-    `).get(handoffId, agentId);
-    if (!pending) return false;
-    this.appendEvent(agentId, { type: "continuation_handoff_consumed", handoffId, executionId });
-    return true;
+    return this.eventSession.consumeContinuationHandoff(agentId, handoffId, executionId);
   }
 
-  /** Durable compatibility and reachability state for the accepted provider session. */
   resumeSessionState(agentId: string): {
     sessionId: string;
     toolContractHash?: string;
     artifactIds: string[];
   } | undefined {
-    const row = this.db
-      .select({
-        sessionId: agents.activeSessionId,
-        toolContractHash: agents.activeSessionContractHash,
-        artifactIdsJson: agents.activeSessionArtifactIdsJson,
-      })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .get();
-    if (!row?.sessionId) return undefined;
-    let artifactIds: string[] = [];
-    try {
-      const parsed = JSON.parse(row.artifactIdsJson) as unknown;
-      if (Array.isArray(parsed) && parsed.every((id) => typeof id === "string")) artifactIds = parsed;
-    } catch {
-      // A malformed rebuildable projection fails closed to no retained roots.
-    }
-    return {
-      sessionId: row.sessionId,
-      ...(row.toolContractHash ? { toolContractHash: row.toolContractHash } : {}),
-      artifactIds: [...new Set(artifactIds)].sort(),
-    };
+    return this.eventSession.resumeSessionState(agentId);
   }
 
-  /** The engine session id to resume for an agent (undefined if none yet). */
   resumeSessionId(agentId: string): string | undefined {
-    return this.resumeSessionState(agentId)?.sessionId;
+    return this.eventSession.resumeSessionId(agentId);
   }
 
-  /**
-   * Forget only the provider runtime session so the next turn seeds a fresh
-   * session from canonical history. Agent identity, memberships, event logs,
-   * and queued collaboration deliveries are intentionally untouched.
-   */
   clearResumeSession(
     agentId: string,
     reason: "explicit_compaction" | "resume_compaction_failed" | "request_context_rollover" | "tool_contract_changed" | "provider_root_exit",
   ): boolean {
-    const row = this.db
-      .select({ id: agents.id, activeSessionId: agents.activeSessionId })
-      .from(agents)
-      .where(eq(agents.id, agentId))
-      .get();
-    if (!row?.activeSessionId) return false;
-
-    this.appendEvent(agentId, { type: "session_reset", reason });
-    return true;
+    return this.eventSession.clearResumeSession(agentId, reason);
   }
+
 }
