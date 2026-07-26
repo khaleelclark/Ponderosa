@@ -88,6 +88,7 @@ import {
   revisedRenderedText,
   userDmAgentIds,
 } from "./store-communication.js";
+import { fsyncDirectory, pruneArtifactDirectory, readJson, readJsonLines, writeJson } from "./store-filesystem.js";
 export { AgentDeletionConflictError } from "./store-agent-management.js";
 import { openDb, type Db } from "./db.js";
 import { EventLog } from "./eventlog.js";
@@ -103,11 +104,6 @@ import {
   type ProjectionState,
 } from "./projectors.js";
 
-function fsyncDirectory(directory: string): void {
-  const descriptor = openSync(directory, "r");
-  try { fsyncSync(descriptor); }
-  finally { closeSync(descriptor); }
-}
 import {
   artifacts,
   agentPresets,
@@ -348,23 +344,6 @@ interface MessageDispatchRecord {
   attachments?: import("@ponderosa/core").ImageAttachmentDto[];
 }
 
-function writeJson(file: string, data: unknown): void {
-  const directory = dirname(file);
-  mkdirSync(directory, { recursive: true });
-  const temporary = join(directory, `.${randomUUID()}.json.tmp`);
-  try {
-    writeFileSync(temporary, JSON.stringify(data, null, 2) + "\n", "utf8");
-    const descriptor = openSync(temporary, "r");
-    try { fsyncSync(descriptor); }
-    finally { closeSync(descriptor); }
-    renameSync(temporary, file);
-    fsyncDirectory(directory);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    throw error;
-  }
-}
-
 export interface AgentDeletionReceipt {
   id: string;
   projectId: string;
@@ -398,33 +377,6 @@ export interface AgentManagementAuthorization {
   scopeHash: string;
   permission: "deletion" | "reorganization";
   approvalDecisionId?: string;
-}
-
-function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(file, "utf8")) as T;
-}
-
-function readJsonLines<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as T);
-}
-
-/** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
-function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
-  if (!existsSync(root)) return;
-  for (const entry of readdirSync(join(root, relative), { withFileTypes: true })) {
-    const childRelative = relative ? join(relative, entry.name) : entry.name;
-    const child = join(root, childRelative);
-    if (entry.isDirectory()) {
-      pruneArtifactDirectory(root, protectedPaths, childRelative);
-      if (readdirSync(child).length === 0) rmSync(child, { recursive: false, force: true });
-    } else if (!entry.isFile() || !protectedPaths.has(childRelative)) {
-      rmSync(child, { force: true });
-    }
-  }
 }
 
 /** V1 is a destructive test-data cutover; managed source workspaces are external. */
