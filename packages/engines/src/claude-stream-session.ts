@@ -245,7 +245,14 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (envelope.type !== "control_response" ||
         envelope.response?.subtype !== "success" ||
         envelope.response.request_id !== this.modelInitializationRequestId) return;
-    this.providerModels = normalizeClaudeProviderModels(envelope.response.response?.models);
+    try {
+      this.providerModels = normalizeClaudeProviderModels(envelope.response.response?.models);
+    } catch {
+      // Catalog capture is best-effort on the live Run path. Discovery has its
+      // own strict probe and must not turn a provider shape change into a Run
+      // failure.
+      return;
+    }
     const modelCatalog = this.liveModelCatalog();
     if (this.capabilitiesSnapshot && modelCatalog) {
       this.capabilitiesSnapshot = { ...this.capabilitiesSnapshot, modelCatalog };

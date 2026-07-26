@@ -51,7 +51,7 @@ export interface ClaudeAdapterOptions {
 // Aliases resolve to the account's current models via the CLI; an empty id means
 // "let the authenticated CLI choose" (avoids hardcoding ids that go stale).
 const DEFAULT_MODELS: ModelOption[] = [
-  { id: "default", label: "Claude default" },
+  { id: "", label: "Claude default" },
   { id: "opus", label: "Opus" },
   { id: "sonnet", label: "Sonnet" },
   { id: "haiku", label: "Haiku" },
