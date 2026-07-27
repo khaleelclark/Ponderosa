@@ -136,7 +136,7 @@ function SharedSidebarPanel({
         </Box>
         <Box component="section" data-sidebar-section="all">
           <SidebarSectionHeading>
-            {title === "Home" ? "All" : `All ${title}`}
+            {title === "Home" ? "Recents" : `All ${title}`}
           </SidebarSectionHeading>
           <List disablePadding>{allRows}</List>
         </Box>
