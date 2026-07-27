@@ -17,6 +17,10 @@ export interface ChatHistoryPage {
 export interface ChatFollowLatest {
   kind: "latest";
   storageKey?: string;
+  /** Distance from the bottom that still counts as actively following.
+   * Chat tolerates a small reading offset; dense audit surfaces can require a
+   * nearly exact bottom position to avoid pulling the operator's viewport. */
+  bottomThreshold?: number;
   /** Disable automatic repositioning for surfaces whose rows change height
    * while settling. Explicit layout-key updates still follow the latest item. */
   followResizes?: boolean;
