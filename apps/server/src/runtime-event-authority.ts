@@ -209,15 +209,17 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
       ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".jar": "application/java-archive",
     } as Record<string, string>)[extension];
     if (durableMedia) return durableMedia;
-    // Text deliverables are common, but edits to source/config files should not
-    // continually republish the whole repository into Project files.
+    // Edits to source/config files should not continually republish the whole
+    // repository into Project files. Newly created files, however, are durable
+    // outputs regardless of extension; unknown formats remain download-only.
     if (changeKind !== "create") return undefined;
     return ({
       ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
       ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
-    } as Record<string, string>)[extension];
+    } as Record<string, string>)[extension] ?? "application/octet-stream";
   }
 
   function clearRunLeaseTimer(run: ActiveRun): void {

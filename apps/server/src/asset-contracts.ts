@@ -130,10 +130,11 @@ export function generatedArtifactMetadataIsValid(artifact: RegisteredGeneratedAr
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".jar": "application/java-archive",
     ".md": "text/markdown", ".txt": "text/plain", ".csv": "text/csv",
     ".json": "application/json", ".html": "text/html", ".zip": "application/zip",
-  } as Record<string, string>)[extension];
-  return Boolean(expectedMediaType && nameExtension === extension && artifact.mediaType === expectedMediaType &&
+  } as Record<string, string>)[extension] ?? "application/octet-stream";
+  return Boolean(nameExtension === extension && artifact.mediaType === expectedMediaType &&
     !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(artifact.summary));
 }
 
