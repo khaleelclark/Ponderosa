@@ -24,6 +24,8 @@ export interface ComposerProps extends ChatComposerContract {
   recipientRequiredMessage?: string;
   removeTextRequest?: { id: string; text: string };
   onMentionedHandlesChange?(handles: string[]): void;
+  /** Reports the one exact Agent destination that may own provider commands. */
+  onCommandTargetHandleChange?(handle?: string): void;
   continueWith?: {
     agentId: string;
     handle: string;

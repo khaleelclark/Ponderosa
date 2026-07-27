@@ -56,6 +56,25 @@ import { composerSurfaceSx } from "./Composer.styles";
 
 export type { ComposerProps } from "./Composer.types";
 
+function providerCommandInput(
+  value: string,
+  destinationHandle?: string,
+): { text: string; start: number } | undefined {
+  if (!destinationHandle) return { text: value, start: 0 };
+  const destination = /^#([\p{L}\p{N}_-]+)\s+/u.exec(value);
+  if (
+    !destination ||
+    destination[1]!.toLocaleLowerCase() !==
+      destinationHandle.toLocaleLowerCase()
+  ) {
+    return undefined;
+  }
+  return {
+    text: value.slice(destination[0].length),
+    start: destination[0].length,
+  };
+}
+
 export function Composer({
   disabled,
   running,
@@ -86,6 +105,7 @@ export function Composer({
   recipientRequiredMessage,
   removeTextRequest,
   onMentionedHandlesChange,
+  onCommandTargetHandleChange,
   continueWith,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() =>
@@ -203,6 +223,25 @@ export function Composer({
     projectDestinations.length === 0
       ? continueWith.handle
       : undefined;
+  const explicitCommandTargetHandle =
+    destinationMode === "project-chat" &&
+    !hasBroadcastDestination &&
+    !hasEveryoneDestination &&
+    projectDestinations.length === 1
+      ? projectDestinations[0]!.handle
+      : destinationMode === "target-required" &&
+          !hasBroadcastDestination &&
+          targetRequiredDestinations.length === 1 &&
+          requiredRecipient?.handle.toLocaleLowerCase() ===
+            targetRequiredDestinations[0]!.handle.toLocaleLowerCase() &&
+          !unresolvedAmbiguousTarget
+        ? targetRequiredDestinations[0]!.handle
+        : undefined;
+  const commandTargetHandle =
+    explicitCommandTargetHandle ?? implicitContinueHandle;
+  useEffect(() => {
+    onCommandTargetHandleChange?.(commandTargetHandle);
+  }, [commandTargetHandle, onCommandTargetHandleChange]);
   const destinationError =
     destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
@@ -623,7 +662,13 @@ export function Composer({
           .startsWith(filePrefix.toLocaleLowerCase()),
       )
     : [];
-  const slashMatch = /^\/([\p{L}\p{N}_:-]*)$/u.exec(text.slice(0, caret));
+  const commandDraft = providerCommandInput(
+    text.slice(0, caret),
+    explicitCommandTargetHandle,
+  );
+  const slashMatch = commandDraft
+    ? /^\/([\p{L}\p{N}_:-]*)$/u.exec(commandDraft.text)
+    : null;
   const commandSuggestions =
     slashMatch && commands
       ? matchingEngineCommands(commands, slashMatch[1]!)
@@ -679,14 +724,15 @@ export function Composer({
 
   const applyCommand = (command: EngineCommand) => {
     if (engineCommandDisabledReason(command)) return;
-    const next = `${command.insertText}${text.slice(caret)}`;
+    if (!commandDraft) return;
+    const next = `${text.slice(0, commandDraft.start)}${command.insertText}${text.slice(caret)}`;
     update(next);
     setHighlighted(0);
     requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el) return;
       el.focus();
-      const nextCaret = command.insertText.length;
+      const nextCaret = commandDraft.start + command.insertText.length;
       el.setSelectionRange(nextCaret, nextCaret);
       setCaret(nextCaret);
     });
@@ -722,9 +768,13 @@ export function Composer({
     ) => Promise<unknown> | unknown,
   ) => {
     if (sendingRef.current || !canSend) return;
+    const commandSubmission = providerCommandInput(
+      submissionText,
+      explicitCommandTargetHandle,
+    );
     const slash =
-      files.length === 0
-        ? providerSlashSubmission(submissionText, commands ?? [])
+      files.length === 0 && commands !== undefined && commandSubmission
+        ? providerSlashSubmission(commandSubmission.text, commands)
         : undefined;
     if (slash && "error" in slash) {
       setSendError(slash.error);

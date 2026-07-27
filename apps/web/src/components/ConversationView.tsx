@@ -168,6 +168,7 @@ export function ConversationView({
     id: string;
     text: string;
   }>();
+  const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
   // The engine/model/effort/speed currently selected for this conversation. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
   // already-running agents keep the model they were spawned with.
@@ -213,6 +214,35 @@ export function ConversationView({
       ),
     [conversationId, projectAgents],
   );
+  const commandTargetAgents = useMemo(
+    () =>
+      commandTargetHandle
+        ? conversationAgents.filter(
+            agent =>
+              agentMentionHandle(agent.title).toLocaleLowerCase() ===
+              commandTargetHandle.toLocaleLowerCase(),
+          )
+        : [],
+    [commandTargetHandle, conversationAgents],
+  );
+  const commandTargetAgent =
+    commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined;
+  const commandCapabilitiesQuery = useQuery({
+    queryKey: queryKeys.engines.capabilitySelection(
+      conversation?.projectId,
+      commandTargetAgent?.id,
+      commandTargetAgent?.activeEngine,
+      commandTargetAgent?.model,
+    ),
+    queryFn: () =>
+      api.getEngineCapabilities(conversation!.projectId, {
+        agentId: commandTargetAgent!.id,
+        engineId: commandTargetAgent!.activeEngine,
+        model: commandTargetAgent!.model,
+      }),
+    enabled: Boolean(conversation?.projectId && commandTargetAgent),
+    staleTime: 10_000,
+  });
   useConversationMessageFocusEffect({
     activeView,
     collaborationMessages,
@@ -529,8 +559,11 @@ export function ConversationView({
     activeEngine,
     engineCapabilities,
   );
-  const commands = composerRuntime.commands;
-  const composerCommands = commands;
+  const composerCommands = commandTargetAgent
+    ? (commandCapabilitiesQuery.data?.find(
+        item => item.engineId === commandTargetAgent.activeEngine,
+      )?.commands ?? [])
+    : undefined;
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
   const speeds = selectedRuntime.speeds;
@@ -938,19 +971,17 @@ export function ConversationView({
             allowSendWhileRunning
             mentionHandles={mentionHandles}
             commands={composerCommands}
+            onCommandTargetHandleChange={setCommandTargetHandle}
             capabilities={composerRuntime.capabilities}
             onCapabilitiesOpen={() =>
               onRefreshCapabilities({ engineId: activeEngine?.id, model })
             }
             onCommand={
-              activeEngine
+              commandTargetAgent
                 ? (command, argumentsText) => {
-                    const invocation = api.invokeProjectProviderCommand(
-                      conversation.projectId,
+                    const invocation = api.invokeProviderCommand(
+                      commandTargetAgent.id,
                       {
-                        engineId: activeEngine.id,
-                        ...(model ? { model } : {}),
-                        ...(effort ? { effort } : {}),
                         name: command.name,
                         ...(argumentsText ? { argumentsText } : {}),
                       },
@@ -958,7 +989,7 @@ export function ConversationView({
                     return invocation.then(result =>
                       setQueuedMessageNotice(
                         result.message ??
-                          `/${command.name} invoked for ${activeEngine.displayName}.`,
+                          `/${command.name} invoked for ${commandTargetAgent.title}.`,
                       ),
                     );
                   }

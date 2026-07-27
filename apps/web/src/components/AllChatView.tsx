@@ -929,12 +929,12 @@ export function AllChatView({
           mentionSuggestionHandles={composerTargets.suggestionHandles}
           ambiguousMentionHandles={composerTargets.ambiguousHandles}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
-          commands={selectedCommands}
+          commands={replyTarget ? selectedCommands : undefined}
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
           onCapabilitiesOpen={refreshSelectedCapabilities}
-          onCommand={invokeCommand}
+          onCommand={replyTarget ? invokeCommand : undefined}
           controls={runtimeControls}
           disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}
