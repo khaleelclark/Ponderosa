@@ -55,12 +55,14 @@ export {
 export {
   MANAGED_ARTIFACT_MAX_BYTES,
   publishManagedArtifactContent,
+  publishManagedArtifactContents,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
   type ManagedArtifactFile,
   type ManagedArtifactContentHandle,
   type ManagedArtifactAsyncReadFaults,
+  type ManagedArtifactBatchInput,
 } from "./managed-artifact-files.js";
 export type { Db } from "./db.js";
 

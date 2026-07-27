@@ -1,3 +1,4 @@
+import ContentPasteOutlinedIcon from "@mui/icons-material/ContentPasteOutlined";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Alert,
@@ -13,17 +14,28 @@ import {
   MenuItem,
   Select,
   Stack,
-  TextField,
   Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
-import type { AgentPortablePackageDto, ConversationDto, EngineDto } from "@ponderosa/core";
+import type { ConversationDto, EngineDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
 const MAX_IMPORT_FILE_BYTES = 96 * 1024 * 1024;
+
+interface PortableAgentPreview {
+  sourceLabel: string;
+  mode: "template" | "full";
+  kind: "agent" | "organization";
+  agentCount: number;
+  artifactCount: number;
+  historyMessageCount: number;
+  sourceEngines: string[];
+  elevatedAgentRefs: string[];
+  invalidPermissionShape: boolean;
+}
 
 export function ImportAgentDialog({
   open,
@@ -43,12 +55,43 @@ export function ImportAgentDialog({
   onImported(agentId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [importJson, setImportJson] = useState("");
+  const [packageBlob, setPackageBlob] = useState<Blob>();
+  const [packagePreview, setPackagePreview] = useState<PortableAgentPreview>();
+  const [inspecting, setInspecting] = useState(false);
   const [fileName, setFileName] = useState<string>();
   const [conversationId, setConversationId] = useState("");
   const [engineMapping, setEngineMapping] = useState<Record<string, string>>({});
   const [acknowledgeElevatedPermissions, setAcknowledgeElevatedPermissions] = useState(false);
   const [error, setError] = useState<string>();
+  const previewWorker = useRef<Worker>();
+  const previewRequestId = useRef(0);
+
+  useEffect(() => {
+    const worker = new Worker(
+      new URL("./agent-package-preview.worker.ts", import.meta.url),
+      { type: "module" },
+    );
+    previewWorker.current = worker;
+    worker.onmessage = (event: MessageEvent<{
+      id: number;
+      preview?: PortableAgentPreview;
+      error?: string;
+    }>) => {
+      if (event.data.id !== previewRequestId.current) return;
+      setInspecting(false);
+      setPackagePreview(event.data.preview);
+      setError(event.data.error);
+    };
+    worker.onerror = () => {
+      setInspecting(false);
+      setPackagePreview(undefined);
+      setError("Ponderosa could not inspect that package.");
+    };
+    return () => {
+      worker.terminate();
+      previewWorker.current = undefined;
+    };
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -57,31 +100,19 @@ export function ImportAgentDialog({
     setError(undefined);
   }, [conversations, initialConversationId, open]);
 
-  const parsedPackage = useMemo(() => {
-    try {
-      const value = JSON.parse(importJson || "null") as AgentPortablePackageDto;
-      return value?.schema === "ponderosa.agent-package.v1" && Array.isArray(value.agents) ? value : undefined;
-    } catch {
-      return undefined;
-    }
-  }, [importJson]);
-  const invalidPermissionShape = Boolean(parsedPackage?.agents.some((node) => {
-    const permissions = node.managementPermissions as unknown;
-    return !permissions || typeof permissions !== "object" || Array.isArray(permissions) ||
-      typeof (permissions as Record<string, unknown>).allowAutomaticDescendantDeletion !== "boolean" ||
-      typeof (permissions as Record<string, unknown>).allowAutomaticDescendantReorganization !== "boolean";
-  }));
-  const elevatedAgents = invalidPermissionShape ? [] : parsedPackage?.agents.filter((node) =>
-    node.managementPermissions.allowAutomaticDescendantDeletion ||
-    node.managementPermissions.allowAutomaticDescendantReorganization) ?? [];
-  const sourceEngines = [...new Set(parsedPackage?.agents.map((node) => node.engine) ?? [])];
+  const invalidPermissionShape = packagePreview?.invalidPermissionShape ?? false;
+  const elevatedAgents = invalidPermissionShape
+    ? []
+    : packagePreview?.elevatedAgentRefs ?? [];
+  const sourceEngines = packagePreview?.sourceEngines ?? [];
   const importAgents = useMutation({
-    mutationFn: () => api.importAgents(projectId, {
-      package: parsedPackage!, conversationId, engineMapping,
+    mutationFn: () => api.importAgentPackageBlob(projectId, packageBlob!, {
+      conversationId, engineMapping,
       ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
     }),
     onSuccess: (result) => {
-      setImportJson("");
+      setPackageBlob(undefined);
+      setPackagePreview(undefined);
       setFileName(undefined);
       setEngineMapping({});
       setAcknowledgeElevatedPermissions(false);
@@ -97,14 +128,35 @@ export function ImportAgentDialog({
       setError("This Agent package is larger than the 96 MiB import limit.");
       return;
     }
+    const id = ++previewRequestId.current;
+    setPackageBlob(file);
+    setPackagePreview(undefined);
+    setInspecting(true);
+    setFileName(file.name);
+    setEngineMapping({});
+    setAcknowledgeElevatedPermissions(false);
+    setError(undefined);
+    previewWorker.current?.postMessage({ id, blob: file });
+  };
+  const pasteJson = async () => {
     try {
-      setImportJson(await file.text());
-      setFileName(file.name);
+      const text = await navigator.clipboard.readText();
+      const blob = new Blob([text], { type: "application/json" });
+      if (blob.size > MAX_IMPORT_FILE_BYTES) {
+        setError("This Agent package is larger than the 96 MiB import limit.");
+        return;
+      }
+      const id = ++previewRequestId.current;
+      setPackageBlob(blob);
+      setPackagePreview(undefined);
+      setInspecting(true);
+      setFileName("Pasted JSON");
       setEngineMapping({});
       setAcknowledgeElevatedPermissions(false);
       setError(undefined);
+      previewWorker.current?.postMessage({ id, blob });
     } catch {
-      setError("Ponderosa could not read that file.");
+      setError("Ponderosa could not read JSON from the clipboard.");
     }
   };
 
@@ -121,21 +173,20 @@ export function ImportAgentDialog({
             if (file) void loadFile(file);
           }} />
         </Button>
-        <Typography variant="body2" color="text.secondary">{fileName ?? "Or paste JSON below"}</Typography>
+        <Button variant="outlined" startIcon={<ContentPasteOutlinedIcon />} onClick={() => void pasteJson()}>
+          Paste JSON
+        </Button>
+        <Typography variant="body2" color="text.secondary">{fileName ?? "No package selected"}</Typography>
       </Stack>
-      <TextField
-        label="Ponderosa JSON"
-        value={importJson}
-        onChange={(event) => { setImportJson(event.target.value); setFileName(undefined); setEngineMapping({}); setAcknowledgeElevatedPermissions(false); setError(undefined); }}
-        multiline
-        minRows={10}
-        error={Boolean(importJson && !parsedPackage)}
-        helperText={importJson && !parsedPackage
-          ? "Choose or paste a ponderosa.agent-package.v1 document."
-          : parsedPackage
-            ? `${parsedPackage.agents.length} Agent${parsedPackage.agents.length === 1 ? "" : "s"} · ${parsedPackage.mode === "template" ? "template" : "full"}`
-            : "Use a Full Agent, Full organization, Agent template, or Organization template export."}
-      />
+      {inspecting ? <Alert severity="info">Inspecting package off the main thread…</Alert> : null}
+      {packagePreview ? <Alert severity="success">
+        <Typography variant="body2">
+          {packagePreview.agentCount} Agent{packagePreview.agentCount === 1 ? "" : "s"} · {packagePreview.mode === "template" ? "template" : "full"} · {packagePreview.artifactCount} artifact{packagePreview.artifactCount === 1 ? "" : "s"} · {packagePreview.historyMessageCount} history message{packagePreview.historyMessageCount === 1 ? "" : "s"}
+        </Typography>
+        <Typography variant="caption" color="text.secondary">{packagePreview.sourceLabel}</Typography>
+      </Alert> : !inspecting && !error ? <Typography variant="body2" color="text.secondary">
+        Use a Full Agent, Full organization, Agent template, or Organization template export.
+      </Typography> : null}
       <FormControl fullWidth>
         <InputLabel id="import-chat-label">Destination Project chat</InputLabel>
         <Select labelId="import-chat-label" label="Destination Project chat" value={conversationId} onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}>
@@ -164,7 +215,7 @@ export function ImportAgentDialog({
     </Stack></DialogContent>
     <DialogActions>
       <Button onClick={onClose}>Cancel</Button>
-      <Button variant="contained" disabled={!parsedPackage || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
+      <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
         {importAgents.isPending ? "Importing…" : "Import"}
       </Button>
     </DialogActions>

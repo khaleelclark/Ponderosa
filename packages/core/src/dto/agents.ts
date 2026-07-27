@@ -98,6 +98,14 @@ export interface ImportAgentPackageRequest {
   /** Required when any imported Agent receives autonomous destructive authority. */
   acknowledgeElevatedManagementPermissions?: boolean;
 }
+export interface CopyAgentPackageRequest {
+  sourceAgentId: string;
+  conversationId: string;
+  /** Copy the source Agent's complete managed descendant organization. */
+  organization?: boolean;
+  /** Required when any copied Agent receives autonomous destructive authority. */
+  acknowledgeElevatedManagementPermissions?: boolean;
+}
 export interface ImportAgentPackageResponse { rootAgentId: string; agentIds: string[] }
 
 export interface AgentRoleProfile {

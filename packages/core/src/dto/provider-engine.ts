@@ -183,6 +183,11 @@ export interface EngineDto {
 
 export interface ProjectEngineCapabilitiesDto {
   engineId: EngineId;
+  /** False means no provider snapshot has completed for this exact Project,
+   * engine, host-path, and model boundary yet. */
+  discovered: boolean;
+  /** A controlled provider discovery is updating this exact snapshot. */
+  refreshing?: boolean;
   steering: boolean;
   persistentSessions: boolean;
   sessionId?: string;

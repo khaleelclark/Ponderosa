@@ -50,6 +50,11 @@ export interface ManagedArtifactPublicationFaults {
   afterRename?: (path: string) => void;
 }
 
+export interface ManagedArtifactBatchInput {
+  artifactId: string;
+  input: Buffer | string;
+}
+
 interface OpenedManagedDirectory {
   descriptors: number[];
   identities: Array<{ dev: number; ino: number }>;
@@ -263,6 +268,190 @@ export function publishManagedArtifactContent(
     }
     closeManagedDirectory(opened);
     activePublications.delete(activeKey);
+  }
+}
+
+/**
+ * Publish a set of immutable blobs as one durability group. Every file is
+ * independently written and fsynced before any destination name is installed;
+ * all destination entries are then made durable by one parent-directory fsync.
+ * A failed in-process publication removes every new leaf before returning.
+ *
+ * The bounded writers overlap independent data fsync latency without weakening
+ * the guarantee provided by publishManagedArtifactContent.
+ */
+export async function publishManagedArtifactContents(
+  dataDir: string,
+  projectId: string,
+  inputs: readonly ManagedArtifactBatchInput[],
+  concurrency = 12,
+): Promise<Array<Omit<ManagedArtifactFile, "body">>> {
+  if (!safeProjectId(projectId)) {
+    throw new Error("managed artifact Project id must be a single safe leaf");
+  }
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+    throw new Error("managed artifact publication concurrency must be between 1 and 32");
+  }
+  const ids = new Set<string>();
+  const planned = inputs.map(({ artifactId, input }) => {
+    if (!safeArtifactId(artifactId)) {
+      throw new Error("managed artifact id must be a single safe leaf");
+    }
+    if (ids.has(artifactId)) {
+      throw new Error("managed artifact batch identities must be unique");
+    }
+    ids.add(artifactId);
+    const body = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
+    if (body.length < 1 || body.length > MANAGED_ARTIFACT_MAX_BYTES) {
+      throw new Error("managed artifact must contain 1 to 64 MiB");
+    }
+    return {
+      artifactId,
+      body,
+      size: body.length,
+      sha256: createHash("sha256").update(body).digest("hex"),
+      temporaryLeaf: undefined as string | undefined,
+      installed: false,
+      existing: false,
+    };
+  });
+  if (planned.length === 0) return [];
+
+  const activeKeys = planned.map((item) =>
+    publicationKey(dataDir, projectId, item.artifactId)
+  );
+  if (activeKeys.some((key) => activePublications.has(key))) {
+    throw new Error("managed artifact publication is already active");
+  }
+  for (const key of activeKeys) activePublications.add(key);
+
+  let opened: OpenedManagedDirectory | undefined;
+  try {
+    opened = openManagedDirectory(dataDir, projectId, true);
+    for (const item of planned) {
+      const destination = managedArtifactContentPath(
+        dataDir,
+        projectId,
+        item.artifactId,
+      );
+      if (destination !== path.join(opened.nominalPath, item.artifactId)) {
+        throw new Error("managed artifact destination escaped its Project directory");
+      }
+      let existingDescriptor: number | undefined;
+      try {
+        existingDescriptor = openSync(
+          descriptorPath(opened.directoryDescriptor, item.artifactId),
+          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
+        );
+        const existing = readManagedArtifactContent(
+          dataDir,
+          projectId,
+          item.artifactId,
+          item.size,
+          item.sha256,
+        );
+        if (!existing) {
+          throw new Error("managed artifact identity collision or unsafe existing leaf");
+        }
+        item.existing = true;
+      } catch (error) {
+        if (
+          !error
+          || typeof error !== "object"
+          || !("code" in error)
+          || error.code !== "ENOENT"
+        ) throw error;
+      } finally {
+        if (existingDescriptor !== undefined) closeSync(existingDescriptor);
+      }
+    }
+
+    let nextIndex = 0;
+    const stage = async (): Promise<void> => {
+      while (nextIndex < planned.length) {
+        const item = planned[nextIndex++]!;
+        if (item.existing) continue;
+        const temporaryLeaf = `.${item.artifactId}.${randomUUID()}.tmp`;
+        item.temporaryLeaf = temporaryLeaf;
+        const handle = await fs.open(
+          descriptorPath(opened!.directoryDescriptor, temporaryLeaf),
+          fsConstants.O_CREAT
+            | fsConstants.O_EXCL
+            | fsConstants.O_WRONLY
+            | fsConstants.O_NOFOLLOW,
+          0o600,
+        );
+        try {
+          await handle.writeFile(item.body);
+          const written = await handle.stat();
+          if (!written.isFile() || written.size !== item.size) {
+            throw new Error("managed artifact batch write was incomplete");
+          }
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
+      }
+    };
+    const writers = Array.from(
+      { length: Math.min(concurrency, planned.length) },
+      () => stage(),
+    );
+    const staged = await Promise.allSettled(writers);
+    const stageFailure = staged.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (stageFailure) throw stageFailure.reason;
+
+    if (!sameManagedDirectory(dataDir, projectId, opened)) {
+      throw new Error("managed artifact directory changed before atomic publication");
+    }
+    for (const item of planned) {
+      if (!item.temporaryLeaf) continue;
+      renameSync(
+        descriptorPath(opened.directoryDescriptor, item.temporaryLeaf),
+        descriptorPath(opened.directoryDescriptor, item.artifactId),
+      );
+      item.temporaryLeaf = undefined;
+      item.installed = true;
+    }
+    fsyncSync(opened.directoryDescriptor);
+    if (!sameManagedDirectory(dataDir, projectId, opened)) {
+      throw new Error("managed artifact directory changed during atomic publication");
+    }
+    return planned.map((item) => ({
+      path: managedArtifactContentPath(dataDir, projectId, item.artifactId),
+      size: item.size,
+      sha256: item.sha256,
+    }));
+  } catch (error) {
+    if (opened) {
+      let directoryChanged = false;
+      for (const item of planned) {
+        for (const leaf of [
+          item.temporaryLeaf,
+          item.installed ? item.artifactId : undefined,
+        ]) {
+          if (!leaf) continue;
+          try {
+            await fs.rm(descriptorPath(opened.directoryDescriptor, leaf), {
+              force: true,
+            });
+            directoryChanged = true;
+          } catch {
+            // The retained directory can disappear during Project teardown.
+          }
+        }
+      }
+      if (directoryChanged) {
+        try { fsyncSync(opened.directoryDescriptor); }
+        catch { /* teardown owns the now-unreachable directory */ }
+      }
+    }
+    throw error;
+  } finally {
+    closeManagedDirectory(opened);
+    for (const key of activeKeys) activePublications.delete(key);
   }
 }
 

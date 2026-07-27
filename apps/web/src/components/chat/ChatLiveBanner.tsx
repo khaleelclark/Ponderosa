@@ -1,5 +1,6 @@
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import { Stack, Typography } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type { ReactNode } from "react";
 
 export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Element | null {
@@ -12,13 +13,15 @@ export function ChatLiveBanner({ children }: { children?: ReactNode }): JSX.Elem
       aria-live="polite"
       sx={{
         minHeight: 24,
-        px: 0.5,
+        px: 0.75,
+        py: 0.25,
         alignItems: "center",
         justifyContent: "center",
         width: "fit-content",
         maxWidth: "min(1180px, calc(100% - 24px))",
         mx: "auto",
-        bgcolor: "transparent",
+        borderRadius: 999,
+        bgcolor: (theme) => alpha(theme.palette.info.main, theme.palette.mode === "dark" ? 0.08 : 0.06),
       }}
     >
       <InfoOutlinedIcon color="info" sx={{ fontSize: 16, flex: "0 0 auto" }} />

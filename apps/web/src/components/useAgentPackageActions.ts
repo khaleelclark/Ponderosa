@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import {
-  downloadJson,
   portablePackageFileName,
 } from "./AgentDetail.helpers";
 
@@ -26,14 +26,14 @@ export function useAgentPackageActions({
 }: AgentPackageActionsInput) {
   const queryClient = useQueryClient();
   const [elevatedCopyPackage, setElevatedCopyPackage] =
-    useState<Awaited<ReturnType<typeof api.exportAgent>>>();
+    useState(false);
 
   const copyAgentPackage = async (
     mode: "template" | "full",
     organization = false,
   ) => {
-    const portable = await api.exportAgent(agentId, mode, organization);
-    await navigator.clipboard.writeText(JSON.stringify(portable, null, 2));
+    const portableJson = await api.exportAgentText(agentId, mode, organization);
+    await navigator.clipboard.writeText(portableJson);
     onNotice(
       `${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} copied.`,
     );
@@ -42,55 +42,49 @@ export function useAgentPackageActions({
     mode: "template" | "full",
     organization = false,
   ) => {
-    const portable = await api.exportAgent(agentId, mode, organization);
-    downloadJson(
-      portable,
-      portablePackageFileName(
-        title ?? "agent",
-        organization,
-        mode,
-      ),
+    const anchor = document.createElement("a");
+    anchor.href = api.agentExportDownloadUrl(agentId, mode, organization);
+    anchor.download = portablePackageFileName(
+      title ?? "agent",
+      organization,
+      mode,
     );
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
     onNotice(
       `${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} downloaded.`,
     );
   };
-  const importQuickCopy = async (
-    portable: Awaited<ReturnType<typeof api.exportAgent>>,
-    elevated: boolean,
-  ) => {
+  const importQuickCopy = async (elevated: boolean) => {
     if (!conversationId || !projectId) return;
-    const engineMapping = Object.fromEntries(
-      [...new Set(portable.agents.map(node => node.engine))].map(engineId => [
-        engineId,
-        engineId,
-      ]),
-    );
-    const imported = await api.importAgents(projectId, {
-      package: portable,
+    const imported = await api.copyAgent(projectId, {
+      sourceAgentId: agentId,
       conversationId,
-      engineMapping,
       ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
     });
     await queryClient.invalidateQueries({
       queryKey: queryKeys.agents.project(projectId),
     });
-    setElevatedCopyPackage(undefined);
+    setElevatedCopyPackage(false);
     onOpenAgent(imported.rootAgentId);
   };
   const quickCopyIntoProjectChat = async () => {
     if (!conversationId) return;
-    const portable = await api.exportAgent(agentId, "full", false);
-    const elevated = portable.agents.some(
-      node =>
-        node.managementPermissions.allowAutomaticDescendantDeletion ||
-        node.managementPermissions.allowAutomaticDescendantReorganization,
-    );
-    if (elevated) {
-      setElevatedCopyPackage(portable);
-      return;
+    try {
+      await importQuickCopy(false);
+    } catch (error) {
+      if (
+        error instanceof ApiRequestError
+        && error.status === 409
+        && error.message.includes("explicit acknowledgement")
+      ) {
+        setElevatedCopyPackage(true);
+        return;
+      }
+      throw error;
     }
-    await importQuickCopy(portable, false);
   };
 
   return {

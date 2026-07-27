@@ -382,45 +382,85 @@ export class AgentArtifactCatalog {
       audience: { kind: "organization", organizationId: artifact.projectId },
     },
   ): void {
-    if (!this.projectExists(artifact.projectId)) throw new Error("artifact project not found");
-    if (
-      !artifact.summary?.trim()
-      || !artifact.mediaType?.trim()
-      || artifact.size === undefined
-      || !Number.isSafeInteger(artifact.size)
-      || artifact.size < 1
-      || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "")
-      || !artifact.originAgentId.trim()
-    ) {
-      throw new Error("managed artifact immutable metadata is required");
-    }
-    const existing = this.getProjectArtifact(artifact.projectId, artifact.id);
-    if (existing) {
-      const immutableFields = [
-        "id",
-        "projectId",
-        "agentId",
-        "originAgentId",
-        "executionId",
-        "kind",
-        "path",
-        "summary",
-        "createdAt",
-        "mediaType",
-        "sourcePath",
-        "size",
-        "sha256",
-      ] as const;
-      const existingAccess = this.getProjectArtifactAccess(artifact.projectId, artifact.id);
+    this.recordProjectArtifacts([{ artifact, access }]);
+  }
+
+  recordProjectArtifacts(
+    entries: ReadonlyArray<{
+      artifact: ArtifactDto & { projectId: string; originAgentId: string };
+      access?: ManagedArtifactAccess;
+    }>,
+  ): void {
+    if (entries.length === 0) return;
+    const projectId = entries[0]!.artifact.projectId;
+    if (!this.projectExists(projectId)) throw new Error("artifact project not found");
+    const ids = new Set<string>();
+    const events: ManagedArtifactEvent[] = [];
+    for (const entry of entries) {
+      const { artifact } = entry;
+      const access = entry.access ?? {
+        ownerKind: "project" as const,
+        ownerId: artifact.id,
+        audience: {
+          kind: "organization" as const,
+          organizationId: artifact.projectId,
+        },
+      };
       if (
-        immutableFields.every((field) => existing[field] === artifact[field])
-        && JSON.stringify(existingAccess) === JSON.stringify(access)
-      ) return;
-      throw new Error("managed artifact identity and provenance are immutable");
+        artifact.projectId !== projectId
+        || ids.has(artifact.id)
+        || !artifact.summary?.trim()
+        || !artifact.mediaType?.trim()
+        || artifact.size === undefined
+        || !Number.isSafeInteger(artifact.size)
+        || artifact.size < 1
+        || !/^[a-f0-9]{64}$/u.test(artifact.sha256 ?? "")
+        || !artifact.originAgentId.trim()
+      ) {
+        throw new Error("managed artifact immutable metadata is required");
+      }
+      ids.add(artifact.id);
+      const existing = this.getProjectArtifact(projectId, artifact.id);
+      if (existing) {
+        const immutableFields = [
+          "id",
+          "projectId",
+          "agentId",
+          "originAgentId",
+          "executionId",
+          "kind",
+          "path",
+          "summary",
+          "createdAt",
+          "mediaType",
+          "sourcePath",
+          "size",
+          "sha256",
+        ] as const;
+        const existingAccess = this.getProjectArtifactAccess(
+          projectId,
+          artifact.id,
+        );
+        if (
+          immutableFields.every((field) =>
+            existing[field] === artifact[field]
+          )
+          && JSON.stringify(existingAccess) === JSON.stringify(access)
+        ) continue;
+        throw new Error("managed artifact identity and provenance are immutable");
+      }
+      events.push({
+        type: "created",
+        artifact,
+        access,
+      } satisfies ManagedArtifactEvent);
     }
-    const event = { type: "created", artifact, access } satisfies ManagedArtifactEvent;
-    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, artifact.projectId), [event]);
-    this.projectManagedArtifactEvent(artifact.projectId, event);
+    appendFsyncedJsonl(managedArtifactsLogPath(this.dataDir, projectId), events);
+    this.client.transaction(() => {
+      for (const event of events) {
+        this.projectManagedArtifactEvent(projectId, event);
+      }
+    })();
   }
 
   deleteProjectArtifact(
