@@ -140,7 +140,12 @@ export function AgentDetailHeader({
       icon={<SmartToyOutlinedIcon />}
       title={agent.title}
       context={
-        <>
+        <Stack
+          direction="row"
+          spacing={0.5}
+          useFlexGap
+          sx={{ alignItems: "center", minWidth: 0, overflow: "hidden" }}
+        >
           <AgentHeaderRelationships
             projectLabel={projectLabel}
             chats={chats}
@@ -148,22 +153,31 @@ export function AgentDetailHeader({
             onOpenChat={onOpenChat}
           />
           {lineageAgentId ? (
-            <Typography variant="caption" color="text.secondary" noWrap>
-              {lineageLabel}{" "}
-              {lineageAgent ? (
-                <Link
-                  component="button"
-                  variant="caption"
-                  onClick={() => onOpenAgent(lineageAgent.id)}
-                >
-                  {lineageAgent.title}
-                </Link>
-              ) : (
-                lineageAgentId
-              )}
-            </Typography>
+            <>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                aria-hidden="true"
+              >
+                ·
+              </Typography>
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {lineageLabel}{" "}
+                {lineageAgent ? (
+                  <Link
+                    component="button"
+                    variant="caption"
+                    onClick={() => onOpenAgent(lineageAgent.id)}
+                  >
+                    {lineageAgent.title}
+                  </Link>
+                ) : (
+                  lineageAgentId
+                )}
+              </Typography>
+            </>
           ) : null}
-        </>
+        </Stack>
       }
       status={
         <AgentRunState
