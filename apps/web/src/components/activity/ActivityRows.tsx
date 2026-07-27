@@ -31,8 +31,8 @@ import { ResponseFileActivity } from "./ResponseFileActivity";
 const ACTIVITY_TITLE_COLOR = "var(--ponderosa-activity-label)";
 const ACTIVITY_TITLE_FONT_SIZE = 15;
 const RESPONSE_TITLE_FONT_SIZE = 16;
-const RUN_TITLE_FONT_SIZE = 17;
-type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
+const RUN_TITLE_FONT_SIZE = 18;
+type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" }>;
 
 export function ActivityElapsed({
   startedAt,
@@ -89,13 +89,47 @@ export function RunHeaderRow({
     `${counts.files} file${counts.files === 1 ? "" : "s"}`,
     ...(counts.errors ? [`${counts.errors} error${counts.errors === 1 ? "" : "s"}`] : []),
   ] : [];
+  const sourceCommunicationCount =
+    entry.run?.providerInput?.sourceManifest.communicationEventIds.length ?? 0;
+  const isCoordinationContinuation =
+    entry.run?.wakeCause === "coordination" ||
+    (entry.run?.wakeCause === "collaboration" &&
+      !entry.run.communicationEventId &&
+      sourceCommunicationCount === 0);
+  if (entry.run && isCoordinationContinuation) {
+    return <Box
+      data-activity-kind="run_continuation"
+      sx={{ py: 1, borderBottom: 1, borderColor: "divider", minWidth: 0 }}
+    >
+      <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
+        <Typography variant="subtitle2" color="text.secondary" sx={{ display: "flex", alignItems: "center", gap: 0.75, fontWeight: 700 }}>
+          <PlayCircleOutlineIcon sx={{ fontSize: 18 }} />
+          Continued after Agent updates
+        </Typography>
+        {countParts.length ? <Typography variant="caption" color="text.secondary">
+          {countParts.join(" · ")}
+        </Typography> : null}
+        <Typography variant="caption" color="text.secondary">
+          <ActivityElapsed startedAt={entry.run.startedAt} completedAt={entry.run.completedAt} />
+        </Typography>
+        {entry.active ? <Chip size="small" color="info" label="Working" /> : null}
+      </Stack>
+    </Box>;
+  }
   return <Box
     data-activity-kind="run_header"
-    sx={{ mt: 3, pt: 1.5, pb: 0.75, borderTop: 2, borderColor: "divider" }}
+    sx={{
+      mt: 3,
+      px: 0.25,
+      pt: 1.5,
+      pb: 1,
+      borderTop: 2,
+      borderColor: "divider",
+    }}
   >
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle1" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: RUN_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: ".015em" }}>
-        <PlayCircleOutlineIcon sx={{ fontSize: 20 }} />
+      <Typography variant="h6" color="secondary.main" sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: RUN_TITLE_FONT_SIZE, fontWeight: 800, letterSpacing: "-.01em" }}>
+        <PlayCircleOutlineIcon sx={{ fontSize: 21 }} />
         {entry.executionId
           ? entry.run?.title ?? `Run ${entry.executionId.slice(0, 8)}`
           : "Unscoped activity"}
@@ -120,16 +154,37 @@ export function CommandRow({
   focusId?: string;
   projectRoot?: string;
 }): JSX.Element {
+  const [expanded, setExpanded] = useState(focusId === entry.id);
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+  useEffect(() => {
+    if (focusId === entry.id) setExpanded(true);
+  }, [entry.id, focusId]);
   const copyLabel = copyState === "copied"
     ? "Command copied"
     : copyState === "failed" ? "Copy command failed" : "Copy command";
   return <Row entry={entry} focusId={focusId}>
     <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, flex: 1, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
-        <CodeIcon fontSize="small" />
-        {entry.internal ? "Ponderosa communication" : "Command"}
-      </Typography>
+      <Button
+        color="inherit"
+        startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", px: 0.5, color: entry.result?.isError ? "error.main" : ACTIVITY_TITLE_COLOR }}
+      >
+        <Stack component="span" direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+          <CodeIcon fontSize="small" />
+          <Box component="span" sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>
+            {entry.internal ? "Ponderosa communication" : "Command"}
+          </Box>
+          {!entry.internal ? <Box
+            component="span"
+            sx={{ color: "text.secondary", fontFamily: "monospace", fontSize: 12.5, fontWeight: 500, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            {entry.command}
+          </Box> : null}
+        </Stack>
+      </Button>
+      {entry.result?.isError ? <Chip size="small" color="error" label="Failed" /> : null}
       {!entry.internal ? <>
         <Tooltip title={copyLabel}>
           <IconButton size="small" color={copyState === "failed" ? "error" : "inherit"} aria-label="Copy command" onClick={() => {
@@ -146,15 +201,17 @@ export function CommandRow({
         </Box>
       </> : null}
     </Stack>
-    {entry.internal
-      ? <Typography variant="body2" color="text.secondary">Sent a structured Ponderosa communication or managed-agent event.</Typography>
-      : <Box component="pre" sx={{ m: 0, mt: 0.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13.5, userSelect: "text" }}>
-          $ {entry.command}
-        </Box>}
-    {!entry.internal && entry.cwd && entry.cwd !== projectRoot ? <Typography variant="caption" color="text.secondary">
-      cwd: {entry.cwd}
-    </Typography> : null}
-    {entry.result ? <ActivityOutput result={entry.result} label="Command output" collapsedLines={5} /> : null}
+    {expanded ? <Box sx={{ pl: { xs: 1, sm: 4.5 }, pr: 0.5, pb: 0.5 }}>
+      {entry.internal
+        ? <Typography variant="body2" color="text.secondary">Sent a structured Ponderosa communication or managed-agent event.</Typography>
+        : <Box component="pre" sx={{ m: 0, mt: 0.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13.5, userSelect: "text" }}>
+            $ {entry.command}
+          </Box>}
+      {!entry.internal && entry.cwd && entry.cwd !== projectRoot ? <Typography variant="caption" color="text.secondary">
+        cwd: {entry.cwd}
+      </Typography> : null}
+      {entry.result ? <ActivityOutput result={entry.result} label="Command output" collapsedLines={5} /> : null}
+    </Box> : null}
   </Row>;
 }
 
@@ -167,21 +224,16 @@ export function ActionGroupRow({
   focusId?: string;
   projectRoot?: string;
 }): JSX.Element {
-  const hasErrors = entries.some((entry) =>
-    (entry.kind === "command" || entry.kind === "tool") && entry.result?.isError);
   const containsFocus = entries.some((entry) => entry.id === focusId);
-  const [expanded, setExpanded] = useState(hasErrors || containsFocus);
+  const [expanded, setExpanded] = useState(containsFocus);
   useEffect(() => {
-    if (hasErrors || containsFocus) setExpanded(true);
-  }, [containsFocus, hasErrors]);
-  const failureCount = entries.filter((entry) =>
-    (entry.kind === "command" || entry.kind === "tool") && entry.result?.isError).length;
-  const commandCount = entries.filter((entry) => entry.kind === "command").length;
-  const toolCount = entries.filter((entry) => entry.kind === "tool").length;
-  const summary = [
-    ...(commandCount ? [`Ran ${commandCount} command${commandCount === 1 ? "" : "s"}`] : []),
-    ...(toolCount ? [`Used ${toolCount} tool${toolCount === 1 ? "" : "s"}`] : []),
-  ].join(" · ");
+    if (containsFocus) setExpanded(true);
+  }, [containsFocus]);
+  const actionKind = entries[0]?.kind;
+  const failureCount = entries.filter((entry) => entry.result?.isError).length;
+  const summary = actionKind === "command"
+    ? `Ran ${entries.length} commands`
+    : `Called ${entries.length} tools`;
   return <Box data-activity-kind="action_group">
     <Stack
       direction="row"
@@ -189,34 +241,31 @@ export function ActionGroupRow({
       sx={{ py: 1.25, alignItems: "center", borderBottom: 1, borderColor: "divider" }}
     >
       <Button
-        size="small"
         color="inherit"
         startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
         aria-expanded={expanded}
-        aria-label={`${expanded ? "Collapse" : "Expand"} grouped activity`}
+        aria-label={`${expanded ? "Collapse" : "Expand"} ${summary.toLocaleLowerCase()}`}
         onClick={() => setExpanded((value) => !value)}
-        sx={{ color: ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.5 }}
+        sx={{ color: failureCount ? "error.main" : ACTIVITY_TITLE_COLOR, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, px: 0.5 }}
       >
         <Stack component="span" direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
-          {commandCount ? <CodeIcon fontSize="small" /> : null}
-          {toolCount ? <BuildOutlinedIcon fontSize="small" /> : null}
+          {actionKind === "command"
+            ? <CodeIcon fontSize="small" />
+            : <BuildOutlinedIcon fontSize="small" />}
           <Box component="span">{summary}</Box>
         </Stack>
       </Button>
-      {failureCount ? <Typography variant="caption" color="error.main">
-        {failureCount} failed
-      </Typography> : null}
+      {failureCount ? <Chip size="small" color="error" label={`${failureCount} failed`} /> : null}
     </Stack>
-    {expanded ? entries.map((entry) => {
-      if (entry.kind === "command") return <CommandRow
-        key={entry.id}
-        entry={entry}
-        focusId={focusId}
-        projectRoot={projectRoot}
-      />;
-      if (entry.kind === "tool") return <ToolRow key={entry.id} entry={entry} focusId={focusId} />;
-      return <CompactActivityRow key={entry.id} entry={entry} focusId={focusId} />;
-    }) : null}
+    {expanded ? entries.map((entry) =>
+      entry.kind === "command"
+        ? <CommandRow
+            key={entry.id}
+            entry={entry}
+            focusId={focusId}
+            projectRoot={projectRoot}
+          />
+        : <ToolRow key={entry.id} entry={entry} focusId={focusId} />) : null}
   </Box>;
 }
 
@@ -254,6 +303,10 @@ export function ToolRow({
   entry: Extract<ActivityStreamEntry, { kind: "tool" }>;
   focusId?: string;
 }): JSX.Element {
+  const [expanded, setExpanded] = useState(focusId === entry.id);
+  useEffect(() => {
+    if (focusId === entry.id) setExpanded(true);
+  }, [entry.id, focusId]);
   let formatted = "";
   try {
     formatted = JSON.stringify(entry.input, null, 2);
@@ -261,14 +314,32 @@ export function ToolRow({
     formatted = String(entry.input);
   }
   return <Row entry={entry} focusId={focusId}>
-    <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700 }}>
-      <BuildOutlinedIcon fontSize="small" />
-      Tool call: {entry.name}
-    </Typography>
-    <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
-      <CollapsibleCode value={formatted || "null"} maxLines={6} />
-    </Box>
-    {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
+    <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+      <Button
+        color="inherit"
+        startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((value) => !value)}
+        sx={{ flex: 1, minWidth: 0, justifyContent: "flex-start", px: 0.5, color: entry.result?.isError ? "error.main" : ACTIVITY_TITLE_COLOR }}
+      >
+        <Stack component="span" direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+          <BuildOutlinedIcon fontSize="small" />
+          <Box component="span" sx={{ fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>
+            Tool
+          </Box>
+          <Box component="span" sx={{ color: "text.secondary", fontFamily: "monospace", fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {entry.name}
+          </Box>
+        </Stack>
+      </Button>
+      {entry.result?.isError ? <Chip size="small" color="error" label="Failed" /> : null}
+    </Stack>
+    {expanded ? <Box sx={{ pl: { xs: 1, sm: 4.5 }, pr: 0.5, pb: 0.5 }}>
+      <Box sx={{ mt: 0.5, pl: 1.5, borderLeft: 2, borderColor: "divider" }}>
+        <CollapsibleCode value={formatted || "null"} maxLines={6} />
+      </Box>
+      {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
+    </Box> : null}
   </Row>;
 }
 

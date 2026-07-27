@@ -21,23 +21,16 @@ import {
 import { buildActivityStream } from "./activityStream";
 import type { ActivityStreamEntry } from "./activityStream";
 
-type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" | "browser" }>;
+type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" }>;
 type ActivityDisplayEntry =
   | ActivityStreamEntry
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
-const MAX_ACTION_GROUP_GAP_MS = 10_000;
-const MAX_ACTION_GROUP_IDLE_SPAN_MS = 30_000;
-
 function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
   let actions: GroupedActionEntry[] = [];
-  let accumulatedIdleMs = 0;
   const flush = () => {
-    const commandCount = actions.filter((entry) => entry.kind === "command").length;
-    const toolCount = actions.filter((entry) => entry.kind === "tool").length;
-    const shouldGroup = commandCount >= 3 || toolCount >= 2 || (commandCount >= 1 && toolCount >= 1);
-    if (shouldGroup) {
+    if (actions.length > 1) {
       grouped.push({
         kind: "action_group",
         id: `action-group:${actions[0]!.id}`,
@@ -47,40 +40,11 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
       grouped.push(...actions);
     }
     actions = [];
-    accumulatedIdleMs = 0;
-  };
-  const append = (entry: GroupedActionEntry) => {
-    const previous = actions.at(-1);
-    if (previous) {
-      const previousCompletedAt = previous.kind === "browser"
-        ? previous.createdAt
-        : previous.result?.completedAt ?? previous.createdAt;
-      const previousCompletedTime = Date.parse(previousCompletedAt ?? "");
-      const entryStartTime = Date.parse(entry.createdAt);
-      const invalidTime = !Number.isFinite(previousCompletedTime) ||
-        !Number.isFinite(entryStartTime);
-      const idleGap = Math.max(0, entryStartTime - previousCompletedTime);
-      if (invalidTime ||
-          idleGap >= MAX_ACTION_GROUP_GAP_MS ||
-          accumulatedIdleMs + idleGap > MAX_ACTION_GROUP_IDLE_SPAN_MS) {
-        flush();
-      } else {
-        accumulatedIdleMs += idleGap;
-      }
-    }
-    actions.push(entry);
   };
   for (const entry of entries) {
-    if (entry.kind === "command" && !entry.internal) {
-      append(entry);
-      continue;
-    }
-    if (entry.kind === "tool") {
-      append(entry);
-      continue;
-    }
-    if (entry.kind === "browser") {
-      append(entry);
+    if (entry.kind === "command" || entry.kind === "tool") {
+      if (actions.length > 0 && actions[0]!.kind !== entry.kind) flush();
+      actions.push(entry);
       continue;
     }
     flush();

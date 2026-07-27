@@ -20,6 +20,7 @@ export type AgentRunWakeCause =
   | "project_request"
   | "direct_message"
   | "collaboration"
+  | "coordination"
   | "trigger"
   | "decision"
   | "managed_failure";
