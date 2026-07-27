@@ -13,7 +13,6 @@ export const composerSurfaceSx: SxProps<Theme> = {
     xl: "min(1240px, calc(100% - 64px))",
   },
   mx: "auto",
-  mt: { xs: 0.75, sm: 1 },
   mb: { xs: 1, sm: 1.5 },
   minWidth: 0,
   maxWidth: "100%",
