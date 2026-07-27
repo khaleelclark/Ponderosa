@@ -6,34 +6,26 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
   Stack,
   TextField,
 } from "@mui/material";
-import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { EngineDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { engineIsAvailable, resolveRuntimeSelection } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
 import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
-import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 
 export function ProjectSettingsDialog({
   project,
   engines,
-  preferences,
   onClose,
   onDeleted,
   onImported,
 }: {
   project?: ProjectDto;
   engines: EngineDto[];
-  preferences: WorkspacePreferencesDto;
   onClose(): void;
   onDeleted(projectId: string): void;
   onImported(projectId: string, agentId: string): void;
@@ -41,9 +33,6 @@ export function ProjectSettingsDialog({
   const queryClient = useQueryClient();
   const [label, setLabel] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [defaultEngine, setDefaultEngine] = useState("");
-  const [defaultModel, setDefaultModel] = useState("");
-  const [defaultEffort, setDefaultEffort] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
@@ -51,9 +40,6 @@ export function ProjectSettingsDialog({
     if (!project) return;
     setLabel(project.label);
     setInstructions(project.instructions ?? "");
-    setDefaultEngine(project.defaultEngine);
-    setDefaultModel(project.defaultModel ?? "");
-    setDefaultEffort(project.defaultEffort ?? "");
     setDeleteOpen(false);
   }, [project]);
 
@@ -67,9 +53,6 @@ export function ProjectSettingsDialog({
     mutationFn: () => api.updateProject(project!.id, {
       label: label.trim(),
       instructions,
-      defaultEngine,
-      defaultModel: defaultModel || null,
-      defaultEffort: defaultEffort || null,
     }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
@@ -86,9 +69,6 @@ export function ProjectSettingsDialog({
     },
   });
 
-  const engine = engines.find((candidate) => candidate.id === defaultEngine);
-  const inherited = resolveRuntimeSelection(engine, preferences);
-
   return (
     <>
       <Dialog
@@ -102,36 +82,6 @@ export function ProjectSettingsDialog({
         <DialogContent>
           <Stack spacing={2} sx={{ pt: 1 }}>
             <TextField autoFocus label="Project name" value={label} onChange={(event) => setLabel(event.target.value)} fullWidth />
-            <FormControl fullWidth>
-              <InputLabel id="settings-project-engine-label">Default engine</InputLabel>
-              <Select
-                labelId="settings-project-engine-label"
-                label="Default engine"
-                value={defaultEngine}
-                onChange={(event) => {
-                  setDefaultEngine(event.target.value);
-                  setDefaultModel("");
-                  setDefaultEffort("");
-                }}
-              >
-                {engines.map((candidate) => <MenuItem key={candidate.id} value={candidate.id} disabled={!engineIsAvailable(candidate)}>{candidate.displayName}</MenuItem>)}
-              </Select>
-            </FormControl>
-            <ProjectRuntimeFields
-              engine={engine}
-              inherited={inherited}
-              model={defaultModel}
-              effort={defaultEffort}
-              onChange={(selection) => {
-                setDefaultModel(selection.model);
-                setDefaultEffort(selection.effort);
-              }}
-              modelLabel="Project model"
-              effortLabel="Project effort"
-              modelLabelId="settings-project-model-label"
-              effortLabelId="settings-project-effort-label"
-              inheritedPrefix="Use Workspace Setting"
-            />
             <TextField
               label="Project master rules"
               value={instructions}

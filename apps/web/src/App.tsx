@@ -945,7 +945,6 @@ export default function App({
         <ProjectSettingsDialog
           project={settingsProject}
           engines={engines}
-          preferences={preferences}
           onClose={() => setSettingsProject(undefined)}
           onImported={(projectId, agentId) => {
             setSettingsProject(undefined);
