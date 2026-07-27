@@ -278,7 +278,6 @@ export function WorkspaceTabs({
                   label,
                 });
               }}
-              onDoubleClick={() => beginRename(tab.key, label)}
               sx={{
                 position: "relative",
                 containerType: "inline-size",
@@ -321,6 +320,11 @@ export function WorkspaceTabs({
               <Tooltip title={`${label} · ${projectLabel}`} enterDelay={500}>
                 <ButtonBase
                   onClick={() => onActivate(tab.key)}
+                  onDoubleClick={event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    beginRename(tab.key, label);
+                  }}
                   onKeyDown={event => {
                     if (
                       event.key === "ContextMenu" ||
