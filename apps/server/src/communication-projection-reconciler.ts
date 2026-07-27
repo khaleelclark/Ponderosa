@@ -32,6 +32,34 @@ interface CommunicationProjectionReconcilerContext {
   ): void;
 }
 
+function runtimeProjectionTargets(
+  event: CommunicationEvent,
+  recipientAgentIds: readonly string[],
+): ReturnType<typeof deriveCommunicationBehavior>["projectionTargets"] {
+  const targets = [...deriveCommunicationBehavior(event).projectionTargets];
+  if (event.intent !== "broadcast" || event.sender.kind !== "user") return targets;
+  // A Project message remains an organization-scoped Broadcast, while its
+  // runtime recipients identify the exact Agents whose audit chats should show
+  // the user handoff. Do not widen this to every Agent in the Project.
+  for (const agentId of recipientAgentIds) {
+    if (!targets.some((target) =>
+      target.surface === "direct_agent_audit" && target.projectionKey === agentId)) {
+      targets.push({ surface: "direct_agent_audit", projectionKey: agentId });
+    }
+  }
+  return targets;
+}
+
+function mergeAttachments(
+  ...groups: Array<readonly ImageAttachmentDto[] | undefined>
+): ImageAttachmentDto[] {
+  const attachments = new Map<string, ImageAttachmentDto>();
+  for (const group of groups) {
+    for (const attachment of group ?? []) attachments.set(attachment.id, attachment);
+  }
+  return [...attachments.values()];
+}
+
 export function createCommunicationProjectionReconciler(
   context: CommunicationProjectionReconcilerContext,
 ) {
@@ -56,6 +84,7 @@ export function createCommunicationProjectionReconciler(
     let skippedUnavailableTargets = 0;
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
+    const exactRecipientAgentIds = new Map<string, string[]>();
     for (const row of coordinationV3.runtimeCommunications()) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;
       const payload = row.payload && typeof row.payload === "object"
@@ -231,7 +260,10 @@ export function createCommunicationProjectionReconciler(
           repairedProjectIds.add(row.projectId);
         }
         if (!canonical) continue;
-        if (filter?.projectId && filter.communicationEventId) exactCanonicalEvents.set(canonical.eventId, canonical);
+        if (filter?.projectId && filter.communicationEventId) {
+          exactCanonicalEvents.set(canonical.eventId, canonical);
+          exactRecipientAgentIds.set(canonical.eventId, recipientAgentIds);
+        }
         for (const artifact of runtimeArtifacts) {
           projectCommunicationArtifact(
             row.projectId,
@@ -242,7 +274,8 @@ export function createCommunicationProjectionReconciler(
         }
 
         const behavior = deriveCommunicationBehavior(canonical);
-        const projectionTargets = behavior.projectionTargets.filter((target) => {
+        const runtimeTargets = runtimeProjectionTargets(canonical, recipientAgentIds);
+        const projectionTargets = runtimeTargets.filter((target) => {
           if (target.surface === "conversation" || target.surface === "collaboration_view") {
             const conversation = store.getConversation(target.projectionKey);
             return Boolean(conversation && conversation.projectId === canonical.projectId && !conversation.archived);
@@ -253,9 +286,11 @@ export function createCommunicationProjectionReconciler(
           }
           return true;
         });
-        skippedUnavailableTargets += behavior.projectionTargets.length - projectionTargets.length;
-        const recipientIds = behavior.deliveryRecipients.flatMap((recipient) =>
-          recipient.kind === "agent" ? [recipient.agentId] : []);
+        skippedUnavailableTargets += runtimeTargets.length - projectionTargets.length;
+        const recipientIds = canonical.intent === "broadcast" && canonical.sender.kind === "user"
+          ? recipientAgentIds
+          : behavior.deliveryRecipients.flatMap((recipient) =>
+              recipient.kind === "agent" ? [recipient.agentId] : []);
         const roomAttachments = canonical.attachments ?? firstRecoveredAttachments;
         const role = canonical.sender.kind === "user" ? "user" : canonical.sender.kind === "system" ? "system" : "assistant";
         const dispatchText = typeof dispatch?.text === "string" ? dispatch.text : canonical.text;
@@ -328,10 +363,14 @@ export function createCommunicationProjectionReconciler(
           const before = store.readCommunicationProjections(canonical.projectId).find((projection) =>
             projection.eventId === canonical.eventId && projection.surface === target.surface &&
             projection.projectionKey === target.projectionKey);
-          const targetAttachments = attachmentsByAgent.get(target.projectionKey) ??
-            (canonical.sender.kind === "agent" && canonical.sender.agentId === target.projectionKey
-              ? roomAttachments ?? []
-              : []);
+          const targetAttachments = canonical.intent === "broadcast" &&
+              canonical.sender.kind === "user" &&
+              recipientAgentIds.includes(target.projectionKey)
+            ? mergeAttachments(roomAttachments, attachmentsByAgent.get(target.projectionKey))
+            : attachmentsByAgent.get(target.projectionKey) ??
+              (canonical.sender.kind === "agent" && canonical.sender.agentId === target.projectionKey
+                ? roomAttachments ?? []
+                : []);
           const auditText = canonical.intent === "broadcast"
             ? renderScopedMessage("broadcast", canonical.text)
             : dispatchText;
@@ -376,20 +415,25 @@ export function createCommunicationProjectionReconciler(
       const receiptMessage = canonical?.conversationId && canonical.idempotencyKey
         ? store.getConversationMessageByReceiptKey(canonical.conversationId, canonical.idempotencyKey)
         : undefined;
-      const incompleteTargets = canonical ? deriveCommunicationBehavior(canonical).projectionTargets.filter((target) => {
-        if (target.surface === "conversation" || target.surface === "collaboration_view") {
-          const conversation = store.getConversation(target.projectionKey);
-          if (!conversation || conversation.projectId !== canonical.projectId || conversation.archived) return false;
-        } else if (target.surface === "direct_agent_audit") {
-          const agent = store.getAgent(target.projectionKey);
-          if (!agent || agent.projectId !== canonical.projectId || agent.archived) return false;
-        } else {
-          return false;
-        }
-        return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
-          !projections.some((projection) => projection.eventId === canonical.eventId &&
-            projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message);
-      }) : [];
+      const incompleteTargets = canonical
+          ? runtimeProjectionTargets(
+            canonical,
+            exactRecipientAgentIds.get(canonical.eventId) ?? [],
+          ).filter((target) => {
+            if (target.surface === "conversation" || target.surface === "collaboration_view") {
+              const conversation = store.getConversation(target.projectionKey);
+              if (!conversation || conversation.projectId !== canonical.projectId || conversation.archived) return false;
+            } else if (target.surface === "direct_agent_audit") {
+              const agent = store.getAgent(target.projectionKey);
+              if (!agent || agent.projectId !== canonical.projectId || agent.archived) return false;
+            } else {
+              return false;
+            }
+            return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
+              !projections.some((projection) => projection.eventId === canonical.eventId &&
+                projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message);
+          })
+        : [];
       if (!canonical || incompleteTargets.length > 0) {
         throw new Error("runtime communication projection recovery is incomplete; exact retry remains safe");
       }
