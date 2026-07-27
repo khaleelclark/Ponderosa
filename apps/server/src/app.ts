@@ -108,6 +108,7 @@ import { EngineAvailabilityStore } from "./engine-availability-store.js";
 import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
 import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
+import { createDeploymentControl } from "./deployment-control.js";
 import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService } from "./trigger-service.js";
@@ -1195,76 +1196,25 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     communicationArtifactAccess,
     projectCommunicationArtifact,
   });
-  let deploymentDraining = false;
-  let shutdownPrepared = false;
-  app.prepareForShutdown = (): void => {
-    if (shutdownPrepared) return;
-    shutdownPrepared = true;
-    closed = true;
-    deploymentDraining = true;
-    for (const closeStream of [...liveSseClosures]) {
-      try {
-        closeStream();
-      } catch (error) {
-        app.log.warn({ err: error }, "Ponderosa could not close a live event stream cleanly");
-      }
-    }
-    app.server.closeIdleConnections();
-  };
-  const deploymentDrainSnapshot = () => {
-    const schedulerRuns = coordinationV3.activeRunCount();
-    const localRuns = activeRuns.size;
-    const authorities = [...runtimeAuthorities.values()];
-    const providerAuthorities = authorities.reduce((total, authority) => total + pendingRuntimeAuthorityCount(authority), 0)
-      + providerUsage.pendingCount();
-    const runtimeCleanupOperations = authorities.reduce((total, authority) =>
-      total + Number(Boolean(authority.closing)) + authority.oneShots.size +
-      Number(Boolean(authority.opening?.terminationOperation)), 0);
-    const runtimeFailures = authorities.reduce((total, authority) => total +
-      Number(Boolean(authority.opening?.lastError)) + Number(Boolean(authority.closing?.lastError)) +
-      [...authority.oneShots.values()].filter((state) => Boolean(state.lastError)).length, 0);
-    const browser = [browserSessions.authorityStatus(), projectBrowserSessions.authorityStatus()];
-    const browserAuthorities = browser.reduce((total, status) =>
-      total + status.openings + status.active + status.pendingCleanup, 0);
-    const browserCleanupOperations = browser.reduce((total, status) => total + status.pendingCleanup, 0);
-    const browserFailures = browser.reduce((total, status) => total + status.retainedFailures, 0);
-    const projectCleanup = store.listPendingProjectDeletions();
-    const committedProjectCleanup = store.listPendingProjectDeletionReceipts();
-    const agentCleanup = store.listPendingAgentDeletionReceipts();
-    const pendingCleanupOperations = runtimeCleanupOperations + browserCleanupOperations +
-      projectCleanup.length + committedProjectCleanup.length + agentCleanup.length;
-    const retainedTeardownFailures = runtimeFailures + browserFailures +
-      projectCleanup.filter((entry) => Boolean(entry.lastError)).length +
-      committedProjectCleanup.filter((entry) => Boolean(entry.lastError)).length +
-      agentCleanup.filter((entry) => Boolean(entry.lastError)).length;
-    const activeRunsCount = Math.max(schedulerRuns, localRuns);
-    return {
-      state: deploymentDraining ? "draining" as const : "accepting" as const,
-      readyForRestart: deploymentDraining && activeRunsCount === 0 && providerAuthorities === 0 &&
-        browserAuthorities === 0 && pendingCleanupOperations === 0 && retainedTeardownFailures === 0,
-      activeRuns: activeRunsCount,
-      schedulerRuns,
-      localRuns,
-      providerAuthorities,
-      browserAuthorities,
-      pendingCleanupOperations,
-      retainedTeardownFailures,
-    };
-  };
-
+  let deploymentControl!: ReturnType<typeof createDeploymentControl>;
   function drainDeploymentIdleAuthorities(): void {
-    if (!deploymentDraining || activeRuns.size > 0) return;
-    for (const [agentId, authority] of runtimeAuthorities) {
-      if (authority.reusable) teardownPersistentRuntimeInBackground(agentId, authority.reusable, "deployment drain");
-    }
-    projectBrowserGrants.clear();
-    void browserSessions.closeAll("deployment_drain").catch((error) => {
-      app.log.error({ err: error }, "Run browser deployment cleanup remains pending");
-    });
-    void projectBrowserSessions.closeAll("deployment_drain").catch((error) => {
-      app.log.error({ err: error }, "Project browser deployment cleanup remains pending");
-    });
+    deploymentControl.drainIdleAuthorities();
   }
+  deploymentControl = createDeploymentControl(app, {
+    store,
+    coordinationV3,
+    activeRuns,
+    runtimeAuthorities,
+    liveSseClosures,
+    projectBrowserGrants,
+    browserSessions,
+    projectBrowserSessions,
+    providerUsage,
+    setClosed: () => { closed = true; },
+    pendingRuntimeAuthorityCount,
+    teardownPersistentRuntimeInBackground,
+  });
+  const deploymentDrainSnapshot = deploymentControl.snapshot;
   const triggerSources = new TriggerSourceService({
     store,
     coordination: coordinationV3,
@@ -1757,7 +1707,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     communicationReconciliation,
     coordinationV3Scheduler,
     isClosed: () => closed,
-    setDeploymentDraining: (value) => { deploymentDraining = value; },
+    setDeploymentDraining: deploymentControl.setDraining,
     deploymentDrainSnapshot,
     drainDeploymentIdleAuthorities,
     refreshTriggerSources: () => triggerSources.refresh(),
@@ -1901,7 +1851,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     managedProjectArtifactAgreesWithRuntime,
     drainDeploymentIdleAuthorities,
     isClosed: () => closed,
-    isDeploymentDraining: () => deploymentDraining,
+    isDeploymentDraining: deploymentControl.isDraining,
     notifyScheduler: () => coordinationV3Scheduler.notify(),
     setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
   });
