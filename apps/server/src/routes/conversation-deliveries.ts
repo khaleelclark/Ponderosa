@@ -496,6 +496,7 @@ export function registerConversationDeliveryRoutes(
     const pending = coordinationV3.pendingActivations(conversation.projectId);
     const perAgentPosition = new Map<string, number>();
     return pending.flatMap((activation) => {
+      if (activation.dispatchPolicy !== "next_run") return [];
       const payload = activation.payload && typeof activation.payload === "object"
         ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; text?: string } }
         : undefined;

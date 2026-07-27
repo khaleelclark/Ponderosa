@@ -13,8 +13,6 @@ export interface ComposerProps extends ChatComposerContract {
   attachmentsUnavailableReason?: string;
   busyMentionHandles?: string[];
   allowUnmentionedSend?: boolean;
-  preferQueue?: boolean;
-  queuedMentionHandles?: string[];
   agentResponding?: boolean;
   onCancel?(): void;
   draftStorageKey?: string;
@@ -27,6 +25,11 @@ export interface ComposerProps extends ChatComposerContract {
   recipientRequiredMessage?: string;
   removeTextRequest?: { id: string; text: string };
   onMentionedHandlesChange?(handles: string[]): void;
-  continueWith?: { handle: string; title: string };
+  continueWith?: {
+    agentId: string;
+    handle: string;
+    title: string;
+    responding?: boolean;
+  };
   destinationTitleForHandle?(handle: string): string | undefined;
 }

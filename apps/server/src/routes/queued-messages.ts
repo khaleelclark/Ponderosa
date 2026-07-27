@@ -89,8 +89,13 @@ export function registerQueuedMessageRoutes(
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversation.archived) return reply.code(404).send({ error: "conversation not found" });
-    const activation = coordinationV3.pendingActivations(conversation.projectId)
+    const pendingActivation = coordinationV3.pendingActivations(conversation.projectId)
       .find((candidate) => candidate.id === request.params.deliveryId);
+    if (pendingActivation &&
+        pendingActivation.dispatchPolicy !== "next_run") {
+      return reply.code(404).send({ error: "queued message not found" });
+    }
+    const activation = pendingActivation;
     if (!activation) {
       const result = coordinationV3.cancelPendingActivation({
         activationId: request.params.deliveryId,
@@ -124,7 +129,8 @@ export function registerQueuedMessageRoutes(
     if (!agent || agent.archived) return reply.code(404).send({ error: "agent not found" });
     let position = 0;
     return coordinationV3.pendingActivations(agent.projectId).flatMap((activation) => {
-      if (activation.agentId !== agent.id) return [];
+      if (activation.agentId !== agent.id ||
+          activation.dispatchPolicy !== "next_run") return [];
       const payload = activation.payload && typeof activation.payload === "object"
         ? activation.payload as { communication?: CommunicationEvent; dispatch?: { text?: string; sourceConversationId?: string | null; conversationId?: string } }
         : undefined;
@@ -153,7 +159,10 @@ export function registerQueuedMessageRoutes(
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+      .find((candidate) =>
+        candidate.id === request.params.deliveryId &&
+        candidate.agentId === agent.id &&
+        candidate.dispatchPolicy === "next_run");
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
@@ -181,7 +190,10 @@ export function registerQueuedMessageRoutes(
     if (!rawText.trim() || rawText.length > MAX_TEXT_LENGTH) return reply.code(400).send({ error: "queued message text is required" });
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+      .find((candidate) =>
+        candidate.id === request.params.deliveryId &&
+        candidate.agentId === agent.id &&
+        candidate.dispatchPolicy === "next_run");
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;
@@ -259,7 +271,10 @@ export function registerQueuedMessageRoutes(
     const idempotencyKey = request.body?.idempotencyKey?.trim() ?? "";
     if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
     const activation = coordinationV3.pendingActivations(agent.projectId)
-      .find((candidate) => candidate.id === request.params.deliveryId && candidate.agentId === agent.id);
+      .find((candidate) =>
+        candidate.id === request.params.deliveryId &&
+        candidate.agentId === agent.id &&
+        candidate.dispatchPolicy === "next_run");
     const payload = activation?.payload && typeof activation.payload === "object"
       ? activation.payload as { communication?: CommunicationEvent }
       : undefined;

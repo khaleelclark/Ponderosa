@@ -255,9 +255,15 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "message_delivery_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(event.agentId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.queuedMessages.agent(event.agentId),
+        });
         if (event.conversationIds) {
           for (const conversationId of event.conversationIds) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.queuedMessages.conversation(conversationId),
+            });
           }
           collaborationChatInvalidator.schedule(event.conversationIds);
         } else {

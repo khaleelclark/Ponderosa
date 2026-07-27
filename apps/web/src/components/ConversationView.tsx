@@ -409,6 +409,9 @@ export function ConversationView({
     const message = [...messages].reverse().find(candidate => Boolean(candidate.authorAgentId));
     return message?.authorAgentId ? agents.find(agent => agent.id === message.authorAgentId) : undefined;
   }, [agents, messages]);
+  const lastRespondingAgentIsRunning =
+    Boolean(lastRespondingAgent) &&
+    Boolean(healthByAgentId.get(lastRespondingAgent!.id)?.runtimeActivity);
   const editConversationMessage = useCallback(
     (selected: ConversationMessageDto) => {
       setEditingMessage(selected);
@@ -876,7 +879,12 @@ export function ConversationView({
             )}
             conversationDraftId={conversationId}
             destinationMode="project-chat"
-            continueWith={lastRespondingAgent ? { handle: agentMentionHandle(lastRespondingAgent.title), title: lastRespondingAgent.title } : undefined}
+            continueWith={lastRespondingAgent ? {
+              agentId: lastRespondingAgent.id,
+              handle: agentMentionHandle(lastRespondingAgent.title),
+              title: lastRespondingAgent.title,
+              responding: lastRespondingAgentIsRunning,
+            } : undefined}
             destinationTitleForHandle={handle => agents.find(agent =>
               agentMentionHandle(agent.title).toLocaleLowerCase() === handle.toLocaleLowerCase())?.title}
             insertTextRequest={mentionInsertRequest}
@@ -919,21 +927,26 @@ export function ConversationView({
                 ? "Send a message"
                 : "#tag an agent or use #broadcast for shared context"
             }
-            onSend={(text, files, stagedIds, draftOwnerId) =>
-              submit(text, files, "steer", stagedIds, draftOwnerId)
+            onSend={(text, files, stagedIds, draftOwnerId, context) =>
+              submit(
+                text,
+                files,
+                "steer",
+                stagedIds,
+                draftOwnerId,
+                context?.implicitRecipientId,
+              )
             }
-            onQueue={(text, files, stagedIds, draftOwnerId) =>
-              submit(text, files, "queue", stagedIds, draftOwnerId)
+            onQueue={(text, files, stagedIds, draftOwnerId, context) =>
+              submit(
+                text,
+                files,
+                "queue",
+                stagedIds,
+                draftOwnerId,
+                context?.implicitRecipientId,
+              )
             }
-            preferQueue={false}
-            queuedMentionHandles={(queuedMessagesQuery.data ?? []).flatMap(
-              message => {
-                const agent = agents.find(
-                  candidate => candidate.id === message.targetAgentId,
-                );
-                return agent ? [agentMentionHandle(agent.title)] : [];
-              },
-            )}
             agentResponding={false}
             projectId={conversation.projectId}
             onCancel={stopOperation}

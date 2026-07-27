@@ -47,8 +47,10 @@ interface ComposerDestinationBarProps {
   hasBroadcastDestination: boolean;
   hasEveryoneDestination: boolean;
   inputRef: RefObject<HTMLTextAreaElement>;
+  implicitContinueSelected: boolean;
   projectDestinationHelper: string;
   projectDestinations: Array<{ handle: string; title: string }>;
+  selectImplicitContinue(selected: boolean): void;
   setDestination(handle: string): void;
   targetRequiredDestinations: Array<{ handle: string; title: string }>;
   targetRequiredHelper: string;
@@ -63,8 +65,10 @@ export function ComposerDestinationBar({
   hasBroadcastDestination,
   hasEveryoneDestination,
   inputRef,
+  implicitContinueSelected,
   projectDestinationHelper,
   projectDestinations,
+  selectImplicitContinue,
   setDestination,
   targetRequiredDestinations,
   targetRequiredHelper,
@@ -105,28 +109,46 @@ export function ComposerDestinationBar({
       ))}
       {!hasBroadcastDestination &&
       !hasEveryoneDestination &&
-      projectDestinations.length === 0 ? (
+      projectDestinations.length === 0 &&
+      !implicitContinueSelected ? (
         <Chip size="small" variant="outlined" label="New Agent" />
       ) : null}
       {!hasBroadcastDestination &&
       !hasEveryoneDestination &&
       projectDestinations.length === 0 &&
       continueWith ? (
-        <Button
-          size="small"
-          onClick={() => {
-            setDestination(continueWith.handle);
-            window.requestAnimationFrame(() => {
-              const input = inputRef.current;
-              if (!input) return;
-              input.focus();
-              const end = input.value.length;
-              input.setSelectionRange(end, end);
-            });
-          }}
-        >
-          Continue with {continueWith.title}
-        </Button>
+        implicitContinueSelected ? (
+          <>
+            <Chip
+              size="small"
+              color="primary"
+              label={`Continue with ${continueWith.title}`}
+            />
+            <Button size="small" onClick={() => selectImplicitContinue(false)}>
+              New Agent
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="small"
+            onClick={() => {
+              if (continueWith.responding) {
+                selectImplicitContinue(true);
+              } else {
+                setDestination(continueWith.handle);
+              }
+              window.requestAnimationFrame(() => {
+                const input = inputRef.current;
+                if (!input) return;
+                input.focus();
+                const end = input.value.length;
+                input.setSelectionRange(end, end);
+              });
+            }}
+          >
+            Continue with {continueWith.title}
+          </Button>
+        )
       ) : null}
       <Typography
         variant="caption"
@@ -276,7 +298,6 @@ interface ComposerSendActionsProps {
   allowSendWhileRunning: boolean;
   canCancel: boolean;
   canSend: boolean;
-  defaultsToQueue: boolean;
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
   mentionedBusyHandles: string[];
@@ -293,7 +314,6 @@ export function ComposerSendActions({
   allowSendWhileRunning,
   canCancel,
   canSend,
-  defaultsToQueue,
   destinationError,
   destinationMode,
   mentionedBusyHandles,
@@ -308,49 +328,33 @@ export function ComposerSendActions({
   return (
     <>
       {showQueue ? (
-        <Tooltip
-          title={
-            defaultsToQueue
-              ? "Send after the active response finishes"
-              : "Steer the active response"
-          }
-        >
+        <Tooltip title="Steer the active response">
           <span>
             <Button
               size="small"
               variant="contained"
               disabled={!canSend}
-              onClick={send}
-              aria-label={
-                defaultsToQueue ? "Queue message" : "Steer active response"
-              }
+              onClick={steer}
+              aria-label="Steer active response"
               sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
             >
-              {defaultsToQueue ? "Queue" : "Steer"}
+              Steer
             </Button>
           </span>
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip
-          title={
-            defaultsToQueue
-              ? "Steer the active response"
-              : "Send after the active response finishes"
-          }
-        >
+        <Tooltip title="Send after the active response finishes">
           <span>
             <Button
               size="small"
               variant="outlined"
               disabled={!canSend}
-              onClick={defaultsToQueue ? steer : queue}
-              aria-label={
-                defaultsToQueue ? "Steer active response" : "Queue message"
-              }
+              onClick={queue}
+              aria-label="Queue message"
               sx={{ minHeight: 40, px: 1.5 }}
             >
-              {defaultsToQueue ? "Steer" : "Queue"}
+              Queue
             </Button>
           </span>
         </Tooltip>

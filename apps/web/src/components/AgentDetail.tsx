@@ -914,7 +914,6 @@ export function AgentDetail({
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,
           onQueue: runtimeActivity ? submitAgentMessage("queue") : undefined,
-          preferQueue: (queuedMessagesQuery.data?.length ?? 0) > 0,
           onCancel: stopActiveRun,
         }}
       />

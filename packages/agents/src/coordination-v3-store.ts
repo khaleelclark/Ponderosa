@@ -746,7 +746,8 @@ export class CoordinationV3Store {
   }
 
   deferSteering(input: {
-    injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number; now?: string;
+    injectionId: string; runId: string; fencingToken: number; retryDelayMs?: number;
+    preserveSteering?: boolean; now?: string;
   }): void {
     this.steeringAuthority.deferSteering(input);
   }

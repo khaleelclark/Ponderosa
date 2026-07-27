@@ -214,7 +214,12 @@ return new CoordinationV3Scheduler(
     dispatchSteering: async (lease, prompt) => {
       const run = activeRuns.get(lease.agentId);
       if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {
-        return { accepted: false, retryable: true, error: "authoritative run is not currently steerable" };
+        return {
+          accepted: false,
+          retryable: true,
+          retrySteering: true,
+          error: "authoritative run is not currently steerable",
+        };
       }
       coordinationV3.markPromptSubmitted({
         injectionId: lease.injectionId,
@@ -229,7 +234,12 @@ return new CoordinationV3Scheduler(
           clientMessageId: lease.injectionId,
         });
         if (result.status !== "accepted") {
-          return { accepted: false, retryable: true, error: result.reason ?? result.status };
+          return {
+            accepted: false,
+            retryable: true,
+            retrySteering: true,
+            error: result.reason ?? result.status,
+          };
         }
         coordinationV3.acknowledgePromptInjection({
           injectionId: lease.injectionId,
