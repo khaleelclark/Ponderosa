@@ -425,7 +425,6 @@ export function ProjectShell({
     <>
       <CreateConversationDialog
         open={masterDialogOpen}
-        engines={projectEngines}
         pending={createConversation.isPending}
         error={createConversation.isError ? String(createConversation.error) : undefined}
         onClose={() => setMasterDialogOpen(false)}

@@ -4,7 +4,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
@@ -21,6 +21,10 @@ import { NotificationPanel } from "./components/NotificationPanel";
 import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
+import {
+  CreateConversationDialog,
+  type CreateConversationInput,
+} from "./components/dialogs";
 import {
   HomeCreateDestinationDialog,
   OnboardingCompleteDialog,
@@ -177,6 +181,7 @@ export default function App({
   const [settingsProject, setSettingsProject] = useState<ProjectDto>();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent">();
+  const [homeChatProjectId, setHomeChatProjectId] = useState<string>();
   const [homeCreateContinueToTrigger, setHomeCreateContinueToTrigger] =
     useState(false);
   const [triggerCreateOpen, setTriggerCreateOpen] = useState(false);
@@ -468,24 +473,34 @@ export default function App({
     });
     openWorkspaceRoute({ kind: "browser", projectId: selectedProjectId });
   };
-  const createHomeChat = async (projectId?: string) => {
+  const beginHomeChat = (projectId?: string) => {
     const project =
       projects.find(candidate => candidate.id === projectId) ?? projects[0];
     if (!project) return;
-    const conversation = await api.createConversation(project.id, {
-      title: "New Project Chat",
-      defaultEngine: project.defaultEngine,
-    });
-    await api.markProjectUsed(project.id, conversation.id);
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.project(project.id),
-    });
-    navigateWorkspace({
-      kind: "conversation",
-      projectId: project.id,
-      conversationId: conversation.id,
-    });
+    homeChatCreation.reset();
+    setHomeChatProjectId(project.id);
   };
+  const homeChatCreation = useMutation({
+    mutationFn: ({
+      projectId,
+      input,
+    }: {
+      projectId: string;
+      input: CreateConversationInput;
+    }) => api.createConversation(projectId, input),
+    onSuccess: async (conversation, variables) => {
+      await api.markProjectUsed(variables.projectId, conversation.id);
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.project(variables.projectId),
+      });
+      setHomeChatProjectId(undefined);
+      navigateWorkspace({
+        kind: "conversation",
+        projectId: variables.projectId,
+        conversationId: conversation.id,
+      });
+    },
+  });
   const createHomeAgent = (
     projectId?: string,
     continueToTrigger = false,
@@ -512,7 +527,7 @@ export default function App({
     }
     if (projects.length === 1) {
       const projectId = projects[0]!.id;
-      if (kind === "chat") void createHomeChat(projectId);
+      if (kind === "chat") beginHomeChat(projectId);
       else createHomeAgent(projectId);
       return;
     }
@@ -526,7 +541,7 @@ export default function App({
     const continueToTrigger = homeCreateContinueToTrigger;
     setHomeCreateKind(undefined);
     setHomeCreateContinueToTrigger(false);
-    if (kind === "chat") void createHomeChat(projectId);
+    if (kind === "chat") beginHomeChat(projectId);
     else createHomeAgent(projectId, continueToTrigger);
   };
 
@@ -771,7 +786,7 @@ export default function App({
                 onPreferences={savePreferences}
                 onCreateProject={() => openProjectCreator()}
                 onBeginHomeCreate={beginHomeCreate}
-                onCreateHomeChat={projectId => void createHomeChat(projectId)}
+                onCreateHomeChat={beginHomeChat}
                 onCreateHomeAgent={(projectId, managerAgentId) =>
                   createHomeAgent(projectId, false, managerAgentId)
                 }
@@ -884,6 +899,27 @@ export default function App({
           projects={projects}
           onClose={() => setHomeCreateKind(undefined)}
           onContinue={continueHomeCreate}
+        />
+        <CreateConversationDialog
+          open={Boolean(homeChatProjectId)}
+          pending={homeChatCreation.isPending}
+          error={
+            homeChatCreation.isError
+              ? String(homeChatCreation.error)
+              : undefined
+          }
+          onClose={() => {
+            homeChatCreation.reset();
+            setHomeChatProjectId(undefined);
+          }}
+          onCreate={input => {
+            if (homeChatProjectId) {
+              homeChatCreation.mutate({
+                projectId: homeChatProjectId,
+                input,
+              });
+            }
+          }}
         />
         <TriggerOwnerDialog
           open={triggerCreateOpen}
