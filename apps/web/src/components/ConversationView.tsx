@@ -844,6 +844,22 @@ export function ConversationView({
             }}
           />
         ) : null}
+        {activeView === "main" && !agentWorkOpen ? (
+          <Box
+            sx={{
+              position: "absolute",
+              insetInline: 0,
+              bottom: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+            }}
+          >
+            <MasterRespondingIndicator
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+          </Box>
+        ) : null}
       </Box>
 
       <Box
@@ -875,14 +891,6 @@ export function ConversationView({
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String(sendError)}
           </Alert>
-        ) : null}
-        {activeView === "main" ? (
-          <Box sx={{ mx: 1.5, mt: 1 }}>
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-          </Box>
         ) : null}
         {activeView === "main" ? (
           <QueuedMessageTray
