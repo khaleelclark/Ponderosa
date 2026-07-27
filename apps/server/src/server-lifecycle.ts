@@ -284,7 +284,7 @@ export function registerServerLifecycle(
     }, linkPreviewHeartbeatMs);
     linkPreviewSweep.unref();
   });
-  
+
   app.addHook("preClose", async () => {
     app.prepareForShutdown();
     app.server.off("upgrade", linkPreviewUpgrade);
@@ -301,7 +301,7 @@ export function registerServerLifecycle(
     linkPreviewWss.close();
     app.server.closeAllConnections();
   });
-  
+
   let providerRuntimeShutdownFinalized = false;
   let shutdownBackgroundCleanupSucceeded = false;
   let shutdownStorageClosed = false;
@@ -332,7 +332,7 @@ export function registerServerLifecycle(
     closeShutdownStorageIfReady();
   };
   app.retryProviderRuntimeShutdown = finalizeProviderRuntimeShutdown;
-  
+
   const boundedBackgroundShutdown = async (label: string, operation: () => void | Promise<void>): Promise<void> => {
     const timeoutMs = opts.shutdownFaults?.backgroundCleanupTimeoutMs ?? 5_000;
     let timer: NodeJS.Timeout | undefined;
@@ -351,7 +351,7 @@ export function registerServerLifecycle(
       if (timer) clearTimeout(timer);
     }
   };
-  
+
   app.addHook("onClose", async () => {
     setClosed();
     if (assetSweep) clearInterval(assetSweep);

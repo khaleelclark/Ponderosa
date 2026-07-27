@@ -92,21 +92,21 @@ export function registerRequestSecurityHooks(
       return reply.code(401).send({ error: "unauthorized" });
     }
   });
-  
+
   app.addHook("onRequest", async (request, reply) => {
     const error = artifactFilesystemError();
     if (error && isArtifactDependentWorkIntake(request.method, request.url)) {
       return reply.code(503).send({ error });
     }
   });
-  
+
   app.addHook("preValidation", async (request, reply) => {
     const error = artifactFilesystemError();
     if (error && isArtifactDependentWorkIntake(request.method, request.url, request.body)) {
       return reply.code(503).send({ error });
     }
   });
-  
+
   app.addHook("onRequest", async (request, reply) => {
     if (!request.url.startsWith("/api/") || !["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) return;
     const origin = request.headers.origin;
@@ -122,7 +122,7 @@ export function registerRequestSecurityHooks(
       return reply.code(403).send({ error: "cross-origin mutation forbidden" });
     }
   });
-  
+
   app.addHook("onSend", async (request, reply, payload) => {
     reply.header("X-Content-Type-Options", "nosniff");
     reply.header("Referrer-Policy", "no-referrer");

@@ -74,8 +74,8 @@ interface TriggerFilesystemBurstRow {
 
 /**
  * Trigger definition, occurrence-read, schedule, budget, and filesystem-burst
- * authority. Scheduler execution and occurrence mutation remain in the root
- * coordination store.
+ * authority. Scheduler execution and occurrence mutation are delegated to
+ * their dedicated coordination authorities.
  */
 export class CoordinationV3TriggerRegistry {
   constructor(
