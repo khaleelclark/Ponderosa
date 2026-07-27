@@ -356,6 +356,9 @@ export function WorkspaceSidebar({
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
       onViewAll={openAllProjects}
+      onViewAllContextMenu={anchor =>
+        openResourceMenu(anchor, { kind: "projects" })
+      }
       drawer={drawer}
     />
   );
@@ -505,6 +508,9 @@ export function WorkspaceSidebar({
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
       onViewAll={() => onNavigate({ kind: "allChats" })}
+      onViewAllContextMenu={anchor =>
+        openResourceMenu(anchor, { kind: "allChats" })
+      }
       drawer={drawer}
     />
   );
@@ -658,6 +664,9 @@ export function WorkspaceSidebar({
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allAgents" })}
+      onViewAllContextMenu={anchor =>
+        openResourceMenu(anchor, { kind: "allAgents" })
+      }
       drawer={drawer}
     />
   );
@@ -837,6 +846,9 @@ export function WorkspaceSidebar({
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}
+      onViewAllContextMenu={anchor =>
+        openResourceMenu(anchor, { kind: "allTriggers" })
+      }
       drawer={drawer}
     />
   );

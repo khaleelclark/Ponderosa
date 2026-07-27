@@ -240,9 +240,15 @@ export function HomeSidebarPanel({
       newLabel="All Messages"
       newIcon={<ChatBubbleOutlineIcon />}
       onNew={onOpenAllMessages}
+      onNewContextMenu={anchor =>
+        onOpenResourceMenu(anchor, { kind: "allChat" })
+      }
       viewAllLabel="View Home"
       viewAllIcon={<HomeOutlinedIcon />}
       onViewAll={onViewHome}
+      onViewAllContextMenu={anchor =>
+        onOpenResourceMenu(anchor, { kind: "home" })
+      }
       drawer={drawer}
     />
   );
