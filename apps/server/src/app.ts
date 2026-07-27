@@ -1,403 +1,112 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { isUtf8 } from "node:buffer";
-import { type Socket } from "node:net";
-import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable, Transform } from "node:stream";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, promises as fs, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
-import webpush from "web-push";
-import WebSocket, { WebSocketServer, type RawData } from "ws";
+import { AgentStore, CoordinationV3Store, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import type {
-  Adapter,
-  AgentMessageChannel,
-  AgentEvent,
-  CommunicationEvent,
-  CommunicationRevisionEvent,
-  AgentHealthProjectionDto,
-  ArtifactDto,
-  ChatMessage,
-  EngineAuthStatus,
-  EngineAvailabilityStatus,
-  EngineCapabilities,
-  EngineDto,
-  EngineModelOption,
-  EngineModelValidationDto,
-  ProjectEngineModelCatalogDto,
-  CreateProjectRequest,
-  UpdateProjectRequest,
-  ReadinessDto,
-  ConversationMessageDto,
-  ConversationDetailDto,
-  CollaborationViewDto,
-  CreateCollaborationMessageRequest,
-  AssetDto,
-  ImageAttachmentDto,
-  QueuedConversationMessageDto,
-  CorrectConversationMessageRequest,
-  CorrectConversationMessageResponse,
-  SendAgentMessageRequest,
-  AgentDto,
-  MessageDto,
-  ModelOption,
-  RuntimeProcessHandle,
-  RuntimeSession,
-  ProviderRootExitDetail,
-  UpdateAgentRequest,
-  UpdateAgentOrganizationRequest,
-  TeamDirectoryDto,
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
-  ProviderUsageCenterDto,
-  ProviderUsageStateDto,
-  PutConversationDraftRequest,
-  DraftAttachmentDto,
-  UpdateWorkspacePreferencesRequest,
-  WorkspaceEventEnvelope,
-  WorkspaceEvent,
-  WorkspaceNotificationDto,
-  DecisionDto,
-  NotificationPreferencesDto,
-  NotificationPreference,
-  VerifiedCitationDto,
-  CancelAgentRunRequest,
-  CancelAgentRunResponse,
-  CreateLinkPreviewRequest,
-  LinkPreviewDto,
-  GlobalChatSearchResponseDto,
-  ProjectBrowserSessionDto,
-  AgentDeletionPreviewRequest,
-  AgentDeletionPreviewDto,
-  CommitAgentDeletionRequest,
-  CommitAgentDeletionResponse,
-  ProviderInputSourceManifest,
-  CommunicationReconciliationReport,
+  WorkspaceEventEnvelope
 } from "@ponderosa/core";
+import Fastify, { type FastifyReply } from "fastify";
+import { randomBytes, randomUUID } from "node:crypto";
+import path from "node:path";
+import { createAgentDeletionAuthority } from "./agent-deletion-authority.js";
 import {
-  agentRoleProfile,
-  INLINE_TEXT_MAX_CODE_POINTS,
-  LONG_TEXT_MAX_UTF8_BYTES,
-  canonicalizeProviderText,
-  deriveCommunicationBehavior,
-  PONDEROSA_COORDINATE_TOOL,
-  PONDEROSA_CONTEXT_TOOL,
-  PONDEROSA_DOCS_TOOL,
-  PONDEROSA_ROLLOVER_TOOL,
-  PONDEROSA_RESULT_TOOL,
-  PONDEROSA_TEAM_DIRECTORY_TOOL,
-  PONDEROSA_MESSAGE_TOOL,
-  PONDEROSA_UPDATE_REQUEST_TOOL,
-  PONDEROSA_CREATE_MANAGED_AGENT_TOOL,
-  PONDEROSA_DECISION_TOOL,
-  PONDEROSA_MANAGE_TOOL,
-  PONDEROSA_BROWSER_TOOLS,
-  shouldBackTextWithArtifact,
-  truncateUnicodeCodePoints,
-  TERMINAL_REQUEST_STATES,
-  unicodeCodePointLength,
-  type CoordinationRequestState,
-  type CoordinationRequestUpdateKind,
-  type RequestLifetime,
-} from "@ponderosa/core";
-import { artifactContentPath, publishManagedArtifactContent, repairManagedArtifactContent, attachmentPath, attachmentsDir, type LogEvent, type ConversationDeliveryIntent, type ManagedArtifactAccess, type ManagedArtifactAsyncReadFaults, type StoredLogEvent, AgentStore, AgentDeletionConflictError, WorkspaceStore, CoordinationV3Store, PendingActivationCapacityError } from "@ponderosa/agents";
-import { classifyProviderFailure, renderSeedPrompt, shouldRolloverEngineSession } from "@ponderosa/engines";
-import { ASSET_LIMITS, AssetError, AssetStore, contentDisposition, type AuthoritativeRuntimeAttachment } from "./assets.js";
+  type ActiveRun,
+  type AgentMessageCapability,
+  type AgentRuntimeAuthority,
+  type CreateServerOptions,
+  type ManagementOperation,
+  type ManagementPlan,
+  type OneShotRuntimeTeardown,
+  type OpeningPersistentRuntime,
+  type PersistentRuntime,
+  type PersistentRuntimeTeardown,
+  type PonderosaServer,
+  type Subscriber
+} from "./app-contracts.js";
+import { ASSET_LIMITS, AssetStore } from "./assets.js";
+import { createBrowserAuthority } from "./browser-authority.js";
+import { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
+import { createCommunicationJournal } from "./communication-journal.js";
+import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { ContextCursorStore } from "./context-cursors.js";
-import { EngineAuthStatusCache } from "./engine-auth-cache.js";
-import { EngineAvailabilityStore } from "./engine-availability-store.js";
-import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js";
-import { CoordinationV3Scheduler } from "./coordination-v3-scheduler.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
 import { createDeploymentControl } from "./deployment-control.js";
+import { documentationReferences } from "./documentation-reference/index.js";
+import { EngineAuthStatusCache } from "./engine-auth-cache.js";
+import { EngineAvailabilityStore } from "./engine-availability-store.js";
+import { createEngineControlPlane } from "./engine-control-plane.js";
+import { createLinkPreviewService } from "./link-preview-service.js";
+import { createLauncherSecurity } from "./launcher-security.js";
+import { createOperationalNotifications } from "./operational-notifications.js";
+import {
+  descriptorRelativeFilesystemCapability
+} from "./project-file-access.js";
+import { ProviderUsageCache } from "./provider-usage-cache.js";
+import { registerAgentSurface } from "./routes/agent-surface.js";
+import { registerApplicationRoutes } from "./routes/application-routes.js";
+import { DraftService } from "./routes/drafts.js";
+import {
+  createProjectFolderPathBoundary
+} from "./routes/project-folders.js";
+import { registerServerControlRoutes } from "./routes/server-control.js";
+import { createRuntimeAuthority } from "./runtime-authority.js";
+import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
+import type { ServerContext } from "./server-context.js";
+import { registerServerLifecycle } from "./server-lifecycle.js";
+import { createServerReadModels } from "./server-read-models.js";
 import {
   registerBodyParsers,
   registerRequestSecurityHooks,
 } from "./server-request-hooks.js";
-import { registerServerLifecycle } from "./server-lifecycle.js";
-import { WebPushDeliveryManager, type WebPushSender } from "./web-push-delivery.js";
-import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import { TriggerSourceService } from "./trigger-service.js";
-import { documentationReferences } from "./documentation-reference/index.js";
-import { isManagedOperatorAvatarId, MAX_OPERATOR_AVATAR_BYTES, OPERATOR_AVATAR_MEDIA_TYPES, readOperatorProfileImage } from "./operator-profile-images.js";
-import { ProviderUsageCache, type ProviderUsageTarget } from "./provider-usage-cache.js";
-import {
-  descriptorRelativeFilesystemCapability,
-  readWorkspaceArtifactFile,
-  type WorkspaceArtifactReadFaults,
-} from "./project-file-access.js";
-import {
-  BrowserSessionError,
-  BrowserSessionManager,
-  chromeBrowserDriverFactory,
-  type BrowserDriverFactory,
-  type BrowserScope,
-} from "./browser-session-manager.js";
-import {
-  RESULT_PAGE_MIN_BYTES,
-  RESULT_PAGE_DEFAULT_BYTES,
-  RESULT_PAGE_MAX_BYTES,
-  encodeTimelineCursor,
-  decodeTimelineCursor,
-  encodeResultCursor,
-  decodeResultCursor,
-  parseResultRef,
-} from "./cursors.js";
-import {
-  collectReachableArtifactIds,
-  rewritePortableArtifactReferences,
-} from "./artifact-refs.js";
+import { createWebPushConfiguration } from "./web-push-configuration.js";
 export {
   collectReachableArtifactIds,
-  rewritePortableArtifactReferences,
+  rewritePortableArtifactReferences
 } from "./artifact-refs.js";
-import {
-  utf8Page,
-  utf8PageEnd,
-  boundedUtf8Preview,
-  contentTypeForStatic,
-  cacheControlForStatic,
-} from "./static-content.js";
-import {
-  workspaceAgentEventCategory,
-  notificationKindForCommunication,
-  notificationPreferenceMatches,
-} from "./notification-routing.js";
-export {
-  workspaceAgentEventCategory,
-  notificationKindForCommunication,
-  notificationPreferenceMatches,
-} from "./notification-routing.js";
-import {
-  conciseConversationTitle,
-  semanticConversationTitle,
-} from "./conversation-titles.js";
 export {
   conciseConversationTitle,
-  semanticConversationTitle,
+  semanticConversationTitle
 } from "./conversation-titles.js";
-import {
-  MAX_FILE_BYTES,
-  pathExists,
-  safeRelativePath,
-  isProjectFileReferenceAllowed,
-} from "./project-files.js";
 export {
-  isProjectFileReferenceAllowed,
-} from "./project-files.js";
+  normalizeExternalCitations
+} from "./external-content.js";
 export {
-  parseGitStatus,
+  parseGitStatus
 } from "./git-status.js";
 export {
-  parseTokenUsageRange,
+  notificationKindForCommunication,
+  notificationPreferenceMatches, workspaceAgentEventCategory
+} from "./notification-routing.js";
+export {
+  isProjectFileReferenceAllowed
+} from "./project-files.js";
+export {
+  boundedContinuationHistory,
+  boundedSeedHistory,
+  runtimeIdentityPrompt
+} from "./prompts.js";
+export {
+  PROVIDER_TOOL_CONTRACT_HASH,
+  providerSessionContractHash
+} from "./runtime-selection.js";
+export {
+  parseTokenUsageRange
 } from "./token-usage.js";
-import {
-  externalFaviconTarget,
-  loadExternalFavicon,
-  normalizeExternalCitations,
-} from "./external-content.js";
-export {
-  normalizeExternalCitations,
-} from "./external-content.js";
-import {
-  derivedRunActionKey,
-  secretEqual,
-} from "./security.js";
-import { registerHealthRoutes } from "./routes/health.js";
-import { registerLimitsRoutes } from "./routes/limits.js";
-import { registerAttachmentRoutes } from "./routes/attachments.js";
-import { registerOperatorProfileImageRoutes } from "./routes/operator-profile-images.js";
-import {
-  createProjectFolderPathBoundary,
-  registerProjectFolderRoutes,
-} from "./routes/project-folders.js";
-import { registerAgentAuditRoutes, registerAgentRunHistoryRoute } from "./routes/agent-audit.js";
-import { registerAgentWorkRoutes } from "./routes/agent-work.js";
-import { registerAgentPresetRoutes } from "./routes/agent-presets.js";
-import { registerAgentPackageRoutes } from "./routes/agent-packages.js";
-import {
-  registerConversationDeliveryRoutes,
-  type PreparedCommunicationArtifact,
-} from "./routes/conversation-deliveries.js";
-import {
-  registerQueuedMessageRoutes,
-  type QueuedEditRevisionOutboxPayload,
-} from "./routes/queued-messages.js";
-import { registerConversationRoutes } from "./routes/conversations.js";
-import { registerConversationCorrectionRoutes } from "./routes/conversation-corrections.js";
-import { registerCollaborationRoutes } from "./routes/collaboration.js";
-import { registerAgentUsageRoute, registerUsageRoutes } from "./routes/usage.js";
-import { registerCommunicationDocumentRoutes } from "./routes/communication-documents.js";
-import {
-  registerNotificationListRoute,
-  registerNotificationMutationRoutes,
-  registerPushRoutes,
-} from "./routes/notifications.js";
-import { registerLegacyFilesRoute, registerLegacyWorkspaceRoutes } from "./routes/legacy-workspace.js";
-import { registerSearchRoutes } from "./routes/search.js";
-import { registerArtifactRoutes } from "./routes/artifacts.js";
-import { registerBrowserRoutes } from "./routes/browsers.js";
-import { registerEngineRoutes } from "./routes/engines.js";
-import { createCommunicationArtifactAuthority } from "./communication-artifacts.js";
-import { createEngineControlPlane } from "./engine-control-plane.js";
-import { createServerReadModels } from "./server-read-models.js";
-import { createOperationalNotifications } from "./operational-notifications.js";
-import { createRuntimeAuthority } from "./runtime-authority.js";
-import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
-import { createLinkPreviewService } from "./link-preview-service.js";
-import { createBrowserAuthority } from "./browser-authority.js";
-import { createCommunicationJournal } from "./communication-journal.js";
-import { createAgentEventService } from "./agent-event-service.js";
-import { registerAgentDecisionRoutes } from "./routes/agent-decisions.js";
-import { registerAgentManagementRoutes } from "./routes/agent-management.js";
-import { registerAgentRuntimeToolRoutes } from "./routes/agent-runtime-tools.js";
-import { registerAgentDirectoryRoutes } from "./routes/agent-directory.js";
-import { registerAgentCoordinationRoutes } from "./routes/agent-coordination.js";
-import { registerAgentRequestCommandRoutes } from "./routes/agent-request-commands.js";
-import { registerAgentCommunicationRoutes } from "./routes/agent-communications.js";
-import { createCommunicationDocumentAuthority } from "./communication-document-authority.js";
-import { registerProjectRoutes } from "./routes/projects.js";
-import { registerProjectDeletionRoutes } from "./project-deletion-coordinator.js";
-import { registerAgentCreationRoutes } from "./routes/agent-creation.js";
-import { registerAgentMaintenanceRoutes } from "./routes/agent-maintenance.js";
-import { registerWorkspacePreferenceRoutes } from "./routes/workspace-preferences.js";
-import { registerAgentMessageRunRoute } from "./routes/agent-message-run.js";
-import { registerProviderCommandRoutes } from "./routes/provider-commands.js";
-import { registerServerControlRoutes } from "./routes/server-control.js";
-import { registerAgentSurface } from "./routes/agent-surface.js";
-import { registerApplicationRoutes } from "./routes/application-routes.js";
-import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
-import { registerStreamRoutes } from "./routes/streams.js";
-import { registerWikiRoutes } from "./routes/wiki.js";
-import { ProjectFileAuthority, registerProjectFileRoutes } from "./routes/project-files.js";
-import { registerTriggerRoutes } from "./routes/triggers.js";
-import { DraftService, registerDraftRoutes } from "./routes/drafts.js";
-import type { ServerContext } from "./server-context.js";
-import {
-  MAX_AGENT_MENTION_REPLAY_WINDOW,
-  agentMentionHandle,
-  mentionRelayFingerprint,
-  advanceMentionTrail,
-  mentionedAgents,
-  hasEveryoneMention,
-  stripLeadingScopeTag,
-  renderScopedMessage,
-  inboundContext,
-} from "./agent-mentions.js";
-import {
-  MAX_SEED_HISTORY_MESSAGES,
-  boundedContinuationHistory,
-  boundedHistoryOmitted,
-  boundedSeedHistory,
-  byteBoundScopedContext,
-  contextSection,
-  continuationPrompt,
-  conversationPrompt,
-  directUserRequestCompletionPrompt,
-  individualChatPrompt,
-  managerRelationshipPrompt,
-  mergeScopedContextSources,
-  olderContextPrompt,
-  runtimeIdentityPrompt,
-  sharedBroadcastContextPrompt,
-  sharedRequestCompletionPrompt,
-  teamDirectoryPrompt,
-  type ScopedContextMessage,
-} from "./prompts.js";
-export {
-  boundedContinuationHistory,
-  boundedSeedHistory,
-  runtimeIdentityPrompt,
-} from "./prompts.js";
-import { isAgentStreamEvent } from "./sse.js";
-import {
-  communicationV3Prompt,
-  PROVIDER_DYNAMIC_TOOLS,
-  PROVIDER_TOOL_CONTRACT_HASH,
-  providerSessionContractHash,
-  runtimeSelectionError,
-  normalizedRuntimeSelection,
-  concreteRuntimeSelection,
-} from "./runtime-selection.js";
-import {
-  canonicalAudienceIncludes,
-  recipientCollaborationMessages,
-  organizationalMasterMessages,
-} from "./communication-scoping.js";
-export {
-  PROVIDER_TOOL_CONTRACT_HASH,
-  providerSessionContractHash,
-} from "./runtime-selection.js";
 
 export type { CreateServerOptions, EngineRegistration, PonderosaServer } from "./app-contracts.js";
-import {
-  CONTEXT_ROLLOVER_INSTRUCTION,
-  MAX_ATTACHMENTS_PER_MESSAGE,
-  MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY,
-  MAX_SSE_SUBSCRIBERS_PER_STREAM,
-  MAX_TEXT_LENGTH,
-  MIN_CONFIGURABLE_AGENT_RUN_CONCURRENCY,
-  agentMessageEndpoint,
-  type ActiveRun,
-  type AgentMessageCapability,
-  type AgentRuntimeAuthority,
-  type CapabilityDiscoveryAuthority,
-  type CapabilityDiscoveryProcess,
-  type CreateServerOptions,
-  type EngineRegistration,
-  type LinkPreviewRegistration,
-  type LinkPreviewSocketPair,
-  type ManagementOperation,
-  type ManagementPlan,
-  type ModelCatalogDiscoveryAuthority,
-  type OneShotRuntimeTeardown,
-  type OpeningPersistentRuntime,
-  type PendingTurn,
-  type PersistentRuntime,
-  type PersistentRuntimeTeardown,
-  type PonderosaServer,
-  type RuntimeOwnershipState,
-  type Subscriber,
-} from "./app-contracts.js";
 
 export function createServer(opts: CreateServerOptions): PonderosaServer {
-  const networkSecurity: ReadinessDto["networkSecurity"] = opts.networkSecurity ?? {
-    mode: opts.authToken ? "authenticated" : "loopback",
-    bindHost: "127.0.0.1",
-    authenticationRequired: Boolean(opts.authToken),
-    detail: opts.authToken
-      ? "Operator API access requires bearer authentication on this loopback listener."
-      : "Operator access is limited to clients on this host.",
-  };
-  const launcherNow = opts.launcherSecurity?.now ?? Date.now;
-  const launcherRandomToken = opts.launcherSecurity?.randomToken ??
-    (() => randomBytes(32).toString("base64url"));
-  const launcherBootstrapTtlMs = Math.max(5_000, Math.min(
-    opts.launcherSecurity?.bootstrapTtlMs ?? 60_000,
-    5 * 60_000,
-  ));
-  const launcherSessionTtlMs = Math.max(60_000, Math.min(
-    opts.launcherSecurity?.sessionTtlMs ?? 12 * 60 * 60_000,
-    7 * 24 * 60 * 60_000,
-  ));
-  const launcherBootstraps = new Map<string, number>();
-  const launcherSessions = new Map<string, number>();
-  const purgeLauncherSecurityState = (): void => {
-    const now = launcherNow();
-    for (const [token, expiresAt] of launcherBootstraps) {
-      if (expiresAt <= now) launcherBootstraps.delete(token);
-    }
-    for (const [token, expiresAt] of launcherSessions) {
-      if (expiresAt <= now) launcherSessions.delete(token);
-    }
-  };
-  const cookieValue = (header: string | undefined, name: string): string | undefined =>
-    header?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))
-      ?.slice(name.length + 1);
-  const validLauncherSession = (header: string | undefined): boolean => {
-    purgeLauncherSecurityState();
-    const token = cookieValue(header, "ponderosa_session");
-    return Boolean(token && (launcherSessions.get(token) ?? 0) > launcherNow());
-  };
+  const {
+    networkSecurity,
+    launcherNow,
+    launcherRandomToken,
+    launcherBootstrapTtlMs,
+    launcherSessionTtlMs,
+    launcherBootstraps,
+    launcherSessions,
+    purgeLauncherSecurityState,
+    validLauncherSession,
+  } = createLauncherSecurity(opts);
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
     (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
@@ -441,42 +150,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const publishWorkspaceSince = (cursor: number): void => {
     for (const event of workspace.readSince(cursor)) publishWorkspace(event);
   };
-  const vapid = {
-    publicKey: (opts.webPush?.publicKey ?? process.env.PONDEROSA_VAPID_PUBLIC_KEY)?.trim(),
-    privateKey: (opts.webPush?.privateKey ?? process.env.PONDEROSA_VAPID_PRIVATE_KEY)?.trim(),
-    subject: (opts.webPush?.subject ?? process.env.PONDEROSA_VAPID_SUBJECT)?.trim() || "mailto:admin@localhost",
-  };
-  let webPushConfiguration: "active" | "missing" | "invalid" = "missing";
-  let webPushConfigurationDetail = "This host has no VAPID keypair. Run the setup command, then restart Ponderosa.";
-  let webPushSender: WebPushSender | undefined;
-  if (Boolean(vapid.publicKey) !== Boolean(vapid.privateKey)) {
-    webPushConfiguration = "invalid";
-    webPushConfigurationDetail = "The host VAPID configuration is incomplete. Regenerate the protected configuration file.";
-  } else if (vapid.publicKey && vapid.privateKey) {
-    try {
-      if (!opts.webPush?.sender) webpush.setVapidDetails(vapid.subject, vapid.publicKey, vapid.privateKey);
-      webPushSender = opts.webPush?.sender ?? {
-        async send(subscription, payload, options) {
-          await webpush.sendNotification(subscription, payload, options);
-        },
-      };
-      webPushConfiguration = "active";
-      webPushConfigurationDetail = "Host VAPID configuration is active.";
-    } catch {
-      webPushConfiguration = "invalid";
-      webPushConfigurationDetail = "The host VAPID configuration is invalid. Regenerate the protected configuration file.";
-    }
-  }
-  const webPushConfigured = webPushConfiguration === "active";
-  const webPushDelivery = webPushSender ? new WebPushDeliveryManager({
-    store: workspace,
-    sender: webPushSender,
-    onWorkspaceEvents: publishWorkspaceSince,
-    ...(opts.webPush?.retryDelaysMs ? { retryDelaysMs: opts.webPush.retryDelaysMs } : {}),
-    ...(opts.webPush?.now ? { now: opts.webPush.now } : {}),
-    ...(opts.webPush?.setTimer ? { setTimer: opts.webPush.setTimer } : {}),
-    ...(opts.webPush?.clearTimer ? { clearTimer: opts.webPush.clearTimer } : {}),
-  }) : undefined;
+  const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
+    createWebPushConfiguration(opts, workspace, publishWorkspaceSince);
   store.recoverInterruptedExecutions();
   const engines = new Map(opts.engines.map((engine) => [engine.adapter.id, engine]));
   const applyOperatorModelOptions = (): void => {
@@ -546,12 +221,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     linkPreviewCloseGraceMs,
     linkPreviewHeartbeatMs,
     linkPreviewMaxConnectionLifetimeMs,
-    linkPreviewMaxHttpPerRegistration,
     linkPreviewMaxIdleMs,
-    linkPreviewMaxPathBytes,
     linkPreviewOwned,
     linkPreviews,
-    linkPreviewTtlMs,
     linkPreviewUpgrade,
     linkPreviewWss,
     registerRoutes: registerLinkPreviewRoutes,
@@ -590,7 +262,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const {
     agentWorkProjection,
     createOperationalNotification,
-    projectWorkspaceNotificationKey,
     reconcileCommunicationFailureNotifications,
     reconcileCoordinationAttentionNotifications,
     reconcileProjectDeletionOperationalNotifications,
@@ -603,251 +274,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     workspace,
     publishWorkspaceSince,
   });
-  const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
-    const cursor = workspace.cursor();
-    for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
-      coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
-      const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
-    }
-    publishWorkspaceSince(cursor);
-  };
-  const deletionRuntimeTerminationTimeoutMs = Math.max(
-    1,
-    opts.agentDeletionCleanupFaults?.runtimeTerminationTimeoutMs ?? 5_000,
-  );
-  const awaitRuntimeTerminationOperation = async (operation: Promise<void>, label: string): Promise<void> => {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        operation,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`${label} timed out`)), deletionRuntimeTerminationTimeoutMs);
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-  const projectDeletionCleanupTimeoutMs = Math.max(1, opts.projectDeletionCleanupTimeoutMs ?? 5_000);
-  const awaitProjectDeletionBarrier = async (operation: Promise<unknown>, label: string): Promise<void> => {
-    let timer: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([
-        operation.then(() => undefined),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`${label} timed out`)), projectDeletionCleanupTimeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-  const runtimeTerminationAttempts = new Map<object, Promise<string | undefined>>();
-  const terminateRuntimeHandle = async (
-    agentId: string,
-    run: ActiveRun | undefined,
-    runtime: PersistentRuntime | undefined,
-    reason = "provider cancellation",
-    projectId?: string,
-  ): Promise<string | undefined> => {
-    const session = runtime?.session ?? run?.runtimeSession;
-    const handle = session ?? run?.completion;
-    if (!handle) return undefined;
-    const existing = runtimeTerminationAttempts.get(handle);
-    if (existing) return existing;
-    const attempt = (async (): Promise<string | undefined> => {
-      if (!session) {
-        try {
-          await awaitRuntimeTerminationOperation(run!.completion!, `${agentId} runtime cancellation`);
-          return undefined;
-        } catch (error) {
-          return error instanceof Error ? error.message : "runtime cancellation was not acknowledged";
-        }
-      }
-      if (runtime) detachPersistentRuntime(agentId, runtime, reason, projectId);
-      let interruptError: string | undefined;
-      try {
-        await awaitRuntimeTerminationOperation(session.interrupt(), `${agentId} runtime interrupt`);
-      } catch (error) {
-        // close() is the authoritative termination acknowledgement. Retain
-        // interrupt detail only when close also fails.
-        interruptError = error instanceof Error ? error.message : "runtime interrupt failed";
-      }
-      try {
-        await awaitRuntimeTerminationOperation(
-          runtime
-            ? teardownPersistentRuntime(agentId, runtime, reason, projectId)
-            : session.close(),
-          `${agentId} runtime close`,
-        );
-        return undefined;
-      } catch (error) {
-        const closeError = error instanceof Error ? error.message : "runtime close failed";
-        return interruptError ? `${interruptError}; ${closeError}` : closeError;
-      }
-    })();
-    runtimeTerminationAttempts.set(handle, attempt);
-    try { return await attempt; }
-    finally {
-      if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
-    }
-  };
-  const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
-    if (receipt.serverCleanupCompleted) return true;
-    try { await opts.agentDeletionCleanupFaults?.beforeServerCleanup?.(receipt.id); }
-    catch (error) {
-      try { store.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "injected cleanup failure"); }
-      catch { /* the receipt itself remains pending */ }
-      return false;
-    }
-    const errors: string[] = [];
-    try { cancelAgentDecisions(receipt.deletedAgentIds); }
-    catch (error) { errors.push(error instanceof Error ? error.message : "Decision cleanup failed"); }
-    const deletedAgentIds = new Set(receipt.deletedAgentIds);
-    await Promise.allSettled(receipt.deletedAgentIds.flatMap((agentId) => {
-      const session = activeRuns.get(agentId)?.runtimeSession;
-      return session ? [Promise.resolve().then(() => awaitRuntimeTerminationOperation(
-        session.interrupt(),
-        `${agentId} runtime interrupt`,
-      ))] : [];
-    }));
-    try {
-      await awaitRuntimeTerminationOperation(
-        drainProviderRuntimeAuthority("Agent deletion", deletedAgentIds),
-        "Agent deletion runtime close",
-      );
-    } catch (error) {
-      const details = error instanceof AggregateError
-        ? error.errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")
-        : undefined;
-      errors.push(error instanceof Error
-        ? `${error.message}${details ? `: ${details}` : ""}`
-        : "Agent deletion provider authority drain failed");
-    }
-    for (const agentId of receipt.deletedAgentIds) {
-      try {
-        subscribers.delete(agentId);
-        scheduledSessionRollovers.delete(agentId);
-        contextRolloverPending.delete(agentId);
-      } catch (error) {
-        errors.push(`${agentId}: ${error instanceof Error ? error.message : "runtime cleanup failed"}`);
-      }
-      try {
-        workspace.deleteDraft(`agent:${agentId}`);
-        await fs.rm(draftAttachmentSurfaceDir(`agent:${agentId}`), { recursive: true, force: true });
-      } catch (error) {
-        errors.push(`${agentId}: ${error instanceof Error ? error.message : "draft cleanup failed"}`);
-      }
-    }
-    try { contextCursors.deleteAgents(new Set(receipt.deletedAgentIds)); }
-    catch (error) { errors.push(error instanceof Error ? error.message : "context cleanup failed"); }
-    try { await triggerSources.refresh(); }
-    catch (error) { errors.push(error instanceof Error ? error.message : "Trigger refresh failed"); }
-    if (errors.length > 0) {
-      try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
-      catch { /* the durable receipt remains pending for startup reconciliation */ }
-      try {
-        createOperationalNotification({
-          dedupeKey: `agent-deletion:${receipt.id}:cleanup-pending`,
-          category: "system",
-          severity: "attention",
-          title: "Agent deletion cleanup needs attention",
-          body: `The Agents were deleted, but runtime or background cleanup is still retrying. ${errors.join("; ").slice(0, 1_000)}`,
-          projectId: receipt.projectId,
-        });
-      } catch { /* the durable receipt remains the authoritative retry signal */ }
-      return false;
-    }
-    try { store.markAgentDeletionServerCleanupComplete(receipt.id); }
-    catch (error) {
-      try { store.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "could not complete deletion receipt"); }
-      catch { /* startup reconciliation will retry */ }
-      return false;
-    }
-    try { resolveOperationalNotification(`agent-deletion:${receipt.id}:cleanup-pending`); }
-    catch { /* notification repair cannot reopen completed provider cleanup */ }
-    try { coordinationV3Scheduler.notify(); }
-    catch { /* scheduler polling and restart reconciliation remain authoritative */ }
-    // Live invalidation is best effort after the durable cleanup receipt is
-    // complete. A WebSocket publication failure cannot reopen cleanup.
-    try { appendWorkspace({ type: "project_changed", projectId: receipt.projectId, action: "updated" }); }
-    catch { /* clients reconcile from durable state on reconnect */ }
-    return true;
-  };
-  const commitAgentDeletion = async (
-    rootAgentIds: string[],
-    previewHash: string,
-    authorization?: import("@ponderosa/agents").AgentManagementAuthorization,
-  ): Promise<CommitAgentDeletionResponse> => {
-    const previous = store.getAgentDeletionReceiptByPreviewHash(previewHash);
-    if (previous) {
-      const normalized = [...new Set(rootAgentIds)].sort();
-      if (JSON.stringify(normalized) !== JSON.stringify(previous.rootAgentIds)) {
-        throw new Error("deletion receipt does not match the requested roots");
-      }
-      if (!previous.storageCleanupCompleted) {
-        try { store.finishAgentDeletionStorageCleanup(previous); }
-        catch (error) { store.recordAgentDeletionCleanupError(previous.id, error instanceof Error ? error.message : "storage cleanup failed"); }
-      }
-      await processAgentDeletionCleanup(store.getAgentDeletionReceiptByPreviewHash(previewHash)!);
-      const refreshed = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
-      return {
-        deleted: true,
-        deletedAgentIds: refreshed.deletedAgentIds,
-        deletionReceiptId: refreshed.id,
-        cleanupPending: !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
-        replayed: true,
-      };
-    }
-    const current = store.previewAgentDeletion(rootAgentIds);
-    if (current.previewHash !== previewHash) throw new AgentDeletionConflictError(current);
-    if (authorization) store.sqlite.transaction(() => store.authorizeAgentManagementPlan(
-      authorization,
-      current.affectedAgents.map((agent) => agent.id),
-      false,
-    ))();
-    const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
-    if (expectedAgentIds.some((agentId) => deletingAgentIds.has(agentId))) {
-      throw new AgentDeletionConflictError(store.previewAgentDeletion(current.rootAgentIds));
-    }
-    // Reserve the exact confirmed topology before the first await. All server
-    // mutation paths reject a reserved Agent, so cleanup cannot open a gap in
-    // which the previewed cascade changes before the atomic store commit.
-    expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
-    let committed: AgentDeletionPreviewDto;
-    try {
-      for (const agentId of expectedAgentIds) {
-        closeLinkPreviewsForAgent(agentId, "agent deleted");
-        const run = activeRuns.get(agentId);
-        if (run) await closeRunBrowser(agentId, run, "agent_deleted");
-      }
-      committed = store.deleteAgentSubtrees(
-        current.rootAgentIds,
-        previewHash,
-        (agentId) => coordinationV3.handleAgentDeletion(agentId),
-        authorization,
-      );
-    } catch (error) {
-      expectedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
-      throw error;
-    }
-    const deletedAgentIds = new Set(committed.affectedAgents.map((agent) => agent.id));
-    try {
-      const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
-      await processAgentDeletionCleanup(receipt);
-    } finally {
-      deletedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
-    }
-    const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
-    return {
-      deleted: true,
-      deletedAgentIds: [...deletedAgentIds],
-      deletionReceiptId: receipt.id,
-      cleanupPending: !(receipt.storageCleanupCompleted && receipt.serverCleanupCompleted),
-    };
-  };
   for (const engineId of engines.keys()) {
     const denial = engineAvailability.denial(engineId);
     if (denial && providerEnabled(engineId)) createOperationalNotification({
@@ -883,13 +309,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     allowedBrowseRoots: opts.allowedBrowseRoots,
   });
   const drafts = new DraftService(opts.dataDir, store, workspace);
-  const normalizedDraftOwner = (value: unknown) => drafts.normalizedOwner(value);
   const draftAttachmentSurfaceDir = (draftId: string) => drafts.surfaceDir(draftId);
-  const draftAttachmentFiles = (draftId: string, ownerId: string, id: string) =>
-    drafts.files(draftId, ownerId, id);
-  const readDraftAttachment = (draftId: string, ownerId: string, id: string) =>
-    drafts.read(draftId, ownerId, id);
-  const validDraftId = (draftId: string) => drafts.validId(draftId);
   const agentMessageCapabilities = new Map<string, AgentMessageCapability>();
   // An agent can request rollover while its capability is live. The reset is
   // applied only after the turn ends, so it never destroys an in-flight session.
@@ -981,25 +401,20 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     cancelRuntimeIdleClose,
     capabilityMatchesCleanupRun,
     capabilityOwnsAuthoritativeRun,
-    clearRuntimeAuthorityRetry,
-    clearRuntimeAuthorityRetryIfUnblocked,
     detachPersistentRuntime,
     drainProviderRuntimeAuthority,
     ownsActiveRun,
     ownsActiveRunForAuditDrain,
-    ownsV3Run,
     pendingRuntimeAuthorityCount,
     persistentRootExited,
     persistentRuntimeForTermination,
     reconcileAgentRuntimeAuthority,
     runAuthorization,
-    scheduleRuntimeAuthorityRetry,
     scheduleRuntimeIdleClose,
     teardownOneShotRuntime,
     teardownOpeningRuntime,
     teardownPersistentRuntime,
     teardownPersistentRuntimeInBackground,
-    trimIdleRuntimeSessions,
   } = createRuntimeAuthority({
     runtimeAuthorities,
     activeRuns,
@@ -1043,9 +458,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     claimActiveRun,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
-    generatedArtifactMediaType,
-    normalizeProviderFileDiff,
-    normalizeRuntimeFileChange,
     persistRuntimeEvent,
     receiveRuntimeEvent,
     releaseActiveRun,
@@ -1095,7 +507,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     teamDirectory,
-    withMessagePresentation,
   } = createServerReadModels({
     store,
     coordinationV3,
@@ -1165,7 +576,37 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     deletingProjectIds,
     isClosed: () => closed,
   });
-  app.server.on("upgrade", linkPreviewUpgrade);
+app.server.on("upgrade", linkPreviewUpgrade);
+  const {
+    cancelAgentDecisions,
+    awaitProjectDeletionBarrier,
+    terminateRuntimeHandle,
+    processAgentDeletionCleanup,
+    commitAgentDeletion,
+  } = createAgentDeletionAuthority({
+    opts,
+    store,
+    coordinationV3,
+    workspace,
+    activeRuns,
+    subscribers,
+    scheduledSessionRollovers,
+    contextRolloverPending,
+    deletingAgentIds,
+    contextCursors,
+    appendWorkspace,
+    publishWorkspaceSince,
+    closeLinkPreviewsForAgent,
+    detachPersistentRuntime,
+    teardownPersistentRuntime,
+    drainProviderRuntimeAuthority,
+    draftAttachmentSurfaceDir,
+    refreshTriggerSources: () => triggerSources.refresh(),
+    notifyScheduler: () => coordinationV3Scheduler.notify(),
+    closeRunBrowser,
+    createOperationalNotification,
+    resolveOperationalNotification,
+  });
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
     opts,
     store,
@@ -1329,17 +770,11 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   const {
-    appendBlockedMentionWarnings,
-    appendCollaborationSystemNotice,
     notifyManagerOfChildFailure,
-    projectBroadcastToAgentAudit,
     projectBroadcastToAgentAudits,
     projectCommunicationToAgentAudit,
     publish,
-    resolveCollaborationIntents,
-    resolveExplicitCollaborationIntents,
     subscribe,
-    agentCanReadDocument,
     agentCanReadRuntimeArtifact,
     authoritativeCommunicationDocument,
     managedProjectArtifactAgreesWithRuntime,
