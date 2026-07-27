@@ -1,0 +1,345 @@
+import { promises as fs } from "node:fs";
+import {
+  AgentDeletionConflictError,
+  type AgentDeletionReceipt,
+  type AgentManagementAuthorization,
+  type AgentStore,
+  type CoordinationV3Store,
+  type WorkspaceStore,
+} from "@ponderosa/agents";
+import type {
+  AgentDeletionPreviewDto,
+  CommitAgentDeletionResponse,
+  WorkspaceEventEnvelope,
+} from "@ponderosa/core";
+import type {
+  ActiveRun,
+  CreateServerOptions,
+  PersistentRuntime,
+  Subscriber,
+} from "./app-contracts.js";
+import type { ContextCursorStore } from "./context-cursors.js";
+import type { createOperationalNotifications } from "./operational-notifications.js";
+
+type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
+
+type AgentDeletionAuthorityContext =
+  Pick<OperationalNotifications,
+    "createOperationalNotification" | "resolveOperationalNotification"> & {
+    opts: CreateServerOptions;
+    store: AgentStore;
+    coordinationV3: CoordinationV3Store;
+    workspace: WorkspaceStore;
+    activeRuns: Map<string, ActiveRun>;
+    subscribers: Map<string, Set<Subscriber>>;
+    scheduledSessionRollovers: Map<string, string>;
+    contextRolloverPending: Map<string, {
+      sessionId: string;
+      usedTokens: number;
+      at: string;
+    }>;
+    deletingAgentIds: Set<string>;
+    contextCursors: ContextCursorStore;
+    appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): WorkspaceEventEnvelope;
+    publishWorkspaceSince(cursor: number): void;
+    closeLinkPreviewsForAgent(agentId: string, reason: string): void;
+    detachPersistentRuntime(
+      agentId: string,
+      runtime: PersistentRuntime,
+      reason: string,
+      projectId?: string,
+    ): void;
+    teardownPersistentRuntime(
+      agentId: string,
+      runtime: PersistentRuntime,
+      reason: string,
+      projectId?: string,
+    ): Promise<void>;
+    drainProviderRuntimeAuthority(reason: string, agentIds?: ReadonlySet<string>): Promise<void>;
+    draftAttachmentSurfaceDir(draftId: string): string;
+    refreshTriggerSources(): Promise<void>;
+    notifyScheduler(): void;
+    closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
+  };
+
+export function createAgentDeletionAuthority(
+  context: AgentDeletionAuthorityContext,
+) {
+  const {
+    opts,
+    store,
+    coordinationV3,
+    workspace,
+    activeRuns,
+    subscribers,
+    scheduledSessionRollovers,
+    contextRolloverPending,
+    deletingAgentIds,
+    contextCursors,
+    appendWorkspace,
+    publishWorkspaceSince,
+    closeLinkPreviewsForAgent,
+    detachPersistentRuntime,
+    teardownPersistentRuntime,
+    drainProviderRuntimeAuthority,
+    draftAttachmentSurfaceDir,
+    refreshTriggerSources,
+    notifyScheduler,
+    closeRunBrowser,
+    createOperationalNotification,
+    resolveOperationalNotification,
+  } = context;
+
+  const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
+    const cursor = workspace.cursor();
+    for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
+      coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
+      const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+    }
+    publishWorkspaceSince(cursor);
+  };
+  const deletionRuntimeTerminationTimeoutMs = Math.max(
+    1,
+    opts.agentDeletionCleanupFaults?.runtimeTerminationTimeoutMs ?? 5_000,
+  );
+  const awaitRuntimeTerminationOperation = async (operation: Promise<void>, label: string): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out`)), deletionRuntimeTerminationTimeoutMs);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const projectDeletionCleanupTimeoutMs = Math.max(1, opts.projectDeletionCleanupTimeoutMs ?? 5_000);
+  const awaitProjectDeletionBarrier = async (operation: Promise<unknown>, label: string): Promise<void> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        operation.then(() => undefined),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`${label} timed out`)), projectDeletionCleanupTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const runtimeTerminationAttempts = new Map<object, Promise<string | undefined>>();
+  const terminateRuntimeHandle = async (
+    agentId: string,
+    run: ActiveRun | undefined,
+    runtime: PersistentRuntime | undefined,
+    reason = "provider cancellation",
+    projectId?: string,
+  ): Promise<string | undefined> => {
+    const session = runtime?.session ?? run?.runtimeSession;
+    const handle = session ?? run?.completion;
+    if (!handle) return undefined;
+    const existing = runtimeTerminationAttempts.get(handle);
+    if (existing) return existing;
+    const attempt = (async (): Promise<string | undefined> => {
+      if (!session) {
+        try {
+          await awaitRuntimeTerminationOperation(run!.completion!, `${agentId} runtime cancellation`);
+          return undefined;
+        } catch (error) {
+          return error instanceof Error ? error.message : "runtime cancellation was not acknowledged";
+        }
+      }
+      if (runtime) detachPersistentRuntime(agentId, runtime, reason, projectId);
+      let interruptError: string | undefined;
+      try {
+        await awaitRuntimeTerminationOperation(session.interrupt(), `${agentId} runtime interrupt`);
+      } catch (error) {
+        // close() is the authoritative termination acknowledgement. Retain
+        // interrupt detail only when close also fails.
+        interruptError = error instanceof Error ? error.message : "runtime interrupt failed";
+      }
+      try {
+        await awaitRuntimeTerminationOperation(
+          runtime
+            ? teardownPersistentRuntime(agentId, runtime, reason, projectId)
+            : session.close(),
+          `${agentId} runtime close`,
+        );
+        return undefined;
+      } catch (error) {
+        const closeError = error instanceof Error ? error.message : "runtime close failed";
+        return interruptError ? `${interruptError}; ${closeError}` : closeError;
+      }
+    })();
+    runtimeTerminationAttempts.set(handle, attempt);
+    try { return await attempt; }
+    finally {
+      if (runtimeTerminationAttempts.get(handle) === attempt) runtimeTerminationAttempts.delete(handle);
+    }
+  };
+  const processAgentDeletionCleanup = async (receipt: import("@ponderosa/agents").AgentDeletionReceipt): Promise<boolean> => {
+    if (receipt.serverCleanupCompleted) return true;
+    try { await opts.agentDeletionCleanupFaults?.beforeServerCleanup?.(receipt.id); }
+    catch (error) {
+      try { store.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "injected cleanup failure"); }
+      catch { /* the receipt itself remains pending */ }
+      return false;
+    }
+    const errors: string[] = [];
+    try { cancelAgentDecisions(receipt.deletedAgentIds); }
+    catch (error) { errors.push(error instanceof Error ? error.message : "Decision cleanup failed"); }
+    const deletedAgentIds = new Set(receipt.deletedAgentIds);
+    await Promise.allSettled(receipt.deletedAgentIds.flatMap((agentId) => {
+      const session = activeRuns.get(agentId)?.runtimeSession;
+      return session ? [Promise.resolve().then(() => awaitRuntimeTerminationOperation(
+        session.interrupt(),
+        `${agentId} runtime interrupt`,
+      ))] : [];
+    }));
+    try {
+      await awaitRuntimeTerminationOperation(
+        drainProviderRuntimeAuthority("Agent deletion", deletedAgentIds),
+        "Agent deletion runtime close",
+      );
+    } catch (error) {
+      const details = error instanceof AggregateError
+        ? error.errors.map((item) => item instanceof Error ? item.message : String(item)).join("; ")
+        : undefined;
+      errors.push(error instanceof Error
+        ? `${error.message}${details ? `: ${details}` : ""}`
+        : "Agent deletion provider authority drain failed");
+    }
+    for (const agentId of receipt.deletedAgentIds) {
+      try {
+        subscribers.delete(agentId);
+        scheduledSessionRollovers.delete(agentId);
+        contextRolloverPending.delete(agentId);
+      } catch (error) {
+        errors.push(`${agentId}: ${error instanceof Error ? error.message : "runtime cleanup failed"}`);
+      }
+      try {
+        workspace.deleteDraft(`agent:${agentId}`);
+        await fs.rm(draftAttachmentSurfaceDir(`agent:${agentId}`), { recursive: true, force: true });
+      } catch (error) {
+        errors.push(`${agentId}: ${error instanceof Error ? error.message : "draft cleanup failed"}`);
+      }
+    }
+    try { contextCursors.deleteAgents(new Set(receipt.deletedAgentIds)); }
+    catch (error) { errors.push(error instanceof Error ? error.message : "context cleanup failed"); }
+    try { await refreshTriggerSources(); }
+    catch (error) { errors.push(error instanceof Error ? error.message : "Trigger refresh failed"); }
+    if (errors.length > 0) {
+      try { store.recordAgentDeletionCleanupError(receipt.id, errors.join("; ")); }
+      catch { /* the durable receipt remains pending for startup reconciliation */ }
+      try {
+        createOperationalNotification({
+          dedupeKey: `agent-deletion:${receipt.id}:cleanup-pending`,
+          category: "system",
+          severity: "attention",
+          title: "Agent deletion cleanup needs attention",
+          body: `The Agents were deleted, but runtime or background cleanup is still retrying. ${errors.join("; ").slice(0, 1_000)}`,
+          projectId: receipt.projectId,
+        });
+      } catch { /* the durable receipt remains the authoritative retry signal */ }
+      return false;
+    }
+    try { store.markAgentDeletionServerCleanupComplete(receipt.id); }
+    catch (error) {
+      try { store.recordAgentDeletionCleanupError(receipt.id, error instanceof Error ? error.message : "could not complete deletion receipt"); }
+      catch { /* startup reconciliation will retry */ }
+      return false;
+    }
+    try { resolveOperationalNotification(`agent-deletion:${receipt.id}:cleanup-pending`); }
+    catch { /* notification repair cannot reopen completed provider cleanup */ }
+    try { notifyScheduler(); }
+    catch { /* scheduler polling and restart reconciliation remain authoritative */ }
+    // Live invalidation is best effort after the durable cleanup receipt is
+    // complete. A WebSocket publication failure cannot reopen cleanup.
+    try { appendWorkspace({ type: "project_changed", projectId: receipt.projectId, action: "updated" }); }
+    catch { /* clients reconcile from durable state on reconnect */ }
+    return true;
+  };
+  const commitAgentDeletion = async (
+    rootAgentIds: string[],
+    previewHash: string,
+    authorization?: import("@ponderosa/agents").AgentManagementAuthorization,
+  ): Promise<CommitAgentDeletionResponse> => {
+    const previous = store.getAgentDeletionReceiptByPreviewHash(previewHash);
+    if (previous) {
+      const normalized = [...new Set(rootAgentIds)].sort();
+      if (JSON.stringify(normalized) !== JSON.stringify(previous.rootAgentIds)) {
+        throw new Error("deletion receipt does not match the requested roots");
+      }
+      if (!previous.storageCleanupCompleted) {
+        try { store.finishAgentDeletionStorageCleanup(previous); }
+        catch (error) { store.recordAgentDeletionCleanupError(previous.id, error instanceof Error ? error.message : "storage cleanup failed"); }
+      }
+      await processAgentDeletionCleanup(store.getAgentDeletionReceiptByPreviewHash(previewHash)!);
+      const refreshed = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
+      return {
+        deleted: true,
+        deletedAgentIds: refreshed.deletedAgentIds,
+        deletionReceiptId: refreshed.id,
+        cleanupPending: !(refreshed.storageCleanupCompleted && refreshed.serverCleanupCompleted),
+        replayed: true,
+      };
+    }
+    const current = store.previewAgentDeletion(rootAgentIds);
+    if (current.previewHash !== previewHash) throw new AgentDeletionConflictError(current);
+    if (authorization) store.sqlite.transaction(() => store.authorizeAgentManagementPlan(
+      authorization,
+      current.affectedAgents.map((agent) => agent.id),
+      false,
+    ))();
+    const expectedAgentIds = current.affectedAgents.map((agent) => agent.id);
+    if (expectedAgentIds.some((agentId) => deletingAgentIds.has(agentId))) {
+      throw new AgentDeletionConflictError(store.previewAgentDeletion(current.rootAgentIds));
+    }
+    // Reserve the exact confirmed topology before the first await. All server
+    // mutation paths reject a reserved Agent, so cleanup cannot open a gap in
+    // which the previewed cascade changes before the atomic store commit.
+    expectedAgentIds.forEach((agentId) => deletingAgentIds.add(agentId));
+    let committed: AgentDeletionPreviewDto;
+    try {
+      for (const agentId of expectedAgentIds) {
+        closeLinkPreviewsForAgent(agentId, "agent deleted");
+        const run = activeRuns.get(agentId);
+        if (run) await closeRunBrowser(agentId, run, "agent_deleted");
+      }
+      committed = store.deleteAgentSubtrees(
+        current.rootAgentIds,
+        previewHash,
+        (agentId) => coordinationV3.handleAgentDeletion(agentId),
+        authorization,
+      );
+    } catch (error) {
+      expectedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
+      throw error;
+    }
+    const deletedAgentIds = new Set(committed.affectedAgents.map((agent) => agent.id));
+    try {
+      const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
+      await processAgentDeletionCleanup(receipt);
+    } finally {
+      deletedAgentIds.forEach((agentId) => deletingAgentIds.delete(agentId));
+    }
+    const receipt = store.getAgentDeletionReceiptByPreviewHash(previewHash)!;
+    return {
+      deleted: true,
+      deletedAgentIds: [...deletedAgentIds],
+      deletionReceiptId: receipt.id,
+      cleanupPending: !(receipt.storageCleanupCompleted && receipt.serverCleanupCompleted),
+    };
+  };
+  return {
+    cancelAgentDecisions,
+    awaitProjectDeletionBarrier,
+    terminateRuntimeHandle,
+    processAgentDeletionCleanup,
+    commitAgentDeletion,
+  };
+}

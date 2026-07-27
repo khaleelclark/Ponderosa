@@ -117,4 +117,4 @@ export {
   mergeDecisionEvents,
   mergeOperationalEvents,
 };
-export type { MainTimelineEntry };
+export type { MainTimelineEntry, OperationalEventGroup };

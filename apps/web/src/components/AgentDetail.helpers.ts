@@ -3,12 +3,18 @@ import type {
   AgentDto,
   AgentTelemetryPageDto,
   AgentTelemetryStream,
+  ConversationDto,
   HistoryWindowDto,
+  MessageDto,
+  ProjectEngineCapabilitiesDto,
   SendMessageRequest,
   SendMessageResponse,
 } from "@ponderosa/core";
+import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
+import { formatFinalizedWorkDuration } from "../time";
+import { orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 
 type AgentTab = AgentDetailView;
 
@@ -171,10 +177,226 @@ function eligibleOrganizationParents(
     .sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 }
 
+function mergeAgentDetailProjection(
+  current: AgentDetailDto | undefined,
+  olderMessages:
+    | { messages: MessageDto[]; cursor?: string; hasMore: boolean }
+    | undefined,
+  olderTelemetry: TelemetryPageState,
+): AgentDetailDto | undefined {
+  if (!current) return undefined;
+  const mergeBy = <T,>(
+    recent: T[],
+    older: T[] | undefined,
+    id: (item: T) => string,
+    compare: (a: T, b: T) => number,
+  ): T[] => uniqueBy([...(older ?? []), ...recent], id, compare);
+  return {
+    ...current,
+    messages: uniqueBy(
+      [...(olderMessages?.messages ?? []), ...current.messages],
+      message => message.id,
+      (a, b) => a.seq - b.seq || a.id.localeCompare(b.id),
+    ),
+    runOutput: mergeBy(
+      current.runOutput,
+      olderTelemetry.runOutput?.items,
+      item => item.id,
+      (a, b) => a.seq - b.seq,
+    ),
+    activity: mergeBy(
+      current.activity,
+      olderTelemetry.activity?.items,
+      item => item.id,
+      (a, b) => a.seq - b.seq,
+    ),
+    changedFiles: mergeBy(
+      current.changedFiles,
+      olderTelemetry.changedFiles?.items,
+      item => item.path,
+      (a, b) => a.lastSeq - b.lastSeq,
+    ),
+    runs: mergeBy(
+      current.runs,
+      olderTelemetry.runs?.items,
+      item => item.id,
+      (a, b) =>
+        a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id),
+    ),
+    workItems: mergeBy(
+      current.workItems,
+      olderTelemetry.workItems?.items,
+      item => item.id,
+      (a, b) =>
+        a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+    ),
+    artifacts: mergeBy(
+      current.artifacts,
+      olderTelemetry.artifacts?.items,
+      item => item.id,
+      (a, b) =>
+        a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+    ),
+    telemetryHistory: Object.fromEntries(
+      (
+        [
+          "runOutput",
+          "activity",
+          "changedFiles",
+          "runs",
+          "workItems",
+          "artifacts",
+        ] satisfies AgentTelemetryStream[]
+      )
+        .map(stream => [
+          stream,
+          olderTelemetry[stream]?.history ?? current.telemetryHistory?.[stream],
+        ])
+        .filter(entry => entry[1] !== undefined),
+    ) as AgentDetailDto["telemetryHistory"],
+    history: olderMessages
+      ? {
+          limit: current.history?.limit ?? 100,
+          hasMore: olderMessages.hasMore,
+          ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
+        }
+      : current.history,
+  };
+}
+
+function mcpPresentation(
+  mcpServers: ProjectEngineCapabilitiesDto["mcpServers"] | undefined,
+) {
+  const configured = mcpServers?.filter(server => server.configured) ?? [];
+  const usable = configured.filter(server => server.usable);
+  const inventoried = configured.filter(server => server.toolsDiscovered);
+  const discoveredTools = inventoried.reduce(
+    (total, server) => total + server.toolCount,
+    0,
+  );
+  return {
+    configuredCount: configured.length,
+    usableCount: usable.length,
+    toolCountLabel:
+      inventoried.length === configured.length
+        ? `${discoveredTools} tools`
+        : `${discoveredTools} tools · inventory ${inventoried.length}/${configured.length}`,
+    summary:
+      configured
+        .map(server =>
+          [
+            `${server.name}: ${server.initialization.replaceAll("_", " ")}`,
+            server.usable ? "usable" : "not usable",
+            server.toolsDiscovered
+              ? `${server.toolCount} tool${server.toolCount === 1 ? "" : "s"}`
+              : "tools not discovered",
+            `health ${server.health}`,
+            server.detail,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+        )
+        .join("\n") || "No MCP servers are configured for this runtime.",
+  };
+}
+
+function finalizedRunDurationLabels(
+  runs: AgentDetailDto["runs"],
+): Map<string, string> {
+  return new Map(
+    runs.flatMap(run => {
+      if (!run.completedAt) return [];
+      const duration =
+        new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
+      return Number.isFinite(duration) && duration >= 0
+        ? [
+            [
+              run.id,
+              `Worked for ${formatFinalizedWorkDuration(duration)}`,
+            ] as const,
+          ]
+        : [];
+    }),
+  );
+}
+
+function agentTranscriptMarkdown(
+  detail: AgentDetailDto | undefined,
+  agentNameForId: (agentId: string) => string | undefined,
+): string {
+  return detail
+    ? buildMarkdownTranscript(
+        `${detail.agent.title} — Agent chat`,
+        detail.messages.map(message => ({
+          author:
+            message.role === "user"
+              ? "You"
+              : message.authorAgentId
+                ? (agentNameForId(message.authorAgentId) ?? "Agent")
+                : detail.agent.title,
+          text: message.text,
+          createdAt: message.createdAt,
+          attachments: message.attachments,
+          document: message.document,
+        })),
+      )
+    : "";
+}
+
+function agentRelationshipPresentation(
+  agent: AgentDto,
+  agents: AgentDto[],
+  conversations: ConversationDto[],
+) {
+  const organizationalParent = agent.managerAgentId
+    ? agents.find(candidate => candidate.id === agent.managerAgentId)
+    : undefined;
+  const spawningAgent = agent.spawnedByAgentId
+    ? agents.find(candidate => candidate.id === agent.spawnedByAgentId)
+    : undefined;
+  const delegatedAgentIds = new Set<string>();
+  const childrenByManager = new Map<string, AgentDto[]>();
+  for (const candidate of agents) {
+    if (!candidate.managerAgentId || candidate.archived) continue;
+    childrenByManager.set(candidate.managerAgentId, [
+      ...(childrenByManager.get(candidate.managerAgentId) ?? []),
+      candidate,
+    ]);
+  }
+  const collect = (managerAgentId: string) => {
+    for (const candidate of childrenByManager.get(managerAgentId) ?? []) {
+      if (delegatedAgentIds.has(candidate.id)) continue;
+      delegatedAgentIds.add(candidate.id);
+      collect(candidate.id);
+    }
+  };
+  collect(agent.id);
+  return {
+    master: agent.conversationId
+      ? conversations.find(candidate => candidate.id === agent.conversationId)
+      : undefined,
+    headerChats: orderedAgentHeaderChats(
+      agent.conversationIds,
+      conversations,
+      agent.conversationId,
+    ),
+    organizationalParent,
+    lineageAgent: spawningAgent ?? organizationalParent,
+    lineageAgentId: agent.spawnedByAgentId ?? agent.managerAgentId,
+    lineageLabel: agent.spawnedByAgentId ? "Created by" : "Delegated under",
+    delegatedAgentCount: delegatedAgentIds.size,
+  };
+}
+
 export {
+  agentRelationshipPresentation,
+  agentTranscriptMarkdown,
   directAgentDeliveryNotice,
   downloadJson,
   eligibleOrganizationParents,
+  finalizedRunDurationLabels,
+  mcpPresentation,
+  mergeAgentDetailProjection,
   mergeTelemetryPage,
   portablePackageFileName,
   telemetryStreamsForTab,

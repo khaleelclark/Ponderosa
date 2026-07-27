@@ -3,12 +3,7 @@ import {
   Box,
   Button,
   CircularProgress,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   Stack,
-  TextField,
   Typography,
   useMediaQuery,
   useTheme,
@@ -23,71 +18,44 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
-  TeamOperationalEventDto,
-  ConversationDecisionEventDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
-import { compactDefined } from "../collections";
 import { agentBelongsToConversation, type AgentStatus } from "../agents";
-import { pickAgentName } from "../parkNames";
 import {
-  useCollaborationView,
-  useConversation,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "../hooks/queries";
 import {
-  effortSelectionIsCompatible,
   engineIsAvailable,
-  modelSelectionIsCompatible,
   resolveConversationEngine,
   resolveRuntimeSelection,
-  selectedRunConfig,
 } from "../conversationEngine";
 import {
   agentIdForMentionHandle,
   agentMentionHandle,
   findMentionedAgents,
-  hasBroadcastMention,
-  hasEveryoneMention,
 } from "../mentions";
-import {
-  managerBroadcastText,
-  uploadFilesForRecipients,
-} from "../conversationRouting";
-import { chatMessageLayoutKey } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
 import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
-import { formatExecutionElapsed } from "../time";
 import { buildMarkdownTranscript } from "../chatTranscript";
-import { ImportAgentDialog } from "./ImportAgentDialog";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { queryKeys } from "../queryKeys";
-import { ChatLiveBanner } from "./chat/ChatLiveBanner";
-import { ConfirmDialog } from "./ConfirmationDialogs";
 import { AgentsTab } from "./AgentsTab";
-import {
-  conversationComposerRuntime,
-  decisionChoice,
-  groupAdjacentOperationalEvents,
-  mergeConversationMessages,
-  mergeDecisionEvents,
-  mergeOperationalEvents,
-  type MainTimelineEntry,
-} from "./ConversationView.helpers";
+import { conversationComposerRuntime } from "./ConversationView.helpers";
 import {
   CollaborationTimeline,
   ConversationHeader,
   MainConversationTimeline,
 } from "./ConversationView.parts";
+import { ConversationDialogs } from "./ConversationView.dialogs";
 import {
   useConversationActiveViewPersistence,
   useConversationActiveViewState,
@@ -99,35 +67,10 @@ import {
   useConversationMessageFocusRefs,
 } from "./useConversationMessageFocus";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
+import { useConversationHistory } from "./useConversationHistory";
+import { useConversationMessagingController } from "./useConversationMessagingController";
+import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 
-function MasterRespondingIndicator({
-  agents,
-  healthByAgentId,
-}: {
-  agents: AgentDto[];
-  healthByAgentId: Map<string, AgentHealthDto>;
-}): JSX.Element | null {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, []);
-  const responding = agents.flatMap(agent => {
-    const activity = healthByAgentId.get(agent.id)?.runtimeActivity;
-    return activity ? [{ agent, activity }] : [];
-  });
-  if (responding.length === 0) return null;
-  const names = responding.map(({ agent }) => agent.title).join(", ");
-  const earliest = responding
-    .map(({ activity }) => activity.startedAt)
-    .sort()[0]!;
-  return (
-    <ChatLiveBanner>
-      {names} {responding.length === 1 ? "is" : "are"} responding ·{" "}
-      {formatExecutionElapsed(earliest, now)}
-    </ChatLiveBanner>
-  );
-}
 import { chatStateKey } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
@@ -184,34 +127,27 @@ export function ConversationView({
     conversationId,
     initialView,
   );
-  const detailQuery = useConversation(conversationId);
-  // Team Chat is a comparatively expensive operational projection. Keep it
-  // dormant while ordinary Chat is visible; React Query fetches the latest page
-  // when the user actually switches views.
-  const collaborationQuery = useCollaborationView(
-    conversationId,
-    100,
-    activeView === "collaboration",
-  );
-  const [olderMain, setOlderMain] = useState<{
-    messages: ConversationMessageDto[];
-    decisionEvents: ConversationDecisionEventDto[];
-    cursor?: string;
-    hasMore: boolean;
-  }>();
-  const [olderCollaboration, setOlderCollaboration] = useState<{
-    messages: ConversationMessageDto[];
-    operations: TeamOperationalEventDto[];
-    cursor?: string;
-    operationCursor?: string;
-    hasMore: boolean;
-    operationHasMore: boolean;
-  }>();
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const queuedMessagesQuery = useQuery({
-    queryKey: queryKeys.queuedMessages.conversation(conversationId),
-    queryFn: () => api.listQueuedConversationMessages(conversationId),
-  });
+  const {
+    agents,
+    collaborationHistory,
+    collaborationLayoutKey,
+    collaborationMessages,
+    collaborationQuery,
+    detailQuery,
+    expandedOperationalEventGroups,
+    loadOlderHistory,
+    loadingOlder,
+    mainHistory,
+    mainTimeline,
+    messageLayoutKey,
+    messages,
+    operationalEventGroups,
+    operationalEvents,
+    operationalLayoutKey,
+    setExpandedOperationalEventGroups,
+    setOlderCollaboration,
+    setOlderMain,
+  } = useConversationHistory(conversationId, activeView);
   const notificationsQuery = useNotifications();
   const markCommunicationVisible = useConversationNotificationVisibility(
     notificationsQuery,
@@ -226,19 +162,6 @@ export function ConversationView({
   const [agentWorkOpen, setAgentWorkOpen] = useState(false);
   const collaborationVisited = useRef(activeView === "collaboration");
   const [agentWorkFocus, setAgentWorkFocus] = useState<string>();
-  const [queuedMessageNotice, setQueuedMessageNotice] = useState<
-    string | undefined
-  >();
-  const [activeOperation, setActiveOperation] = useState<{
-    agentIds: string[];
-    state: "starting" | "running";
-  }>();
-  const [stoppedNotice, setStoppedNotice] = useState<string>();
-  const [stopConfirmation, setStopConfirmation] = useState<{
-    targets: { agentId: string; runId: string }[];
-    names: string;
-  }>();
-  const stopOperationRequestId = useRef<string>();
   const [editingMessage, setEditingMessage] =
     useState<ConversationMessageDto>();
   const [correctionText, setCorrectionText] = useState("");
@@ -283,44 +206,6 @@ export function ConversationView({
     retry: false,
     staleTime: 5_000,
   });
-  // Live query updates can briefly leave sparse entries in cached collections.
-  // Compact at the page boundary so historical chats remain renderable.
-  const messages = useMemo(
-    () =>
-      mergeConversationMessages(
-        olderMain?.messages ?? [],
-        compactDefined(detailQuery.data?.messages ?? []),
-      ),
-    [detailQuery.data?.messages, olderMain?.messages],
-  );
-  const agents = useMemo(
-    () => compactDefined(detailQuery.data?.agents ?? []),
-    [detailQuery.data?.agents],
-  );
-  const decisionEvents = useMemo(
-    () =>
-      mergeDecisionEvents(
-        olderMain?.decisionEvents ?? [],
-        detailQuery.data?.decisionEvents ?? [],
-      ),
-    [detailQuery.data?.decisionEvents, olderMain?.decisionEvents],
-  );
-  const mainTimeline = useMemo<MainTimelineEntry[]>(() => {
-    const entries: MainTimelineEntry[] = [
-      ...messages.map((message) => ({
-        kind: "message" as const,
-        id: `message:${message.id}`,
-        at: message.createdAt,
-        message,
-      })),
-      ...decisionEvents.flatMap((event): MainTimelineEntry[] => {
-        if (event.kind === "decision") return [{ kind: "decision", id: event.id, at: event.createdAt, event }];
-        const choice = decisionChoice(event.decision);
-        return choice ? [{ kind: "decision-response", id: event.id, at: event.createdAt, event, choice }] : [];
-      }),
-    ];
-    return entries.sort((left, right) => left.at.localeCompare(right.at) || left.id.localeCompare(right.id));
-  }, [decisionEvents, messages]);
   const conversationAgents = useMemo(
     () =>
       projectAgents.filter(agent =>
@@ -328,115 +213,6 @@ export function ConversationView({
       ),
     [conversationId, projectAgents],
   );
-  const collaborationMessages = useMemo(
-    () =>
-      mergeConversationMessages(
-        olderCollaboration?.messages ?? [],
-        compactDefined(collaborationQuery.data?.messages ?? []),
-      ),
-    [collaborationQuery.data?.messages, olderCollaboration?.messages],
-  );
-  const operationalEvents = useMemo(
-    () =>
-      mergeOperationalEvents(
-        olderCollaboration?.operations ?? [],
-        compactDefined(collaborationQuery.data?.operations ?? []),
-      ),
-    [collaborationQuery.data?.operations, olderCollaboration?.operations],
-  );
-  const operationalEventGroups = useMemo(
-    () => groupAdjacentOperationalEvents(operationalEvents),
-    [operationalEvents],
-  );
-  const [expandedOperationalEventGroups, setExpandedOperationalEventGroups] = useState<Set<string>>(() => new Set());
-  const messageLayoutKey = mainTimeline.map((entry) => entry.id).join(":");
-  const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
-  const operationalLayoutKey = operationalEvents.length
-    ? `${operationalEvents.length}:${operationalEvents.at(-1)?.id ?? ""}`
-    : "0";
-  const mainHistory = olderMain ?? {
-    messages: [],
-    decisionEvents: [],
-    cursor: detailQuery.data?.history?.cursor,
-    hasMore: detailQuery.data?.history?.hasMore ?? false,
-  };
-  const collaborationHistory = olderCollaboration ?? {
-    messages: [],
-    operations: [],
-    cursor: collaborationQuery.data?.history?.cursor,
-    operationCursor: collaborationQuery.data?.operationHistory?.cursor,
-    hasMore: collaborationQuery.data?.history?.hasMore ?? false,
-    operationHasMore:
-      collaborationQuery.data?.operationHistory?.hasMore ?? false,
-  };
-  const loadOlderHistory = async () => {
-    if (loadingOlder) return;
-    setLoadingOlder(true);
-    try {
-      if (activeView === "main") {
-        if (!mainHistory.hasMore || !mainHistory.cursor) return;
-        const page = await api.getConversation(
-          conversationId,
-          100,
-          mainHistory.cursor,
-        );
-        setOlderMain(current => ({
-          messages: mergeConversationMessages(
-            page.messages,
-            current?.messages ?? [],
-            detailQuery.data?.messages ?? [],
-          ),
-          decisionEvents: mergeDecisionEvents(
-            page.decisionEvents ?? [],
-            current?.decisionEvents ?? [],
-            detailQuery.data?.decisionEvents ?? [],
-          ),
-          cursor: page.history?.cursor,
-          hasMore: page.history?.hasMore ?? false,
-        }));
-      } else {
-        const loadMessages =
-          collaborationHistory.hasMore && Boolean(collaborationHistory.cursor);
-        const loadOperations =
-          collaborationHistory.operationHasMore &&
-          Boolean(collaborationHistory.operationCursor);
-        if (!loadMessages && !loadOperations) return;
-        const page = await api.getCollaborationView(
-          conversationId,
-          100,
-          loadMessages ? collaborationHistory.cursor : undefined,
-          undefined,
-          loadOperations ? collaborationHistory.operationCursor : undefined,
-        );
-        setOlderCollaboration(current => ({
-          messages: loadMessages
-            ? mergeConversationMessages(
-                page.messages,
-                current?.messages ?? [],
-                collaborationQuery.data?.messages ?? [],
-              )
-            : (current?.messages ?? []),
-          operations: loadOperations
-            ? mergeOperationalEvents(
-                page.operations ?? [],
-                current?.operations ?? [],
-                collaborationQuery.data?.operations ?? [],
-              )
-            : (current?.operations ?? []),
-          cursor: loadMessages ? page.history?.cursor : current?.cursor,
-          operationCursor: loadOperations
-            ? page.operationHistory?.cursor
-            : current?.operationCursor,
-          hasMore: loadMessages ? (page.history?.hasMore ?? false) : false,
-          operationHasMore: loadOperations
-            ? (page.operationHistory?.hasMore ?? false)
-            : false,
-        }));
-      }
-    } finally {
-      setLoadingOlder(false);
-    }
-  };
   useConversationMessageFocusEffect({
     activeView,
     collaborationMessages,
@@ -483,23 +259,6 @@ export function ConversationView({
     setEffort(resolved.effort);
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
-  const invalidate = () => {
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.detailPrefix(conversationId),
-    });
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.conversations.all,
-    });
-    void queryClient.invalidateQueries({
-      queryKey: queryKeys.collaborationPrefix(conversationId),
-    });
-    if (conversation) {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.agents.project(conversation.projectId),
-      });
-    }
-  };
-
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const persistDefaults = useMutation({
@@ -518,234 +277,6 @@ export function ConversationView({
     },
   });
 
-  const spawn = useMutation({
-    mutationFn: async ({
-      text,
-      draftAttachmentIds,
-      draftOwnerId,
-    }: {
-      text: string;
-      draftAttachmentIds: string[];
-      draftOwnerId?: string;
-    }) => {
-      if (!conversation) {
-        throw new Error("Project chat not loaded");
-      }
-      // Record the message in the shared pool, spawn a park-named agent on the
-      // selected engine, and hand it the message as its first turn.
-      const selectedEngine = engines.find(candidate => candidate.id === engine);
-      const compatibleModel = modelSelectionIsCompatible(selectedEngine, model)
-        ? model
-        : "";
-      const compatibleEffort = effortSelectionIsCompatible(
-        selectedEngine,
-        compatibleModel,
-        effort,
-      )
-        ? effort
-        : "";
-      const runConfig = selectedRunConfig(compatibleModel, compatibleEffort);
-      setActiveOperation({ agentIds: [], state: "starting" });
-      const agent = await api.createAgent(
-        conversation.projectId,
-        conversationId,
-        {
-          title: pickAgentName(
-            (detailQuery.data?.agents ?? []).map(agent => agent.title),
-          ),
-          engine,
-          ...runConfig,
-          initialMessage: text,
-          draftAttachmentIds,
-          draftOwnerId,
-        },
-      );
-      setActiveOperation({ agentIds: [agent.id], state: "starting" });
-      return agent;
-    },
-    onSuccess: () => {
-      invalidate();
-    },
-  });
-
-  // Persist one canonical user message, then let the server fan it out to the
-  // explicitly tagged agents as stable-ID direct deliveries.
-  const sendToAgents = useMutation({
-    mutationFn: async ({
-      agentIds,
-      text,
-      files,
-      requestId,
-      activeRunDelivery,
-    }: {
-      agentIds: string[];
-      text: string;
-      files: File[];
-      requestId: string;
-      activeRunDelivery: "steer" | "queue";
-    }) => {
-      const recipients = await uploadFilesForRecipients(
-        agentIds,
-        files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-      );
-      return api.sendMultiAgentDirectMessage(conversationId, {
-        text,
-        recipients: recipients.map(({ agentId, attachments }) => ({
-          agentId,
-          attachmentIds: attachments.map(item => item.id),
-        })),
-        idempotencyKey: requestId,
-        activeRunDelivery,
-      });
-    },
-    onSuccess: (response, variables) => {
-      invalidate();
-      const queuedTitles = response.recipients
-        .filter(recipient => recipient.queued)
-        .map(
-          recipient =>
-            detailQuery.data?.agents.find(
-              agent => agent.id === recipient.agentId,
-            )?.title ?? "Agent",
-        );
-      setQueuedMessageNotice(
-        queuedTitles.length > 0
-          ? variables.activeRunDelivery === "queue"
-            ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
-            : undefined
-          : undefined,
-      );
-      const activeIds = response.recipients
-        .filter(recipient => !recipient.queued)
-        .map(recipient => recipient.agentId);
-      if (activeIds.length === 0) setActiveOperation(undefined);
-      else setActiveOperation({ agentIds: activeIds, state: "starting" });
-      for (const agentId of variables.agentIds) {
-        void queryClient.invalidateQueries({
-          queryKey: queryKeys.agents.detailPrefix(agentId),
-        });
-      }
-    },
-  });
-
-  const broadcast = useMutation({
-    mutationFn: async ({
-      text,
-      files,
-      requestId,
-      agentIds,
-      activeRunDelivery,
-    }: {
-      text: string;
-      files: File[];
-      requestId: string;
-      agentIds: string[];
-      activeRunDelivery: "steer" | "queue";
-    }) => {
-      const owner = agents.find(agent => !agent.archived);
-      if (files.length && !owner)
-        throw new Error(
-          "Create an agent before attaching files to shared project context.",
-        );
-      const uploadAgentIds = [
-        ...new Set([
-          ...(owner ? [owner.id] : []),
-          ...agentIds,
-        ]),
-      ];
-      const uploadedRecipients = await uploadFilesForRecipients(
-        uploadAgentIds,
-        files,
-        (agentId, file) => api.uploadAttachment(agentId, file),
-        (agentId, item) => api.deleteAttachment(agentId, item.id),
-      );
-      const attachmentsByAgent = new Map(
-        uploadedRecipients.map(recipient => [
-          recipient.agentId,
-          recipient.attachments,
-        ]),
-      );
-      const attachments = owner
-        ? (attachmentsByAgent.get(owner.id) ?? [])
-        : [];
-      try {
-        return await api.sendConversationMessage(conversationId, {
-          text,
-          attachments,
-          recipientAgentIds: agentIds,
-          recipientAttachments: agentIds.map(agentId => ({
-            agentId,
-            attachmentIds: (attachmentsByAgent.get(agentId) ?? []).map(
-              item => item.id,
-            ),
-          })),
-          activeRunDelivery,
-          idempotencyKey: requestId,
-        });
-      } catch (error) {
-        await Promise.allSettled(
-          uploadedRecipients.flatMap(recipient =>
-            recipient.attachments.map(item =>
-              api.deleteAttachment(recipient.agentId, item.id),
-            ),
-          ),
-        );
-        throw error;
-      }
-    },
-    onSuccess: () => {
-      invalidate();
-    },
-  });
-
-  const cancelQueued = useMutation({
-    mutationFn: (deliveryId: string) =>
-      api.cancelQueuedConversationMessage(conversationId, deliveryId, {
-        idempotencyKey: `cancel:${deliveryId}`,
-      }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.conversation(conversationId),
-      });
-    },
-  });
-  const editQueued = useMutation({
-    mutationFn: ({
-      deliveryId,
-      targetAgentId,
-      text,
-    }: {
-      deliveryId: string;
-      targetAgentId: string;
-      text: string;
-    }) =>
-      api.editQueuedAgentMessage(targetAgentId, deliveryId, {
-        text,
-        idempotencyKey: createClientId(),
-      }),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.conversation(conversationId),
-      }),
-  });
-  const steerQueued = useMutation({
-    mutationFn: ({
-      deliveryId,
-      targetAgentId,
-    }: {
-      deliveryId: string;
-      targetAgentId: string;
-    }) =>
-      api.steerQueuedAgentMessage(targetAgentId, deliveryId, {
-        idempotencyKey: createClientId(),
-      }),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.queuedMessages.conversation(conversationId),
-      }),
-  });
   const correctMessage = useMutation({
     mutationFn: (message: ConversationMessageDto) =>
       api.correctConversationMessage(conversationId, message.id, {
@@ -809,20 +340,6 @@ export function ConversationView({
     },
   });
 
-  const busy = spawn.isPending || sendToAgents.isPending || broadcast.isPending;
-
-  useEffect(() => {
-    if (!activeOperation || activeOperation.agentIds.length === 0) return;
-    const anyRunning = activeOperation.agentIds.some(
-      agentId => statusByAgentId.get(agentId) === "running",
-    );
-    if (anyRunning && activeOperation.state !== "running") {
-      setActiveOperation({ ...activeOperation, state: "running" });
-    } else if (!busy && activeOperation.state === "running" && !anyRunning) {
-      setActiveOperation(undefined);
-    }
-  }, [activeOperation, busy, statusByAgentId]);
-
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const project = conversation
     ? projectsQuery.data?.find(
@@ -844,6 +361,36 @@ export function ConversationView({
       agents.find(agent => agent.id === agentId)?.title ?? "Agent",
     [agents],
   );
+  const {
+    busy,
+    cancelOperationTargets,
+    cancelQueued,
+    editQueued,
+    invalidate,
+    operationRunning,
+    queuedMessageNotice,
+    queuedMessagesQuery,
+    sendError,
+    setQueuedMessageNotice,
+    setStopConfirmation,
+    steerQueued,
+    stopConfirmation,
+    stoppedNotice,
+    stopOperation,
+    submit,
+  } = useConversationMessagingController({
+    conversationId,
+    conversation,
+    agents,
+    detailAgents: detailQuery.data?.agents ?? [],
+    engines,
+    engine,
+    model,
+    effort,
+    statusByAgentId,
+    healthByAgentId,
+    agentTitle,
+  });
   const agentIdForHandle = useCallback(
     (handle: string): string | undefined =>
       agentIdForMentionHandle(agents, handle),
@@ -985,93 +532,6 @@ export function ConversationView({
   const busyMentionHandles = agents
     .filter(agent => statusByAgentId.get(agent.id) === "running")
     .map(agent => agentMentionHandle(agent.title));
-
-  const operationRunning = Boolean(
-    activeOperation && (busy || activeOperation.state === "running"),
-  );
-  const cancelOperationTargets = async (
-    targets: { agentId: string; runId: string }[],
-    names: string,
-  ) => {
-    setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
-    const requestId = stopOperationRequestId.current ?? createClientId();
-    stopOperationRequestId.current = requestId;
-    await Promise.allSettled(
-      targets.map(({ agentId, runId }) =>
-        api.cancelRun(agentId, {
-          targetRunId: runId,
-          idempotencyKey: `${requestId}:${runId}`,
-        }),
-      ),
-    );
-    stopOperationRequestId.current = undefined;
-    setStopConfirmation(undefined);
-    setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
-    invalidate();
-  };
-  const stopOperation = async () => {
-    const targets = (activeOperation?.agentIds ?? []).flatMap(agentId => {
-      const runId = healthByAgentId.get(agentId)?.runtimeActivity?.executionId;
-      return runId ? [{ agentId, runId }] : [];
-    });
-    if (targets.length === 0) return;
-    const names = targets.map(({ agentId }) => agentTitle(agentId)).join(", ");
-    if (targets.length > 1) {
-      setStopConfirmation({ targets, names });
-      return;
-    }
-    await cancelOperationTargets(targets, names);
-  };
-
-  const submit = async (
-    text: string,
-    files: File[],
-    activeRunDelivery: "steer" | "queue" = "steer",
-    draftAttachmentIds: string[] = [],
-    draftOwnerId?: string,
-  ) => {
-    const broadcastMentioned = hasBroadcastMention(text);
-    const broadcastText = managerBroadcastText(text);
-    const everyoneMentioned = hasEveryoneMention(text);
-    const explicitlyMentionedAgents = findMentioned(text);
-    const targets = everyoneMentioned
-      ? agents.filter(agent => !agent.archived)
-      : explicitlyMentionedAgents;
-    if (broadcastText !== undefined) {
-      if (!broadcastText && files.length === 0)
-        throw new Error(
-          "Add informational context or an attachment after #broadcast.",
-        );
-      await broadcast.mutateAsync({
-        text: broadcastText,
-        files,
-        requestId: createClientId(),
-        agentIds: targets.map(target => target.id),
-        activeRunDelivery,
-      });
-      return;
-    }
-    if (broadcastMentioned)
-      throw new Error("Broadcast scope could not be resolved.");
-    if (everyoneMentioned && targets.length === 0)
-      throw new Error("There are no active agents to notify.");
-    if (targets.length > 0) {
-      setActiveOperation({
-        agentIds: targets.map(target => target.id),
-        state: "starting",
-      });
-      await sendToAgents.mutateAsync({
-        agentIds: targets.map(target => target.id),
-        text,
-        files,
-        requestId: createClientId(),
-        activeRunDelivery,
-      });
-    } else {
-      setActiveOperation({ agentIds: [], state: "starting" });
-      await spawn.mutateAsync({ text, draftAttachmentIds, draftOwnerId });
-    }
-  };
 
   const runtimeControls =
     activeView === "main" ? (
@@ -1370,10 +830,9 @@ export function ConversationView({
             {stoppedNotice}
           </Alert>
         ) : null}
-        {spawn.isError || sendToAgents.isError ? (
+        {sendError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Message not sent.{" "}
-            {String((spawn.error ?? sendToAgents.error) as Error)}
+            Message not sent. {String(sendError)}
           </Alert>
         ) : null}
         {activeView === "main" ? (
@@ -1482,157 +941,44 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      <ImportAgentDialog
-        open={importOpen}
-        projectId={conversation.projectId}
+      <ConversationDialogs
+        conversation={conversation}
         engines={engines}
-        conversations={[conversation]}
-        initialConversationId={conversation.id}
-        onClose={() => setImportOpen(false)}
-        onImported={onOpenAgent}
+        importOpen={importOpen}
+        stopConfirmation={stopConfirmation}
+        renameOpen={renameOpen}
+        renameValue={renameValue}
+        renamePending={rename.isPending}
+        renameError={rename.isError ? String(rename.error) : undefined}
+        editingMessage={editingMessage}
+        correctionText={correctionText}
+        correctionPending={correctMessage.isPending}
+        correctionError={
+          correctMessage.isError ? String(correctMessage.error) : undefined
+        }
+        deleteOpen={deleteOpen}
+        deletePending={deleteConversation.isPending}
+        deleteError={
+          deleteConversation.isError
+            ? String(deleteConversation.error)
+            : undefined
+        }
+        onImportClose={() => setImportOpen(false)}
+        onImported={agentId => onOpenAgent(agentId)}
+        onStopCancel={() => setStopConfirmation(undefined)}
+        onStopConfirm={(targets, names) =>
+          void cancelOperationTargets(targets, names)
+        }
+        onRenameClose={() => setRenameOpen(false)}
+        onRenameValueChange={setRenameValue}
+        onRename={() => rename.mutate(renameValue.trim())}
+        onCorrectionClose={() => setEditingMessage(undefined)}
+        onCorrectionTextChange={setCorrectionText}
+        onCorrectMessage={message => correctMessage.mutate(message)}
+        onDeleteClose={() => setDeleteOpen(false)}
+        onDelete={() => deleteConversation.mutate()}
       />
 
-      <ConfirmDialog
-        open={Boolean(stopConfirmation)}
-        title="Stop Operation Tree?"
-        confirmLabel="Stop Operation"
-        onCancel={() => setStopConfirmation(undefined)}
-        onConfirm={() => {
-          if (stopConfirmation)
-            void cancelOperationTargets(
-              stopConfirmation.targets,
-              stopConfirmation.names,
-            );
-        }}
-      >
-        <Typography sx={{ pt: 1 }}>
-          Stop work for {stopConfirmation?.names}? Partial output from every
-          affected Agent will remain visible.
-        </Typography>
-      </ConfirmDialog>
-
-      <Dialog
-        open={renameOpen}
-        onClose={() => setRenameOpen(false)}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Rename Project chat</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            fullWidth
-            label="Project chat name"
-            value={renameValue}
-            onChange={event => setRenameValue(event.target.value)}
-            sx={{ mt: 1 }}
-          />
-          {rename.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(rename.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setRenameOpen(false)}>Cancel</Button>
-          <Button
-            variant="contained"
-            disabled={!renameValue.trim() || rename.isPending}
-            onClick={() => rename.mutate(renameValue.trim())}
-          >
-            Save
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={Boolean(editingMessage)}
-        onClose={() =>
-          !correctMessage.isPending && setEditingMessage(undefined)
-        }
-        fullWidth
-        maxWidth="sm"
-      >
-        <DialogTitle>Edit Message</DialogTitle>
-        <DialogContent>
-          <Alert severity="info" sx={{ mb: 2 }}>
-            The original remains in append-only history. Broadcast edits update
-            the shared note; edits to a delivered request queue a correction to
-            its original recipient.
-          </Alert>
-          <TextField
-            autoFocus
-            fullWidth
-            multiline
-            minRows={3}
-            label="Message"
-            value={correctionText}
-            onChange={event => setCorrectionText(event.target.value)}
-          />
-          {correctMessage.isError ? (
-            <Alert severity="error" sx={{ mt: 2 }}>
-              {String(correctMessage.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setEditingMessage(undefined)}
-            disabled={correctMessage.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            variant="contained"
-            disabled={!correctionText.trim() || correctMessage.isPending}
-            onClick={() =>
-              editingMessage && correctMessage.mutate(editingMessage)
-            }
-          >
-            Save Edit
-          </Button>
-        </DialogActions>
-      </Dialog>
-
-      <Dialog
-        open={deleteOpen}
-        onClose={() => {
-          if (!deleteConversation.isPending) setDeleteOpen(false);
-        }}
-        fullWidth
-        maxWidth="xs"
-      >
-        <DialogTitle>Delete Project chat?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes{" "}
-            <Box component="strong">{conversation.title}</Box> and its chat
-            history. Its agents are preserved in the Agents tab as unassigned
-            agents. This cannot be undone.
-          </Typography>
-          {deleteConversation.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(deleteConversation.error)}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button
-            onClick={() => setDeleteOpen(false)}
-            disabled={deleteConversation.isPending}
-          >
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={deleteConversation.isPending}
-            onClick={() => deleteConversation.mutate()}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

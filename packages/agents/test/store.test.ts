@@ -1251,6 +1251,65 @@ describe("AgentStore — append + projection", () => {
     expect(existsSync(importedAgentHistoryPath(dir, projectId, agentId))).toBe(true);
   });
 
+  it("preserves private managed-artifact identity and access across projection rebuilds", () => {
+    const project = store.createProject({ label: "Private artifacts", hostPath: "/private-artifacts" });
+    const sender = store.createAgent(project.id, { title: "Sender", engine: "codex" });
+    const recipient = store.createAgent(project.id, { title: "Recipient", engine: "codex" });
+    const unrelated = store.createAgent(project.id, { title: "Unrelated", engine: "codex" });
+    const otherProject = store.createProject({ label: "Other", hostPath: "/other" });
+    const outsider = store.createAgent(otherProject.id, { title: "Outsider", engine: "codex" });
+    const artifact = {
+      id: "private-managed-artifact",
+      projectId: project.id,
+      agentId: sender.id,
+      originAgentId: sender.id,
+      executionId: "run-private",
+      kind: "generated_file" as const,
+      path: "generated/private.txt",
+      sourcePath: "private.txt",
+      summary: "private.txt",
+      createdAt: "2026-07-26T12:00:00.000Z",
+      mediaType: "text/plain",
+      visibility: "project" as const,
+      pinned: false,
+      size: 7,
+      sha256: "b".repeat(64),
+    };
+    const access = {
+      ownerKind: "communication" as const,
+      ownerId: "communication-private",
+      audience: {
+        kind: "user_agent" as const,
+        userId: "local-operator",
+        agentId: recipient.id,
+      },
+      senderAgentId: sender.id,
+    };
+
+    store.recordProjectArtifact(artifact, access);
+    store.recordProjectArtifact(artifact, access);
+
+    const assertPrivateAccess = () => {
+      expect(store.getProjectArtifactAccess(project.id, artifact.id)).toEqual(access);
+      expect(store.projectArtifactIsOrganizationVisible(project.id, artifact.id)).toBe(false);
+      expect(store.operatorCanReadProjectArtifact(project.id, artifact.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, sender.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, recipient.id)).toBe(true);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, unrelated.id)).toBe(false);
+      expect(store.agentCanReadProjectArtifact(project.id, artifact.id, outsider.id)).toBe(false);
+      expect(store.getProjectContextArtifacts(project.id)).toEqual([]);
+    };
+
+    assertPrivateAccess();
+    expect(() => store.recordProjectArtifact({ ...artifact, summary: "changed.txt" }, access))
+      .toThrow("managed artifact identity and provenance are immutable");
+    expect(() => store.recordProjectArtifact(artifact, { ...access, ownerId: "changed-owner" }))
+      .toThrow("managed artifact identity and provenance are immutable");
+
+    store.rebuildProjections();
+    assertPrivateAccess();
+  });
+
   it("serves 50-Agent health heads and reconnect tails without reopening canonical JSONL", () => {
     const project = store.createProject({ label: "Large team", hostPath: "/large-team" });
     const team = Array.from({ length: 50 }, (_, index) =>
@@ -1425,6 +1484,45 @@ describe("AgentStore — append + projection", () => {
       }),
     ]);
     expect(detail.runs).toEqual([expect.objectContaining({ id: "run-1", status: "completed" })]);
+  });
+
+  it("returns complete Run output text when the bounded timeline preview is truncated", () => {
+    const { agentId } = seedAgent();
+    const text = `${"response block ".repeat(3_000)}tail`;
+    store.appendEvent(agentId, {
+      type: "text",
+      delta: text,
+      executionId: "run-large-output",
+    });
+
+    const output = store.getRunOutputs(agentId)[0]!;
+    expect(output.textPreview).toMatchObject({
+      truncated: true,
+      previewUtf8Bytes: 32 * 1_024,
+      totalUtf8Bytes: Buffer.byteLength(text),
+    });
+    expect(output.text).toHaveLength(32 * 1_024);
+    expect(store.getRunOutputText(agentId, output.seq)).toEqual({
+      agentId,
+      runOutputId: output.id,
+      seq: output.seq,
+      text,
+      totalUtf8Bytes: Buffer.byteLength(text),
+    });
+  });
+
+  it("rejects Run output retrieval above the canonical 8 MiB boundary", () => {
+    const { agentId } = seedAgent();
+    store.appendEvent(agentId, {
+      type: "text",
+      delta: "x".repeat(8 * 1_024 * 1_024 + 1),
+      executionId: "run-output-over-limit",
+    });
+
+    const output = store.getRunOutputs(agentId)[0]!;
+    expect(() => store.getRunOutputText(agentId, output.seq)).toThrowError(
+      "run output segment exceeds the 8 MiB retrieval limit",
+    );
   });
 
   itWithManagedArtifacts("rebuilds chronological activity and per-file execution history after restart", () => {
