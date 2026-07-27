@@ -122,6 +122,17 @@ return new CoordinationV3Scheduler(
     const dispatch = activationPayloads
       .map((payload) => payload.dispatch)
       .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
+    const managedOpeningRequest = activationPayloads
+      .map((payload) => payload.request)
+      .find((value): value is Record<string, unknown> =>
+        Boolean(value) &&
+        typeof value === "object" &&
+        (value as Record<string, unknown>).managedAgentOpening === true);
+    const managedOpeningRuntimeSelection =
+      managedOpeningRequest?.runtimeSelection &&
+      typeof managedOpeningRequest.runtimeSelection === "object"
+        ? managedOpeningRequest.runtimeSelection as Record<string, unknown>
+        : undefined;
     const steeringRecovery = activationPayloads
       .map((payload) => payload.steeringRecovery)
       .find((value): value is Record<string, unknown> => Boolean(value) && typeof value === "object");
@@ -178,6 +189,11 @@ return new CoordinationV3Scheduler(
         text: dispatchText,
         ...(typeof dispatch?.model === "string" ? { model: dispatch.model } : failoverModel ? { model: failoverModel } : {}),
         ...(typeof dispatch?.effort === "string" ? { effort: dispatch.effort } : {}),
+        ...(typeof dispatch?.speed === "string"
+          ? { speed: dispatch.speed }
+          : typeof managedOpeningRuntimeSelection?.speed === "string"
+            ? { speed: managedOpeningRuntimeSelection.speed }
+            : {}),
         ...(sourceConversationId ? { sourceConversationId } : {}),
         ...(sourceChannel ? { sourceChannel } : {}),
         ...(dispatch?.shareWithOrganization === true ? { shareWithOrganization: true } : {}),

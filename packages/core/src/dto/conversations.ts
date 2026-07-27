@@ -434,6 +434,8 @@ export interface SendMessageRequest {
   attachmentIds?: string[];
   model?: string;
   effort?: string;
+  /** Per-turn processing tier. "standard" clears provider acceleration. */
+  speed?: string;
   /** Set by a conversation client when this turn originated in that room. */
   sourceChannel?: "main";
   /** A plain Conversation request is shared context while still starting this agent. */

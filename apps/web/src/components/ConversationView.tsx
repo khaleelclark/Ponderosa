@@ -71,7 +71,7 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 
-import { chatStateKey } from "../chatState";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
@@ -168,12 +168,13 @@ export function ConversationView({
     id: string;
     text: string;
   }>();
-  // The engine/model/effort currently selected for this conversation. Model-agnostic:
+  // The engine/model/effort/speed currently selected for this conversation. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
   // already-running agents keep the model they were spawned with.
   const [engine, setEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [speed, setSpeed] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
   const { focusedMessage, focusedMessageHighlightDisposer } =
     useConversationMessageFocusRefs();
@@ -250,12 +251,16 @@ export function ConversationView({
       {
         model: conversation.defaultModel,
         effort: conversation.defaultEffort,
+        speed: readChatState(
+          chatStateKey("runtime", `conversation.${conversation.id}.speed`),
+        ),
       },
     );
     initializedFor.current = conversation.id;
     setEngine(resolvedEngine);
     setModel(resolved.model);
     setEffort(resolved.effort);
+    setSpeed(resolved.speed ?? "");
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
   // Persist the selection so "the model selected for this conversation" survives
@@ -349,10 +354,15 @@ export function ConversationView({
     engine: activeEngine,
     preferences: preferencesQuery.data,
     project,
-    selection: { model, effort },
+    selection: { model, effort, speed },
     onChange: next => {
       setModel(next.model);
       setEffort(next.effort);
+      setSpeed(next.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `conversation.${conversationId}.speed`),
+        next.speed ?? "",
+      );
     },
   });
   const agentTitle = useCallback(
@@ -386,6 +396,7 @@ export function ConversationView({
     engine,
     model,
     effort,
+    speed,
     statusByAgentId,
     healthByAgentId,
     agentTitle,
@@ -522,6 +533,7 @@ export function ConversationView({
   const composerCommands = commands;
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
+  const speeds = selectedRuntime.speeds;
   const engineReady = selectedRuntime.ready;
 
   const transcriptTitle =
@@ -570,6 +582,8 @@ export function ConversationView({
         models={models}
         effort={effort}
         efforts={efforts}
+        speed={selectedRuntime.speed}
+        speeds={speeds}
         onEngineChange={next => {
           const nextEngine = engines.find(candidate => candidate.id === next);
           const resolved = resolveRuntimeSelection(
@@ -580,6 +594,11 @@ export function ConversationView({
           setEngine(next);
           setModel(resolved.model);
           setEffort(resolved.effort);
+          setSpeed(resolved.speed ?? "");
+          writeChatState(
+            chatStateKey("runtime", `conversation.${conversationId}.speed`),
+            resolved.speed ?? "",
+          );
           persistDefaults.mutate({
             defaultEngine: next as EngineDto["id"],
             defaultModel: resolved.model || null,
@@ -596,6 +615,9 @@ export function ConversationView({
         onEffortChange={next => {
           const resolved = selectedRuntime.selectEffort(next);
           persistDefaults.mutate({ defaultEffort: resolved.effort });
+        }}
+        onSpeedChange={next => {
+          selectedRuntime.selectSpeed(next);
         }}
       />
     ) : null;

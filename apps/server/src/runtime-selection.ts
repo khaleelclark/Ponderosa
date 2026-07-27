@@ -81,6 +81,30 @@ function runtimeSelectionError(
   }
 }
 
+function runtimeSpeedSelectionError(
+  adapter: Adapter,
+  model?: string,
+  speed?: string,
+  additionalModels: ModelOption[] = [],
+): string | undefined {
+  const selectedSpeed = speed?.trim() || undefined;
+  if (!selectedSpeed || selectedSpeed === "standard") return;
+  const selectedModel = model?.trim() || undefined;
+  const models = [...adapter.listModels()];
+  const knownModelIds = new Set(models.map(option => option.id));
+  for (const option of additionalModels) {
+    if (!knownModelIds.has(option.id)) models.push(option);
+  }
+  const matchedModel = selectedModel
+    ? models.find(option => option.id === selectedModel)
+    : undefined;
+  if (!matchedModel?.serviceTiers?.some(tier => tier.id === selectedSpeed)) {
+    return selectedModel
+      ? "speed is not available for model"
+      : "speed is not available for engine";
+  }
+}
+
 function normalizedRuntimeSelection(
   adapter: Adapter,
   model?: string,
@@ -126,6 +150,7 @@ export {
   communicationV3Prompt,
   PROVIDER_DYNAMIC_TOOLS,
   runtimeSelectionError,
+  runtimeSpeedSelectionError,
   normalizedRuntimeSelection,
   concreteRuntimeSelection,
 };

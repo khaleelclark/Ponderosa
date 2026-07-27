@@ -50,6 +50,8 @@ function AgentRuntimeControls({
   models,
   effort,
   efforts,
+  speed,
+  speeds,
   selectedRuntime,
   onEngineChange,
 }: {
@@ -59,9 +61,12 @@ function AgentRuntimeControls({
   models: RuntimeControlState["models"];
   effort: string;
   efforts: RuntimeControlState["efforts"];
+  speed: string;
+  speeds: RuntimeControlState["speeds"];
   selectedRuntime: {
     selectModel(nextModel: string): void;
     selectEffort(nextEffort: string): void;
+    selectSpeed(nextSpeed: string): void;
   };
   onEngineChange(nextEngine: string): void;
 }): JSX.Element {
@@ -84,12 +89,17 @@ function AgentRuntimeControls({
       models={models}
       effort={effort}
       efforts={efforts}
+      speed={speed}
+      speeds={speeds}
       onEngineChange={onEngineChange}
       onModelChange={(nextModel) => {
         selectedRuntime.selectModel(nextModel);
       }}
       onEffortChange={(nextEffort) => {
         selectedRuntime.selectEffort(nextEffort);
+      }}
+      onSpeedChange={(nextSpeed) => {
+        selectedRuntime.selectSpeed(nextSpeed);
       }}
     />
   );

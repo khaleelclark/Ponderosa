@@ -66,10 +66,19 @@ interface CodexCachedModel {
   visibility?: unknown;
   default_reasoning_level?: unknown;
   supported_reasoning_levels?: unknown;
+  additional_speed_tiers?: unknown;
+  service_tiers?: unknown;
+  default_service_tier?: unknown;
 }
 
 interface CodexCachedReasoningLevel {
   effort?: unknown;
+}
+
+interface CodexCachedServiceTier {
+  id?: unknown;
+  name?: unknown;
+  description?: unknown;
 }
 
 interface CodexModelsCache {
@@ -100,6 +109,50 @@ export function readCodexModels(cachePath: string): ModelOption[] {
             return options;
           }, [])
         : [];
+      const advertisedServiceTiers = Array.isArray(model.service_tiers)
+        ? (model.service_tiers as CodexCachedServiceTier[]).reduce<NonNullable<ModelOption["serviceTiers"]>>(
+            (options, tier) => {
+              if (
+                typeof tier.id !== "string" ||
+                !tier.id.trim() ||
+                options.some(option => option.id === tier.id)
+              ) {
+                return options;
+              }
+              options.push({
+                id: tier.id,
+                label:
+                  typeof tier.name === "string" && tier.name.trim()
+                    ? tier.name.trim()
+                    : tier.id,
+                ...(typeof tier.description === "string" && tier.description.trim()
+                  ? { description: tier.description.trim() }
+                  : {}),
+              });
+              return options;
+            },
+            [],
+          )
+        : [];
+      const fallbackSpeedTiers =
+        advertisedServiceTiers.length === 0 &&
+        Array.isArray(model.additional_speed_tiers)
+          ? (model.additional_speed_tiers as unknown[]).flatMap(tier =>
+              typeof tier === "string" && tier.trim()
+                ? [{
+                    id: tier.trim(),
+                    label: tier.trim() === "fast" ? "Fast" : effortLabel(tier.trim()),
+                    ...(tier.trim() === "fast"
+                      ? { description: "1.5x speed, increased usage" }
+                      : {}),
+                  }]
+                : [],
+            )
+          : [];
+      const serviceTiers =
+        advertisedServiceTiers.length > 0
+          ? advertisedServiceTiers
+          : fallbackSpeedTiers;
       return [{
         id: model.slug,
         label:
@@ -109,6 +162,11 @@ export function readCodexModels(cachePath: string): ModelOption[] {
         ...(hasEffortMetadata ? { efforts } : {}),
         ...(typeof model.default_reasoning_level === "string" && efforts.some((option) => option.id === model.default_reasoning_level)
           ? { defaultEffort: model.default_reasoning_level }
+          : {}),
+        ...(serviceTiers.length > 0 ? { serviceTiers } : {}),
+        ...(typeof model.default_service_tier === "string" &&
+          serviceTiers.some(option => option.id === model.default_service_tier)
+          ? { defaultServiceTier: model.default_service_tier }
           : {}),
       }];
     });
@@ -222,6 +280,11 @@ export class CodexAdapter implements Adapter {
       spawnFn: this.spawnFn,
       sandboxMode: this.sandboxMode,
       killGraceMs: this.killGraceMs,
+      enableFastMode: this.listModels().some(model =>
+        model.serviceTiers?.some(tier =>
+          tier.id === "fast" || tier.label.toLocaleLowerCase() === "fast"
+        ),
+      ),
     });
   }
 
@@ -236,7 +299,7 @@ export class CodexAdapter implements Adapter {
   }
 
   /** Config overrides accepted by BOTH `exec` and `exec resume`. */
-  private configArgs(model?: string, effort?: string): string[] {
+  private configArgs(model?: string, effort?: string, speed?: string): string[] {
     const args = [
       "-c",
       `sandbox_mode=${JSON.stringify(this.sandboxMode)}`,
@@ -245,6 +308,17 @@ export class CodexAdapter implements Adapter {
     ];
     if (model) args.push("-m", model);
     if (effort) args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+    if (speed) {
+      if (speed === "fast" || speed === "priority") {
+        args.push("-c", "features.fast_mode=true");
+      }
+      args.push(
+        "-c",
+        `service_tier=${JSON.stringify(
+          speed === "standard" ? "default" : speed,
+        )}`,
+      );
+    }
     return args;
   }
 
@@ -254,7 +328,7 @@ export class CodexAdapter implements Adapter {
       "exec",
       "--json",
       "--skip-git-repo-check",
-      ...this.configArgs(opts.model, opts.effort),
+      ...this.configArgs(opts.model, opts.effort, opts.speed),
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
@@ -267,7 +341,7 @@ export class CodexAdapter implements Adapter {
       opts.resumeSessionId,
       "--json",
       "--skip-git-repo-check",
-      ...this.configArgs(opts.model, opts.effort),
+      ...this.configArgs(opts.model, opts.effort, opts.speed),
       "-",
     ];
     return this.run(args, opts.cwd, opts.signal, opts.environment, opts.prompt, opts.onRuntimeRootExit, opts.onRuntimeSpawned);

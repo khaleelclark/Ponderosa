@@ -3,7 +3,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
-import { effortSelectionIsCompatible } from "../conversationEngine";
+import {
+  effortSelectionIsCompatible,
+  speedSelectionIsCompatible,
+} from "../conversationEngine";
 import { useSendMessage } from "../hooks/useSendMessage";
 import { queryKeys } from "../queryKeys";
 import { directAgentDeliveryNotice } from "./AgentDetail.helpers";
@@ -14,6 +17,7 @@ interface AgentMessageControllerInput {
   engine?: EngineDto;
   model: string;
   effort: string;
+  speed: string;
   onNotice(value?: string): void;
   onChatSelected(): void;
 }
@@ -24,6 +28,7 @@ export function useAgentMessageController({
   engine,
   model,
   effort,
+  speed,
   onNotice,
   onChatSelected,
 }: AgentMessageControllerInput) {
@@ -117,6 +122,9 @@ export function useAgentMessageController({
               effort: effortSelectionIsCompatible(engine, model, effort)
                 ? effort
                 : "",
+              ...(speed && speedSelectionIsCompatible(engine, model, speed)
+                ? { speed }
+                : {}),
               activeRunDelivery,
             },
             {

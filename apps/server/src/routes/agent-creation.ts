@@ -19,6 +19,7 @@ import type { createCommunicationArtifactAuthority } from "../communication-arti
 import {
   concreteRuntimeSelection,
   runtimeSelectionError,
+  runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
 import type { DraftService } from "./drafts.js";
 
@@ -72,7 +73,7 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
+    Body: { title: string; engine: string; conversationId?: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
@@ -125,6 +126,13 @@ export function registerAgentCreationRoutes(
       ], projectModelOptions);
       request.body.model = resolvedRuntime.model;
       request.body.effort = resolvedRuntime.effort;
+      const speedError = runtimeSpeedSelectionError(
+        requestedAdapter,
+        request.body.model,
+        request.body.speed,
+        projectModelOptions,
+      );
+      if (speedError) return reply.code(400).send({ error: speedError });
       const initialMessage = request.body.initialMessage?.trim() ?? "";
       const draftAttachmentIds = request.body.draftAttachmentIds ?? [];
       const firstTurnDraftOwnerId = drafts.normalizedOwner(request.body.draftOwnerId);
@@ -202,6 +210,9 @@ export function registerAgentCreationRoutes(
                 resultRef: `ponderosa://artifact/${openingPrepared!.artifact.id}`,
               } : {}),
               managedAgentOpening: true,
+              ...(request.body.speed ? {
+                runtimeSelection: { speed: request.body.speed },
+              } : {}),
               ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
             } }],
             ...(request.body.awaitResult === false ? {} : { join: { id: `managed:${agent.id}:join`, mode: "all" as const } }),
@@ -269,6 +280,7 @@ export function registerAgentCreationRoutes(
               })),
               model: request.body.model ?? null,
               effort: request.body.effort ?? null,
+              speed: request.body.speed ?? null,
             },
           },
           ...(openingPrepared!.artifact ? { artifacts: [runtimeArtifactMetadata(openingPrepared!.artifact)] } : {}),

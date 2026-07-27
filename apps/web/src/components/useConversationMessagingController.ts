@@ -35,6 +35,7 @@ interface ConversationMessagingControllerInput {
   engine: string;
   model: string;
   effort: string;
+  speed: string;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   agentTitle(agentId: string | undefined): string;
@@ -49,6 +50,7 @@ export function useConversationMessagingController({
   engine,
   model,
   effort,
+  speed,
   statusByAgentId,
   healthByAgentId,
   agentTitle,
@@ -111,7 +113,11 @@ export function useConversationMessagingController({
       )
         ? effort
         : "";
-      const runConfig = selectedRunConfig(compatibleModel, compatibleEffort);
+      const runConfig = selectedRunConfig(
+        compatibleModel,
+        compatibleEffort,
+        speed,
+      );
       setActiveOperation({ agentIds: [], state: "starting" });
       const agent = await api.createAgent(
         conversation.projectId,

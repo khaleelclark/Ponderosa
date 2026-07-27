@@ -140,6 +140,7 @@ export function AgentDetail({
   });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [speed, setSpeed] = useState("");
   const [runtimeEngine, setRuntimeEngine] = useState("");
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
@@ -363,10 +364,15 @@ export function AgentDetail({
     engine,
     preferences: preferencesQuery.data,
     project,
-    selection: { model, effort },
+    selection: { model, effort, speed },
     onChange: next => {
       setModel(next.model);
       setEffort(next.effort);
+      setSpeed(next.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `agent.${agentId}.speed`),
+        next.speed ?? "",
+      );
     },
   });
   const inheritedRuntime = resolveRuntimeSelection(
@@ -401,6 +407,7 @@ export function AgentDetail({
     engine,
     model,
     effort,
+    speed,
     onNotice: setQueuedMessageNotice,
     onChatSelected: () => setTab("chat"),
   });
@@ -428,7 +435,16 @@ export function AgentDetail({
   useEffect(() => {
     setModel(persistedModel);
     setEffort(persistedEffort);
-  }, [agentId, persistedModel, persistedEffort]);
+    setSpeed(
+      runtimeControlState(engine, {
+        model: persistedModel,
+        effort: persistedEffort,
+        speed: readChatState(
+          chatStateKey("runtime", `agent.${agentId}.speed`),
+        ),
+      }).speed,
+    );
+  }, [agentId, engine, persistedModel, persistedEffort]);
 
   useEffect(() => {
     if (!detail) return;
@@ -457,7 +473,10 @@ export function AgentDetail({
     setEffort(current =>
       effortSelectionIsCompatible(engine, model, current) ? current : "",
     );
-  }, [engine, model]);
+    setSpeed(current =>
+      runtimeControlState(engine, { model, effort, speed: current }).speed,
+    );
+  }, [engine, effort, model]);
 
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity) || sendMessage.isPending;
@@ -664,6 +683,7 @@ export function AgentDetail({
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
+  const speeds = selectedRuntime.speeds;
   const settingsEngineRegistration = engines.find(
     candidate => candidate.id === settingsEngine,
   );
@@ -697,6 +717,8 @@ export function AgentDetail({
     models={models}
     effort={effort}
     efforts={efforts}
+    speed={selectedRuntime.speed}
+    speeds={speeds}
     selectedRuntime={selectedRuntime}
     onEngineChange={next => {
       const nextEngine = engines.find(candidate => candidate.id === next);
@@ -709,6 +731,11 @@ export function AgentDetail({
       setRuntimeEngine(next);
       setModel(resolved.model);
       setEffort(resolved.effort);
+      setSpeed(resolved.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `agent.${agentId}.speed`),
+        resolved.speed ?? "",
+      );
       setSettingsEngine(next);
       setSettingsModel(resolved.model);
       setSettingsEffort(resolved.effort);
@@ -723,6 +750,13 @@ export function AgentDetail({
             setRuntimeEngine(detail.agent.activeEngine);
             setModel(persistedModel);
             setEffort(persistedEffort);
+            setSpeed(
+              runtimeControlState(engine, {
+                model: persistedModel,
+                effort: persistedEffort,
+                speed,
+              }).speed,
+            );
           },
         },
       );
