@@ -257,6 +257,7 @@ import { registerAgentMessageRunRoute } from "./routes/agent-message-run.js";
 import { registerProviderCommandRoutes } from "./routes/provider-commands.js";
 import { registerServerControlRoutes } from "./routes/server-control.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
+import { registerApplicationRoutes } from "./routes/application-routes.js";
 import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { registerStreamRoutes } from "./routes/streams.js";
 import { registerWikiRoutes } from "./routes/wiki.js";
@@ -1953,531 +1954,146 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     runtimeStatus,
   });
 
-  registerLinkPreviewRoutes(app);
-
-  registerProjectRoutes(app, {
+  registerApplicationRoutes(app, {
+    opts,
     store,
-    workspace,
-    engines,
-    managedWorkspacesRoot,
-    projectFolderPathBoundary,
-    activeRuns,
-    scheduledSessionRollovers,
-    organizationEnvelopeStates,
-    cachedModelOptions,
-    appendWorkspace,
-    refreshCommunicationReconciliation,
-    clearAgentResumeSession,
-    persistentRuntimeForTermination,
-    teardownPersistentRuntime,
-  });
-
-  registerProjectDeletionRoutes(app, {
-    store,
+    assets,
     coordinationV3,
+    communicationArtifactAccess,
+    prepareUserCommunicationText,
+    projectCommunicationArtifact,
+    runtimeArtifactMetadata,
+    coordinationV3WorkerId,
+    workspace,
+    workspaceSubscribers,
+    liveSseClosures,
+    appendWorkspace,
+    publishWorkspaceSince,
+    vapid,
+    webPushConfiguration,
+    webPushConfigurationDetail,
+    webPushConfigured,
     engines,
-    triggerSources,
+    applyOperatorModelOptions,
     activeRuns,
-    runtimeAuthorities,
-    engineCapabilityDiscoveryAuthorities,
-    engineModelCatalogDiscoveryAuthorities,
-    deletingProjectIds,
-    deletingAgentIds,
-    projectDeletionInFlightIds,
-    projectBrowserGrants,
-    browserSessions,
-    projectBrowserSessions,
-    agentMessageCapabilities,
-    subscribers,
-    scheduledSessionRollovers,
-    contextCursors,
-    communicationReconciliation,
-    dirtyCommunicationProjects,
-    clearRunLeaseTimer,
-    clearRunLivenessTimer,
     closeLinkPreviewsForAgent,
-    drainProviderRuntimeAuthority,
-    drainEngineCapabilityDiscoveries,
-    drainEngineModelCatalogDiscoveries,
-    awaitProjectDeletionBarrier,
-    cancelAgentDecisions,
-    invalidateEngineCapabilities,
-    appendWorkspace,
+    registerLinkPreviewRoutes,
+    runtimeAuthorities,
+    runtimeAuthority,
+    pruneRuntimeAuthority,
+    reusableRuntime,
+    openingRuntime,
+    closingRuntime,
+    oneShotRuntime,
+    organizationEnvelopeStates,
+    engineAuthStatuses,
+    engineAvailability,
+    providerEnabled,
+    agentWorkProjection,
     createOperationalNotification,
-    resolveOperationalNotification,
-    agentHealth,
-    logError: (meta, message) => app.log.error(meta, message),
-    projectDeletionCleanupFaults: opts.projectDeletionCleanupFaults,
-  });
-
-  registerAgentWorkRoutes(app, { store, projection: agentWorkProjection });
-
-  registerUsageRoutes(app, serverContext);
-
-  registerConversationRoutes(app, {
-    store,
-    workspace,
-    engines,
-    cachedModelOptions,
-    appendWorkspace,
-    publishWorkspaceSince,
-    generateConversationTitle,
-    conversationDetail,
-    agentHealth,
-    teamDirectory,
-    hasActiveRun: agentId => activeRuns.has(agentId),
-    handleAgentConversationRemoval: (agentId, conversationId) =>
-      coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
-    refreshTriggers: () => triggerSources.refresh(),
-    draftAttachmentSurfaceDir,
-  });
-
-  registerConversationDeliveryRoutes(app, {
-    store,
-    coordinationV3,
-    assets,
-    projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
-    assetMetadata,
-    prepareUserCommunicationText,
-    runtimeArtifactMetadata,
-    recordCommunication,
-    reconcileRuntimeCommunicationProjections,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    projectBroadcastToAgentAudits,
-    projectCommunicationToAgentAudit,
-    appendWorkspace,
-    publishCoordinationV3Changed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
-  });
-
-  registerQueuedMessageRoutes(app, {
-    store,
-    coordinationV3,
-    workspace,
-    prepareUserCommunicationText,
-    runtimeArtifactMetadata,
-    appendWorkspace,
-    publishWorkspaceSince,
-    publishCoordinationV3Changed,
-    publishMessageDeliveryChanged,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    afterQueuedEditSqliteCommit: opts.messageLifecycleFaults?.afterQueuedEditSqliteCommit,
-  });
-  registerConversationCorrectionRoutes(app, {
-    store,
-    coordinationV3,
-    recordCommunication,
-    appendWorkspace,
-    publishCoordinationV3Changed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-  });
-
-  registerCollaborationRoutes(app, {
-    store,
-    coordinationV3,
-    assets,
-    projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
-    collaborationViewDetail,
-    assetMetadata,
-    prepareUserCommunicationText,
-    runtimeArtifactMetadata,
-    recordCommunication,
-    reconcileRuntimeCommunicationProjections,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    projectCommunicationToAgentAudit,
-    appendWorkspace,
-    publishCoordinationV3Changed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    afterCommunicationArtifactCommit: opts.messageLifecycleFaults?.afterCommunicationArtifactCommit,
-  });
-
-  app.get<{ Params: { id: string } }>("/api/projects/:id/agents", async (request, reply) => {
-    if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
-    return store.listAgents(request.params.id);
-  });
-
-  registerAgentPresetRoutes(app, {
-    store,
-    validateRuntimeSelection: (input, projectId) => {
-      if (!input.engine) return undefined;
-      const configured = engines.get(input.engine);
-      if (!configured) return "unknown engine";
-      return runtimeSelectionError(
-        configured.adapter,
-        input.model ?? undefined,
-        input.effort ?? undefined,
-        cachedModelOptions(configured.adapter, projectId),
-      );
-    },
-  });
-
-  registerAgentCreationRoutes(app, {
-    store,
-    coordinationV3,
-    workspace,
-    assets,
-    drafts,
-    engines,
-    deletingAgentIds,
-    deletingProjectIds,
-    cachedModelOptions,
-    recordCommunication,
-    prepareUserCommunicationText,
-    runtimeArtifactMetadata,
-    projectCommunicationArtifact,
-    communicationArtifactAccess,
-    publish,
-    publishMessageDeliveryChanged,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    messageLifecycleFaults: opts.messageLifecycleFaults,
-  });
-
-  registerTriggerRoutes(app, {
-    store,
-    coordination: coordinationV3,
-    sources: triggerSources,
-    webhookRawBodies,
-    rejectQuarantinedMutation: rejectQuarantinedTriggerMutation,
-    appendWorkspace,
-    reconcileOperationalNotifications: reconcileTriggerOperationalNotifications,
-    resolveOperationalNotification,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-  });
-
-  app.get<{ Params: { id: string } }>("/api/agent-trigger-occurrences/:id", async (request, reply) => {
-    const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
-    const capability = token ? agentMessageCapabilities.get(token) : undefined;
-    const active = capability ? activeRuns.get(capability.agentId) : undefined;
-    if (!capability || !active || !capabilityOwnsAuthoritativeRun(capability, active) || active.messageCapability !== token) {
-      return reply.code(401).send({ error: "Trigger occurrence capability is not authorized for an active Run" });
-    }
-    const occurrence = coordinationV3.getTriggerOccurrence(request.params.id);
-    if (!occurrence || occurrence.agentId !== capability.agentId) return reply.code(404).send({ error: "Trigger occurrence not found" });
-    if (!occurrence.activationId || coordinationV3.activationPayloads(capability.agentId, [occurrence.activationId], capability.runId).length !== 1) {
-      return reply.code(404).send({ error: "Trigger occurrence is not attached to this Run" });
-    }
-    return occurrence;
-  });
-
-  registerAgentAuditRoutes(app, serverContext);
-
-  app.get<{ Params: { id: string; seq: string } }>(
-    "/api/agents/:id/run-output/:seq/text",
-    async (request, reply) => {
-      if (!store.getAgentDetail(request.params.id, 1, false)) {
-        return reply.code(404).send({ error: "agent not found" });
-      }
-      const seq = Number(request.params.seq);
-      if (!Number.isSafeInteger(seq) || seq < 1) {
-        return reply.code(400).send({ error: "invalid run output sequence" });
-      }
-      try {
-        return store.getRunOutputText(request.params.id, seq)
-          ?? reply.code(404).send({ error: "run output segment not found" });
-      } catch (error) {
-        if (error instanceof RangeError) {
-          return reply.code(413).send({ error: error.message });
-        }
-        throw error;
-      }
-    },
-  );
-
-  registerAgentPackageRoutes(app, {
-    dataDir: opts.dataDir,
-    store,
-    coordination: coordinationV3,
-    assets,
-    engines,
-    deletingProjectIds,
-    cachedModelOptions,
-    triggerSources,
-    appendWorkspace,
-    agentMessages,
-  });
-
-  registerAgentUsageRoute(app, serverContext);
-
-  registerAgentMaintenanceRoutes(app, {
-    store, coordinationV3, workspace, engines, triggerSources, deletingAgentIds,
-    cachedModelOptions, commitAgentDeletion,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-  });
-
-  const globalChatSearch = (query: { q?: string; limit?: string | number }): GlobalChatSearchResponseDto => {
-    const q = String(query.q ?? "").trim();
-    if (q.length > 200) throw new Error("search query must be 200 characters or fewer");
-    const requestedLimit = Number(query.limit ?? 30);
-    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(50, Math.floor(requestedLimit))) : 30;
-    return store.searchGlobalChats({ query: q, limit, notifications: workspace.listNotifications() });
-  };
-
-  registerWikiRoutes(app, serverContext);
-
-  registerSearchRoutes(app, { ...serverContext, globalChatSearch, workspace });
-
-  async function assetMetadata(agentId: string, id: string) {
-    const agent = store.getAgent(agentId);
-    if (!agent) return undefined;
-    const metadata = await assets.read(agent.projectId, agent.id, id);
-    return metadata && await assets.content(agent.projectId, agent.id, id, false) ? metadata : undefined;
-  }
-
-  registerLimitsRoutes(app, serverContext);
-
-  registerAttachmentRoutes(app, { assets, store });
-
-  registerAgentMessageRunRoute(app, {
-    opts, store, workspace, coordinationV3, assets, drafts, engines, engineAvailability,
-    contextCursors, activeRuns, agentMessageCapabilities, runtimeAuthorities,
-    organizationEnvelopeStates, scheduledSessionRollovers, contextRolloverPending,
-    engineModelCatalogCache, deletingProjectIds, deletingAgentIds,
-    coordinationV3WorkerId, v3DispatchKey, deploymentDraining: () => deploymentDraining,
-    isClosed: () => closed, providerEnabled, leaseExpiry, reusableRuntime, openingRuntime,
-    closingRuntime, oneShotRuntime, runtimeAuthority, pruneRuntimeAuthority, clearAgentResumeSession,
-    assetMetadata, recordCommunication, reconcileRuntimeCommunicationProjections,
-    notifyManagerOfChildFailure, notifyScheduler: () => coordinationV3Scheduler.notify(),
-    cachedModelOptions, discoverEngineModelCatalog, markEngineModelUnavailable,
-    discoverEngineCapabilities,
-    reportRuntimeCapabilitiesChanged, refreshProviderUsageAfterRun, ownsActiveRunForAuditDrain,
-    persistentRootExited, scheduleRuntimeIdleClose, teardownOneShotRuntime, teardownOpeningRuntime,
-    teardownPersistentRuntime, teardownPersistentRuntimeInBackground, claimActiveRun,
-    persistRuntimeEvent, receiveRuntimeEvent, releaseActiveRun, renewExecutionLease,
-    waitBeforeRuntimePersist, communicationArtifactAccess, prepareUserCommunicationText,
-    projectCommunicationArtifact, runtimeArtifactMetadata, projectBroadcastToAgentAudits,
-    publish, publishCoordinationV3Changed, publishMessageDeliveryChanged, teamDirectory,
-    canonicalConversationContext, agentCanReadRuntimeArtifact,
-    createOperationalNotification, resolveOperationalNotification, reconcileProjectWorkspace,
-    drainDeploymentIdleAuthorities,
-    ownsActiveRun, cancelRuntimeIdleClose, reconcileAgentRuntimeAuthority,
-    scheduleRuntimeLivenessHeartbeat,
-  });
-
-  registerWorkspacePreferenceRoutes(app, {
-    opts, store, workspace, engines, activeRuns, scheduledSessionRollovers,
-    organizationEnvelopeStates, engineModelCatalogCache, cachedModelOptions,
-    applyOperatorModelOptions, publishWorkspaceSince,
-    setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
-    clearAgentResumeSession, persistentRuntimeForTermination, teardownPersistentRuntime,
-  });
-
-  registerDraftRoutes(
-    app,
-    drafts,
-    workspace,
-    MAX_ATTACHMENTS_PER_MESSAGE,
-    publishWorkspaceSince,
-  );
-
-  const notificationRoutesOptions = {
-    workspace,
-    store,
-    publishWorkspaceSince,
     reconcileCommunicationFailureNotifications,
     reconcileCoordinationAttentionNotifications,
-  };
-  registerNotificationListRoute(app, notificationRoutesOptions);
-  app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: string; status?: string } }>("/api/decisions", async (request, reply) => {
-    const status = request.query.status;
-    if (status && !["pending", "resolved", "cancelled"].includes(status)) return reply.code(400).send({ error: "invalid Decision status" });
-    return workspace.listDecisions({
-      projectId: request.query.projectId,
-      conversationId: request.query.conversationId,
-      agentId: request.query.agentId,
-      status: status as "pending" | "resolved" | "cancelled" | undefined,
-    });
-  });
-  app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>("/api/decisions/:id/respond", async (request, reply) => {
-    const current = workspace.getDecision(request.params.id);
-    if (!current) return reply.code(404).send({ error: "Decision not found" });
-    if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
-    if (current.status !== "pending") {
-      if (current.status === "resolved") {
-        ensureDecisionResponseActivation(current);
-        coordinationV3Scheduler.notify();
-      }
-      return current;
-    }
-    const optionId = request.body?.optionId?.trim();
-    const text = request.body?.text?.trim();
-    if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
-    if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
-    if (!optionId && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
-    const respondedAt = new Date().toISOString();
-    if (current.approvalScope?.kind === "agent_management") {
-      try {
-        if (!store.resolveAgentManagementApproval(current.id, optionId === "approve", respondedAt)) {
-          return reply.code(409).send({ error: "the scoped management approval record is unavailable" });
-        }
-      } catch (error) {
-        return reply.code(409).send({ error: error instanceof Error ? error.message : "management approval could not be resolved" });
-      }
-    }
-    const cursor = workspace.cursor();
-    const decision = workspace.resolveDecision(current.id, { ...(optionId ? { optionId } : {}), ...(text ? { text } : {}), respondedAt })!;
-    const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
-    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
-    publishWorkspaceSince(cursor);
-    ensureDecisionResponseActivation(decision);
-    publishMessageDeliveryChanged(decision.agentId);
-    coordinationV3Scheduler.notify();
-    return decision;
-  });
-  registerNotificationMutationRoutes(app, notificationRoutesOptions);
-  registerPushRoutes(app, {
-    workspace,
-    publishWorkspaceSince,
-    configuration: {
-      configured: webPushConfigured,
-      state: webPushConfiguration,
-      detail: webPushConfigurationDetail,
-      ...(webPushConfigured ? { publicKey: vapid.publicKey } : {}),
-    },
-  });
-
-  registerStreamRoutes(app, {
-    store,
-    workspace,
-    serverClosed: () => closed,
-    maxSubscribersPerStream: MAX_SSE_SUBSCRIBERS_PER_STREAM,
-    workspaceSubscribers,
-    agentSubscriberCount: (agentId) => subscribers.get(agentId)?.size ?? 0,
-    subscribe,
-    liveSseClosures,
-  });
-
-  registerBrowserRoutes(app, {
+    reconcileProjectWorkspace,
+    reconcileTriggerOperationalNotifications,
+    resolveOperationalNotification,
+    cancelAgentDecisions,
+    awaitProjectDeletionBarrier,
+    commitAgentDeletion,
+    contextCursors,
+    browserScopeForRun,
     browserSessions,
-    projectBrowserSessions,
-    projectExists: (projectId) => Boolean(store.getProject(projectId)),
-    projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
-    operatorBrowserScope: (params) => {
-      const agent = store.getAgent(params.id);
-      if (!agent || agent.projectId !== params.projectId) {
-        throw new BrowserSessionError("agent not found", 404);
-      }
-      if (deletingProjectIds.has(agent.projectId) || deletingAgentIds.has(agent.id)) {
-        throw new BrowserSessionError("Project deletion is in progress", 409);
-      }
-      const run = activeRuns.get(agent.id);
-      if (!run || run.runId !== params.runId || !ownsActiveRun(agent.id, run)) {
-        throw new BrowserSessionError("browser access requires the exact active run", 404);
-      }
-      return browserScopeForRun(agent.id, run)!;
-    },
-    projectBrowserScope,
+    closeRunBrowser,
     projectBrowserDto,
-    getProjectBrowserGrant: (projectId) => projectBrowserGrants.get(projectId),
-    setProjectBrowserGrant: (projectId, grant) => projectBrowserGrants.set(projectId, grant),
-    deleteProjectBrowserGrant: (projectId) => {
-      projectBrowserGrants.delete(projectId);
-    },
-    activeProjectBrowserController: (projectId, agentId) => {
-      const agent = agentId ? store.getAgent(agentId) : undefined;
-      const run = agent ? activeRuns.get(agent.id) : undefined;
-      if (!agent || agent.projectId !== projectId || !run || !ownsActiveRun(agent.id, run)) return undefined;
-      return {
-        grant: { agentId: agent.id, runId: run.runId },
-        privateScope: () => browserScopeForRun(agent.id, run),
-      };
-    },
-  });
-
-  registerProviderCommandRoutes(app, {
-    store,
-    coordinationV3,
-    workspace,
-    engines,
-    activeRuns,
+    projectBrowserGrants,
+    projectBrowserScope,
+    projectBrowserSessions,
+    managedWorkspacesRoot,
+    projectFolderPathBoundary,
+    drafts,
+    draftAttachmentSurfaceDir,
+    agentMessageCapabilities,
     scheduledSessionRollovers,
+    contextRolloverPending,
+    clearAgentResumeSession,
+    v3DispatchKey,
+    subscribers,
     deletingProjectIds,
     deletingAgentIds,
-    engineCapabilityDiscoveryAuthorities,
-    serverContext,
-    isClosed: () => closed,
-    notifyScheduler: () => coordinationV3Scheduler.notify(),
-    reusableRuntime,
+    rejectQuarantinedTriggerMutation,
+    projectDeletionInFlightIds,
+    communicationReconciliation,
+    dirtyCommunicationProjects,
+    generateConversationTitle,
+    recordCommunication,
+    refreshCommunicationReconciliation,
+    leaseExpiry,
+    cancelRuntimeIdleClose,
+    capabilityOwnsAuthoritativeRun,
+    drainProviderRuntimeAuthority,
+    ownsActiveRun,
+    ownsActiveRunForAuditDrain,
+    persistentRootExited,
     persistentRuntimeForTermination,
-    closeRunBrowser,
-    clearAgentResumeSession,
+    reconcileAgentRuntimeAuthority,
+    scheduleRuntimeIdleClose,
+    teardownOneShotRuntime,
+    teardownOpeningRuntime,
     teardownPersistentRuntime,
+    teardownPersistentRuntimeInBackground,
+    claimActiveRun,
+    clearRunLeaseTimer,
+    clearRunLivenessTimer,
+    persistRuntimeEvent,
+    receiveRuntimeEvent,
+    releaseActiveRun,
+    renewExecutionLease,
+    scheduleRuntimeLivenessHeartbeat,
+    waitBeforeRuntimePersist,
+    agentHealth,
+    agentMessages,
+    canonicalConversationContext,
+    collaborationViewDetail,
+    conversationDetail,
+    ensureDecisionResponseActivation,
+    publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
-    publish,
+    teamDirectory,
+    serverContext,
     cachedModelOptions,
     closeCapabilityDiscoveryAuthority,
     closeCapabilityDiscoveryProcess,
-    providerUsageState,
-    reportRuntimeCapabilitiesChanged,
-  });
-
-  registerCommunicationDocumentRoutes(app, authoritativeCommunicationDocument);
-  const projectFileAuthority = new ProjectFileAuthority(
-    store,
-    opts.projectFilePreviewFaults,
-  );
-  registerArtifactRoutes(app, {
-    store,
-    assets,
-    dataDir: opts.dataDir,
-    projectFileAuthority,
-    workspaceArtifactReadFaults: opts.workspaceArtifactReadFaults,
-    managedArtifactReadFaults: opts.managedArtifactReadFaults,
-    publish,
-    managedProjectArtifactAgreesWithRuntime,
-  });
-
-  registerLegacyFilesRoute(app, serverContext);
-
-  registerProjectFileRoutes(app, projectFileAuthority, store);
-
-  registerLegacyWorkspaceRoutes(app, serverContext);
-
-  registerEngineRoutes(app, {
-    engines,
-    store,
-    workspace,
+    discoverEngineCapabilities,
+    discoverEngineModelCatalog,
+    drainEngineCapabilityDiscoveries,
+    drainEngineModelCatalogDiscoveries,
+    engineCapabilityDiscoveryAuthorities,
     engineDto,
+    engineModelCatalogCache,
+    engineModelCatalogDiscoveryAuthorities,
+    invalidateEngineCapabilities,
+    markEngineModelUnavailable,
     providerUsageCenter,
     providerUsageState,
-    publishWorkspaceSince,
+    refreshProviderUsageAfterRun,
+    reportRuntimeCapabilitiesChanged,
+    validateEngineModel,
+    triggerSources,
+    webhookRawBodies,
+    reconcileRuntimeCommunicationProjections,
+    notifyManagerOfChildFailure,
+    projectBroadcastToAgentAudits,
+    projectCommunicationToAgentAudit,
+    publish,
+    subscribe,
+    agentCanReadRuntimeArtifact,
+    authoritativeCommunicationDocument,
+    managedProjectArtifactAgreesWithRuntime,
+    drainDeploymentIdleAuthorities,
+    isClosed: () => closed,
+    isDeploymentDraining: () => deploymentDraining,
     notifyScheduler: () => coordinationV3Scheduler.notify(),
-    authStatuses: engineAuthStatuses,
-    availability: engineAvailability,
-    createOperationalNotification,
-    resolveOperationalNotification,
-    projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
-    discoverModelCatalog: discoverEngineModelCatalog,
-    validateModel: validateEngineModel,
-    runtimeSession: (agentId) => activeRuns.get(agentId)?.runtimeSession ?? reusableRuntime(agentId)?.session,
-    discoverCapabilities: discoverEngineCapabilities,
+    setMaxConcurrentRuns: (value) => coordinationV3Scheduler.setMaxConcurrentRuns(value),
   });
-
-  if (opts.webDist) {
-    app.get("/*", async (request, reply) => {
-      try {
-        const rawPath = request.url.split("?")[0] ?? "/";
-        if (rawPath === "/api" || rawPath.startsWith("/api/")) return reply.code(404).send();
-        const rel = rawPath === "/" ? "index.html" : safeRelativePath(decodeURIComponent(rawPath.slice(1)));
-        const target = path.resolve(opts.webDist!, rel);
-        const root = path.resolve(opts.webDist!);
-        if (target !== root && !target.startsWith(root + path.sep)) return reply.code(404).send();
-        const targetExists = await pathExists(target);
-        const file = targetExists ? target : path.join(root, "index.html");
-        if (!targetExists && !(await pathExists(file))) return reply.code(404).send();
-        const [rootReal, fileReal] = await Promise.all([fs.realpath(root), fs.realpath(file)]);
-        if (fileReal !== rootReal && !fileReal.startsWith(rootReal + path.sep)) return reply.code(404).send();
-        return reply
-          .header("Cache-Control", cacheControlForStatic(file))
-          .type(contentTypeForStatic(file))
-          .send(await fs.readFile(file));
-      } catch {
-        return reply.code(404).send();
-      }
-    });
-  }
 
   return app;
 }
