@@ -463,6 +463,8 @@ export interface QueuedMessageResponse {
   queued: true;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
+  /** Stable queued-delivery identity used to follow this item until it starts. */
+  deliveryId: string;
   communicationEventId?: string;
 }
 

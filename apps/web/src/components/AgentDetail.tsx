@@ -390,6 +390,7 @@ export function AgentDetail({
   const {
     cancelQueuedMessage,
     editQueuedMessage,
+    queueDeliveryNotice,
     queuedMessagesQuery,
     sendMessage,
     steerQueuedMessage,
@@ -892,7 +893,7 @@ export function AgentDetail({
       <AgentDetailComposer
         visible={tab === "chat"}
         mobileComposer={mobileComposer}
-        queuedMessageNotice={queuedMessageNotice}
+        queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         sendError={
           sendMessage.isError || cancelRun.isError
             ? `${sendMessage.isError ? "Message not sent." : "The agent could not be stopped."} ${String(

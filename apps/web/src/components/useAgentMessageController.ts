@@ -1,5 +1,6 @@
 import type { EngineDto, SendMessageRequest } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { effortSelectionIsCompatible } from "../conversationEngine";
@@ -32,6 +33,28 @@ export function useAgentMessageController({
     queryKey: queryKeys.queuedMessages.agent(agentId),
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
+  const [queueDeliveryNotice, setQueueDeliveryNotice] = useState<{
+    deliveryId: string;
+    text: string;
+  }>();
+  const queueNoticeBaseline = useRef(0);
+  useEffect(() => {
+    if (
+      !queueDeliveryNotice ||
+      queuedMessagesQuery.isFetching ||
+      queuedMessagesQuery.dataUpdatedAt <= queueNoticeBaseline.current
+    ) return;
+    if (!queuedMessagesQuery.data?.some(
+      message => message.deliveryId === queueDeliveryNotice.deliveryId,
+    )) {
+      setQueueDeliveryNotice(undefined);
+    }
+  }, [
+    queueDeliveryNotice,
+    queuedMessagesQuery.data,
+    queuedMessagesQuery.dataUpdatedAt,
+    queuedMessagesQuery.isFetching,
+  ]);
   const cancelQueuedMessage = useMutation({
     mutationFn: (deliveryId: string) =>
       api.cancelQueuedAgentMessage(agentId, deliveryId, {
@@ -98,9 +121,26 @@ export function useAgentMessageController({
             },
             {
               onSuccess: response => {
-                onNotice(
-                  directAgentDeliveryNotice(response, activeRunDelivery),
+                const notice = directAgentDeliveryNotice(
+                  response,
+                  activeRunDelivery,
                 );
+                if (
+                  response.queued &&
+                  activeRunDelivery === "queue" &&
+                  notice
+                ) {
+                  queueNoticeBaseline.current =
+                    queuedMessagesQuery.dataUpdatedAt;
+                  setQueueDeliveryNotice({
+                    deliveryId: response.deliveryId,
+                    text: notice,
+                  });
+                  onNotice(undefined);
+                } else {
+                  setQueueDeliveryNotice(undefined);
+                  onNotice(notice);
+                }
                 void queryClient.invalidateQueries({
                   queryKey: queryKeys.queuedMessages.agent(agentId),
                 });
@@ -126,6 +166,7 @@ export function useAgentMessageController({
   return {
     cancelQueuedMessage,
     editQueuedMessage,
+    queueDeliveryNotice: queueDeliveryNotice?.text,
     queuedMessagesQuery,
     sendMessage,
     steerQueuedMessage,

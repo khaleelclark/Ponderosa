@@ -580,7 +580,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(202).send({
           queued: true,
           position,
-          activationId: v3Intake.activationId,
+          deliveryId: v3Intake.activationId,
           communicationEventId,
         });
       }
