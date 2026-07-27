@@ -1,7 +1,6 @@
 import { Typography } from "@mui/material";
 import type { ComponentProps } from "react";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
-import { ImportAgentDialog } from "./ImportAgentDialog";
 import {
   AgentMembershipDialog,
   AgentOrganizationDialog,
@@ -23,7 +22,6 @@ interface AgentDetailDialogsProps {
     onConfirm(): void;
   };
   deletion: ComponentProps<typeof AgentDeletionDialog>;
-  importAgent: ComponentProps<typeof ImportAgentDialog>;
   rename: ComponentProps<typeof AgentRenameDialog>;
   membership: ComponentProps<typeof AgentMembershipDialog>;
   organization: ComponentProps<typeof AgentOrganizationDialog>;
@@ -33,7 +31,6 @@ export function AgentDetailDialogs({
   elevatedCopy,
   recheckEngine,
   deletion,
-  importAgent,
   rename,
   membership,
   organization,
@@ -67,7 +64,6 @@ export function AgentDetailDialogs({
         </Typography>
       </ConfirmDialog>
       <AgentDeletionDialog {...deletion} />
-      <ImportAgentDialog {...importAgent} />
       <AgentRenameDialog {...rename} />
       <AgentMembershipDialog {...membership} />
       <AgentOrganizationDialog {...organization} />

@@ -151,7 +151,6 @@ export function AgentDetail({
   const [renameValue, setRenameValue] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
   const [organizationOpen, setOrganizationOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [primaryConversationId, setPrimaryConversationId] = useState("");
@@ -878,7 +877,6 @@ export function AgentDetail({
           setPrimaryConversationId(detail.agent.conversationId ?? "");
           setMembershipOpen(true);
         }}
-        onImport={() => setImportOpen(true)}
         onQuickCopy={
           detail.agent.conversationId
             ? () => void quickCopyIntoProjectChat()
@@ -1031,15 +1029,6 @@ export function AgentDetail({
             setDeleteOpen(false);
             onDeleted();
           },
-        }}
-        importAgent={{
-          open: importOpen,
-          projectId: detail.agent.projectId,
-          engines,
-          conversations,
-          initialConversationId: detail.agent.conversationId,
-          onClose: () => setImportOpen(false),
-          onImported: onOpenAgent,
         }}
         rename={{
           renameOpen,

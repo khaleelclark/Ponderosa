@@ -1,4 +1,3 @@
-import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import {
   Alert,
   Button,
@@ -9,32 +8,26 @@ import {
   Stack,
   TextField,
 } from "@mui/material";
-import type { EngineDto, ProjectDto } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ProjectDto } from "@ponderosa/core";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
-import { ImportAgentDialog } from "./ImportAgentDialog";
 
 export function ProjectSettingsDialog({
   project,
-  engines,
   onClose,
   onDeleted,
-  onImported,
 }: {
   project?: ProjectDto;
-  engines: EngineDto[];
   onClose(): void;
   onDeleted(projectId: string): void;
-  onImported(projectId: string, agentId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [label, setLabel] = useState("");
   const [instructions, setInstructions] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     if (!project) return;
@@ -43,12 +36,6 @@ export function ProjectSettingsDialog({
     setDeleteOpen(false);
   }, [project]);
 
-  const conversations = useQuery({
-    queryKey: queryKeys.conversations.project(project?.id),
-    queryFn: () => api.listConversations(project!.id),
-    enabled: importOpen && Boolean(project),
-    staleTime: 10_000,
-  });
   const updateProject = useMutation({
     mutationFn: () => api.updateProject(project!.id, {
       label: label.trim(),
@@ -91,13 +78,6 @@ export function ProjectSettingsDialog({
               helperText="These rules apply after global rules to every Agent working in this Project."
               fullWidth
             />
-            <Button
-              variant="outlined"
-              startIcon={<FileUploadOutlinedIcon />}
-              onClick={() => setImportOpen(true)}
-            >
-              Import Agent or Organization
-            </Button>
             {updateProject.isError ? <Alert severity="error">{String(updateProject.error)}</Alert> : null}
             <Button color="error" variant="outlined" onClick={() => setDeleteOpen(true)}>Delete Project Permanently</Button>
           </Stack>
@@ -128,19 +108,6 @@ export function ProjectSettingsDialog({
           This permanently deletes its Project chats, agents, runs, work items, and files &amp; results. The working folder and its source files are not deleted.
         </Alert>
       </DestructiveConfirmDialog>
-      {project ? (
-        <ImportAgentDialog
-          open={importOpen}
-          projectId={project.id}
-          engines={engines}
-          conversations={conversations.data ?? []}
-          onClose={() => setImportOpen(false)}
-          onImported={(agentId) => {
-            setImportOpen(false);
-            onImported(project.id, agentId);
-          }}
-        />
-      ) : null}
     </>
   );
 }

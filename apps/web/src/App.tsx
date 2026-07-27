@@ -980,12 +980,7 @@ export default function App({
         />
         <ProjectSettingsDialog
           project={settingsProject}
-          engines={engines}
           onClose={() => setSettingsProject(undefined)}
-          onImported={(projectId, agentId) => {
-            setSettingsProject(undefined);
-            navigateWorkspace({ kind: "agent", projectId, agentId });
-          }}
           onDeleted={projectId => {
             const next = nextProjectAfterDelete(projects, projectId);
             const survivingProjectIds = new Set(
