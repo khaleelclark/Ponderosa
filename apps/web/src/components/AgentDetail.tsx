@@ -404,6 +404,19 @@ export function AgentDetail({
     onNotice: setQueuedMessageNotice,
     onChatSelected: () => setTab("chat"),
   });
+  const visibleChatMessages = useMemo(() => {
+    const queuedCommunicationIds = new Set(
+      (queuedMessagesQuery.data ?? []).map(message => message.messageId),
+    );
+    return (detail?.messages ?? []).filter(
+      message =>
+        !queuedCommunicationIds.has(message.id) &&
+        !(
+          message.communicationEventId &&
+          queuedCommunicationIds.has(message.communicationEventId)
+        ),
+    );
+  }, [detail?.messages, queuedMessagesQuery.data]);
 
   const persistedModel = detail
     ? (detail.agent.model ?? inheritedRuntime.model)
@@ -851,6 +864,7 @@ export function AgentDetail({
       <AgentDetailPanels
         tab={tab}
         detail={detail}
+        chatMessages={visibleChatMessages}
         agentId={agentId}
         agents={agents}
         conversations={conversations}

@@ -139,7 +139,6 @@ export function ConversationView({
     loadingOlder,
     mainHistory,
     mainTimeline,
-    messageLayoutKey,
     messages,
     operationalEventGroups,
     operationalEvents,
@@ -391,6 +390,23 @@ export function ConversationView({
     healthByAgentId,
     agentTitle,
   });
+  const visibleMainTimeline = useMemo(() => {
+    const queuedMessageIds = new Set(
+      (queuedMessagesQuery.data ?? []).map(message => message.messageId),
+    );
+    return mainTimeline.filter(
+      entry =>
+        entry.kind !== "message" ||
+        (!queuedMessageIds.has(entry.message.id) &&
+          !(
+            entry.message.communicationEventId &&
+            queuedMessageIds.has(entry.message.communicationEventId)
+          )),
+    );
+  }, [mainTimeline, queuedMessagesQuery.data]);
+  const visibleMessageLayoutKey = visibleMainTimeline
+    .map(entry => entry.id)
+    .join(":");
   const agentIdForHandle = useCallback(
     (handle: string): string | undefined =>
       agentIdForMentionHandle(agents, handle),
@@ -636,7 +652,7 @@ export function ConversationView({
         >
           <ChatSurface
             layout="project"
-            layoutKey={`main:${messageLayoutKey}`}
+            layoutKey={`main:${visibleMessageLayoutKey}`}
             label="Project chat messages"
             follow={{
               kind: "latest",
@@ -698,7 +714,7 @@ export function ConversationView({
             }
           >
             <MainConversationTimeline
-              mainTimeline={mainTimeline}
+              mainTimeline={visibleMainTimeline}
               operatorProfile={preferencesQuery.data?.profile}
               projectId={conversation.projectId}
               healthByAgentId={healthByAgentId}
