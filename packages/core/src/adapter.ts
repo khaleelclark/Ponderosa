@@ -44,6 +44,10 @@ export interface ModelOption {
   efforts?: EffortOption[];
   /** Provider-reported default effort for this exact model. */
   defaultEffort?: string;
+  /** Provider-reported non-standard service tiers for this exact model. */
+  serviceTiers?: ServiceTierOption[];
+  /** Provider-reported default service tier. Missing means Standard. */
+  defaultServiceTier?: string;
   resolvedModel?: string;
   description?: string;
   kind?: EngineModelKind;
@@ -90,6 +94,13 @@ export interface EffortOption {
   label: string;
 }
 
+/** A provider processing tier presented to users as response speed. */
+export interface ServiceTierOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
 /** Options shared by both `seed()` and `continue()`. */
 export interface RunOptionsBase {
   agentId: string;
@@ -99,6 +110,8 @@ export interface RunOptionsBase {
   prompt: string;
   model?: string;
   effort?: string;
+  /** "standard" clears any provider tier override; other values are provider IDs. */
+  speed?: string;
   /** Per-run capability variables supplied by the orchestrator. */
   environment?: Record<string, string>;
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
@@ -134,6 +147,8 @@ export interface RuntimeTurnInput {
   kind: RuntimeDeliveryKind;
   model?: string;
   effort?: string;
+  /** "standard" clears any provider tier override; other values are provider IDs. */
+  speed?: string;
   clientMessageId?: string;
 }
 
@@ -215,6 +230,8 @@ export interface OpenRuntimeSessionOptions {
   history: ChatMessage[];
   model?: string;
   effort?: string;
+  /** "standard" clears any provider tier override; other values are provider IDs. */
+  speed?: string;
   environment?: Record<string, string>;
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];

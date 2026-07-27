@@ -30,7 +30,10 @@ export function useChatScroll(
       const saved = readScrollPosition(follow.storageKey);
       if (saved !== undefined) {
         element.scrollTop = saved;
-        followLatest.current = isChatNearBottom(element);
+        followLatest.current = isChatNearBottom(
+          element,
+          follow.bottomThreshold,
+        );
         setShowScrollToLatest(!followLatest.current);
         follow.onPositionChange?.(element, followLatest.current);
         firstLayout.current = false;
@@ -48,7 +51,11 @@ export function useChatScroll(
       setShowScrollToLatest(false);
       follow.onPositionChange?.(element, true);
     }
-  }, [follow.storageKey, layoutKey]);
+  }, [
+    follow.bottomThreshold,
+    follow.storageKey,
+    layoutKey,
+  ]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -69,11 +76,18 @@ export function useChatScroll(
     const element = scrollRef.current;
     if (!element) return;
     revealChatScrollbar(element);
-    followLatest.current = isChatNearBottom(element);
+    followLatest.current = isChatNearBottom(
+      element,
+      follow.bottomThreshold,
+    );
     setShowScrollToLatest(!followLatest.current);
     follow.onPositionChange?.(element, followLatest.current);
     if (follow.storageKey) writeChatState(follow.storageKey, String(element.scrollTop));
-  }, [follow.storageKey, follow.onPositionChange]);
+  }, [
+    follow.bottomThreshold,
+    follow.storageKey,
+    follow.onPositionChange,
+  ]);
 
   const scrollToLatest = useCallback(() => {
     const element = scrollRef.current;

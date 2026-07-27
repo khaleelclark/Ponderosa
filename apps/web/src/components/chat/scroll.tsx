@@ -5,8 +5,9 @@ const CHAT_BOTTOM_THRESHOLD = 48;
 
 export function isChatNearBottom(
   element: Pick<HTMLElement, "clientHeight" | "scrollHeight" | "scrollTop">,
+  threshold = CHAT_BOTTOM_THRESHOLD,
 ): boolean {
-  return element.scrollHeight - element.clientHeight - element.scrollTop <= CHAT_BOTTOM_THRESHOLD;
+  return element.scrollHeight - element.clientHeight - element.scrollTop <= threshold;
 }
 
 export function scrollChatToBottom(element: Pick<HTMLElement, "scrollHeight" | "scrollTop">): void {

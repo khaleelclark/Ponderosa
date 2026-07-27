@@ -53,6 +53,7 @@ import {
   normalizedRuntimeSelection,
   providerSessionContractHash,
   runtimeSelectionError,
+  runtimeSpeedSelectionError,
 } from "../runtime-selection.js";
 import type { DraftService } from "./drafts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
@@ -190,6 +191,7 @@ export function registerAgentMessageRunRoute(
       idempotencyKey?: string;
       model?: string;
       effort?: string;
+      speed?: string;
       agentMentionDepth?: number;
       agentMentionTrail?: string[];
       sourceChannel?: "main";
@@ -220,7 +222,7 @@ export function registerAgentMessageRunRoute(
       const project = store.getProject(agent.projectId);
       if (!project) return reply.code(404).send({ error: "project not found" });
       const allowedMessageFields = new Set([
-        "text", "idempotencyKey", "model", "effort", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
+        "text", "idempotencyKey", "model", "effort", "speed", "agentMentionDepth", "agentMentionTrail", "sourceChannel",
               "shareWithOrganization", "activeRunDelivery", "sourceConversationId",
         "attachmentIds", "draftAttachmentIds", "draftId", "draftOwnerId", "v3SchedulerRunId", "v3FencingToken", "v3InjectionId",
         "v3FreshProviderSession", "v3ActivationPrompt", "v3CommunicationEventId",
@@ -300,6 +302,20 @@ export function registerAgentMessageRunRoute(
         : hasModelOverride
           ? concreteRuntimeSelection(engine.adapter, [{ model: effectiveModel }, workspace.getPreferences().engineDefaults?.[runtimeEngineId]], projectModelOptions).effort
           : normalizedRuntimeSelection(engine.adapter, effectiveModel, recovered.effort, projectModelOptions).effort;
+      const hasSpeedOverride =
+        !activeRunSnapshot && request.body.speed !== undefined;
+      const requestedSpeed = request.body.speed?.trim() || undefined;
+      if (hasSpeedOverride) {
+        const speedError = runtimeSpeedSelectionError(
+          engine.adapter,
+          effectiveModel,
+          requestedSpeed,
+          projectModelOptions,
+        );
+        if (speedError) return reply.code(400).send({ error: speedError });
+      }
+      const effectiveSpeed =
+        hasSpeedOverride && requestedSpeed ? requestedSpeed : "standard";
       const runtimeSessionContractHash = providerSessionContractHash(
         runtimeEngineId,
         effectiveModel,
@@ -452,6 +468,7 @@ export function registerAgentMessageRunRoute(
                 })),
                 model: request.body.model ?? null,
                 effort: request.body.effort ?? null,
+                speed: request.body.speed ?? null,
               },
             },
             ...(userTextArtifact ? { artifacts: [runtimeArtifactMetadata(userTextArtifact)] } : {}),
@@ -553,6 +570,7 @@ export function registerAgentMessageRunRoute(
         communicationEventId,
         model: request.body.model,
         effort: request.body.effort,
+        speed: request.body.speed,
         agentMentionDepth: mentionDepth ?? 0,
         agentMentionTrail: mentionTrail,
         sourceChannel: request.body.sourceChannel === "main" ? "main" : undefined,
@@ -580,7 +598,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(202).send({
           queued: true,
           position,
-          activationId: v3Intake.activationId,
+          deliveryId: v3Intake.activationId,
           communicationEventId,
         });
       }
@@ -772,6 +790,7 @@ export function registerAgentMessageRunRoute(
         cursorModel,
         effectiveEffort,
         effectiveModel,
+        effectiveSpeed,
         engine,
         freshExactProviderInput,
         freshPrompt,

@@ -152,6 +152,8 @@ export interface CreateAgentRequest {
   conversationId?: string;
   model?: string;
   effort?: string;
+  /** Per-opening-turn processing tier. "standard" clears provider acceleration. */
+  speed?: string;
   /** Optional first turn, dispatched atomically with agent creation. */
   initialMessage?: string;
   /** Conversation-scoped staged assets committed with the optional first turn. */

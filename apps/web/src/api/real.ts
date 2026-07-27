@@ -427,6 +427,7 @@ export const realApi = {
       conversationId,
       model: options.model,
       effort: options.effort,
+      speed: options.speed,
       initialMessage: options.initialMessage,
       draftAttachmentIds: options.draftAttachmentIds,
       draftOwnerId: options.draftOwnerId,

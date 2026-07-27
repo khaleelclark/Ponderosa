@@ -55,6 +55,7 @@ export interface ProviderRunExecutionInput {
   cursorModel: string;
   effectiveEffort: string | undefined;
   effectiveModel: string | undefined;
+  effectiveSpeed: string;
   engine: EngineRegistration;
   freshExactProviderInput: string;
   freshPrompt: string;
@@ -159,6 +160,7 @@ export function startProviderRunExecution(
     cursorModel,
     effectiveEffort,
     effectiveModel,
+    effectiveSpeed,
     engine,
     freshExactProviderInput,
     freshPrompt,
@@ -233,6 +235,7 @@ export function startProviderRunExecution(
           history: sessionResumeId ? [] : seedHistory,
           model: effectiveModel,
           effort: effectiveEffort,
+          speed: effectiveSpeed,
           environment,
           dynamicTools: PROVIDER_DYNAMIC_TOOLS,
           handleDynamicToolCall: async (call) => {
@@ -418,6 +421,7 @@ export function startProviderRunExecution(
                     kind: "collaboration",
                     model: effectiveModel,
                     effort: effectiveEffort,
+                    speed: effectiveSpeed,
                     clientMessageId: communicationEventId,
                   });
                   persistentTurnStarted = true;
@@ -441,6 +445,7 @@ export function startProviderRunExecution(
               resumeSessionId: sessionId,
               model: effectiveModel,
               effort: effectiveEffort,
+              speed: effectiveSpeed,
               environment,
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
@@ -455,6 +460,7 @@ export function startProviderRunExecution(
                     kind: "collaboration",
                     model: effectiveModel,
                     effort: effectiveEffort,
+                    speed: effectiveSpeed,
                     clientMessageId: communicationEventId,
                   });
                   persistentTurnStarted = true;
@@ -478,6 +484,7 @@ export function startProviderRunExecution(
               history: seedHistory,
               model: effectiveModel,
               effort: effectiveEffort,
+              speed: effectiveSpeed,
               environment,
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),

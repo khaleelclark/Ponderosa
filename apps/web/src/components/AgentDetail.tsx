@@ -140,6 +140,8 @@ export function AgentDetail({
   });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [speed, setSpeed] = useState("");
+  const [runtimeEngine, setRuntimeEngine] = useState("");
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
@@ -149,7 +151,6 @@ export function AgentDetail({
   const [renameValue, setRenameValue] = useState("");
   const [membershipOpen, setMembershipOpen] = useState(false);
   const [organizationOpen, setOrganizationOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
   const [organizationParentId, setOrganizationParentId] = useState("");
   const [membershipIds, setMembershipIds] = useState<string[]>([]);
   const [primaryConversationId, setPrimaryConversationId] = useState("");
@@ -351,7 +352,9 @@ export function AgentDetail({
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const engine =
-    engines.find(candidate => candidate.id === detail?.agent.activeEngine) ??
+    engines.find(candidate =>
+      candidate.id === (runtimeEngine || detail?.agent.activeEngine)
+    ) ??
     engines[0];
   const project = projectsQuery.data?.find(
     candidate => candidate.id === detail?.agent.projectId,
@@ -360,10 +363,15 @@ export function AgentDetail({
     engine,
     preferences: preferencesQuery.data,
     project,
-    selection: { model, effort },
+    selection: { model, effort, speed },
     onChange: next => {
       setModel(next.model);
       setEffort(next.effort);
+      setSpeed(next.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `agent.${agentId}.speed`),
+        next.speed ?? "",
+      );
     },
   });
   const inheritedRuntime = resolveRuntimeSelection(
@@ -387,6 +395,7 @@ export function AgentDetail({
   const {
     cancelQueuedMessage,
     editQueuedMessage,
+    queueDeliveryNotice,
     queuedMessagesQuery,
     sendMessage,
     steerQueuedMessage,
@@ -397,9 +406,23 @@ export function AgentDetail({
     engine,
     model,
     effort,
+    speed,
     onNotice: setQueuedMessageNotice,
     onChatSelected: () => setTab("chat"),
   });
+  const visibleChatMessages = useMemo(() => {
+    const queuedCommunicationIds = new Set(
+      (queuedMessagesQuery.data ?? []).map(message => message.messageId),
+    );
+    return (detail?.messages ?? []).filter(
+      message =>
+        !queuedCommunicationIds.has(message.id) &&
+        !(
+          message.communicationEventId &&
+          queuedCommunicationIds.has(message.communicationEventId)
+        ),
+    );
+  }, [detail?.messages, queuedMessagesQuery.data]);
 
   const persistedModel = detail
     ? (detail.agent.model ?? inheritedRuntime.model)
@@ -411,10 +434,20 @@ export function AgentDetail({
   useEffect(() => {
     setModel(persistedModel);
     setEffort(persistedEffort);
-  }, [agentId, persistedModel, persistedEffort]);
+    setSpeed(
+      runtimeControlState(engine, {
+        model: persistedModel,
+        effort: persistedEffort,
+        speed: readChatState(
+          chatStateKey("runtime", `agent.${agentId}.speed`),
+        ),
+      }).speed,
+    );
+  }, [agentId, engine, persistedModel, persistedEffort]);
 
   useEffect(() => {
     if (!detail) return;
+    setRuntimeEngine(detail.agent.activeEngine);
     setSettingsEngine(detail.agent.activeEngine);
     setSettingsModel(detail.agent.model ?? "");
     setSettingsEffort(detail.agent.effort ?? "");
@@ -439,7 +472,10 @@ export function AgentDetail({
     setEffort(current =>
       effortSelectionIsCompatible(engine, model, current) ? current : "",
     );
-  }, [engine, model]);
+    setSpeed(current =>
+      runtimeControlState(engine, { model, effort, speed: current }).speed,
+    );
+  }, [engine, effort, model]);
 
   const runtimeActivity = projectedHealth?.runtimeActivity;
   const running = Boolean(runtimeActivity) || sendMessage.isPending;
@@ -646,6 +682,7 @@ export function AgentDetail({
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
+  const speeds = selectedRuntime.speeds;
   const settingsEngineRegistration = engines.find(
     candidate => candidate.id === settingsEngine,
   );
@@ -674,12 +711,55 @@ export function AgentDetail({
   const lineageLabel = relationships.lineageLabel;
   const agentRuntimeControls = <AgentRuntimeControls
     engine={engine}
-    engineCapability={engineCapability}
+    engines={engines}
     model={model}
     models={models}
     effort={effort}
     efforts={efforts}
+    speed={selectedRuntime.speed}
+    speeds={speeds}
     selectedRuntime={selectedRuntime}
+    onEngineChange={next => {
+      const nextEngine = engines.find(candidate => candidate.id === next);
+      if (!nextEngine || !detail) return;
+      const resolved = resolveRuntimeSelection(
+        nextEngine,
+        preferencesQuery.data,
+        project,
+      );
+      setRuntimeEngine(next);
+      setModel(resolved.model);
+      setEffort(resolved.effort);
+      setSpeed(resolved.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `agent.${agentId}.speed`),
+        resolved.speed ?? "",
+      );
+      setSettingsEngine(next);
+      setSettingsModel(resolved.model);
+      setSettingsEffort(resolved.effort);
+      updateRuntimeSettings.mutate(
+        {
+          activeEngine: next,
+          model: resolved.model || null,
+          effort: resolved.effort || null,
+        },
+        {
+          onError: () => {
+            setRuntimeEngine(detail.agent.activeEngine);
+            setModel(persistedModel);
+            setEffort(persistedEffort);
+            setSpeed(
+              runtimeControlState(engine, {
+                model: persistedModel,
+                effort: persistedEffort,
+                speed,
+              }).speed,
+            );
+          },
+        },
+      );
+    }}
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
@@ -726,7 +806,7 @@ export function AgentDetail({
       onSettingsEffort={setSettingsEffort}
       onNotice={setRuntimeSettingsNotice}
       onFreshSessionNotice={setQueuedMessageNotice}
-      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate()}
+      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
       onManageMemberships={() => {
@@ -797,7 +877,6 @@ export function AgentDetail({
           setPrimaryConversationId(detail.agent.conversationId ?? "");
           setMembershipOpen(true);
         }}
-        onImport={() => setImportOpen(true)}
         onQuickCopy={
           detail.agent.conversationId
             ? () => void quickCopyIntoProjectChat()
@@ -817,6 +896,7 @@ export function AgentDetail({
       <AgentDetailPanels
         tab={tab}
         detail={detail}
+        chatMessages={visibleChatMessages}
         agentId={agentId}
         agents={agents}
         conversations={conversations}
@@ -859,7 +939,7 @@ export function AgentDetail({
       <AgentDetailComposer
         visible={tab === "chat"}
         mobileComposer={mobileComposer}
-        queuedMessageNotice={queuedMessageNotice}
+        queuedMessageNotice={queueDeliveryNotice ?? queuedMessageNotice}
         sendError={
           sendMessage.isError || cancelRun.isError
             ? `${sendMessage.isError ? "Message not sent." : "The agent could not be stopped."} ${String(
@@ -901,7 +981,7 @@ export function AgentDetail({
           conversationDraftId: `agent:${agentId}`,
           insertTextRequest: mentionInsertRequest,
           controls: agentRuntimeControls,
-          disabled: sendMessage.isPending,
+          disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,
           placeholder: runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
@@ -949,15 +1029,6 @@ export function AgentDetail({
             setDeleteOpen(false);
             onDeleted();
           },
-        }}
-        importAgent={{
-          open: importOpen,
-          projectId: detail.agent.projectId,
-          engines,
-          conversations,
-          initialConversationId: detail.agent.conversationId,
-          onClose: () => setImportOpen(false),
-          onImported: onOpenAgent,
         }}
         rename={{
           renameOpen,

@@ -210,18 +210,21 @@ export function ProviderQuotaIndicator({
     () => (query.data?.providers ?? []).filter((provider) => provider.authenticated),
     [query.data],
   );
+  useEffect(() => {
+    setSelectedProvider(undefined);
+  }, [preferredProvider]);
   const constrained = constrainedProvider(authenticated);
   const selected = authenticated.find((provider) => provider.provider === selectedProvider)
     ?? authenticated.find((provider) => provider.provider === preferredProvider)
     ?? constrained;
-  const maximum = constrained?.reading
-    ? Math.max(...constrained.reading.windows.map((window) => window.usedPercent ?? -1))
+  const maximum = selected?.reading
+    ? Math.max(...selected.reading.windows.map((window) => window.usedPercent ?? -1))
     : undefined;
-  const label = constrained
+  const label = selected
     ? maximum !== undefined && maximum >= 0
-      ? `${constrained.displayName} · ${Math.round(maximum)}%`
-      : constrained.refreshing
-        ? `${constrained.displayName} · loading`
+      ? `${selected.displayName} · ${Math.round(maximum)}%`
+      : selected.refreshing
+        ? `${selected.displayName} · loading`
         : "Quota"
     : query.isLoading ? "Quota" : "Quota unavailable";
 

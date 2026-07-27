@@ -25,6 +25,7 @@ import { TriggersPane } from "./TriggersPane";
 interface AgentDetailPanelsProps {
   tab: AgentTab;
   detail: AgentDetailDto;
+  chatMessages: AgentDetailDto["messages"];
   agentId: string;
   agents: AgentDto[];
   conversations: ConversationDto[];
@@ -73,6 +74,7 @@ interface AgentDetailPanelsProps {
 export function AgentDetailPanels({
   tab,
   detail,
+  chatMessages,
   agentId,
   agents,
   conversations,
@@ -117,7 +119,7 @@ export function AgentDetailPanels({
         sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}
       >
         <ChatPane
-          messages={detail.messages}
+          messages={chatMessages}
           agentName={detail.agent.title}
           agentNameForId={agentNameForId}
           agentIdForHandle={agentIdForHandle}

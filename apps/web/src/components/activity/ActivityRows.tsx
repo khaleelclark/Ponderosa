@@ -229,6 +229,17 @@ export function ActionGroupRow({
   useEffect(() => {
     if (containsFocus) setExpanded(true);
   }, [containsFocus]);
+  const onlyEntry = entries.length === 1 ? entries[0] : undefined;
+  if (onlyEntry?.kind === "command") {
+    return <CommandRow
+      entry={onlyEntry}
+      focusId={focusId}
+      projectRoot={projectRoot}
+    />;
+  }
+  if (onlyEntry?.kind === "tool") {
+    return <ToolRow entry={onlyEntry} focusId={focusId} />;
+  }
   const actionKind = entries[0]?.kind;
   const failureCount = entries.filter((entry) => entry.result?.isError).length;
   const summary = actionKind === "command"

@@ -25,32 +25,36 @@ export interface ComposerRuntimeOption {
   group?: "Latest" | "Pinned";
 }
 
-type RuntimeSection = "engine" | "model" | "effort";
+type RuntimeSection = "engine" | "model" | "effort" | "speed";
 
 export function ComposerRuntimeSelector({
   engine,
   engines,
   model,
   models,
-  resolvedModel,
   effort,
   efforts,
+  speed,
+  speeds = [],
   engineLocked = false,
   onEngineChange,
   onModelChange,
   onEffortChange,
+  onSpeedChange,
 }: {
   engine: string;
   engines: ComposerRuntimeOption[];
   model: string;
   models: ComposerRuntimeOption[];
-  resolvedModel?: string;
   effort: string;
   efforts: ComposerRuntimeOption[];
+  speed?: string;
+  speeds?: ComposerRuntimeOption[];
   engineLocked?: boolean;
   onEngineChange?(id: string): void;
   onModelChange(id: string): void;
   onEffortChange(id: string): void;
+  onSpeedChange?(id: string): void;
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [section, setSection] = useState<RuntimeSection | null>(null);
@@ -58,10 +62,8 @@ export function ComposerRuntimeSelector({
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
+  const selectedSpeed = speeds.find(option => option.id === speed);
   const selectedModelLabel = selectedModel?.label ?? "Model unavailable";
-  const displayedModel = resolvedModel && resolvedModel !== model
-    ? `${selectedModelLabel} → ${resolvedModel}`
-    : selectedModelLabel;
   const close = () => { setAnchor(null); setSection(null); };
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const sections: Array<{
@@ -73,21 +75,30 @@ export function ComposerRuntimeSelector({
     ...(canSwitchEngine
       ? [{ id: "engine" as const, label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines }]
       : []),
-    { id: "model", label: "Model", value: displayedModel, options: models },
+    { id: "model", label: "Model", value: selectedModelLabel, options: models },
     { id: "effort", label: "Reasoning", value: selectedEffort?.label ?? "Unavailable", options: efforts },
+    ...(speeds.length > 0 && onSpeedChange
+      ? [{
+          id: "speed" as const,
+          label: "Speed",
+          value: selectedSpeed?.label ?? speeds[0]?.label ?? "Standard",
+          options: speeds,
+        }]
+      : []),
   ];
   const active = sections.find((item) => item.id === section);
   const select = (id: string) => {
     if (section === "engine") onEngineChange?.(id);
     if (section === "model") onModelChange(id);
     if (section === "effort") onEffortChange(id);
-    if (section === "effort") close();
+    if (section === "speed") onSpeedChange?.(id);
+    if (section === "effort" || section === "speed") close();
     else setSection(null);
   };
 
   return <>
     <ButtonBase
-      aria-label="Choose engine, model, and reasoning"
+      aria-label="Choose engine, model, reasoning, and speed"
       aria-haspopup="menu"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
@@ -115,7 +126,7 @@ export function ComposerRuntimeSelector({
             {selectedEngine?.label ?? "Engine"}
           </Typography>
         ) : null}
-        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{displayedModel}</Typography>
+        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>
           · {selectedEffort?.label ?? "Reasoning unavailable"}
         </Typography>
@@ -174,9 +185,21 @@ export function ComposerRuntimeSelector({
                 }}
               >
                 {active.options.flatMap((option, optionIndex) => {
-                  const current = active.id === "engine" ? engine : active.id === "model" ? model : effort;
+                  const current =
+                    active.id === "engine"
+                      ? engine
+                      : active.id === "model"
+                        ? model
+                        : active.id === "effort"
+                          ? effort
+                          : speed;
                   const showGroup = option.group && option.group !== active.options[optionIndex - 1]?.group;
-                  const showDetail = Boolean(option.detail && (active.id === "engine" || option.disabled));
+                  const showDetail = Boolean(
+                    option.detail &&
+                    (active.id === "engine" ||
+                      active.id === "speed" ||
+                      option.disabled),
+                  );
                   return [
                     ...(showGroup ? [
                       <ListSubheader

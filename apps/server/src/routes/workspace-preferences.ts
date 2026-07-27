@@ -151,6 +151,9 @@ export function registerWorkspacePreferenceRoutes(
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
     if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });
+    if (patch.defaultUsageProvider !== undefined && (typeof patch.defaultUsageProvider !== "string" || !engines.get(patch.defaultUsageProvider)?.adapter.readProviderUsage)) {
+      return reply.code(400).send({ error: "default usage provider must expose subscription usage" });
+    }
     if (patch.engineDefaults !== undefined) {
       if (typeof patch.engineDefaults !== "object" || patch.engineDefaults === null) return reply.code(400).send({ error: "engine defaults must be an object" });
       for (const [engineId, selection] of Object.entries(patch.engineDefaults)) {

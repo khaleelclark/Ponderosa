@@ -30,9 +30,6 @@ const UNSET = "";
 
 export interface CreateConversationInput {
   title: string;
-  defaultEngine?: string;
-  defaultModel?: string;
-  defaultEffort?: string;
 }
 
 export function PresetManagerDialog({ open, engines, presets, onClose, onSave, onDelete }: {
@@ -193,39 +190,28 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
   </>;
 }
 
-/**
- * Project chats are model-agnostic: an optional default engine just
- * prefills the agents spawned from here. The user can pick any engine per agent
- * and change it any time.
- */
 export function CreateConversationDialog({
   open,
-  engines,
   pending,
   error,
   onClose,
   onCreate,
 }: {
   open: boolean;
-  engines: EngineDto[];
   pending: boolean;
   error?: string;
   onClose(): void;
   onCreate(input: CreateConversationInput): void;
 }): JSX.Element {
   const [title, setTitle] = useState("");
-  const [engine, setEngine] = useState(UNSET);
 
   useEffect(() => {
-    if (open) {
-      setTitle("");
-      setEngine(UNSET);
-    }
+    if (open) setTitle("");
   }, [open]);
 
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>New Project chat</DialogTitle>
+      <DialogTitle>New Project Chat</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           <TextField
@@ -235,23 +221,6 @@ export function CreateConversationDialog({
             autoFocus
             fullWidth
           />
-          <FormControl fullWidth size="small">
-            <InputLabel id="master-default-engine-label">Default engine (optional)</InputLabel>
-            <Select
-              labelId="master-default-engine-label"
-              label="Default engine (optional)"
-              value={engine}
-              onChange={(event: SelectChangeEvent) => setEngine(event.target.value)}
-            >
-              <MenuItem value={UNSET}>No Default — Choose per Agent</MenuItem>
-              {engines.map((option) => (
-                <MenuItem key={option.id} value={option.id} disabled={!engineIsAvailable(option)}>
-                  {option.displayName}
-                  {engineIsAvailable(option) ? "" : option.authenticated ? " — Unavailable" : " — Not Signed In"}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
           {error ? <Alert severity="error">{error}</Alert> : null}
         </Stack>
       </DialogContent>
@@ -260,9 +229,7 @@ export function CreateConversationDialog({
         <Button
           variant="contained"
           disabled={!title.trim() || pending}
-          onClick={() =>
-            onCreate({ title: title.trim(), defaultEngine: engine || undefined })
-          }
+          onClick={() => onCreate({ title: title.trim() })}
         >
           Create
         </Button>

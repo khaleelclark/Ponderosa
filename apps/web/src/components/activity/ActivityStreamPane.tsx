@@ -30,14 +30,12 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
   const grouped: ActivityDisplayEntry[] = [];
   let actions: GroupedActionEntry[] = [];
   const flush = () => {
-    if (actions.length > 1) {
+    if (actions.length > 0) {
       grouped.push({
         kind: "action_group",
         id: `action-group:${actions[0]!.id}`,
         entries: actions,
       });
-    } else {
-      grouped.push(...actions);
     }
     actions = [];
   };
@@ -96,24 +94,21 @@ export function ActivityStreamPane({
     ...(activeExecutionId ? { activeExecutionId } : {}),
   }), [activity, runOutput, runs, activeExecutionId]);
   const displayEntries = useMemo(() => groupConsecutiveActions(entries), [entries]);
-  const last = entries.at(-1);
-  const latestActivitySeq = activity.reduce(
-    (latest, item) => Math.max(latest, item.seq),
-    0,
-  );
   const latestRunOutputSeq = runOutput.reduce(
     (latest, item) => Math.max(latest, item.sourceSeqEnd),
     0,
   );
-  const layoutKey = last
-    ? `${entries.length}:${last.id}:${latestActivitySeq}:${latestRunOutputSeq}`
-    : `0:${latestActivitySeq}:${latestRunOutputSeq}`;
+  const lastDisplayEntry = displayEntries.at(-1);
+  const layoutKey = lastDisplayEntry
+    ? `${displayEntries.length}:${lastDisplayEntry.id}:${latestRunOutputSeq}`
+    : `0:${latestRunOutputSeq}`;
   return <ChatSurface
     layout="workspace"
     label="Agent activity"
     layoutKey={layoutKey}
     follow={{
       kind: "latest",
+      bottomThreshold: 4,
       followResizes: false,
       storageKey: chatStateKey("scroll", `agent.${agentId}.activity`),
     }}

@@ -30,6 +30,7 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   spawnFn: SpawnFn;
   sandboxMode: string;
   killGraceMs: number;
+  enableFastMode: boolean;
   configuredMcps?: EngineMcpServer[];
 }
 
@@ -46,6 +47,10 @@ function object(value: unknown): Record<string, unknown> | undefined {
 
 function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
+}
+
+function serviceTierForSpeed(speed: string | undefined): string | null {
+  return speed && speed !== "standard" ? speed : null;
 }
 
 function isApprovalPolicy(value: unknown): boolean {
@@ -371,6 +376,7 @@ export class CodexAppServerSession implements RuntimeSession {
         "--stdio",
         "-c", `sandbox_mode=${JSON.stringify(opts.sandboxMode)}`,
         "-c", 'approval_policy="never"',
+        ...(opts.enableFastMode ? ["-c", "features.fast_mode=true"] : []),
       ],
       cwd: opts.cwd,
       environment: opts.environment,
@@ -401,12 +407,14 @@ export class CodexAppServerSession implements RuntimeSession {
           threadId: opts.resumeSessionId,
           cwd: opts.cwd,
           model: opts.model || null,
+          serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
           sandbox: opts.sandboxMode,
         })
       : await rpc.request<ThreadResponse>("thread/start", {
           cwd: opts.cwd,
           model: opts.model || null,
+          serviceTier: serviceTierForSpeed(opts.speed),
           approvalPolicy: "never",
           sandbox: opts.sandboxMode,
           ephemeral: false,
@@ -559,6 +567,7 @@ export class CodexAppServerSession implements RuntimeSession {
       input: [{ type: "text", text: prompt, text_elements: [] }],
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
+      serviceTier: serviceTierForSpeed(input.speed),
       ...(input.effort ? { effort: input.effort } : {}),
     });
     this.activeTurnId = response.turn.id;

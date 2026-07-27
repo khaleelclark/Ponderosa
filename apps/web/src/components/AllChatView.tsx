@@ -16,12 +16,18 @@ import type {
   AllChatDecisionEventDto,
   AllChatItemDto,
   EngineCommand,
+  EngineDto,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { useAllChat, useWorkspacePreferences } from "../hooks/queries";
+import {
+  useAllChat,
+  useEngines,
+  useProjects,
+  useWorkspacePreferences,
+} from "../hooks/queries";
 import type { Route } from "../routing";
 import { ChatMessageBody } from "./chat/ChatMessages";
 import { Composer } from "./chat/Composer";
@@ -38,6 +44,13 @@ import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { isOrdinaryMessageNotification } from "../workspaceNavigation";
 import { DecisionCard } from "./decisions/DecisionCard";
+import { AgentRuntimeControls } from "./AgentDetail.parts";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
+import {
+  resolveRuntimeSelection,
+  runtimeControlState,
+} from "../conversationEngine";
+import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -111,6 +124,8 @@ export function AllChatView({
 }): JSX.Element {
   const query = useAllChat();
   const workspacePreferences = useWorkspacePreferences();
+  const enginesQuery = useEngines();
+  const projectsQuery = useProjects();
   const queryClient = useQueryClient();
   const markedVisibleNotificationIds = useRef(new Set<string>());
   const [older, setOlder] = useState<{
@@ -122,6 +137,11 @@ export function AllChatView({
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [selectedId, setSelectedId] = useState<string>();
   const [replyTarget, setReplyTarget] = useState<AllChatReplyTarget>();
+  const [runtimeEngine, setRuntimeEngine] = useState("");
+  const [model, setModel] = useState("");
+  const [effort, setEffort] = useState("");
+  const [speed, setSpeed] = useState("");
+  const initializedRuntime = useRef<string>();
   const [notice, setNotice] = useState<string>();
   const [mentionInsertRequest, setMentionInsertRequest] = useState<{
     id: string;
@@ -204,8 +224,109 @@ export function AllChatView({
     queryFn: () => api.getAgent(selectedAgentId!, 100),
     enabled: Boolean(selectedAgentId),
   });
-  const selectedEngineId = selectedAgent.data?.agent.activeEngine;
-  const selectedModel = selectedAgent.data?.agent.model;
+  const engines = enginesQuery.data ?? [];
+  const project = projectsQuery.data?.find(
+    item => item.id === selectedProjectId,
+  );
+  const selectedEngineId =
+    runtimeEngine || selectedAgent.data?.agent.activeEngine;
+  const selectedModel = model || selectedAgent.data?.agent.model;
+  const selectedEngine = engines.find(
+    item => item.id === selectedEngineId,
+  );
+  const selectedRuntime = useRuntimeControls({
+    engine: selectedEngine,
+    preferences: workspacePreferences.data,
+    project,
+    selection: { model, effort, speed },
+    onChange: next => {
+      setModel(next.model);
+      setEffort(next.effort);
+      setSpeed(next.speed ?? "");
+      if (selectedAgentId) {
+        writeChatState(
+          chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
+          next.speed ?? "",
+        );
+      }
+    },
+  });
+  useEffect(() => {
+    if (!selectedAgentId) {
+      initializedRuntime.current = undefined;
+      setRuntimeEngine("");
+      setModel("");
+      setEffort("");
+      setSpeed("");
+      return;
+    }
+    const agent = selectedAgent.data?.agent;
+    if (!agent) return;
+    const initializationKey = [
+      agent.id,
+      agent.activeEngine,
+      agent.model ?? "",
+      agent.effort ?? "",
+    ].join(":");
+    if (initializedRuntime.current === initializationKey) return;
+    const engine = engines.find(item => item.id === agent.activeEngine);
+    const resolved = runtimeControlState(engine, {
+      model:
+        agent.model ??
+        resolveRuntimeSelection(
+          engine,
+          workspacePreferences.data,
+          project,
+        ).model,
+      effort:
+        agent.effort ??
+        resolveRuntimeSelection(
+          engine,
+          workspacePreferences.data,
+          project,
+        ).effort,
+      speed: readChatState(
+        chatStateKey("runtime", `agent.${agent.id}.speed`),
+      ),
+    });
+    initializedRuntime.current = initializationKey;
+    setRuntimeEngine(agent.activeEngine);
+    setModel(resolved.model);
+    setEffort(resolved.effort);
+    setSpeed(resolved.speed);
+  }, [
+    engines,
+    project,
+    selectedAgent.data?.agent,
+    selectedAgentId,
+    workspacePreferences.data,
+  ]);
+  const updateRuntimeEngine = useMutation({
+    mutationFn: ({
+      agentId,
+      activeEngine,
+      model: nextModel,
+      effort: nextEffort,
+    }: {
+      agentId: string;
+      activeEngine: EngineDto["id"];
+      model: string | null;
+      effort: string | null;
+    }) =>
+      api.updateAgent(agentId, {
+        activeEngine,
+        model: nextModel,
+        effort: nextEffort,
+      }),
+    onSuccess: updated => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detailPrefix(updated.id),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.project(updated.projectId),
+      });
+    },
+  });
   const selectedCapabilities = useQuery({
     queryKey: queryKeys.engines.capabilitySelection(
       selectedProjectId,
@@ -317,6 +438,15 @@ export function AllChatView({
                 draftOwnerId,
               }
             : {}),
+          ...(selectedRuntime.model
+            ? { model: selectedRuntime.model }
+            : {}),
+          ...(selectedRuntime.effort
+            ? { effort: selectedRuntime.effort }
+            : {}),
+          ...(selectedRuntime.speed
+            ? { speed: selectedRuntime.speed }
+            : {}),
           idempotencyKey: createClientId(),
           activeRunDelivery: "steer",
         });
@@ -427,6 +557,59 @@ export function AllChatView({
       setLoadingOlder(false);
     }
   };
+  const runtimeControls =
+    replyTarget && selectedAgent.data && selectedEngine ? (
+      <AgentRuntimeControls
+        engine={selectedEngine}
+        engines={engines}
+        model={model}
+        models={selectedRuntime.models}
+        effort={effort}
+        efforts={selectedRuntime.efforts}
+        speed={selectedRuntime.speed}
+        speeds={selectedRuntime.speeds}
+        selectedRuntime={selectedRuntime}
+        onEngineChange={next => {
+          const nextEngine = engines.find(item => item.id === next);
+          if (!nextEngine || !selectedAgentId) return;
+          const previous = {
+            engine: selectedEngineId ?? "",
+            model,
+            effort,
+            speed,
+          };
+          const resolved = resolveRuntimeSelection(
+            nextEngine,
+            workspacePreferences.data,
+            project,
+          );
+          setRuntimeEngine(next);
+          setModel(resolved.model);
+          setEffort(resolved.effort);
+          setSpeed(resolved.speed ?? "");
+          writeChatState(
+            chatStateKey("runtime", `agent.${selectedAgentId}.speed`),
+            resolved.speed ?? "",
+          );
+          updateRuntimeEngine.mutate(
+            {
+              agentId: selectedAgentId,
+              activeEngine: next as EngineDto["id"],
+              model: resolved.model || null,
+              effort: resolved.effort || null,
+            },
+            {
+              onError: () => {
+                setRuntimeEngine(previous.engine);
+                setModel(previous.model);
+                setEffort(previous.effort);
+                setSpeed(previous.speed);
+              },
+            },
+          );
+        }}
+      />
+    ) : null;
   return (
     <Box
       sx={{
@@ -746,13 +929,14 @@ export function AllChatView({
           mentionSuggestionHandles={composerTargets.suggestionHandles}
           ambiguousMentionHandles={composerTargets.ambiguousHandles}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
-          commands={selectedCommands}
+          commands={replyTarget ? selectedCommands : undefined}
           capabilities={
             selectedEngineCapabilities?.composerCapabilities ?? []
           }
           onCapabilitiesOpen={refreshSelectedCapabilities}
-          onCommand={invokeCommand}
-          disabled={send.isPending}
+          onCommand={replyTarget ? invokeCommand : undefined}
+          controls={runtimeControls}
+          disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}
           allowUnmentionedSend={Boolean(replyTarget)}
           attachmentsEnabled

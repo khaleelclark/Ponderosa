@@ -44,6 +44,8 @@ export interface WorkspacePreferencesDto {
   fontFamily: "inter" | "system" | "sans";
   /** Operator-controlled global runtime switches. Missing engines default to enabled. */
   providerAvailability: Record<string, boolean>;
+  /** Provider whose subscription quota is shown by default when several are authenticated. */
+  defaultUsageProvider?: EngineId;
   /** Concrete model/effort defaults chosen independently for each engine. */
   engineDefaults?: Record<string, { model: string; effort?: string }>;
   /** Operator-managed versioned Claude model choices. Environment pins take precedence. */

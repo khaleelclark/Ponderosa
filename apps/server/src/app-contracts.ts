@@ -358,6 +358,7 @@ export interface PendingTurn {
   communicationEventId?: string;
   model?: string;
   effort?: string;
+  speed?: string;
   agentMentionDepth: number;
   agentMentionTrail: string[];
   sourceChannel?: "main";

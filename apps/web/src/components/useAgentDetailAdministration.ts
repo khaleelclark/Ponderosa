@@ -21,6 +21,12 @@ interface AgentDetailAdministrationInput {
   onRuntimeSettingsNotice(value?: string): void;
 }
 
+interface AgentRuntimeSettingsPatch {
+  activeEngine: string;
+  model: string | null;
+  effort: string | null;
+}
+
 export function useAgentDetailAdministration({
   agentId,
   membershipIds,
@@ -125,8 +131,8 @@ export function useAgentDetailAdministration({
   });
 
   const updateRuntimeSettings = useMutation({
-    mutationFn: () =>
-      api.updateAgent(agentId, {
+    mutationFn: (patch?: AgentRuntimeSettingsPatch) =>
+      api.updateAgent(agentId, patch ?? {
         activeEngine: settingsEngine,
         model: settingsModel || null,
         effort: settingsEffort || null,

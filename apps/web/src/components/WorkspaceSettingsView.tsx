@@ -529,6 +529,14 @@ function ProviderSettingsSection({
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
 }): JSX.Element {
+  const usageProviders = engines.filter(engine =>
+    engine.authenticated && Boolean(engine.providerUsageCommand)
+  );
+  const defaultUsageProvider = usageProviders.some(
+    engine => engine.id === preferences.defaultUsageProvider,
+  )
+    ? preferences.defaultUsageProvider
+    : usageProviders[0]?.id;
   return (
     <Stack spacing={2}>
       {engines.length === 0 ? (
@@ -536,6 +544,36 @@ function ProviderSettingsSection({
           No AI providers are registered yet. Install and authenticate Codex or
           Claude Code on this host, then refresh Ponderosa.
         </Alert>
+      ) : null}
+      {usageProviders.length > 1 ? (
+        <Paper variant="outlined" sx={{ p: 2.5 }}>
+          <Typography variant="h6" fontWeight={800}>
+            Provider quota
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Choose which provider appears in the quota button by default.
+            Agent pages can temporarily show that Agent&apos;s active provider.
+          </Typography>
+          <FormControl fullWidth>
+            <InputLabel id="settings-default-usage-provider">
+              Default Provider
+            </InputLabel>
+            <Select
+              labelId="settings-default-usage-provider"
+              label="Default Provider"
+              value={defaultUsageProvider}
+              onChange={event =>
+                onPreferences({ defaultUsageProvider: event.target.value })
+              }
+            >
+              {usageProviders.map(engine => (
+                <MenuItem key={engine.id} value={engine.id}>
+                  {engine.displayName}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        </Paper>
       ) : null}
       {engines.map(engine => {
         const resolved = resolveRuntimeSelection(engine, preferences);

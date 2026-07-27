@@ -89,10 +89,15 @@ export function resolveConversationEngine(
 }
 
 /** Keep Project-chat runtime controls attached to both creation and first dispatch. */
-export function selectedRunConfig(model: string, effort: string): { model?: string; effort?: string } {
+export function selectedRunConfig(
+  model: string,
+  effort: string,
+  speed?: string,
+): { model?: string; effort?: string; speed?: string } {
   return {
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
+    ...(speed ? { speed } : {}),
   };
 }
 
@@ -114,9 +119,36 @@ export function effortSelectionIsCompatible(engine: EngineDto | undefined, model
   return effortOptionsForModel(engine, model).some((option) => option.id === effort);
 }
 
+export function speedOptionsForModel(
+  engine: EngineDto | undefined,
+  model: string,
+): RuntimeOption[] {
+  const serviceTiers = engine?.models.find(option => option.id === model)
+    ?.serviceTiers;
+  if (!serviceTiers?.length) return [];
+  return [
+    { id: "standard", label: "Standard", detail: "Default speed" },
+    ...serviceTiers.map(tier => ({
+      id: tier.id,
+      label: tier.label,
+      ...(tier.description ? { detail: tier.description } : {}),
+    })),
+  ];
+}
+
+export function speedSelectionIsCompatible(
+  engine: EngineDto | undefined,
+  model: string,
+  speed: string,
+): boolean {
+  if (!speed) return true;
+  return speedOptionsForModel(engine, model).some(option => option.id === speed);
+}
+
 export interface RuntimeSelection {
   model: string;
   effort: string;
+  speed?: string;
 }
 
 interface RuntimeOption {
@@ -128,8 +160,10 @@ interface RuntimeOption {
 }
 
 export interface RuntimeControlState extends RuntimeSelection {
+  speed: string;
   models: RuntimeOption[];
   efforts: RuntimeOption[];
+  speeds: RuntimeOption[];
   ready: boolean;
 }
 
@@ -186,7 +220,16 @@ export function runtimeControlState(
   engine: EngineDto | undefined,
   selection: RuntimeSelection,
 ): RuntimeControlState {
-  if (!engine) return { ...selection, models: [], efforts: [], ready: false };
+  if (!engine) {
+    return {
+      ...selection,
+      speed: selection.speed ?? "",
+      models: [],
+      efforts: [],
+      speeds: [],
+      ready: false,
+    };
+  }
   const advertisedModels = engine.models.filter((option) => option.id);
   const models = engine.modelCatalogKnown === false
     && selection.model
@@ -199,10 +242,20 @@ export function runtimeControlState(
     && !advertisedEfforts.some((option) => option.id === selection.effort)
     ? [...advertisedEfforts, { id: selection.effort, label: `${selection.effort} (saved selection)` }]
     : advertisedEfforts;
+  const speeds = speedOptionsForModel(engine, selection.model);
+  const speed = selection.speed &&
+    speedSelectionIsCompatible(engine, selection.model, selection.speed)
+      ? selection.speed
+      : speeds.find(option =>
+          option.id === engine.models.find(model => model.id === selection.model)
+            ?.defaultServiceTier
+        )?.id ?? speeds[0]?.id ?? "";
   return {
     ...selection,
+    speed,
     models: models.map((option) => runtimeModelOption(engine, option)),
     efforts,
+    speeds,
     ready: engineIsAvailable(engine),
   };
 }
@@ -212,15 +265,35 @@ export function runtimeSelectionAfterChange(
   preferences: Pick<WorkspacePreferencesDto, "engineDefaults"> | undefined,
   project: Pick<ProjectDto, "defaultEngine" | "defaultModel" | "defaultEffort"> | undefined,
   current: RuntimeSelection,
-  change: { model: string } | { effort: string },
+  change: { model: string } | { effort: string } | { speed: string },
 ): RuntimeSelection {
   if ("model" in change) {
-    const resolved = resolveRuntimeSelection(engine, preferences, project, { model: change.model });
-    return { model: change.model, effort: resolved.effort };
+    const resolved = resolveRuntimeSelection(engine, preferences, project, {
+      model: change.model,
+      speed: current.speed,
+    });
+    return {
+      model: change.model,
+      effort: resolved.effort,
+      speed: resolved.speed,
+    };
+  }
+  if ("speed" in change) {
+    return {
+      ...current,
+      speed: speedSelectionIsCompatible(
+        engine,
+        current.model,
+        change.speed,
+      )
+        ? change.speed
+        : "",
+    };
   }
   return {
     model: current.model,
     effort: effortSelectionIsCompatible(engine, current.model, change.effort) ? change.effort : "",
+    speed: current.speed,
   };
 }
 
@@ -229,9 +302,9 @@ export function resolveRuntimeSelection(
   engine: EngineDto | undefined,
   preferences: Pick<WorkspacePreferencesDto, "engineDefaults"> | undefined,
   project?: Pick<ProjectDto, "defaultEngine" | "defaultModel" | "defaultEffort">,
-  explicit?: { model?: string; effort?: string },
+  explicit?: { model?: string; effort?: string; speed?: string },
 ): RuntimeSelection {
-  if (!engine) return { model: "", effort: "" };
+  if (!engine) return { model: "", effort: "", speed: "" };
   const global = preferences?.engineDefaults?.[engine.id];
   const projectApplies = project?.defaultEngine === engine.id;
   const modelCandidates = [
@@ -252,5 +325,16 @@ export function resolveRuntimeSelection(
     effortOptionsForModel(engine, model)[0]?.id,
   ];
   const effort = effortCandidates.find((candidate) => Boolean(candidate) && effortSelectionIsCompatible(engine, model, candidate!)) ?? "";
-  return { model, effort };
+  const speeds = speedOptionsForModel(engine, model);
+  const defaultSpeed = engine.models.find(option => option.id === model)
+    ?.defaultServiceTier;
+  const speed = [
+    explicit?.speed,
+    defaultSpeed,
+    speeds[0]?.id,
+  ].find(candidate =>
+    Boolean(candidate) &&
+    speedSelectionIsCompatible(engine, model, candidate!)
+  ) ?? "";
+  return { model, effort, speed };
 }

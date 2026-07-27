@@ -71,7 +71,7 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 
-import { chatStateKey } from "../chatState";
+import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { notificationTechnicalFocusId } from "../technicalFocus";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 
@@ -139,7 +139,6 @@ export function ConversationView({
     loadingOlder,
     mainHistory,
     mainTimeline,
-    messageLayoutKey,
     messages,
     operationalEventGroups,
     operationalEvents,
@@ -169,12 +168,14 @@ export function ConversationView({
     id: string;
     text: string;
   }>();
-  // The engine/model/effort currently selected for this conversation. Model-agnostic:
+  const [commandTargetHandle, setCommandTargetHandle] = useState<string>();
+  // The engine/model/effort/speed currently selected for this conversation. Model-agnostic:
   // it can change any time and only affects agents spawned *after* the change —
   // already-running agents keep the model they were spawned with.
   const [engine, setEngine] = useState("");
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [speed, setSpeed] = useState("");
   const initializedFor = useRef<string | undefined>(undefined);
   const { focusedMessage, focusedMessageHighlightDisposer } =
     useConversationMessageFocusRefs();
@@ -213,6 +214,35 @@ export function ConversationView({
       ),
     [conversationId, projectAgents],
   );
+  const commandTargetAgents = useMemo(
+    () =>
+      commandTargetHandle
+        ? conversationAgents.filter(
+            agent =>
+              agentMentionHandle(agent.title).toLocaleLowerCase() ===
+              commandTargetHandle.toLocaleLowerCase(),
+          )
+        : [],
+    [commandTargetHandle, conversationAgents],
+  );
+  const commandTargetAgent =
+    commandTargetAgents.length === 1 ? commandTargetAgents[0] : undefined;
+  const commandCapabilitiesQuery = useQuery({
+    queryKey: queryKeys.engines.capabilitySelection(
+      conversation?.projectId,
+      commandTargetAgent?.id,
+      commandTargetAgent?.activeEngine,
+      commandTargetAgent?.model,
+    ),
+    queryFn: () =>
+      api.getEngineCapabilities(conversation!.projectId, {
+        agentId: commandTargetAgent!.id,
+        engineId: commandTargetAgent!.activeEngine,
+        model: commandTargetAgent!.model,
+      }),
+    enabled: Boolean(conversation?.projectId && commandTargetAgent),
+    staleTime: 10_000,
+  });
   useConversationMessageFocusEffect({
     activeView,
     collaborationMessages,
@@ -251,12 +281,16 @@ export function ConversationView({
       {
         model: conversation.defaultModel,
         effort: conversation.defaultEffort,
+        speed: readChatState(
+          chatStateKey("runtime", `conversation.${conversation.id}.speed`),
+        ),
       },
     );
     initializedFor.current = conversation.id;
     setEngine(resolvedEngine);
     setModel(resolved.model);
     setEffort(resolved.effort);
+    setSpeed(resolved.speed ?? "");
   }, [conversation, engines, preferencesQuery.data, projectsQuery.data]);
 
   // Persist the selection so "the model selected for this conversation" survives
@@ -350,10 +384,15 @@ export function ConversationView({
     engine: activeEngine,
     preferences: preferencesQuery.data,
     project,
-    selection: { model, effort },
+    selection: { model, effort, speed },
     onChange: next => {
       setModel(next.model);
       setEffort(next.effort);
+      setSpeed(next.speed ?? "");
+      writeChatState(
+        chatStateKey("runtime", `conversation.${conversationId}.speed`),
+        next.speed ?? "",
+      );
     },
   });
   const agentTitle = useCallback(
@@ -387,10 +426,28 @@ export function ConversationView({
     engine,
     model,
     effort,
+    speed,
     statusByAgentId,
     healthByAgentId,
     agentTitle,
   });
+  const visibleMainTimeline = useMemo(() => {
+    const queuedMessageIds = new Set(
+      (queuedMessagesQuery.data ?? []).map(message => message.messageId),
+    );
+    return mainTimeline.filter(
+      entry =>
+        entry.kind !== "message" ||
+        (!queuedMessageIds.has(entry.message.id) &&
+          !(
+            entry.message.communicationEventId &&
+            queuedMessageIds.has(entry.message.communicationEventId)
+          )),
+    );
+  }, [mainTimeline, queuedMessagesQuery.data]);
+  const visibleMessageLayoutKey = visibleMainTimeline
+    .map(entry => entry.id)
+    .join(":");
   const agentIdForHandle = useCallback(
     (handle: string): string | undefined =>
       agentIdForMentionHandle(agents, handle),
@@ -502,10 +559,14 @@ export function ConversationView({
     activeEngine,
     engineCapabilities,
   );
-  const commands = composerRuntime.commands;
-  const composerCommands = commands;
+  const composerCommands = commandTargetAgent
+    ? (commandCapabilitiesQuery.data?.find(
+        item => item.engineId === commandTargetAgent.activeEngine,
+      )?.commands ?? [])
+    : undefined;
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
+  const speeds = selectedRuntime.speeds;
   const engineReady = selectedRuntime.ready;
 
   const transcriptTitle =
@@ -554,6 +615,8 @@ export function ConversationView({
         models={models}
         effort={effort}
         efforts={efforts}
+        speed={selectedRuntime.speed}
+        speeds={speeds}
         onEngineChange={next => {
           const nextEngine = engines.find(candidate => candidate.id === next);
           const resolved = resolveRuntimeSelection(
@@ -564,6 +627,11 @@ export function ConversationView({
           setEngine(next);
           setModel(resolved.model);
           setEffort(resolved.effort);
+          setSpeed(resolved.speed ?? "");
+          writeChatState(
+            chatStateKey("runtime", `conversation.${conversationId}.speed`),
+            resolved.speed ?? "",
+          );
           persistDefaults.mutate({
             defaultEngine: next as EngineDto["id"],
             defaultModel: resolved.model || null,
@@ -580,6 +648,9 @@ export function ConversationView({
         onEffortChange={next => {
           const resolved = selectedRuntime.selectEffort(next);
           persistDefaults.mutate({ defaultEffort: resolved.effort });
+        }}
+        onSpeedChange={next => {
+          selectedRuntime.selectSpeed(next);
         }}
       />
     ) : null;
@@ -636,7 +707,7 @@ export function ConversationView({
         >
           <ChatSurface
             layout="project"
-            layoutKey={`main:${messageLayoutKey}`}
+            layoutKey={`main:${visibleMessageLayoutKey}`}
             label="Project chat messages"
             follow={{
               kind: "latest",
@@ -698,7 +769,7 @@ export function ConversationView({
             }
           >
             <MainConversationTimeline
-              mainTimeline={mainTimeline}
+              mainTimeline={visibleMainTimeline}
               operatorProfile={preferencesQuery.data?.profile}
               projectId={conversation.projectId}
               healthByAgentId={healthByAgentId}
@@ -806,6 +877,22 @@ export function ConversationView({
             }}
           />
         ) : null}
+        {activeView === "main" && !agentWorkOpen ? (
+          <Box
+            sx={{
+              position: "absolute",
+              insetInline: 0,
+              bottom: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+            }}
+          >
+            <MasterRespondingIndicator
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+          </Box>
+        ) : null}
       </Box>
 
       <Box
@@ -837,14 +924,6 @@ export function ConversationView({
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String(sendError)}
           </Alert>
-        ) : null}
-        {activeView === "main" ? (
-          <Box sx={{ mx: 1.5, mt: 1 }}>
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-          </Box>
         ) : null}
         {activeView === "main" ? (
           <QueuedMessageTray
@@ -892,19 +971,17 @@ export function ConversationView({
             allowSendWhileRunning
             mentionHandles={mentionHandles}
             commands={composerCommands}
+            onCommandTargetHandleChange={setCommandTargetHandle}
             capabilities={composerRuntime.capabilities}
             onCapabilitiesOpen={() =>
               onRefreshCapabilities({ engineId: activeEngine?.id, model })
             }
             onCommand={
-              activeEngine
+              commandTargetAgent
                 ? (command, argumentsText) => {
-                    const invocation = api.invokeProjectProviderCommand(
-                      conversation.projectId,
+                    const invocation = api.invokeProviderCommand(
+                      commandTargetAgent.id,
                       {
-                        engineId: activeEngine.id,
-                        ...(model ? { model } : {}),
-                        ...(effort ? { effort } : {}),
                         name: command.name,
                         ...(argumentsText ? { argumentsText } : {}),
                       },
@@ -912,7 +989,7 @@ export function ConversationView({
                     return invocation.then(result =>
                       setQueuedMessageNotice(
                         result.message ??
-                          `/${command.name} invoked for ${activeEngine.displayName}.`,
+                          `/${command.name} invoked for ${commandTargetAgent.title}.`,
                       ),
                     );
                   }

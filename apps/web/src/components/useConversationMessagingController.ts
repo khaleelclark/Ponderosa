@@ -35,6 +35,7 @@ interface ConversationMessagingControllerInput {
   engine: string;
   model: string;
   effort: string;
+  speed: string;
   statusByAgentId: Map<string, AgentStatus>;
   healthByAgentId: Map<string, AgentHealthDto>;
   agentTitle(agentId: string | undefined): string;
@@ -49,6 +50,7 @@ export function useConversationMessagingController({
   engine,
   model,
   effort,
+  speed,
   statusByAgentId,
   healthByAgentId,
   agentTitle,
@@ -59,6 +61,8 @@ export function useConversationMessagingController({
     queryFn: () => api.listQueuedConversationMessages(conversationId),
   });
   const [queuedMessageNotice, setQueuedMessageNotice] = useState<string>();
+  const queuedNoticeDeliveryIds = useRef<Set<string>>(new Set());
+  const queuedNoticeBaseline = useRef(0);
   const [activeOperation, setActiveOperation] = useState<{
     agentIds: string[];
     state: "starting" | "running";
@@ -109,7 +113,11 @@ export function useConversationMessagingController({
       )
         ? effort
         : "";
-      const runConfig = selectedRunConfig(compatibleModel, compatibleEffort);
+      const runConfig = selectedRunConfig(
+        compatibleModel,
+        compatibleEffort,
+        speed,
+      );
       setActiveOperation({ agentIds: [], state: "starting" });
       const agent = await api.createAgent(
         conversation.projectId,
@@ -173,6 +181,16 @@ export function useConversationMessagingController({
           ? `Queued for ${queuedTitles.join(", ")}; it will start when the current response finishes.`
           : undefined,
       );
+      queuedNoticeDeliveryIds.current = new Set(
+        variables.activeRunDelivery === "queue"
+          ? response.recipients.flatMap(recipient =>
+              recipient.queued && recipient.deliveryId
+                ? [recipient.deliveryId]
+                : []
+            )
+          : [],
+      );
+      queuedNoticeBaseline.current = queuedMessagesQuery.dataUpdatedAt;
       const activeIds = response.recipients
         .filter(recipient => !recipient.queued)
         .map(recipient => recipient.agentId);
@@ -301,6 +319,29 @@ export function useConversationMessagingController({
 
   const busy =
     spawn.isPending || sendToAgents.isPending || broadcast.isPending;
+  useEffect(() => {
+    if (
+      !queuedMessageNotice ||
+      queuedMessagesQuery.isFetching ||
+      queuedMessagesQuery.dataUpdatedAt <= queuedNoticeBaseline.current
+    ) return;
+    const pendingIds = new Set(
+      (queuedMessagesQuery.data ?? []).map(message => message.deliveryId),
+    );
+    const trackedIds = queuedNoticeDeliveryIds.current;
+    const deliveryStillQueued = trackedIds.size > 0
+      ? [...trackedIds].some(deliveryId => pendingIds.has(deliveryId))
+      : pendingIds.size > 0;
+    if (!deliveryStillQueued) {
+      queuedNoticeDeliveryIds.current.clear();
+      setQueuedMessageNotice(undefined);
+    }
+  }, [
+    queuedMessageNotice,
+    queuedMessagesQuery.data,
+    queuedMessagesQuery.dataUpdatedAt,
+    queuedMessagesQuery.isFetching,
+  ]);
   useEffect(() => {
     if (!activeOperation || activeOperation.agentIds.length === 0) return;
     const anyRunning = activeOperation.agentIds.some(

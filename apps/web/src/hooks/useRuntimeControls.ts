@@ -9,6 +9,7 @@ import {
 export interface RuntimeControls extends RuntimeControlState {
   selectModel(model: string): RuntimeSelection;
   selectEffort(effort: string): RuntimeSelection;
+  selectSpeed(speed: string): RuntimeSelection;
 }
 
 export function useRuntimeControls({
@@ -35,5 +36,16 @@ export function useRuntimeControls({
     onChange(next);
     return next;
   };
-  return { ...state, selectModel, selectEffort };
+  const selectSpeed = (speed: string) => {
+    const next = runtimeSelectionAfterChange(
+      engine,
+      preferences,
+      project,
+      selection,
+      { speed },
+    );
+    onChange(next);
+    return next;
+  };
+  return { ...state, selectModel, selectEffort, selectSpeed };
 }
