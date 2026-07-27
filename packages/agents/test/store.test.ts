@@ -592,6 +592,58 @@ describe("AgentStore — canonical communication events", () => {
     expect(store.reconcileCommunicationEvents(project.id).ok).toBe(true);
   });
 
+  it("preserves a routing-prefixed direct-agent projection across restart replay", () => {
+    const project = store.createProject({ label: "Projection replay", hostPath: "/repo" });
+    const agent = store.createAgent(project.id, { title: "Audit Agent", engine: "codex" });
+    const event: CommunicationEvent = {
+      eventId: "event-prefixed-audit", schemaVersion: 1, projectId: project.id,
+      sender: { kind: "agent", agentId: agent.id }, intent: "direct_to_user",
+      audience: { kind: "user", userId: "local-operator" }, text: "Audit note",
+      createdAt: "2026-07-12T00:00:00.000Z",
+    };
+
+    store.appendCommunicationEvent(event);
+    store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId,
+      surface: "direct_agent_audit",
+      projectionKey: agent.id,
+      projectedAt: event.createdAt,
+      message: {
+        messageId: "prefixed-audit-message",
+        role: "assistant",
+        renderedText: "#Audit-Agent Audit note",
+        createdAt: event.createdAt,
+      },
+    });
+    const stored = store.appendEvent(agent.id, {
+      type: "communication_projection",
+      communicationEventId: event.eventId,
+      role: "assistant",
+      text: event.text,
+    });
+
+    store.close();
+    store = new AgentStore(dir);
+
+    const projection = store.readCommunicationProjections(project.id).find((candidate) =>
+      candidate.surface === "direct_agent_audit" && candidate.projectionKey === agent.id);
+    expect(projection?.message?.renderedText).toBe("#Audit-Agent Audit note");
+    expect(projection?.message?.sequence).toBe(stored.seq);
+
+    expect(() => store.appendCommunicationProjection(project.id, {
+      eventId: event.eventId,
+      surface: "direct_agent_audit",
+      projectionKey: agent.id,
+      projectedAt: event.createdAt,
+      message: {
+        messageId: "conflicting-audit-message",
+        role: "assistant",
+        renderedText: "not-a-routing-prefix Audit note",
+        createdAt: event.createdAt,
+      },
+    })).toThrow("communication projection metadata collision");
+  });
+
   it("keeps a communication event's scope immutable", () => {
     const project = store.createProject({ label: "Demo", hostPath: "/repo" });
     const event: CommunicationEvent = {
