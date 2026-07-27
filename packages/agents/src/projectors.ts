@@ -143,6 +143,13 @@ export function projectEvent(
           attachmentsJson: event.attachments?.length ? JSON.stringify(event.attachments) : null,
         },
       });
+      if (event.role === "user") {
+        next = {
+          ...next,
+          pendingRunTitle: truncate(event.text) || "Run",
+          pendingCommunicationEventId: event.communicationEventId,
+        };
+      }
       ops.push({ kind: "touch_agent", updatedAt: ts });
       break;
     }
@@ -214,7 +221,12 @@ export function projectEvent(
             completedAt: null,
           },
         });
-        next = { ...next, activeExecutionId: event.executionId, pendingCommunicationEventId: undefined };
+        next = {
+          ...next,
+          activeExecutionId: event.executionId,
+          pendingRunTitle: "Run",
+          pendingCommunicationEventId: undefined,
+        };
       } else {
         ops.push({
           kind: "update_run",

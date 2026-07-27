@@ -196,7 +196,7 @@ function mergeAgentDetailProjection(
     messages: uniqueBy(
       [...(olderMessages?.messages ?? []), ...current.messages],
       message => message.id,
-      (a, b) => a.seq - b.seq || a.id.localeCompare(b.id),
+      compareAgentChatMessages,
     ),
     runOutput: mergeBy(
       current.runOutput,
@@ -262,6 +262,12 @@ function mergeAgentDetailProjection(
         }
       : current.history,
   };
+}
+
+function compareAgentChatMessages(left: MessageDto, right: MessageDto): number {
+  return left.createdAt.localeCompare(right.createdAt) ||
+    left.seq - right.seq ||
+    left.id.localeCompare(right.id);
 }
 
 function mcpPresentation(
@@ -391,6 +397,7 @@ function agentRelationshipPresentation(
 export {
   agentRelationshipPresentation,
   agentTranscriptMarkdown,
+  compareAgentChatMessages,
   directAgentDeliveryNotice,
   downloadJson,
   eligibleOrganizationParents,

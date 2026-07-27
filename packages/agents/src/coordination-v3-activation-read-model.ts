@@ -11,7 +11,8 @@ export class CoordinationV3ActivationReadModel {
 
   pendingActivations(projectId?: string): PendingActivationV3View[] {
     const rows = this.sqlite.prepare(`
-      SELECT id, project_id, agent_id, kind, state, payload_json, created_at
+      SELECT id, project_id, agent_id, kind, dispatch_policy, state,
+        payload_json, created_at
       FROM agent_activations
       WHERE state IN ('pending', 'retry_pending') AND (? IS NULL OR project_id = ?)
       ORDER BY priority DESC, created_at, id
@@ -20,6 +21,7 @@ export class CoordinationV3ActivationReadModel {
       project_id: string;
       agent_id: string;
       kind: string;
+      dispatch_policy: PendingActivationV3View["dispatchPolicy"];
       state: "pending" | "retry_pending";
       payload_json: string;
       created_at: string;
@@ -29,6 +31,7 @@ export class CoordinationV3ActivationReadModel {
       projectId: row.project_id,
       agentId: row.agent_id,
       kind: row.kind,
+      dispatchPolicy: row.dispatch_policy,
       state: row.state,
       payload: JSON.parse(row.payload_json) as unknown,
       createdAt: row.created_at,

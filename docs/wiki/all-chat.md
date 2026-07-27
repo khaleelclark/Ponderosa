@@ -16,7 +16,7 @@ Use filters and bounded history loading to find a conversation without hydrating
 
 ## Send only to an exact Agent
 
-The aggregate composer is intentionally constrained. A new message from All Messages must be a Direct Message to one exact stable Agent ID. Broadcast is forbidden because an aggregate view does not supply one unambiguous organizational audience. Collaboration remains Agent-authored and belongs in Team Chat.
+The aggregate composer is intentionally constrained. Choose one Agent with `#` or a message reply action, then send a Direct Message to that exact stable Agent ID. Broadcast is forbidden because an aggregate view does not supply one unambiguous organizational audience. Collaboration remains Agent-authored and belongs in Team Chat.
 
 ## Treat it as an audit view
 

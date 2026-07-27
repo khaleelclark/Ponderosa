@@ -65,6 +65,24 @@ function workspaceEventInvalidatesAllChat(event: WorkspaceEvent): boolean {
     || (event.type === "agent_event" && event.category === "message");
 }
 
+function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
+  return event.type === "resource_used"
+    || event.type === "agent_event"
+    || event.type === "coordination_changed"
+    || (
+      event.type === "project_changed"
+      && ["created", "deleted", "used"].includes(event.action)
+    )
+    || (
+      event.type === "conversation_changed"
+      && ["created", "deleted", "used", "message"].includes(event.action)
+    )
+    || (
+      event.type === "trigger_changed"
+      && ["created", "deleted", "occurrence"].includes(event.action)
+    );
+}
+
 function workspaceReconnectRequiresRefresh(
   cursor: number,
   previousInstance: string | null,
@@ -204,6 +222,7 @@ export function useWorkspaceStream(): void {
       void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrencesAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all });
@@ -221,6 +240,7 @@ export function useWorkspaceStream(): void {
       const event = envelope.event;
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
+      if (workspaceEventChangesResourceRecency(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
       if (event.type === "preferences_updated") queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
       else if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       else if (event.type === "conversation_changed") {
@@ -235,9 +255,15 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "message_delivery_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(event.agentId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.queuedMessages.agent(event.agentId),
+        });
         if (event.conversationIds) {
           for (const conversationId of event.conversationIds) {
             void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(conversationId) });
+            void queryClient.invalidateQueries({
+              queryKey: queryKeys.queuedMessages.conversation(conversationId),
+            });
           }
           collaborationChatInvalidator.schedule(event.conversationIds);
         } else {

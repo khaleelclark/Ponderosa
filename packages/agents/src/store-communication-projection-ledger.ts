@@ -95,7 +95,26 @@ export class AgentCommunicationProjectionLedger {
       const room = this.getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId && !room.archived);
     })();
-    const targetAllowed = communicationHasProjectionTarget(event, projection.surface, projection.projectionKey);
+    // A user-authored Project message remains an organization-scoped
+    // Broadcast. Its exact responsible Agents are canonical Activation
+    // recipients in SQLite, not members of the immutable Broadcast audience.
+    const runtimeRecipientAllowed = event.intent === "broadcast" &&
+      event.sender.kind === "user" &&
+      projection.surface === "direct_agent_audit" &&
+      Boolean(this.client.prepare(`
+        SELECT 1
+        FROM activation_sources source
+        JOIN agent_activations activation ON activation.id = source.activation_id
+        JOIN runtime_communications communication ON communication.id = source.source_id
+        WHERE source.source_kind = 'communication'
+          AND communication.project_id = ?
+          AND activation.project_id = communication.project_id
+          AND activation.agent_id = ?
+          AND (source.source_id = ? OR json_extract(communication.payload_json, '$.communication.eventId') = ?)
+        LIMIT 1
+      `).get(projectId, projection.projectionKey, event.eventId, event.eventId));
+    const targetAllowed = runtimeRecipientAllowed ||
+      communicationHasProjectionTarget(event, projection.surface, projection.projectionKey);
     if (targetAllowed) {
       if (projection.surface === "conversation" || projection.surface === "collaboration_view") return roomKeyAllowed;
       if (projection.surface === "direct_agent_audit" || projection.surface === "agent_inbox") {

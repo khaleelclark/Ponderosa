@@ -53,10 +53,12 @@ function SharedSidebarPanel({
   newLabel,
   newIcon,
   onNew,
+  onNewContextMenu,
   newDisabled = false,
   viewAllLabel,
   viewAllIcon,
   onViewAll,
+  onViewAllContextMenu,
   drawer,
 }: {
   icon: ReactNode;
@@ -72,10 +74,12 @@ function SharedSidebarPanel({
   newLabel: string;
   newIcon?: ReactNode;
   onNew(): void;
+  onNewContextMenu?(anchor: HTMLElement): void;
   newDisabled?: boolean;
   viewAllLabel: string;
   viewAllIcon: ReactNode;
   onViewAll(): void;
+  onViewAllContextMenu?(anchor: HTMLElement): void;
   drawer: boolean;
 }): JSX.Element {
   return (
@@ -136,7 +140,7 @@ function SharedSidebarPanel({
         </Box>
         <Box component="section" data-sidebar-section="all">
           <SidebarSectionHeading>
-            {title === "Home" ? "All" : `All ${title}`}
+            {title === "Home" ? "Recents" : `All ${title}`}
           </SidebarSectionHeading>
           <List disablePadding>{allRows}</List>
         </Box>
@@ -153,6 +157,11 @@ function SharedSidebarPanel({
           color="inherit"
           startIcon={newIcon ?? <AddIcon />}
           onClick={onNew}
+          onContextMenu={event => {
+            if (!onNewContextMenu) return;
+            event.preventDefault();
+            onNewContextMenu(event.currentTarget);
+          }}
           disabled={newDisabled}
           sx={{
             justifyContent: "flex-start",
@@ -165,6 +174,11 @@ function SharedSidebarPanel({
           fullWidth
           startIcon={viewAllIcon}
           onClick={onViewAll}
+          onContextMenu={event => {
+            if (!onViewAllContextMenu) return;
+            event.preventDefault();
+            onViewAllContextMenu(event.currentTarget);
+          }}
           sx={{
             justifyContent: "flex-start",
             color: "text.secondary",

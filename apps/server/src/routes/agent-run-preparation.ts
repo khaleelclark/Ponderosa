@@ -516,6 +516,8 @@ export async function prepareAgentRun(
         payload && typeof payload === "object" && "decision" in payload,
       ))
       ? "decision" as const
+      : manifestActivationPayloads.some(({ kind }) => kind.startsWith("coordination_"))
+        ? "coordination" as const
       : undefined;
   const activationCommunicationEventIds = manifestActivationPayloads.flatMap(({ payload }) => {
     if (!payload || typeof payload !== "object") return [];

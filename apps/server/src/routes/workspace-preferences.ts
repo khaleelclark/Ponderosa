@@ -1,9 +1,14 @@
 import type {
+  MarkWorkspaceResourceUsedRequest,
   ModelOption,
   ProjectEngineModelCatalogDto,
   UpdateWorkspacePreferencesRequest,
 } from "@ponderosa/core";
-import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import type {
+  AgentStore,
+  CoordinationV3Store,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import type { FastifyInstance } from "fastify";
 import {
   MAX_CONFIGURABLE_AGENT_RUN_CONCURRENCY,
@@ -23,6 +28,7 @@ import { registerOperatorProfileImageRoutes } from "./operator-profile-images.js
 interface WorkspacePreferenceRoutesContext {
   opts: CreateServerOptions;
   store: AgentStore;
+  coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
   engines: ReadonlyMap<string, EngineRegistration>;
   activeRuns: ReadonlyMap<string, ActiveRun>;
@@ -55,6 +61,7 @@ export function registerWorkspacePreferenceRoutes(
   const {
     opts,
     store,
+    coordinationV3,
     workspace,
     engines,
     activeRuns,
@@ -81,6 +88,46 @@ export function registerWorkspacePreferenceRoutes(
   registerOperatorProfileImageRoutes(app, opts);
 
   app.get("/api/workspace/preferences", async () => workspace.getPreferences());
+
+  app.get(
+    "/api/workspace/recent-resources",
+    async () => workspace.listResourceRecency(),
+  );
+
+  app.post<{ Body: MarkWorkspaceResourceUsedRequest }>(
+    "/api/workspace/recent-resources/use",
+    async (request, reply) => {
+      const kind = request.body?.kind;
+      const resourceId = request.body?.resourceId;
+      if (
+        (
+          kind !== "project"
+          && kind !== "conversation"
+          && kind !== "agent"
+          && kind !== "trigger"
+        )
+        || typeof resourceId !== "string"
+        || !resourceId.trim()
+        || resourceId.length > 200
+      ) {
+        return reply.code(400).send({ error: "invalid workspace resource" });
+      }
+      const exists = kind === "project"
+        ? Boolean(store.getProject(resourceId))
+        : kind === "conversation"
+          ? Boolean(store.getConversation(resourceId))
+          : kind === "agent"
+            ? Boolean(store.getAgent(resourceId))
+            : Boolean(coordinationV3.getTriggerDefinition(resourceId));
+      if (!exists) {
+        return reply.code(404).send({ error: "workspace resource not found" });
+      }
+      const cursor = workspace.cursor();
+      const recency = workspace.markResourceUsed(kind, resourceId);
+      publishWorkspaceSince(cursor);
+      return recency;
+    },
+  );
 
   app.patch<{ Body: UpdateWorkspacePreferencesRequest }>("/api/workspace/preferences", async (request, reply) => {
     const patch = request.body ?? {};

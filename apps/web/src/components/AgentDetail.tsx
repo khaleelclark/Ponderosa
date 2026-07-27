@@ -59,6 +59,7 @@ import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import {
   agentRelationshipPresentation,
   agentTranscriptMarkdown,
+  compareAgentChatMessages,
   finalizedRunDurationLabels,
   mcpPresentation,
   mergeAgentDetailProjection,
@@ -245,7 +246,7 @@ export function AgentDetail({
                   ...(agentQuery.data?.messages ?? []),
                 ],
                 message => message.id,
-                (a, b) => a.seq - b.seq || a.id.localeCompare(b.id),
+                compareAgentChatMessages,
               ),
               cursor: page.history?.cursor,
               hasMore: page.history?.hasMore ?? false,
@@ -503,7 +504,7 @@ export function AgentDetail({
             ...(agentQuery.data?.messages ?? []),
           ],
           message => message.id,
-          (a, b) => a.seq - b.seq || a.id.localeCompare(b.id),
+          compareAgentChatMessages,
         ),
         cursor: page.history?.cursor,
         hasMore: page.history?.hasMore ?? false,
@@ -889,7 +890,6 @@ export function AgentDetail({
         }
         composer={{
           destinationMode: "fixed",
-          fixedRecipientTitle: detail.agent.title,
           commands,
           capabilities: engineIsAvailable(engine)
             ? engineCapability?.composerCapabilities
@@ -903,17 +903,13 @@ export function AgentDetail({
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending,
           running: false,
-          guidance: runtimeActivity
-            ? "Send steers the active response. Choose Queue to deliver the draft after it finishes. Use @ to reference a project file."
-            : undefined,
           placeholder: runtimeActivity
-            ? "Steer this agent's active response"
-            : "Message this agent directly",
+            ? `Steer ${detail.agent.title}'s active response · Queue sends next`
+            : `Message ${detail.agent.title} directly · @ references Project files`,
           agentResponding: Boolean(runtimeActivity),
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,
           onQueue: runtimeActivity ? submitAgentMessage("queue") : undefined,
-          preferQueue: (queuedMessagesQuery.data?.length ?? 0) > 0,
           onCancel: stopActiveRun,
         }}
       />

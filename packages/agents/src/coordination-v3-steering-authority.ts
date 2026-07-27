@@ -176,6 +176,7 @@ export class CoordinationV3SteeringAuthority {
     runId: string;
     fencingToken: number;
     retryDelayMs?: number;
+    preserveSteering?: boolean;
     now?: string;
   }): void {
     const now = input.now ?? new Date().toISOString();
@@ -199,10 +200,14 @@ export class CoordinationV3SteeringAuthority {
         const placeholders = activationIds.map(() => "?").join(", ");
         this.sqlite.prepare(`
           UPDATE agent_activations
-          SET state = 'retry_pending', dispatch_policy = 'next_run',
+          SET state = 'retry_pending',
+            dispatch_policy = CASE
+              WHEN ? = 1 THEN dispatch_policy
+              ELSE 'next_run'
+            END,
             available_at = ?, updated_at = ?
           WHERE id IN (${placeholders}) AND state = 'attached'
-        `).run(availableAt, now, ...activationIds);
+        `).run(input.preserveSteering ? 1 : 0, availableAt, now, ...activationIds);
       }
       this.sqlite.prepare(`
         UPDATE scheduler_prompt_injections

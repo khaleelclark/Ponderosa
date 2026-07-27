@@ -269,6 +269,7 @@ export interface PendingActivationV3View {
   projectId: string;
   agentId: string;
   kind: string;
+  dispatchPolicy: ActivationDispatchPolicy;
   state: "pending" | "retry_pending";
   payload: unknown;
   createdAt: string;

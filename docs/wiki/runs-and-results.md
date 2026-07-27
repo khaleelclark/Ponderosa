@@ -11,6 +11,8 @@ assets: Workspace map|docs/wiki/assets/workspace-map.svg
 
 An **Activation** is an actionable reason to wake an Agent. A **Run** is the bounded execution that consumes one or more compatible Activations. Only the scheduler creates and leases Runs; message handlers, provider adapters, and UI projections do not.
 
+In Agent Activity, each user-, Agent-, or Trigger-initiated Run is a prominent top-level boundary. Scheduler Runs awakened by Join and coordination updates remain auditable as compact continuation markers beneath that work instead of repeating the original title as a new peer heading. Consecutive tool calls or commands collapse into one type-based summary and stop grouping when the activity type changes; expand the summary to inspect individual rows, then expand a row for its input, output, working directory, or failure evidence.
+
 ## Follow current work
 
 The responding indicator and elapsed time come from canonical Run ownership. **Work log** contains completed ordinary response text and transient reasoning detail for that execution. **Activity** is a read-only chronological inspection stream that interleaves those response and reasoning segments with commands, tests, tools, browser operations, and file events at their canonical event sequence. Command and file-change events may carry the provider call ID so their later tool result can be paired without changing either event's communication scope. **Changed Files** is the Agent-attributed set, while **Review** may layer current Git working-tree state over that provenance.

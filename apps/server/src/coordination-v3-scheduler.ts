@@ -3,6 +3,8 @@ import type { ActivationTerminalOutcome, CoordinationV3Store, ProviderOperation,
 export interface CoordinationV3DispatchResult {
   accepted: boolean;
   retryable?: boolean;
+  /** Keep steer-or-run semantics instead of silently converting to Queue. */
+  retrySteering?: boolean;
   terminalOutcome?: Exclude<ActivationTerminalOutcome, "retry_exhausted">;
   outcomeUnknown?: boolean;
   error?: string;
@@ -210,6 +212,7 @@ export class CoordinationV3Scheduler {
                 runId: steering.runId,
                 fencingToken: steering.fencingToken,
                 retryDelayMs: result.retryable === false ? 30_000 : 500,
+                preserveSteering: result.retrySteering === true,
               });
             } catch (error) {
               this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);

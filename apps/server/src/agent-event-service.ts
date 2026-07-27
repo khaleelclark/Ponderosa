@@ -118,10 +118,10 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     if (author && !author.archived) projectBroadcastToAgentAudit(author.id, event, attachments);
   }
 
-  /** Materialize a canonical collaboration in an agent's audit surface without
-   * copying it into runtime history. V3 activations carry the actionable prompt;
-   * this projection keeps reconciliation and the UI complete without charging
-   * the provider for the same handoff twice. */
+  /** Materialize canonical Communication in the Agent audit log. The
+   * presentation-only communication_projection supplies the stable sequence
+   * required by Agent Chat; V3 Activations remain the actionable prompt and
+   * prevent this audit copy from becoming a second provider handoff. */
   function projectCommunicationToAgentAudit(
     agentId: string,
     event: CommunicationEvent,
@@ -131,7 +131,7 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     const existing = store.readCommunicationProjections(event.projectId).find((projection) =>
       projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
       projection.projectionKey === agentId && projection.message);
-    if (existing?.message) {
+    if (existing?.message?.sequence !== undefined) {
       if (attachments?.length && !existing.message.attachments?.length) {
         store.appendCommunicationProjection(event.projectId, {
           ...existing,
@@ -140,20 +140,14 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       }
       return;
     }
-    store.appendCommunicationProjection(event.projectId, {
-      eventId: event.eventId,
-      surface: "direct_agent_audit",
-      projectionKey: agentId,
-      projectedAt: event.createdAt,
-      message: {
-        messageId: `${event.eventId}:agent-audit:${agentId}`,
-        role: event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant",
-        renderedText,
-        createdAt: event.createdAt,
-        ...(event.sender.kind === "agent" ? { authorAgentId: event.sender.agentId } : {}),
-        ...(attachments?.length ? { attachments } : {}),
-      },
+    const stored = store.appendEvent(agentId, {
+      type: "communication_projection",
+      communicationEventId: event.eventId,
+      text: renderedText,
+      role: event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant",
+      ...(attachments?.length ? { attachments } : {}),
     });
+    publish(agentId, stored);
   }
 
   function subscribe(agentId: string, subscriber: Subscriber): () => void {

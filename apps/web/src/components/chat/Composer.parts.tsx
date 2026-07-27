@@ -2,7 +2,6 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -10,48 +9,24 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { ReactNode, RefObject } from "react";
+import type { RefObject } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
-
-interface ComposerGuidanceProps {
-  guidance: ReactNode;
-}
-
-export function ComposerGuidance({
-  guidance,
-}: ComposerGuidanceProps): JSX.Element | null {
-  return guidance ? (
-    <Box sx={{ px: 0.25, pb: 0.9, color: "text.secondary" }}>
-      {typeof guidance === "string" ? (
-        <Typography
-          variant="body2"
-          sx={{ fontSize: { xs: 12.5, sm: 13.5 }, lineHeight: 1.45 }}
-        >
-          {guidance}
-        </Typography>
-      ) : (
-        guidance
-      )}
-    </Box>
-  ) : null;
-}
 
 interface ComposerDestinationBarProps {
   clearDestination(handle: string): void;
   continueWith: ComposerProps["continueWith"];
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
-  fixedRecipientTitle: string | undefined;
   hasBroadcastDestination: boolean;
   hasEveryoneDestination: boolean;
   inputRef: RefObject<HTMLTextAreaElement>;
-  projectDestinationHelper: string;
-  projectDestinations: Array<{ handle: string; title: string }>;
+  implicitContinueSelected: boolean;
+  projectDestinations: Array<{ handle: string }>;
+  selectImplicitContinue(selected: boolean): void;
   setDestination(handle: string): void;
-  targetRequiredDestinations: Array<{ handle: string; title: string }>;
-  targetRequiredHelper: string;
+  targetRequiredDestinations: Array<{ handle: string }>;
 }
 
 export function ComposerDestinationBar({
@@ -59,15 +34,14 @@ export function ComposerDestinationBar({
   continueWith,
   destinationError,
   destinationMode,
-  fixedRecipientTitle,
   hasBroadcastDestination,
   hasEveryoneDestination,
   inputRef,
-  projectDestinationHelper,
+  implicitContinueSelected,
   projectDestinations,
+  selectImplicitContinue,
   setDestination,
   targetRequiredDestinations,
-  targetRequiredHelper,
 }: ComposerDestinationBarProps): JSX.Element | null {
   return destinationMode === "project-chat" ? (
     <Stack
@@ -105,45 +79,46 @@ export function ComposerDestinationBar({
       ))}
       {!hasBroadcastDestination &&
       !hasEveryoneDestination &&
-      projectDestinations.length === 0 ? (
+      projectDestinations.length === 0 &&
+      !implicitContinueSelected ? (
         <Chip size="small" variant="outlined" label="New Agent" />
       ) : null}
       {!hasBroadcastDestination &&
       !hasEveryoneDestination &&
       projectDestinations.length === 0 &&
       continueWith ? (
-        <Button
-          size="small"
-          onClick={() => {
-            setDestination(continueWith.handle);
-            window.requestAnimationFrame(() => {
-              const input = inputRef.current;
-              if (!input) return;
-              input.focus();
-              const end = input.value.length;
-              input.setSelectionRange(end, end);
-            });
-          }}
-        >
-          Continue with {continueWith.title}
-        </Button>
-      ) : null}
-      <Typography
-        variant="caption"
-        color={destinationError ? "error.main" : "text.secondary"}
-      >
-        {projectDestinationHelper}
-      </Typography>
-      {!destinationError ? (
-        <Tooltip title="Use @ to reference a Project file.">
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{ whiteSpace: "nowrap" }}
+        implicitContinueSelected ? (
+          <>
+            <Chip
+              size="small"
+              color="primary"
+              label={`Continue with ${continueWith.title}`}
+            />
+            <Button size="small" onClick={() => selectImplicitContinue(false)}>
+              New Agent
+            </Button>
+          </>
+        ) : (
+          <Button
+            size="small"
+            onClick={() => {
+              if (continueWith.responding) {
+                selectImplicitContinue(true);
+              } else {
+                setDestination(continueWith.handle);
+              }
+              window.requestAnimationFrame(() => {
+                const input = inputRef.current;
+                if (!input) return;
+                input.focus();
+                const end = input.value.length;
+                input.setSelectionRange(end, end);
+              });
+            }}
           >
-            · @ file
-          </Typography>
-        </Tooltip>
+            Continue with {continueWith.title}
+          </Button>
+        )
       ) : null}
     </Stack>
   ) : destinationMode === "target-required" ? (
@@ -176,21 +151,12 @@ export function ComposerDestinationBar({
       !hasBroadcastDestination ? (
         <Chip size="small" variant="outlined" label="Choose an Agent" />
       ) : null}
-      <Typography
-        variant="caption"
-        color={destinationError ? "error.main" : "text.secondary"}
-      >
-        {targetRequiredHelper}
-      </Typography>
+      {destinationError ? (
+        <Typography variant="caption" color="error.main">
+          {destinationError}
+        </Typography>
+      ) : null}
     </Stack>
-  ) : destinationMode === "fixed" && fixedRecipientTitle ? (
-    <Typography
-      variant="caption"
-      color="text.secondary"
-      sx={{ display: "block", px: 0.25, pb: 0.75 }}
-    >
-      {fixedRecipientTitle} will receive this.
-    </Typography>
   ) : null;
 }
 
@@ -276,7 +242,6 @@ interface ComposerSendActionsProps {
   allowSendWhileRunning: boolean;
   canCancel: boolean;
   canSend: boolean;
-  defaultsToQueue: boolean;
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
   mentionedBusyHandles: string[];
@@ -293,7 +258,6 @@ export function ComposerSendActions({
   allowSendWhileRunning,
   canCancel,
   canSend,
-  defaultsToQueue,
   destinationError,
   destinationMode,
   mentionedBusyHandles,
@@ -308,49 +272,33 @@ export function ComposerSendActions({
   return (
     <>
       {showQueue ? (
-        <Tooltip
-          title={
-            defaultsToQueue
-              ? "Send after the active response finishes"
-              : "Steer the active response"
-          }
-        >
+        <Tooltip title="Steer the active response">
           <span>
             <Button
               size="small"
               variant="contained"
               disabled={!canSend}
-              onClick={send}
-              aria-label={
-                defaultsToQueue ? "Queue message" : "Steer active response"
-              }
+              onClick={steer}
+              aria-label="Steer active response"
               sx={{ minHeight: 40, px: 1.5, boxShadow: "none" }}
             >
-              {defaultsToQueue ? "Queue" : "Steer"}
+              Steer
             </Button>
           </span>
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip
-          title={
-            defaultsToQueue
-              ? "Steer the active response"
-              : "Send after the active response finishes"
-          }
-        >
+        <Tooltip title="Send after the active response finishes">
           <span>
             <Button
               size="small"
               variant="outlined"
               disabled={!canSend}
-              onClick={defaultsToQueue ? steer : queue}
-              aria-label={
-                defaultsToQueue ? "Steer active response" : "Queue message"
-              }
+              onClick={queue}
+              aria-label="Queue message"
               sx={{ minHeight: 40, px: 1.5 }}
             >
-              {defaultsToQueue ? "Steer" : "Queue"}
+              Queue
             </Button>
           </span>
         </Tooltip>

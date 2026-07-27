@@ -307,7 +307,23 @@ export function registerConversationDeliveryRoutes(
     await Promise.all([...assetsByAgent].map(([agentId, ids]) =>
       assets.associate(master.projectId, agentId, [...ids]),
     ));
-    if (communication?.intent === "broadcast" && message) projectBroadcastToAgentAudits(communication, [], message.attachments);
+    if (communication?.intent === "broadcast" && message) {
+      projectBroadcastToAgentAudits(communication, [], message.attachments);
+      for (const agentId of recipientAgentIds) {
+        const attachments = new Map(
+          [
+            ...(message.attachments ?? []),
+            ...(recipientAssets.get(agentId) ?? []),
+          ].map((attachment) => [attachment.id, attachment]),
+        );
+        projectCommunicationToAgentAudit(
+          agentId,
+          communication,
+          renderScopedMessage("broadcast", communication.text),
+          [...attachments.values()],
+        );
+      }
+    }
     if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     for (const agentId of recipientAgentIds) publishCoordinationV3Changed(agentId);
     if (recipientAgentIds.length) notifyScheduler();
@@ -480,6 +496,7 @@ export function registerConversationDeliveryRoutes(
     const pending = coordinationV3.pendingActivations(conversation.projectId);
     const perAgentPosition = new Map<string, number>();
     return pending.flatMap((activation) => {
+      if (activation.dispatchPolicy !== "next_run") return [];
       const payload = activation.payload && typeof activation.payload === "object"
         ? activation.payload as { communication?: CommunicationEvent; dispatch?: { conversationId?: string; text?: string } }
         : undefined;

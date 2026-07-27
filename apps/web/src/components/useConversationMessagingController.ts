@@ -356,14 +356,27 @@ export function useConversationMessagingController({
     activeRunDelivery: "steer" | "queue" = "steer",
     draftAttachmentIds: string[] = [],
     draftOwnerId?: string,
+    implicitTargetAgentId?: string,
   ) => {
     const broadcastMentioned = hasBroadcastMention(text);
     const broadcastText = managerBroadcastText(text);
     const everyoneMentioned = hasEveryoneMention(text);
     const explicitlyMentionedAgents = findMentionedAgents(text, agents);
+    const implicitTarget =
+      implicitTargetAgentId &&
+      !everyoneMentioned &&
+      explicitlyMentionedAgents.length === 0
+        ? agents.find(
+            agent => agent.id === implicitTargetAgentId && !agent.archived,
+          )
+        : undefined;
     const targets = everyoneMentioned
       ? agents.filter(agent => !agent.archived)
-      : explicitlyMentionedAgents;
+      : explicitlyMentionedAgents.length > 0
+        ? explicitlyMentionedAgents
+        : implicitTarget
+          ? [implicitTarget]
+          : [];
     if (broadcastText !== undefined) {
       if (!broadcastText && files.length === 0) {
         throw new Error(

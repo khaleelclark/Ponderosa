@@ -5,10 +5,14 @@ import type { ArtifactDto, ChangedFileDto } from "./artifacts.js";
 import type { HistoryPageDto, HistoryWindowDto } from "./common.js";
 import type { MessageDto, ResponseFileActivityDto } from "./conversations.js";
 import type { AgentCoordinationV3Dto, AgentRunDto, WorkItemDto } from "./runs.js";
-import type { WorkspacePreferencesDto } from "./workspace.js";
+import type {
+  WorkspacePreferencesDto,
+  WorkspaceResourceKind,
+} from "./workspace.js";
 
 export type WorkspaceEvent =
   | { type: "preferences_updated"; preferences: WorkspacePreferencesDto }
+  | { type: "resource_used"; kind: WorkspaceResourceKind; resourceId: string }
   | { type: "project_changed"; projectId: string; action: "created" | "updated" | "deleted" | "used" }
   | { type: "conversation_changed"; projectId: string; conversationId: string; action: "created" | "updated" | "deleted" | "used" | "message" }
   | { type: "draft_changed"; conversationId: string; revision: number; cleared: boolean }

@@ -377,15 +377,6 @@ export function AllChatView({
       return undefined;
     });
   }, [composerTargets.targetByHandle]);
-  const destinationTitleForHandle = useCallback((handle: string) => {
-    const normalized = handle.toLocaleLowerCase();
-    if (
-      replyTarget &&
-      agentMentionHandle(replyTarget.title).toLocaleLowerCase() === normalized
-    )
-      return replyTarget.title;
-    return composerTargets.targetByHandle.get(normalized)?.title;
-  }, [composerTargets.targetByHandle, replyTarget]);
   const mentionItem = (item: AllChatItemDto) => {
     selectItem(item);
     if (!item.directMessageAgent) return;
@@ -754,7 +745,6 @@ export function AllChatView({
           mentionHandles={composerTargets.handles}
           mentionSuggestionHandles={composerTargets.suggestionHandles}
           ambiguousMentionHandles={composerTargets.ambiguousHandles}
-          destinationTitleForHandle={destinationTitleForHandle}
           onMentionedHandlesChange={syncReplyTargetFromMentions}
           commands={selectedCommands}
           capabilities={
@@ -766,7 +756,11 @@ export function AllChatView({
           running={false}
           allowUnmentionedSend={Boolean(replyTarget)}
           attachmentsEnabled
-          placeholder={replyTarget ? `Message ${replyTarget.title}` : "Write a message, then choose an Agent"}
+          placeholder={
+            replyTarget
+              ? `Message ${replyTarget.title} directly`
+              : "Choose an Agent with #, then write a message"
+          }
           insertTextRequest={mentionInsertRequest}
           removeTextRequest={mentionRemoveRequest}
           draftStorageKey="messages:composer"

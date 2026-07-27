@@ -25,7 +25,6 @@ import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
-  ComposerGuidance,
   ComposerSendActions,
 } from "./Composer.parts";
 import {
@@ -76,23 +75,18 @@ export function Composer({
   onSend,
   onCommand,
   onQueue,
-  preferQueue = false,
-  queuedMentionHandles,
   agentResponding = false,
   onCancel,
   draftStorageKey,
   conversationDraftId,
   controls,
-  guidance,
   insertTextRequest,
   destinationMode,
-  fixedRecipientTitle,
   requiredRecipient,
   recipientRequiredMessage,
   removeTextRequest,
   onMentionedHandlesChange,
   continueWith,
-  destinationTitleForHandle,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() =>
     draftStorageKey ? (readChatState(draftStorageKey) ?? "") : "",
@@ -155,6 +149,12 @@ export function Composer({
   const appliedInsertRequest = useRef<string>();
   const appliedRemoveRequest = useRef<string>();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [implicitContinueSelected, setImplicitContinueSelected] = useState(
+    Boolean(continueWith?.responding),
+  );
+  useEffect(() => {
+    setImplicitContinueSelected(Boolean(continueWith?.responding));
+  }, [continueWith?.handle, continueWith?.responding]);
   const submissionText = composerSubmissionText(text, pastedText);
   const mentionedHandles = useMemo(
     () => findMentionedHandles(submissionText, mentionHandles ?? []),
@@ -169,7 +169,6 @@ export function Composer({
       : [];
   const projectDestinations = projectDestinationHandles.map(handle => ({
     handle,
-    title: destinationTitleForHandle?.(handle) ?? handle,
   }));
   const targetRequiredHandles =
     destinationMode === "target-required"
@@ -180,7 +179,6 @@ export function Composer({
       : [];
   const targetRequiredDestinations = targetRequiredHandles.map(handle => ({
     handle,
-    title: destinationTitleForHandle?.(handle) ?? handle,
   }));
   const ambiguousTargetRequiredHandles =
     destinationMode === "target-required"
@@ -196,6 +194,15 @@ export function Composer({
   const hasEveryoneDestination =
     destinationMode === "project-chat" &&
     mentionedHandles.some(handle => handle.toLocaleLowerCase() === "everyone");
+  const implicitContinueHandle =
+    destinationMode === "project-chat" &&
+    implicitContinueSelected &&
+    continueWith?.responding &&
+    !hasBroadcastDestination &&
+    !hasEveryoneDestination &&
+    projectDestinations.length === 0
+      ? continueWith.handle
+      : undefined;
   const destinationError =
     destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
@@ -219,23 +226,16 @@ export function Composer({
     if (handle) update(current => removeHandle(current, handle));
     requiredRecipient?.onClear();
   };
-  const queuedHandles = new Set(
-    (queuedMentionHandles ?? []).map(handle => handle.toLocaleLowerCase()),
-  );
-  const mentionedAgentsWithQueues = mentionedHandles.filter(handle =>
-    queuedHandles.has(handle.toLocaleLowerCase()),
-  );
-  const defaultsToQueue =
-    Boolean(onQueue) &&
-    (preferQueue ||
-      (mentionedHandles.length > 0 &&
-        mentionedAgentsWithQueues.length === mentionedHandles.length));
   const composerLocked = running && !allowSendWhileRunning;
   const busyHandles = new Set(
     (busyMentionHandles ?? []).map(handle => handle.toLocaleLowerCase()),
   );
   const mentionedBusyHandles = mentionedHandles.filter(handle =>
     busyHandles.has(handle.toLocaleLowerCase()),
+  );
+  const implicitContinueResponding = Boolean(
+    implicitContinueHandle &&
+      busyHandles.has(implicitContinueHandle.toLocaleLowerCase()),
   );
   const textCanSend = canSubmitComposerText({
     text: submissionText,
@@ -718,6 +718,7 @@ export function Composer({
       selectedFiles: File[],
       stagedAttachmentIds?: string[],
       stagedDraftOwnerId?: string,
+      context?: { implicitRecipientId?: string },
     ) => Promise<unknown> | unknown,
   ) => {
     if (sendingRef.current || !canSend) return;
@@ -749,6 +750,9 @@ export function Composer({
             files,
             stagedIds,
             conversationDraftId ? draftOwnerId : undefined,
+            implicitContinueHandle
+              ? { implicitRecipientId: continueWith!.agentId }
+              : undefined,
           );
     void Promise.resolve(operation)
       .then(() => {
@@ -781,64 +785,37 @@ export function Composer({
     if (!onQueue) return;
     submit(onQueue);
   };
-  const send = () => (defaultsToQueue ? queue() : steer());
+  const send = steer;
   const showQueue =
     Boolean(onQueue) &&
     shouldShowQueueControl({
       text: submissionText,
       hasAttachments: files.length > 0,
-      agentResponding: agentResponding || mentionedBusyHandles.length > 0,
+      agentResponding:
+        agentResponding ||
+        implicitContinueResponding ||
+        mentionedBusyHandles.length > 0,
       disabled,
     });
-  const projectDestinationHelper =
-    destinationError ??
-    (hasBroadcastDestination
-      ? hasEveryoneDestination
-        ? "Shared with the Project; every active Agent will receive this."
-        : projectDestinations.length === 1
-          ? `Shared with the Project; ${projectDestinations[0]!.title} will receive this.`
-          : projectDestinations.length === 2
-            ? `Shared with the Project; ${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
-            : projectDestinations.length > 2
-              ? `Shared with the Project; ${projectDestinations.length} Agents will receive this.`
-              : "Adds durable shared Project context; starts no Agent."
-      : hasEveryoneDestination
-        ? "Every active Agent in this Chat will receive this."
-        : projectDestinations.length === 1
-          ? `${projectDestinations[0]!.title} will receive this.`
-          : projectDestinations.length === 2
-            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
-            : projectDestinations.length > 2
-              ? `${projectDestinations.length} Agents will receive this.`
-              : "Starts a fresh Agent · use #Agent or #broadcast.");
-  const targetRequiredHelper =
-    destinationError ??
-    (targetRequiredDestinations.length === 1
-      ? `${targetRequiredDestinations[0]!.title} will receive this.`
-      : (recipientRequiredMessage ??
-        "Tag an Agent with # to choose a recipient."));
-
   return (
     <Paper
       className="ponderosa-composer"
       elevation={0}
       sx={composerSurfaceSx}
     >
-      <ComposerGuidance guidance={guidance} />
       <ComposerDestinationBar
         clearDestination={clearDestination}
         continueWith={continueWith}
         destinationError={destinationError}
         destinationMode={destinationMode}
-        fixedRecipientTitle={fixedRecipientTitle}
         hasBroadcastDestination={hasBroadcastDestination}
         hasEveryoneDestination={hasEveryoneDestination}
         inputRef={inputRef}
-        projectDestinationHelper={projectDestinationHelper}
+        implicitContinueSelected={Boolean(implicitContinueHandle)}
         projectDestinations={projectDestinations}
+        selectImplicitContinue={setImplicitContinueSelected}
         setDestination={setDestination}
         targetRequiredDestinations={targetRequiredDestinations}
-        targetRequiredHelper={targetRequiredHelper}
       />
       <ComposerAttachmentList
         draftUploadStates={draftUploadStates}
@@ -961,7 +938,6 @@ export function Composer({
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}
           canSend={canSend}
-          defaultsToQueue={defaultsToQueue}
           destinationError={destinationError}
           destinationMode={destinationMode}
           mentionedBusyHandles={mentionedBusyHandles}

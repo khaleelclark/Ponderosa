@@ -71,6 +71,28 @@ export interface WorkspacePreferencesDto {
   updatedAt: string;
 }
 
+export type WorkspaceResourceKind =
+  | "project"
+  | "conversation"
+  | "agent"
+  | "trigger";
+
+export interface WorkspaceResourceRecencyDto {
+  resourceKey: `${WorkspaceResourceKind}:${string}`;
+  kind: WorkspaceResourceKind;
+  resourceId: string;
+  lastUsedAt: string;
+}
+
+export interface WorkspaceResourceRecencyListDto {
+  resources: WorkspaceResourceRecencyDto[];
+}
+
+export interface MarkWorkspaceResourceUsedRequest {
+  kind: WorkspaceResourceKind;
+  resourceId: string;
+}
+
 export interface OperatorProfileDto {
   displayName: string;
   handle: string;

@@ -18,21 +18,20 @@ import type {
   TriggerDefinitionDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
+import { useQueryClient } from "@tanstack/react-query";
 import {
-  reorderStableIds,
   sortWorkspaceResources,
   starredWorkspaceResources,
-  workspaceResourceSort,
 } from "../resourcePreferences";
 import type { Route } from "../routing";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import {
+  markWorkspaceResourceUsed,
+  useWorkspaceResourceRecency,
+  workspaceResourceRecencyMap,
+} from "../workspaceRecency";
 import { starColor } from "./WorkspaceSidebar.helpers";
 import { SharedSidebarPanel } from "./WorkspaceSidebar.parts";
-
-type DraggedResource = {
-  kind: "home" | "chat" | "agent" | "trigger";
-  id: string;
-};
 
 interface HomeSidebarPanelProps {
   snapshots: WorkspaceProjectSnapshot[];
@@ -40,10 +39,7 @@ interface HomeSidebarPanelProps {
   preferences: WorkspacePreferencesDto;
   filter: string;
   drawer: boolean;
-  draggedResource?: DraggedResource;
   onFilterChange(value: string): void;
-  onDraggedResourceChange(value: DraggedResource | undefined): void;
-  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void;
   onOpenResourceMenu(anchor: HTMLElement, route: Route): void;
   onOpenAllMessages(): void;
@@ -60,16 +56,16 @@ export function HomeSidebarPanel({
   preferences,
   filter,
   drawer,
-  draggedResource,
   onFilterChange,
-  onDraggedResourceChange,
-  onPreferences,
   onNavigate,
   onOpenResourceMenu,
   onOpenAllMessages,
   onViewHome,
   onToggleStar,
 }: HomeSidebarPanelProps): JSX.Element {
+  const queryClient = useQueryClient();
+  const recencyQuery = useWorkspaceResourceRecency();
+  const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const agentDestinations = new Map(
@@ -148,18 +144,18 @@ export function HomeSidebarPanel({
   );
   const resources = sortWorkspaceResources(
     filteredResources,
-    workspaceResourceSort(preferences, "home"),
-    preferences.homeOrder,
+    "last_used",
+    [],
     item => item.id,
     item => item.title,
-    item => item.updatedAt,
+    item => recency.get(item.id) ?? item.updatedAt,
   );
   const starredResources = resources.filter(item =>
     starredResourceIds.has(item.id),
   );
-  const unstarredResources = resources.filter(
-    item => !starredResourceIds.has(item.id),
-  );
+  const unstarredResources = resources
+    .filter(item => !starredResourceIds.has(item.id))
+    .slice(0, normalizedFilter ? undefined : 12);
 
   const rows = (items: typeof resources) =>
     items.map(item => {
@@ -168,26 +164,6 @@ export function HomeSidebarPanel({
         <Stack
           key={item.id}
           direction="row"
-          draggable
-          onDragStart={() => onDraggedResourceChange({ kind: "home", id: item.id })}
-          onDragEnd={() => onDraggedResourceChange(undefined)}
-          onDragOver={event => {
-            if (draggedResource?.kind === "home") event.preventDefault();
-          }}
-          onDrop={event => {
-            event.preventDefault();
-            if (draggedResource?.kind === "home")
-              onPreferences({
-                homeSort: "custom",
-                homeOrder: reorderStableIds(
-                  preferences.homeOrder,
-                  resources.map(resource => resource.id),
-                  draggedResource.id,
-                  item.id,
-                ),
-              });
-            onDraggedResourceChange(undefined);
-          }}
           onContextMenu={event => {
             event.preventDefault();
             onOpenResourceMenu(event.currentTarget, item.route);
@@ -195,7 +171,16 @@ export function HomeSidebarPanel({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <ListItemButton
-            onClick={() => onNavigate(item.route)}
+            onClick={() => {
+              if (item.id.startsWith("trigger:")) {
+                markWorkspaceResourceUsed(
+                  queryClient,
+                  "trigger",
+                  item.id.slice("trigger:".length),
+                );
+              }
+              onNavigate(item.route);
+            }}
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >
             <ListItemIcon sx={{ minWidth: 38 }}>{item.icon}</ListItemIcon>
@@ -255,9 +240,15 @@ export function HomeSidebarPanel({
       newLabel="All Messages"
       newIcon={<ChatBubbleOutlineIcon />}
       onNew={onOpenAllMessages}
+      onNewContextMenu={anchor =>
+        onOpenResourceMenu(anchor, { kind: "allChat" })
+      }
       viewAllLabel="View Home"
       viewAllIcon={<HomeOutlinedIcon />}
       onViewAll={onViewHome}
+      onViewAllContextMenu={anchor =>
+        onOpenResourceMenu(anchor, { kind: "home" })
+      }
       drawer={drawer}
     />
   );
