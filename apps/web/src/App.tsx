@@ -326,7 +326,16 @@ export default function App({
     setSidebarConversationAction({ kind, conversation });
   };
 
-  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const preferences = preferencesQuery.data ?? { projectSort: "last_used" as const, projectOrder: [], homeSort: "last_used" as const, homeOrder: [], chatSort: "last_used" as const, chatOrder: [], agentSort: "last_used" as const, agentOrder: [], triggerSort: "last_used" as const, triggerOrder: [], starredResourceIds: [], starredProjectIds: [], sidebarCollapsed: false, sidebarWidth: 288, notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false }, fontFamily: "inter" as const, providerAvailability: {}, defaultUsageProvider: undefined as string | undefined, engineDefaults: {}, claudeModelOptions: [], globalInstructions: "", maxConcurrentAgentRuns: 8, contextRolloverEnabled: false, contextRolloverTokens: 150_000, contextRolloverWindowFraction: 0.7, onboardingCompletedAt: null, profile: { displayName: "User", handle: "operator", avatarId: "default-user" }, updatedAt: new Date(0).toISOString() };
+  const usageProviders = engines.filter(engine =>
+    engine.authenticated && Boolean(engine.providerUsageCommand)
+  );
+  const defaultQuotaProvider = usageProviders.some(
+    engine => engine.id === preferences.defaultUsageProvider,
+  )
+    ? preferences.defaultUsageProvider
+    : usageProviders[0]?.id;
+  const displayedQuotaProvider = preferredQuotaProvider ?? defaultQuotaProvider;
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -648,7 +657,7 @@ export default function App({
         </Box>
         <MobileWorkspaceHeader
           appIconSource={appIconSource}
-          preferredQuotaProvider={preferredQuotaProvider}
+          preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           unreadNotifications={(notificationsQuery.data ?? []).filter(
             item => !item.readAt && (item.status ?? "open") === "open",
@@ -736,7 +745,7 @@ export default function App({
                 onCloseOthers={closeOtherWorkspaceViews}
                 onRename={renameWorkspaceView}
                 onReorder={reorderWorkspaceViews}
-                preferredProvider={preferredQuotaProvider}
+                preferredProvider={displayedQuotaProvider}
               />
             ) : null}
             <WorkspaceErrorBoundary
