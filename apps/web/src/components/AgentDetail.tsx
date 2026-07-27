@@ -140,6 +140,7 @@ export function AgentDetail({
   });
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
+  const [runtimeEngine, setRuntimeEngine] = useState("");
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
@@ -351,7 +352,9 @@ export function AgentDetail({
   const preferencesQuery = useWorkspacePreferences();
   const projectsQuery = useProjects();
   const engine =
-    engines.find(candidate => candidate.id === detail?.agent.activeEngine) ??
+    engines.find(candidate =>
+      candidate.id === (runtimeEngine || detail?.agent.activeEngine)
+    ) ??
     engines[0];
   const project = projectsQuery.data?.find(
     candidate => candidate.id === detail?.agent.projectId,
@@ -415,6 +418,7 @@ export function AgentDetail({
 
   useEffect(() => {
     if (!detail) return;
+    setRuntimeEngine(detail.agent.activeEngine);
     setSettingsEngine(detail.agent.activeEngine);
     setSettingsModel(detail.agent.model ?? "");
     setSettingsEffort(detail.agent.effort ?? "");
@@ -674,12 +678,41 @@ export function AgentDetail({
   const lineageLabel = relationships.lineageLabel;
   const agentRuntimeControls = <AgentRuntimeControls
     engine={engine}
-    engineCapability={engineCapability}
+    engines={engines}
     model={model}
     models={models}
     effort={effort}
     efforts={efforts}
     selectedRuntime={selectedRuntime}
+    onEngineChange={next => {
+      const nextEngine = engines.find(candidate => candidate.id === next);
+      if (!nextEngine || !detail) return;
+      const resolved = resolveRuntimeSelection(
+        nextEngine,
+        preferencesQuery.data,
+        project,
+      );
+      setRuntimeEngine(next);
+      setModel(resolved.model);
+      setEffort(resolved.effort);
+      setSettingsEngine(next);
+      setSettingsModel(resolved.model);
+      setSettingsEffort(resolved.effort);
+      updateRuntimeSettings.mutate(
+        {
+          activeEngine: next,
+          model: resolved.model || null,
+          effort: resolved.effort || null,
+        },
+        {
+          onError: () => {
+            setRuntimeEngine(detail.agent.activeEngine);
+            setModel(persistedModel);
+            setEffort(persistedEffort);
+          },
+        },
+      );
+    }}
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
@@ -726,7 +759,7 @@ export function AgentDetail({
       onSettingsEffort={setSettingsEffort}
       onNotice={setRuntimeSettingsNotice}
       onFreshSessionNotice={setQueuedMessageNotice}
-      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate()}
+      onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
       onManageMemberships={() => {
@@ -901,7 +934,7 @@ export function AgentDetail({
           conversationDraftId: `agent:${agentId}`,
           insertTextRequest: mentionInsertRequest,
           controls: agentRuntimeControls,
-          disabled: sendMessage.isPending,
+          disabled: sendMessage.isPending || updateRuntimeSettings.isPending,
           running: false,
           placeholder: runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`

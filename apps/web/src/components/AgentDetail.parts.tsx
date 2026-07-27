@@ -20,7 +20,6 @@ import type {
   AgentDto,
   ConversationDto,
   EngineDto,
-  ProjectEngineCapabilitiesDto,
 } from "@ponderosa/core";
 import type { Dispatch, SetStateAction } from "react";
 import type { RuntimeControlState } from "../conversationEngine";
@@ -46,15 +45,16 @@ interface VoidMutation {
 
 function AgentRuntimeControls({
   engine,
-  engineCapability,
+  engines,
   model,
   models,
   effort,
   efforts,
   selectedRuntime,
+  onEngineChange,
 }: {
   engine?: EngineDto;
-  engineCapability?: ProjectEngineCapabilitiesDto;
+  engines: EngineDto[];
   model: string;
   models: RuntimeControlState["models"];
   effort: string;
@@ -63,21 +63,28 @@ function AgentRuntimeControls({
     selectModel(nextModel: string): void;
     selectEffort(nextEffort: string): void;
   };
+  onEngineChange(nextEngine: string): void;
 }): JSX.Element {
   return (
     <ComposerRuntimeSelector
       engine={engine?.id ?? ""}
-      engines={engine ? [{ id: engine.id, label: engine.displayName }] : []}
-      engineLocked
+      engines={engines.map(option => ({
+        id: option.id,
+        label: option.displayName,
+        disabled: !option.available || option.enabled === false,
+        detail: option.available
+          ? option.enabled === false
+            ? "Disabled in Settings"
+            : undefined
+          : option.authenticated
+            ? "Access unavailable"
+            : "Signed out",
+      }))}
       model={model}
       models={models}
-      resolvedModel={
-        engineCapability?.selectedModel === model
-          ? engineCapability.model
-          : undefined
-      }
       effort={effort}
       efforts={efforts}
+      onEngineChange={onEngineChange}
       onModelChange={(nextModel) => {
         selectedRuntime.selectModel(nextModel);
       }}

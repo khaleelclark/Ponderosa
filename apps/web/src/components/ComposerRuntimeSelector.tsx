@@ -32,7 +32,6 @@ export function ComposerRuntimeSelector({
   engines,
   model,
   models,
-  resolvedModel,
   effort,
   efforts,
   engineLocked = false,
@@ -44,7 +43,6 @@ export function ComposerRuntimeSelector({
   engines: ComposerRuntimeOption[];
   model: string;
   models: ComposerRuntimeOption[];
-  resolvedModel?: string;
   effort: string;
   efforts: ComposerRuntimeOption[];
   engineLocked?: boolean;
@@ -59,9 +57,6 @@ export function ComposerRuntimeSelector({
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
   const selectedModelLabel = selectedModel?.label ?? "Model unavailable";
-  const displayedModel = resolvedModel && resolvedModel !== model
-    ? `${selectedModelLabel} → ${resolvedModel}`
-    : selectedModelLabel;
   const close = () => { setAnchor(null); setSection(null); };
   const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const sections: Array<{
@@ -73,7 +68,7 @@ export function ComposerRuntimeSelector({
     ...(canSwitchEngine
       ? [{ id: "engine" as const, label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines }]
       : []),
-    { id: "model", label: "Model", value: displayedModel, options: models },
+    { id: "model", label: "Model", value: selectedModelLabel, options: models },
     { id: "effort", label: "Reasoning", value: selectedEffort?.label ?? "Unavailable", options: efforts },
   ];
   const active = sections.find((item) => item.id === section);
@@ -115,7 +110,7 @@ export function ComposerRuntimeSelector({
             {selectedEngine?.label ?? "Engine"}
           </Typography>
         ) : null}
-        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{displayedModel}</Typography>
+        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>
           · {selectedEffort?.label ?? "Reasoning unavailable"}
         </Typography>
