@@ -890,7 +890,6 @@ export function AgentDetail({
         }
         composer={{
           destinationMode: "fixed",
-          fixedRecipientTitle: detail.agent.title,
           commands,
           capabilities: engineIsAvailable(engine)
             ? engineCapability?.composerCapabilities
@@ -904,12 +903,9 @@ export function AgentDetail({
           controls: agentRuntimeControls,
           disabled: sendMessage.isPending,
           running: false,
-          guidance: runtimeActivity
-            ? "Send steers the active response. Choose Queue to deliver the draft after it finishes. Use @ to reference a project file."
-            : undefined,
           placeholder: runtimeActivity
-            ? "Steer this agent's active response"
-            : "Message this agent directly",
+            ? `Steer ${detail.agent.title}'s active response · Queue sends next`
+            : `Message ${detail.agent.title} directly · @ references Project files`,
           agentResponding: Boolean(runtimeActivity),
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,

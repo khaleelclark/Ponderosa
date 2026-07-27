@@ -20,7 +20,6 @@ export interface ComposerProps extends ChatComposerContract {
   insertTextRequest?: { id: string; text: string };
   /** Project Chat exposes its deliberate fresh-agent default as a destination. */
   destinationMode?: "project-chat" | "fixed" | "target-required";
-  fixedRecipientTitle?: string;
   requiredRecipient?: { handle: string; title: string; onClear(): void };
   recipientRequiredMessage?: string;
   removeTextRequest?: { id: string; text: string };
@@ -31,5 +30,4 @@ export interface ComposerProps extends ChatComposerContract {
     title: string;
     responding?: boolean;
   };
-  destinationTitleForHandle?(handle: string): string | undefined;
 }

@@ -25,7 +25,6 @@ import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
-  ComposerGuidance,
   ComposerSendActions,
 } from "./Composer.parts";
 import {
@@ -81,16 +80,13 @@ export function Composer({
   draftStorageKey,
   conversationDraftId,
   controls,
-  guidance,
   insertTextRequest,
   destinationMode,
-  fixedRecipientTitle,
   requiredRecipient,
   recipientRequiredMessage,
   removeTextRequest,
   onMentionedHandlesChange,
   continueWith,
-  destinationTitleForHandle,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() =>
     draftStorageKey ? (readChatState(draftStorageKey) ?? "") : "",
@@ -173,7 +169,6 @@ export function Composer({
       : [];
   const projectDestinations = projectDestinationHandles.map(handle => ({
     handle,
-    title: destinationTitleForHandle?.(handle) ?? handle,
   }));
   const targetRequiredHandles =
     destinationMode === "target-required"
@@ -184,7 +179,6 @@ export function Composer({
       : [];
   const targetRequiredDestinations = targetRequiredHandles.map(handle => ({
     handle,
-    title: destinationTitleForHandle?.(handle) ?? handle,
   }));
   const ambiguousTargetRequiredHandles =
     destinationMode === "target-required"
@@ -803,59 +797,25 @@ export function Composer({
         mentionedBusyHandles.length > 0,
       disabled,
     });
-  const projectDestinationHelper =
-    destinationError ??
-    (hasBroadcastDestination
-      ? hasEveryoneDestination
-        ? "Shared with the Project; every active Agent will receive this."
-        : projectDestinations.length === 1
-          ? `Shared with the Project; ${projectDestinations[0]!.title} will receive this.`
-          : projectDestinations.length === 2
-            ? `Shared with the Project; ${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
-            : projectDestinations.length > 2
-              ? `Shared with the Project; ${projectDestinations.length} Agents will receive this.`
-              : "Adds durable shared Project context; starts no Agent."
-      : hasEveryoneDestination
-        ? "Every active Agent in this Chat will receive this."
-        : projectDestinations.length === 1
-          ? `${projectDestinations[0]!.title} will receive this.`
-          : projectDestinations.length === 2
-            ? `${projectDestinations[0]!.title} and ${projectDestinations[1]!.title} will receive this.`
-            : projectDestinations.length > 2
-              ? `${projectDestinations.length} Agents will receive this.`
-              : implicitContinueHandle && continueWith
-                ? `${continueWith.title} will receive this.`
-                : "Starts a fresh Agent · use #Agent or #broadcast.");
-  const targetRequiredHelper =
-    destinationError ??
-    (targetRequiredDestinations.length === 1
-      ? `${targetRequiredDestinations[0]!.title} will receive this.`
-      : (recipientRequiredMessage ??
-        "Tag an Agent with # to choose a recipient."));
-
   return (
     <Paper
       className="ponderosa-composer"
       elevation={0}
       sx={composerSurfaceSx}
     >
-      <ComposerGuidance guidance={guidance} />
       <ComposerDestinationBar
         clearDestination={clearDestination}
         continueWith={continueWith}
         destinationError={destinationError}
         destinationMode={destinationMode}
-        fixedRecipientTitle={fixedRecipientTitle}
         hasBroadcastDestination={hasBroadcastDestination}
         hasEveryoneDestination={hasEveryoneDestination}
         inputRef={inputRef}
         implicitContinueSelected={Boolean(implicitContinueHandle)}
-        projectDestinationHelper={projectDestinationHelper}
         projectDestinations={projectDestinations}
         selectImplicitContinue={setImplicitContinueSelected}
         setDestination={setDestination}
         targetRequiredDestinations={targetRequiredDestinations}
-        targetRequiredHelper={targetRequiredHelper}
       />
       <ComposerAttachmentList
         draftUploadStates={draftUploadStates}

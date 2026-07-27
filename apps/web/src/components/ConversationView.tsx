@@ -885,8 +885,6 @@ export function ConversationView({
               title: lastRespondingAgent.title,
               responding: lastRespondingAgentIsRunning,
             } : undefined}
-            destinationTitleForHandle={handle => agents.find(agent =>
-              agentMentionHandle(agent.title).toLocaleLowerCase() === handle.toLocaleLowerCase())?.title}
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             disabled={busy}
@@ -924,8 +922,8 @@ export function ConversationView({
             allowUnmentionedSend={engineReady}
             placeholder={
               engineReady
-                ? "Send a message"
-                : "#tag an agent or use #broadcast for shared context"
+                ? "Write a message · # targets Agents · #broadcast shares · @ references files"
+                : "Choose an available Agent with #, or use #broadcast"
             }
             onSend={(text, files, stagedIds, draftOwnerId, context) =>
               submit(

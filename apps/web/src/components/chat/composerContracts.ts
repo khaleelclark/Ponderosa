@@ -25,5 +25,4 @@ export interface ChatComposerContract {
   commands?: EngineCommand[];
   capabilities?: EngineComposerCapability[];
   controls?: ReactNode;
-  guidance?: ReactNode;
 }
