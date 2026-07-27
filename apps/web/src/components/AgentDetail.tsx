@@ -997,10 +997,10 @@ export function AgentDetail({
       <AgentDetailDialogs
         elevatedCopy={{
           open: Boolean(elevatedCopyPackage),
-          onCancel: () => setElevatedCopyPackage(undefined),
+          onCancel: () => setElevatedCopyPackage(false),
           onConfirm: () => {
             if (elevatedCopyPackage)
-              void importQuickCopy(elevatedCopyPackage, true);
+              void importQuickCopy(true);
           },
         }}
         recheckEngine={{

@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
   AgentDto,
   AgentExportMode,
   AgentPortablePackageDto,
   Adapter,
+  CopyAgentPackageRequest,
   CreateTriggerRequest,
   ImportAgentPackageRequest,
   ImportAgentPackageResponse,
@@ -15,12 +15,12 @@ import type {
   TriggerSourceKind,
 } from "@ponderosa/core";
 import {
-  managedArtifactContentPath,
+  publishManagedArtifactContents,
   readManagedArtifactContent,
   type AgentStore,
   type CoordinationV3Store,
 } from "@ponderosa/agents";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import {
   CANONICAL_ARTIFACT_ID,
   portableAgentTopologyError,
@@ -79,20 +79,23 @@ export function registerAgentPackageRoutes(
     appendWorkspace,
     agentMessages,
   } = context;
+  const blobImportContentType = "application/vnd.ponderosa.agent-import";
+  app.addContentTypeParser(
+    blobImportContentType,
+    { parseAs: "buffer" },
+    (_request, body, done) => done(null, body),
+  );
 
-  app.get<{
-    Params: { id: string };
-    Querystring: { mode?: AgentExportMode; organization?: string };
-  }>("/api/agents/:id/export", async (request, reply) => {
-    const root = store.getAgent(request.params.id);
-    if (!root) return reply.code(404).send({ error: "agent not found" });
-    const requestedMode: AgentExportMode = ["template", "context", "full"]
-      .includes(request.query.mode ?? "")
-      ? request.query.mode!
-      : "full";
+  const buildPortablePackage = async (
+    agentId: string,
+    requestedMode: AgentExportMode,
+    organization: boolean,
+  ): Promise<AgentPortablePackageDto> => {
+    const root = store.getAgent(agentId);
+    if (!root) throw new AssetError(404, "agent not found");
     // Context packages were an early V3.3 spelling of a full portable Agent.
     const mode: AgentExportMode = requestedMode === "context" ? "full" : requestedMode;
-    const nodes = request.query.organization === "true"
+    const nodes = organization
       ? store.listAgentSubtree(root.id)
       : [root];
     const included = new Set(nodes.map((agent) => agent.id));
@@ -235,7 +238,7 @@ export function registerAgentPackageRoutes(
         ...(triggers?.length ? { triggers } : {}),
       };
     }));
-    const result: AgentPortablePackageDto = {
+    return {
       schema: "ponderosa.agent-package.v1",
       mode,
       kind: nodes.length === 1 ? "agent" : "organization",
@@ -247,18 +250,46 @@ export function registerAgentPackageRoutes(
       rootRef: root.id,
       agents,
     };
+  };
+
+  app.get<{
+    Params: { id: string };
+    Querystring: {
+      mode?: AgentExportMode;
+      organization?: string;
+      download?: string;
+    };
+  }>("/api/agents/:id/export", async (request, reply) => {
+    const requestedMode: AgentExportMode = ["template", "context", "full"]
+      .includes(request.query.mode ?? "")
+      ? request.query.mode!
+      : "full";
+    const result = await buildPortablePackage(
+      request.params.id,
+      requestedMode,
+      request.query.organization === "true",
+    );
+    if (request.query.download === "1") {
+      const safeTitle = result.sourceLabel
+        .normalize("NFKD")
+        .replace(/[^\p{L}\p{N}]+/gu, "-")
+        .replace(/^-+|-+$/gu, "")
+        .toLocaleLowerCase()
+        .slice(0, 80);
+      reply.header(
+        "content-disposition",
+        `attachment; filename="${safeTitle || "agent"}-${result.mode}.ponderosa.json"`,
+      );
+    }
     return result;
   });
 
-  app.post<{
-    Params: { id: string };
-    Body: ImportAgentPackageRequest;
-  }>(
-    "/api/projects/:id/import-agents",
-    { bodyLimit: 96 * 1024 * 1024 },
-    async (request, reply) => {
-      const project = store.getProject(request.params.id);
-      const body = request.body;
+  const importPackage = async (
+    projectId: string,
+    body: ImportAgentPackageRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+      const project = store.getProject(projectId);
       const conversation = body?.conversationId
         ? store.getConversation(body.conversationId)
         : undefined;
@@ -758,6 +789,19 @@ export function registerAgentPackageRoutes(
       }
 
       // Every deterministic decision is complete before the first mutation.
+      if (deletingProjectIds.has(project.id)) {
+        throw new Error("Project deletion is already in progress");
+      }
+      const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
+      await publishManagedArtifactContents(
+        context.dataDir,
+        project.id,
+        plannedArtifacts.map((artifact) => ({
+          artifactId: artifact.destinationId,
+          input: artifact.data,
+        })),
+      );
+
       const created = new Map<string, AgentDto>();
       for (const node of importNodes) {
         if (deletingProjectIds.has(project.id)) {
@@ -772,20 +816,14 @@ export function registerAgentPackageRoutes(
           managementPermissions: node.managementPermissions,
         });
         created.set(node.ref, agent);
+      }
+
+      const catalogArtifacts: Array<{
+        artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
+      }> = [];
+      for (const node of importNodes) {
+        const agent = created.get(node.ref)!;
         for (const artifact of node.artifacts) {
-          const destination = managedArtifactContentPath(
-            context.dataDir,
-            project.id,
-            artifact.destinationId,
-          );
-          await fs.mkdir(path.dirname(destination), { recursive: true });
-          const importedFile = await fs.open(destination, "wx", 0o600);
-          try {
-            await importedFile.writeFile(artifact.data);
-            await importedFile.sync();
-          } finally {
-            await importedFile.close();
-          }
           const catalogArtifact = {
             id: artifact.destinationId,
             projectId: project.id,
@@ -809,8 +847,13 @@ export function registerAgentPackageRoutes(
               catalogArtifact as RegisteredGeneratedArtifact,
             );
           }
-          store.recordProjectArtifact(catalogArtifact);
+          catalogArtifacts.push({ artifact: catalogArtifact });
         }
+      }
+      store.recordProjectArtifacts(catalogArtifacts);
+
+      for (const node of importNodes) {
+        const agent = created.get(node.ref)!;
         if (node.history.length) {
           store.setImportedHistory(
             agent.id,
@@ -860,6 +903,102 @@ export function registerAgentPackageRoutes(
         agentIds: [...created.values()].map((agent) => agent.id),
       };
       return reply.code(201).send(response);
+  };
+
+  app.post<{
+    Params: { id: string };
+    Body: ImportAgentPackageRequest;
+  }>(
+    "/api/projects/:id/import-agents",
+    { bodyLimit: 96 * 1024 * 1024 },
+    (request, reply) => importPackage(request.params.id, request.body, reply),
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: Buffer;
+  }>(
+    "/api/projects/:id/import-agent-package",
+    { bodyLimit: 96 * 1024 * 1024 },
+    async (request, reply) => {
+      const separator = request.body.indexOf(0x0a);
+      if (separator < 1 || separator > 16 * 1024) {
+        return reply.code(400).send({
+          error: "Agent package upload metadata is invalid",
+        });
+      }
+      try {
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const metadata = JSON.parse(
+          decoder.decode(request.body.subarray(0, separator)),
+        ) as Omit<ImportAgentPackageRequest, "package">;
+        const portable = JSON.parse(
+          decoder.decode(request.body.subarray(separator + 1)),
+        ) as AgentPortablePackageDto;
+        return importPackage(
+          request.params.id,
+          { ...metadata, package: portable },
+          reply,
+        );
+      } catch (error) {
+        return reply.code(400).send({
+          error: error instanceof Error
+            ? error.message
+            : "invalid Ponderosa Agent package",
+        });
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: CopyAgentPackageRequest;
+  }>(
+    "/api/projects/:id/copy-agent",
+    { bodyLimit: 64 * 1024 },
+    async (request, reply) => {
+      const sourceAgentId = request.body?.sourceAgentId?.trim();
+      const conversationId = request.body?.conversationId?.trim();
+      if (
+        !sourceAgentId
+        || !conversationId
+        || (
+          request.body.organization !== undefined
+          && typeof request.body.organization !== "boolean"
+        )
+        || (
+          request.body.acknowledgeElevatedManagementPermissions !== undefined
+          && typeof request.body.acknowledgeElevatedManagementPermissions
+            !== "boolean"
+        )
+      ) {
+        return reply.code(400).send({
+          error: "copy request fields are invalid",
+        });
+      }
+      const source = store.getAgent(sourceAgentId);
+      if (!source) return reply.code(404).send({ error: "agent not found" });
+      const portable = await buildPortablePackage(
+        source.id,
+        "full",
+        request.body.organization === true,
+      );
+      const engineMapping = Object.fromEntries(
+        [...new Set(portable.agents.map((node) => node.engine))]
+          .map((engineId) => [engineId, engineId]),
+      );
+      return importPackage(
+        request.params.id,
+        {
+          package: portable,
+          conversationId,
+          engineMapping,
+          ...(request.body.acknowledgeElevatedManagementPermissions === true
+            ? { acknowledgeElevatedManagementPermissions: true }
+            : {}),
+        },
+        reply,
+      );
     },
   );
 }

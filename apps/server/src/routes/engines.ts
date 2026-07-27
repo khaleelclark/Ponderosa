@@ -10,7 +10,6 @@ import type {
   ProjectEngineModelCatalogDto,
   ProviderUsageCenterDto,
   ProviderUsageStateDto,
-  RuntimeSession,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import type { FastifyInstance, FastifyReply } from "fastify";
@@ -65,7 +64,6 @@ interface EngineRoutesContext {
     adapter: Adapter,
     modelId: string,
   ): Promise<EngineModelValidationDto>;
-  runtimeSession(agentId: string): RuntimeSession | undefined;
   discoverCapabilities(
     projectId: string,
     hostPath: string,
@@ -73,6 +71,16 @@ interface EngineRoutesContext {
     model: string | undefined,
     forceRefresh: boolean,
   ): Promise<EngineCapabilities>;
+  readCapabilities(
+    projectId: string,
+    hostPath: string,
+    adapter: Adapter,
+    model: string | undefined,
+  ): {
+    capabilities: EngineCapabilities;
+    discovered: boolean;
+    refreshing: boolean;
+  };
 }
 
 export function registerEngineRoutes(
@@ -95,8 +103,8 @@ export function registerEngineRoutes(
     projectDeletionInProgress,
     discoverModelCatalog,
     validateModel,
-    runtimeSession,
     discoverCapabilities,
+    readCapabilities,
   } = context;
 
   app.get("/api/engines", async (): Promise<EngineDto[]> => {
@@ -291,25 +299,44 @@ export function registerEngineRoutes(
         return reply.code(400).send({ error: "unknown engine" });
       }
       const forceRefresh = request.query.refresh === "true" || request.query.refresh === "1";
-      return Promise.all([...engines.values()].map(async ({ adapter }) => {
-        const selectedModel = adapter.id === request.query.engineId
-          || adapter.id === scopedAgent?.activeEngine
-          ? request.query.model?.trim() || undefined
+      const scopedEngineId = request.query.engineId
+        ?? scopedAgent?.activeEngine;
+      const registrations = scopedEngineId
+        ? [engines.get(scopedEngineId)!]
+        : [...engines.values()];
+      return Promise.all(registrations.map(async ({ adapter }) => {
+        const selectedModel = adapter.id === scopedEngineId
+          ? request.query.model?.trim()
+            || (
+              scopedAgent?.activeEngine === adapter.id
+                ? scopedAgent.model
+                : undefined
+            )
+            || undefined
           : undefined;
-        const liveSession = scopedAgent?.activeEngine === adapter.id
-          ? runtimeSession(scopedAgent.id)
-          : undefined;
-        const capabilities = liveSession?.capabilities
-          ? await liveSession.capabilities()
-          : await discoverCapabilities(
-            project.id,
-            project.hostPath,
-            adapter,
-            selectedModel,
-            forceRefresh,
-          );
+        const snapshot = forceRefresh
+          ? {
+              capabilities: await discoverCapabilities(
+                project.id,
+                project.hostPath,
+                adapter,
+                selectedModel,
+                true,
+              ),
+              discovered: true,
+              refreshing: false,
+            }
+          : readCapabilities(
+              project.id,
+              project.hostPath,
+              adapter,
+              selectedModel,
+            );
+        const capabilities = snapshot.capabilities;
         return {
           engineId: adapter.id,
+          discovered: snapshot.discovered,
+          ...(snapshot.refreshing ? { refreshing: true } : {}),
           ...capabilities,
           commands: capabilities.commands,
         };

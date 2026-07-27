@@ -93,8 +93,8 @@ type ApplicationRoutesContext =
     "dataDir" | "projectFileAuthority"> &
   Omit<Parameters<typeof registerEngineRoutes>[1],
     "authStatuses" | "availability" | "projectDeletionInProgress" |
-    "discoverModelCatalog" | "validateModel" | "runtimeSession" |
-    "discoverCapabilities"> & {
+    "discoverModelCatalog" | "validateModel" | "discoverCapabilities" |
+    "readCapabilities"> & {
     serverContext: ServerContext;
     registerLinkPreviewRoutes(app: FastifyInstance): void;
     agentWorkProjection: Parameters<typeof registerAgentWorkRoutes>[1]["projection"];
@@ -120,6 +120,9 @@ type ApplicationRoutesContext =
       capability: AgentMessageCapability,
       run: ActiveRun | undefined,
     ): boolean;
+    readEngineCapabilities: Parameters<
+      typeof registerEngineRoutes
+    >[1]["readCapabilities"];
     validateEngineModel: Parameters<typeof registerEngineRoutes>[1]["validateModel"];
     drainDeploymentIdleAuthorities(): void;
     isClosed(): boolean;
@@ -252,6 +255,7 @@ export function registerApplicationRoutes(
     markEngineModelUnavailable,
     providerUsageCenter,
     providerUsageState,
+    readEngineCapabilities,
     refreshProviderUsageAfterRun,
     reportRuntimeCapabilitiesChanged,
     validateEngineModel,
@@ -771,8 +775,8 @@ registerEngineRoutes(app, {
   projectDeletionInProgress: (projectId) => deletingProjectIds.has(projectId),
   discoverModelCatalog: discoverEngineModelCatalog,
   validateModel: validateEngineModel,
-  runtimeSession: (agentId) => activeRuns.get(agentId)?.runtimeSession ?? reusableRuntime(agentId)?.session,
   discoverCapabilities: discoverEngineCapabilities,
+  readCapabilities: readEngineCapabilities,
 });
 
 if (opts.webDist) {

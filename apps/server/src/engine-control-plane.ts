@@ -180,6 +180,19 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
   const engineCapabilityGenerations = new Map<string, number>();
   const engineCapabilityScopeKey = (projectId: string, engineId: string): string =>
     `${projectId}\0${engineId}`;
+  const engineCapabilityKey = (
+    projectId: string,
+    hostPath: string,
+    engineId: string,
+    model: string | undefined,
+  ): string => `${projectId}\0${hostPath}\0${engineId}\0${model ?? "default"}`;
+  const undiscoveredEngineCapabilities: EngineCapabilities = {
+    steering: false,
+    persistentSessions: false,
+    commands: [],
+    mcpServers: [],
+    composerCapabilities: [],
+  };
   const invalidateEngineCapabilities = (projectId: string, engineId: string): void => {
     const scopeKey = engineCapabilityScopeKey(projectId, engineId);
     engineCapabilityGenerations.set(scopeKey, (engineCapabilityGenerations.get(scopeKey) ?? 0) + 1);
@@ -255,7 +268,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     }
     const scopeKey = engineCapabilityScopeKey(projectId, adapter.id);
     const generation = engineCapabilityGenerations.get(scopeKey) ?? 0;
-    const key = `${projectId}\0${hostPath}\0${adapter.id}\0${model ?? "default"}`;
+    const key = engineCapabilityKey(projectId, hostPath, adapter.id, model);
     const cached = engineCapabilityCache.get(key);
     const running = engineCapabilityDiscoveries.get(key);
     // A cache invalidation may make this result ineligible for storage, but it
@@ -303,7 +316,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
             expiresAt: Date.now() + engineCapabilityCacheTtlMs,
             value,
           });
-          if (cached && JSON.stringify(cached.value) !== JSON.stringify(value)) {
+          if (!cached || JSON.stringify(cached.value) !== JSON.stringify(value)) {
             appendWorkspace({ type: "runtime_capabilities_changed", projectId, engineId: adapter.id });
           }
         }
@@ -326,6 +339,54 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       return Promise.resolve(cached.value);
     }
     return promise;
+  };
+  const readEngineCapabilities = (
+    projectId: string,
+    hostPath: string,
+    adapter: Adapter,
+    model: string | undefined,
+  ): {
+    capabilities: EngineCapabilities;
+    discovered: boolean;
+    refreshing: boolean;
+  } => {
+    if (!adapter.capabilities) {
+      return {
+        capabilities: undiscoveredEngineCapabilities,
+        discovered: true,
+        refreshing: false,
+      };
+    }
+    const key = engineCapabilityKey(projectId, hostPath, adapter.id, model);
+    const cached = engineCapabilityCache.get(key);
+    const running = engineCapabilityDiscoveries.has(key);
+    if (cached && cached.expiresAt > Date.now() && !running) {
+      return {
+        capabilities: cached.value,
+        discovered: true,
+        refreshing: false,
+      };
+    }
+    if (!running && !isClosed() && !deletingProjectIds.has(projectId)) {
+      void discoverEngineCapabilities(
+        projectId,
+        hostPath,
+        adapter,
+        model,
+        false,
+      ).catch((error) => {
+        app.log.warn(
+          { err: error, projectId, engineId: adapter.id },
+          "background capability discovery failed",
+        );
+      });
+    }
+    return {
+      capabilities: cached?.value ?? undiscoveredEngineCapabilities,
+      discovered: Boolean(cached),
+      refreshing: running
+        || (!isClosed() && !deletingProjectIds.has(projectId)),
+    };
   };
   const engineModelCatalogCacheTtlMs = 5 * 60_000;
   const engineModelCatalogCache = new Map<string, {
@@ -609,6 +670,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     markEngineModelUnavailable,
     providerUsageCenter,
     providerUsageState,
+    readEngineCapabilities,
     refreshProviderUsageAfterRun,
     reportRuntimeCapabilitiesChanged,
     runtimeStatus,

@@ -37,6 +37,7 @@ import type {
   ConversationDto,
   CorrectConversationMessageRequest,
   CorrectConversationMessageResponse,
+  CopyAgentPackageRequest,
   CreateAgentPresetRequest,
   CreateAgentRequest,
   CreateCollaborationMessageRequest,
@@ -156,6 +157,25 @@ async function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSta
   }
   const body = await response.text();
   return (body ? JSON.parse(body) : undefined) as T;
+}
+
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const response = await fetch(`${API_BASE}${path}`, init);
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`;
+    if (response.headers.get("content-type")?.includes("application/json")) {
+      try {
+        const body = await response.json() as { error?: unknown };
+        if (typeof body.error === "string" && body.error.trim()) {
+          message = body.error.trim();
+        }
+      } catch {
+        // Preserve the stable HTTP fallback for malformed errors.
+      }
+    }
+    throw new ApiRequestError(response.status, message);
+  }
+  return response.text();
 }
 
 function toQuery(params: Record<string, string | number | boolean | undefined>): string {
@@ -496,8 +516,44 @@ export const realApi = {
   exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<AgentPortablePackageDto> {
     return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
   },
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<string> {
+    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  },
+  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
+    return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
+  },
   importAgents(projectId: string, request: ImportAgentPackageRequest): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, { method: "POST", body: JSON.stringify(request satisfies ImportAgentPackageRequest) });
+  },
+  importAgentPackageBlob(
+    projectId: string,
+    packageBlob: Blob,
+    metadata: Omit<ImportAgentPackageRequest, "package">,
+  ): Promise<ImportAgentPackageResponse> {
+    const body = new Blob(
+      [`${JSON.stringify(metadata)}\n`, packageBlob],
+      { type: "application/vnd.ponderosa.agent-import" },
+    );
+    return requestJson<ImportAgentPackageResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/import-agent-package`,
+      {
+        method: "POST",
+        headers: { "content-type": body.type },
+        body,
+      },
+    );
+  },
+  copyAgent(
+    projectId: string,
+    request: CopyAgentPackageRequest,
+  ): Promise<ImportAgentPackageResponse> {
+    return requestJson<ImportAgentPackageResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/copy-agent`,
+      {
+        method: "POST",
+        body: JSON.stringify(request satisfies CopyAgentPackageRequest),
+      },
+    );
   },
   listTriggers(agentId: string): Promise<TriggerDefinitionDto[]> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/triggers`);

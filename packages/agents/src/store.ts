@@ -892,6 +892,15 @@ export class AgentStore extends AgentEventSessionFacade {
     this.artifactCatalog.recordProjectArtifact(artifact, access);
   }
 
+  recordProjectArtifacts(
+    entries: ReadonlyArray<{
+      artifact: ArtifactDto & { projectId: string; originAgentId: string };
+      access?: ManagedArtifactAccess;
+    }>,
+  ): void {
+    this.artifactCatalog.recordProjectArtifacts(entries);
+  }
+
   deleteProjectArtifact(projectId: string, artifactIdValue: string, reason: string): boolean {
     return this.artifactCatalog.deleteProjectArtifact(projectId, artifactIdValue, reason);
   }
