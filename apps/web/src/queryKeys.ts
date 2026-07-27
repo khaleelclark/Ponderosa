@@ -15,6 +15,9 @@ export const queryKeys = {
   workspacePreferences: {
     all: ["workspace-preferences"] as const,
   },
+  workspaceResourceRecency: {
+    all: ["workspace-resource-recency"] as const,
+  },
   notifications: {
     all: ["notifications"] as const,
   },

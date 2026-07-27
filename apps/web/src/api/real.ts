@@ -66,6 +66,7 @@ import type {
   ImportAgentPackageResponse,
   LetCurrentRunFinishRequest,
   LetCurrentRunFinishResponse,
+  MarkWorkspaceResourceUsedRequest,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
   RunOutputTextDto,
@@ -108,6 +109,8 @@ import type {
   WorkspaceFileViewDto,
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
+  WorkspaceResourceRecencyDto,
+  WorkspaceResourceRecencyListDto,
   WorkspaceStatusDto,
   WorkspaceStreamStatusDto,
   WikiArticleDto,
@@ -317,6 +320,8 @@ export const realApi = {
   },
   getWorkspacePreferences(): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences"); },
   updateWorkspacePreferences(request: UpdateWorkspacePreferencesRequest): Promise<WorkspacePreferencesDto> { return requestJson<WorkspacePreferencesDto>("/api/workspace/preferences", { method: "PATCH", body: JSON.stringify(request satisfies UpdateWorkspacePreferencesRequest) }); },
+  getWorkspaceResourceRecency(): Promise<WorkspaceResourceRecencyListDto> { return requestJson<WorkspaceResourceRecencyListDto>("/api/workspace/recent-resources"); },
+  markWorkspaceResourceUsed(request: MarkWorkspaceResourceUsedRequest): Promise<WorkspaceResourceRecencyDto> { return requestJson<WorkspaceResourceRecencyDto>("/api/workspace/recent-resources/use", { method: "POST", body: JSON.stringify(request satisfies MarkWorkspaceResourceUsedRequest) }); },
   uploadOperatorAvatar(file: File): Promise<UploadedOperatorAvatarDto> {
     return requestJson<UploadedOperatorAvatarDto>("/api/workspace/profile-images", {
       method: "POST",

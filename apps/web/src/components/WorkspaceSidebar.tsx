@@ -23,7 +23,7 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import {
@@ -48,6 +48,7 @@ import {
   type WorkspaceProjectSnapshot,
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
+import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { ResourceContextMenu } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
 import {
@@ -112,6 +113,7 @@ export function WorkspaceSidebar({
   onCollapsedChange?(collapsed: boolean): void;
   onWidthChange?(width: number): void;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const conversationQueries = useProjectConversations(projects);
   const agentQueries = useProjectAgents(projects);
   const healthQueries = useProjectAgentHealth(projects);
@@ -178,7 +180,12 @@ export function WorkspaceSidebar({
   };
   const showTriggers = () => revealSection("triggers");
   const showWiki = () => revealSection("wiki");
-  const openTriggerManager = (projectId: string, agentId: string) => {
+  const openTriggerManager = (
+    projectId: string,
+    agentId: string,
+    triggerId: string,
+  ) => {
+    markWorkspaceResourceUsed(queryClient, "trigger", triggerId);
     onNavigate({ kind: "agent", projectId, agentId, view: "triggers" });
   };
 
@@ -241,10 +248,7 @@ export function WorkspaceSidebar({
       preferences={preferences}
       filter={filter}
       drawer={drawer}
-      draggedResource={draggedResource}
       onFilterChange={setFilter}
-      onDraggedResourceChange={setDraggedResource}
-      onPreferences={onPreferences}
       onNavigate={onNavigate}
       onOpenResourceMenu={(anchor, resourceRoute) =>
         openResourceMenu(anchor, resourceRoute)
@@ -735,7 +739,11 @@ export function WorkspaceSidebar({
           <ListItemButton
             aria-label={`Open triggers for ${destination.agent.title}`}
             onClick={() =>
-              openTriggerManager(destination.project.id, destination.agent.id)
+              openTriggerManager(
+                destination.project.id,
+                destination.agent.id,
+                trigger.id,
+              )
             }
             sx={{ borderRadius: 1.25, px: 1, py: 0.65, minWidth: 0 }}
           >

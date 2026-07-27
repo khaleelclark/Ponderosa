@@ -88,6 +88,10 @@ import {
 import { queryKeys } from "./queryKeys";
 import { MobileWorkspaceDrawer, MobileWorkspaceHeader } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
+import {
+  markWorkspaceResourceUsed,
+  workspaceResourceFromRoute,
+} from "./workspaceRecency";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -387,7 +391,18 @@ export default function App({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  const recordWorkspaceRouteUse = (next: Route) => {
+    const resource = workspaceResourceFromRoute(next);
+    if (resource) {
+      markWorkspaceResourceUsed(
+        queryClient,
+        resource.kind,
+        resource.resourceId,
+      );
+    }
+  };
   const navigateWorkspace = (next: Route) => {
+    recordWorkspaceRouteUse(next);
     const reusable = reusableWorkspaceTab(
       workspaceTabs,
       activeWorkspaceTabKey,
@@ -401,6 +416,7 @@ export default function App({
   const activateWorkspaceView = (key: string) => {
     const tab = workspaceTabs.find(candidate => candidate.key === key);
     if (!tab) return;
+    recordWorkspaceRouteUse(tab.route);
     setActiveWorkspaceTabKey(key);
     setWorkspaceTabs(current => navigateWorkspaceTab(current, key, tab.route));
     navigate(tab.route);
@@ -414,6 +430,7 @@ export default function App({
     navigate(tab.route);
   };
   const openWorkspaceRoute = (next: Route) => {
+    recordWorkspaceRouteUse(next);
     const tab = createWorkspaceTab(next);
     setWorkspaceTabs(current =>
       openWorkspaceTab(current, next, tab.lastActivatedAt, tab.key),
@@ -427,6 +444,7 @@ export default function App({
     openWorkspaceRoute({ kind: "new", createKind });
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
+    recordWorkspaceRouteUse(next);
     const tab = createWorkspaceTab(next);
     setWorkspaceTabs(current =>
       openWorkspaceTabInBackground(current, next, tab.lastActivatedAt, tab.key),
@@ -531,6 +549,7 @@ export default function App({
     setWorkspaceTabs(remaining);
     if (nextActive) {
       setActiveWorkspaceTabKey(nextActive.key);
+      recordWorkspaceRouteUse(nextActive.route);
       navigate(nextActive.route);
     }
   };
@@ -539,6 +558,7 @@ export default function App({
     if (!retained) return;
     setWorkspaceTabs([retained]);
     setActiveWorkspaceTabKey(key);
+    recordWorkspaceRouteUse(retained.route);
     navigate(retained.route);
   };
   const renameWorkspaceView = (key: string, title: string) =>
@@ -810,7 +830,9 @@ export default function App({
             if (selection.chat.kind === "conversation") {
               void api.markProjectUsed(selection.projectId, selection.chat.id);
             }
-            navigate(routeForGlobalSearchSelection(selection));
+            const destination = routeForGlobalSearchSelection(selection);
+            recordWorkspaceRouteUse(destination);
+            navigate(destination);
           }}
           onOpenInNewTab={selection => {
             saveLastProjectId(selection.projectId);

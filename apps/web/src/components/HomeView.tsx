@@ -8,7 +8,7 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import { Box, Button, ButtonBase, Chip, Paper, Stack, Typography } from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
@@ -16,9 +16,14 @@ import { queryKeys } from "../queryKeys";
 import { engineAvailabilityPresentation } from "../conversationEngine";
 import type { Route } from "../routing";
 import { isOpenAttention } from "../attention";
-import { reorderStableIds, sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar, workspaceResourceSort } from "../resourcePreferences";
+import { sortWorkspaceResources, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import {
+  markWorkspaceResourceUsed,
+  useWorkspaceResourceRecency,
+  workspaceResourceRecencyMap,
+} from "../workspaceRecency";
 
 type RecentResource = { id: string; title: string; detail: string; updatedAt: string; route: Route; icon: JSX.Element };
 
@@ -41,7 +46,9 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   onCreateTrigger(): void;
   onOpenInbox(): void;
 }): JSX.Element {
-  const [draggedResourceId, setDraggedResourceId] = useState<string>();
+  const queryClient = useQueryClient();
+  const recencyQuery = useWorkspaceResourceRecency();
+  const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
   const conversationQueries = useProjectConversations(projects);
@@ -62,13 +69,22 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
     ...(triggersQuery.data ?? []).flatMap((trigger) => { const destination = agentDestinations.get(trigger.agentId); return destination ? [{ id: `trigger:${trigger.id}`, title: trigger.name, detail: `${destination.project.label} · Trigger`, updatedAt: trigger.updatedAt, route: { kind: "agent", projectId: destination.project.id, agentId: destination.agent.id, view: "triggers" } as Route, icon: <BoltOutlinedIcon fontSize="small" /> }] : []; }),
   ];
   const starredIds = starredWorkspaceResources(preferences);
-  const homeSort = workspaceResourceSort(preferences, "home");
-  const orderedResources = sortWorkspaceResources(allResources, homeSort, preferences.homeOrder, (item) => item.id, (item) => item.title, (item) => item.updatedAt);
+  const orderedResources = sortWorkspaceResources(allResources, "last_used", [], (item) => item.id, (item) => item.title, (item) => recency.get(item.id) ?? item.updatedAt);
   const starred = orderedResources.filter((item) => starredIds.has(item.id));
   const recent = orderedResources.filter((item) => !starredIds.has(item.id)).slice(0, 10);
   const unstar = (item: RecentResource) => {
     const [kind, id] = item.id.split(":", 2) as ["project" | "conversation" | "agent" | "trigger", string];
     onPreferences(toggleWorkspaceResourceStar(preferences, kind, id));
+  };
+  const openResource = (item: RecentResource) => {
+    if (item.id.startsWith("trigger:")) {
+      markWorkspaceResourceUsed(
+        queryClient,
+        "trigger",
+        item.id.slice("trigger:".length),
+      );
+    }
+    onNavigate(item.route);
   };
 
   return <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto" }}>
@@ -107,12 +123,12 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
 
-      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => onNavigate(item.route)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
+      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
 
       <Box component="section">
-        <Stack direction="row" sx={{ alignItems: "center", mb: 1 }}><Typography variant="h6" fontWeight={800} sx={{ flex: 1 }}>Recent</Typography><Button size="small" onClick={() => onNavigate({ kind: "allChats" })}>View All Chats</Button></Stack>
+        <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Recent</Typography>
         <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", md: "repeat(2, minmax(0, 1fr))" }, gap: 1 }}>
-          {recent.map((item) => <Paper key={item.id} variant="outlined" draggable onDragStart={() => setDraggedResourceId(item.id)} onDragEnd={() => setDraggedResourceId(undefined)} onDragOver={(event) => { if (draggedResourceId) event.preventDefault(); }} onDrop={(event) => { event.preventDefault(); if (draggedResourceId) onPreferences({ homeSort: "custom", homeOrder: reorderStableIds(preferences.homeOrder, orderedResources.map((entry) => entry.id), draggedResourceId, item.id) }); setDraggedResourceId(undefined); }} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => onNavigate(item.route)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
+          {recent.map((item) => <Paper key={item.id} variant="outlined" onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }}><ButtonBase onClick={() => openResource(item)} sx={{ width: "100%", p: 1.5, gap: 1.25, justifyContent: "flex-start", textAlign: "left" }}><Box sx={{ width: 34, height: 34, borderRadius: 1.5, bgcolor: "action.selected", display: "grid", placeItems: "center", flexShrink: 0 }}>{item.icon}</Box><Box sx={{ minWidth: 0 }}><Typography fontWeight={750} noWrap>{item.title}</Typography><Typography variant="caption" color="text.secondary" noWrap>{item.detail}</Typography></Box></ButtonBase></Paper>)}
           {!recent.length ? <Paper variant="outlined" sx={{ p: 3, textAlign: "center" }}><AddIcon color="disabled" /><Typography fontWeight={750}>Your recent work will appear here</Typography><Typography variant="body2" color="text.secondary">Create a Project to begin.</Typography></Paper> : null}
         </Box>
       </Box></> : null}

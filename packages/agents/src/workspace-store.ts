@@ -12,6 +12,9 @@ import type {
   WorkspaceNotificationDto,
   NotificationPreferencesDto,
   WorkspacePreferencesDto,
+  WorkspaceResourceKind,
+  WorkspaceResourceRecencyDto,
+  WorkspaceResourceRecencyListDto,
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
@@ -102,6 +105,7 @@ export class WorkspaceStore {
   private readonly decisionEventIdsByConversation = new Map<string, string[]>();
   private readonly pushSubscriptions = new Map<string, WebPushSubscriptionDto>();
   private readonly pushDeliveries = new Map<string, PushDeliveryRecord>();
+  private readonly resourceRecency = new Map<string, WorkspaceResourceRecencyDto>();
   private preferences = DEFAULT_PREFERENCES;
 
   private draftKey(conversationId: string, ownerId = "legacy"): string {
@@ -122,6 +126,7 @@ export class WorkspaceStore {
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
+    this.projectResourceRecency(record);
     if (record.event.type === "preferences_updated") this.preferences = {
       ...DEFAULT_PREFERENCES,
       ...record.event.preferences,
@@ -255,6 +260,66 @@ export class WorkspaceStore {
     }
   }
 
+  private projectResourceRecency(record: CanonicalWorkspaceEvent): void {
+    const event = record.event;
+    if (event.type === "resource_used") {
+      this.touchResourceRecency(event.kind, event.resourceId, record.ts);
+      return;
+    }
+    if (event.type === "project_changed") {
+      if (event.action === "deleted") {
+        this.resourceRecency.delete(`project:${event.projectId}`);
+      } else if (event.action === "created" || event.action === "used") {
+        this.touchResourceRecency("project", event.projectId, record.ts);
+      }
+      return;
+    }
+    if (event.type === "conversation_changed") {
+      if (event.action === "deleted") {
+        this.resourceRecency.delete(`conversation:${event.conversationId}`);
+      } else if (
+        event.action === "created"
+        || event.action === "used"
+        || event.action === "message"
+      ) {
+        this.touchResourceRecency("conversation", event.conversationId, record.ts);
+      }
+      return;
+    }
+    if (
+      event.type === "agent_event"
+      || event.type === "coordination_changed"
+    ) {
+      this.touchResourceRecency("agent", event.agentId, record.ts);
+      return;
+    }
+    if (event.type === "trigger_changed") {
+      if (event.action === "deleted") {
+        this.resourceRecency.delete(`trigger:${event.triggerId}`);
+      } else if (event.action === "created" || event.action === "occurrence") {
+        this.touchResourceRecency("trigger", event.triggerId, record.ts);
+      }
+    }
+  }
+
+  private touchResourceRecency(
+    kind: WorkspaceResourceKind,
+    resourceId: string,
+    lastUsedAt: string,
+  ): WorkspaceResourceRecencyDto {
+    const resourceKey = `${kind}:${resourceId}` as const;
+    const current = this.resourceRecency.get(resourceKey);
+    if (current && current.lastUsedAt > lastUsedAt) return current;
+    const next: WorkspaceResourceRecencyDto = {
+      resourceKey,
+      kind,
+      resourceId,
+      lastUsedAt,
+    };
+    this.resourceRecency.set(resourceKey, next);
+    return next;
+  }
+
   private decisionOrder(leftId: string, rightId: string): number {
     const left = this.decisions.get(leftId)!;
     const right = this.decisions.get(rightId)!;
@@ -359,6 +424,29 @@ export class WorkspaceStore {
   instanceId(): string { return this.instance; }
 
   getPreferences(): WorkspacePreferencesDto { return this.preferences; }
+
+  listResourceRecency(): WorkspaceResourceRecencyListDto {
+    return {
+      resources: [...this.resourceRecency.values()].sort(
+        (left, right) =>
+          right.lastUsedAt.localeCompare(left.lastUsedAt)
+          || left.resourceKey.localeCompare(right.resourceKey),
+      ),
+    };
+  }
+
+  markResourceUsed(
+    kind: WorkspaceResourceKind,
+    resourceId: string,
+  ): WorkspaceResourceRecencyDto {
+    const record = this.append({ type: "resource_used", kind, resourceId });
+    return this.resourceRecency.get(`${kind}:${resourceId}`) ?? {
+      resourceKey: `${kind}:${resourceId}`,
+      kind,
+      resourceId,
+      lastUsedAt: record.ts,
+    };
+  }
 
   updatePreferences(patch: UpdateWorkspacePreferencesRequest): WorkspacePreferencesDto {
     const notifications = patch.notifications ? normalizeNotifications(patch.notifications) : this.preferences.notifications;

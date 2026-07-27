@@ -577,7 +577,7 @@ registerAgentMessageRunRoute(app, {
 });
 
 registerWorkspacePreferenceRoutes(app, {
-  opts, store, workspace, engines, activeRuns, scheduledSessionRollovers,
+  opts, store, coordinationV3, workspace, engines, activeRuns, scheduledSessionRollovers,
   organizationEnvelopeStates, engineModelCatalogCache, cachedModelOptions,
   applyOperatorModelOptions, publishWorkspaceSince,
   setMaxConcurrentRuns: setMaxConcurrentRuns,

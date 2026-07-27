@@ -9,7 +9,7 @@ import {
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
 import type { EngineDto, ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import {
@@ -28,6 +28,7 @@ import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
 import { CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
+import { markWorkspaceResourceUsed } from "../workspaceRecency";
 
 function ResourceToolbar({ search, onSearch, searchLabel, sort, onSort, projectId, projects, onProject }: {
   search: string; onSearch(value: string): void; sort: ProjectSort; onSort(value: ProjectSort): void;
@@ -127,6 +128,7 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const triggers = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const agents = useProjectAgents(projects);
   const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
@@ -155,7 +157,10 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
         meta={<Typography variant="caption" color={trigger.enabled ? "success.main" : "text.disabled"}>{trigger.enabled ? "Enabled" : "Disabled"}</Typography>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
-        onOpen={() => onNavigate(route)}
+        onOpen={() => {
+          markWorkspaceResourceUsed(queryClient, "trigger", trigger.id);
+          onNavigate(route);
+        }}
         onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
         draggable
         onDragStart={() => setDragged(trigger.id)}
