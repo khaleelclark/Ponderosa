@@ -1,3 +1,4 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CheckIcon from "@mui/icons-material/Check";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
@@ -13,8 +14,6 @@ import {
   Popper,
   Stack,
   Typography,
-  useMediaQuery,
-  useTheme,
 } from "@mui/material";
 import { useId, useState } from "react";
 
@@ -56,8 +55,6 @@ export function ComposerRuntimeSelector({
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const [section, setSection] = useState<RuntimeSection | null>(null);
   const menuId = useId();
-  const theme = useTheme();
-  const compact = useMediaQuery(theme.breakpoints.down("sm"));
   const selectedEngine = engines.find((option) => option.id === engine);
   const selectedModel = models.find((option) => option.id === model);
   const selectedEffort = efforts.find((option) => option.id === effort);
@@ -66,32 +63,42 @@ export function ComposerRuntimeSelector({
     ? `${selectedModelLabel} → ${resolvedModel}`
     : selectedModelLabel;
   const close = () => { setAnchor(null); setSection(null); };
+  const canSwitchEngine = !engineLocked && Boolean(onEngineChange) && engines.length > 1;
   const sections: Array<{
     id: RuntimeSection;
     label: string;
     value: string;
     options: ComposerRuntimeOption[];
-    locked?: boolean;
   }> = [
-    { id: "engine", label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines, locked: engineLocked || !onEngineChange },
+    ...(canSwitchEngine
+      ? [{ id: "engine" as const, label: "Engine", value: selectedEngine?.label ?? "Engine", options: engines }]
+      : []),
     { id: "model", label: "Model", value: displayedModel, options: models },
-    { id: "effort", label: "Effort", value: selectedEffort?.label ?? "Effort unavailable", options: efforts },
+    { id: "effort", label: "Reasoning", value: selectedEffort?.label ?? "Unavailable", options: efforts },
   ];
   const active = sections.find((item) => item.id === section);
   const select = (id: string) => {
     if (section === "engine") onEngineChange?.(id);
     if (section === "model") onModelChange(id);
     if (section === "effort") onEffortChange(id);
-    close();
+    if (section === "effort") close();
+    else setSection(null);
   };
 
   return <>
     <ButtonBase
-      aria-label="Choose engine, model, and effort"
+      aria-label="Choose engine, model, and reasoning"
       aria-haspopup="menu"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
-      onClick={(event) => { setAnchor(event.currentTarget); setSection(null); }}
+      onClick={(event) => {
+        if (anchor) {
+          close();
+          return;
+        }
+        setAnchor(event.currentTarget);
+        setSection(null);
+      }}
       sx={{
         minHeight: 40,
         maxWidth: "100%",
@@ -103,9 +110,15 @@ export function ComposerRuntimeSelector({
       }}
     >
       <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
-        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedEngine?.label ?? "Engine"}</Typography>
-        <Typography variant="body2" noWrap>{displayedModel}</Typography>
-        <Typography variant="body2" color="text.secondary" noWrap>{selectedEffort?.label ?? "Effort unavailable"}</Typography>
+        {canSwitchEngine ? (
+          <Typography variant="body2" color="text.secondary" noWrap>
+            {selectedEngine?.label ?? "Engine"}
+          </Typography>
+        ) : null}
+        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{displayedModel}</Typography>
+        <Typography variant="body2" color="text.secondary" noWrap>
+          · {selectedEffort?.label ?? "Reasoning unavailable"}
+        </Typography>
         <KeyboardArrowDownIcon sx={{ alignSelf: "center", color: "text.secondary", fontSize: 20 }} />
       </Stack>
     </ButtonBase>
@@ -121,66 +134,126 @@ export function ComposerRuntimeSelector({
       sx={{ zIndex: 1500 }}
     >
       <ClickAwayListener onClickAway={close}>
-        <Stack direction="row" spacing={0.75} sx={{ alignItems: "flex-end" }}>
-          {(!compact || !section) ? <Paper
-            id={menuId}
-            role="menu"
-            elevation={12}
-            sx={{ width: 270, maxWidth: "calc(100vw - 24px)", p: 0.75, border: 1, borderColor: "divider", borderRadius: 2.5, bgcolor: "background.paper" }}
-          >
-            <MenuList disablePadding aria-label="Runtime settings">
-              {sections.flatMap((item, index) => [
-                ...(index === 1 ? [<Divider key="runtime-divider" sx={{ my: 0.5 }} />] : []),
-                <MenuItem
-                  key={item.id}
-                  disabled={item.options.length === 0 || item.locked}
-                  selected={section === item.id}
-                  onClick={() => setSection(item.id)}
-                  sx={{ minHeight: 48, borderRadius: 1.5, px: 1.25, gap: 1 }}
-                >
-                  <Typography sx={{ flex: 1 }}>{item.label}</Typography>
-                  <Typography color="text.secondary" noWrap sx={{ maxWidth: 125 }}>{item.value}</Typography>
-                  {!item.locked ? <ChevronRightIcon fontSize="small" sx={{ color: "text.secondary" }} /> : null}
-                </MenuItem>,
-              ])}
-            </MenuList>
-          </Paper> : null}
-          {active ? <Paper
-            elevation={12}
-            sx={{ width: 310, maxWidth: "calc(100vw - 24px)", maxHeight: "min(55vh, 470px)", overflow: "hidden", border: 1, borderColor: "divider", borderRadius: 2.5, bgcolor: "background.paper" }}
-          >
-            <Box sx={{ px: 2, pt: 1.5, pb: 0.75 }}>
-              <Typography color="text.secondary">{active.label}</Typography>
-            </Box>
-            <MenuList aria-label={`${active.label} options`} sx={{ maxHeight: "min(48vh, 410px)", overflowY: "auto", px: 0.75, pb: 0.75 }}>
-              {compact ? <MenuItem onClick={() => setSection(null)} sx={{ borderRadius: 1.5 }}>Back</MenuItem> : null}
-              {active.options.flatMap((option, index) => {
-                const current = active.id === "engine" ? engine : active.id === "model" ? model : effort;
-                const showGroup = option.group && option.group !== active.options[index - 1]?.group;
-                return [
-                  ...(showGroup ? [
-                    <ListSubheader key={`group-${option.group}`} sx={{ bgcolor: "background.paper", lineHeight: "34px", fontWeight: 800 }}>
-                      {option.group}
-                    </ListSubheader>,
-                  ] : []),
+        <Paper
+          id={menuId}
+          role="menu"
+          elevation={12}
+          sx={{
+            width: 286,
+            maxWidth: "calc(100vw - 24px)",
+            maxHeight: "min(62vh, 520px)",
+            overflowX: "hidden",
+            overflowY: "auto",
+            overscrollBehavior: "contain",
+            p: 0.75,
+            border: 1,
+            borderColor: "divider",
+            borderRadius: 2.5,
+            bgcolor: "background.paper",
+          }}
+        >
+          {active ? (
+            <>
+              <MenuItem
+                onClick={() => setSection(null)}
+                sx={{ minHeight: 46, borderRadius: 1.5, gap: 1 }}
+              >
+                <ArrowBackIcon fontSize="small" />
+                <Typography sx={{ flex: 1, fontWeight: 700 }}>{active.label}</Typography>
+              </MenuItem>
+              <Divider sx={{ my: 0.5 }} />
+              <MenuList
+                autoFocusItem
+                disablePadding
+                aria-label={`${active.label} options`}
+                sx={{
+                  maxHeight: "min(50vh, 430px)",
+                  overflowY: "auto",
+                  overflowX: "hidden",
+                  overscrollBehavior: "contain",
+                }}
+              >
+                {active.options.flatMap((option, optionIndex) => {
+                  const current = active.id === "engine" ? engine : active.id === "model" ? model : effort;
+                  const showGroup = option.group && option.group !== active.options[optionIndex - 1]?.group;
+                  const showDetail = Boolean(option.detail && (active.id === "engine" || option.disabled));
+                  return [
+                    ...(showGroup ? [
+                      <ListSubheader
+                        key={`${active.id}-group-${option.group}`}
+                        disableSticky
+                        sx={{
+                          bgcolor: "transparent",
+                          color: "text.secondary",
+                          lineHeight: "30px",
+                          fontWeight: 800,
+                          px: 1.5,
+                        }}
+                      >
+                        {option.group}
+                      </ListSubheader>,
+                    ] : []),
+                    <MenuItem
+                      key={`${active.id}-${option.id || "default"}`}
+                      disabled={option.disabled}
+                      selected={option.id === current}
+                      onClick={() => select(option.id)}
+                      sx={{
+                        minHeight: showDetail ? 52 : 40,
+                        borderRadius: 1.5,
+                        px: 1.5,
+                        py: showDetail ? 0.75 : 0.5,
+                        gap: 1,
+                        alignItems: "flex-start",
+                        whiteSpace: "normal",
+                      }}
+                    >
+                      <Box sx={{ flex: 1, minWidth: 0 }}>
+                        <Typography sx={{ overflowWrap: "anywhere" }}>
+                          {option.label}
+                        </Typography>
+                        {showDetail ? (
+                          <Typography
+                            variant="caption"
+                            color="text.secondary"
+                            sx={{ display: "block", lineHeight: 1.35, overflowWrap: "anywhere" }}
+                          >
+                            {option.detail}
+                          </Typography>
+                        ) : null}
+                      </Box>
+                      {option.id === current ? <CheckIcon fontSize="small" sx={{ mt: 0.25 }} /> : null}
+                    </MenuItem>,
+                  ];
+                })}
+              </MenuList>
+            </>
+          ) : (
+            <>
+              <Box sx={{ px: 1.25, pt: 0.75, pb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  Runtime
+                </Typography>
+              </Box>
+              <MenuList disablePadding aria-label="Runtime settings">
+                {sections.map((item) => (
                   <MenuItem
-                    key={option.id || "default"}
-                    disabled={option.disabled}
-                    selected={option.id === current}
-                    onClick={() => select(option.id)}
-                    sx={{ minHeight: option.detail ? 54 : 46, borderRadius: 1.5, gap: 1, alignItems: "flex-start" }}
+                    key={item.id}
+                    disabled={item.options.length === 0}
+                    onClick={() => setSection(item.id)}
+                    sx={{ minHeight: 46, borderRadius: 1.5, px: 1.25, gap: 1 }}
                   >
-                    <Box sx={{ flex: 1, minWidth: 0 }}>
-                      <Typography>{option.label}</Typography>
-                      {option.detail ? <Typography variant="caption" color="text.secondary">{option.detail}</Typography> : null}
-                    </Box>
-                    {option.id === current ? <CheckIcon fontSize="small" sx={{ mt: 0.25 }} /> : null}
-                  </MenuItem>,
-                ];
-              })}
-            </MenuList>
-          </Paper> : null}
-        </Stack>
+                    <Typography sx={{ flex: 1 }}>{item.label}</Typography>
+                    <Typography color="text.secondary" noWrap sx={{ maxWidth: 132 }}>
+                      {item.value}
+                    </Typography>
+                    <ChevronRightIcon fontSize="small" sx={{ color: "text.secondary" }} />
+                  </MenuItem>
+                ))}
+              </MenuList>
+            </>
+          )}
+        </Paper>
       </ClickAwayListener>
     </Popper>
   </>;
