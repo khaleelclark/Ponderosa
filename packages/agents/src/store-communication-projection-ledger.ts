@@ -170,14 +170,26 @@ export class AgentCommunicationProjectionLedger {
           return { projection: enriched, replayed: false };
         }
       }
+      const existingText = existing.message?.renderedText ?? "";
+      const projectionText = projection.message?.renderedText ?? "";
+      const canonicalText = this.communicationIndex(projectId).byId.get(projection.eventId)?.text;
+      const routingPrefix = canonicalText && existingText.endsWith(canonicalText)
+        ? existingText.slice(0, -canonicalText.length)
+        : "";
+      const sameCanonicalAuditMaterialization = projection.surface === "direct_agent_audit"
+        && canonicalText !== undefined
+        && canonicalText.length > 0
+        && projectionText === canonicalText
+        && /^#[\p{L}\p{N}_-]+(?: #[\p{L}\p{N}_-]+)* $/u.test(routingPrefix);
       const sameMaterialization = existing.message && projection.message
         && existing.message.role === projection.message.role
-        && (existing.message.renderedText ?? "") === (projection.message.renderedText ?? "");
+        && (existingText === projectionText || sameCanonicalAuditMaterialization);
       if (projection.message && JSON.stringify(existing.message) !== JSON.stringify(projection.message) && !sameMaterialization) {
         throw new Error("communication projection metadata collision");
       }
-      // Delivery retries may create new runtime-local IDs and timestamps. Keep
-      // the first placement when the visible role and text are identical.
+      // Delivery retries may create new runtime-local IDs and timestamps, and
+      // passive audit replay may omit an existing presentation-only routing
+      // prefix. Keep the first, richer placement when materialization agrees.
       this.upsertGlobalChatSearchProjection(projectId, existing);
       return { projection: existing, replayed: true };
     }
