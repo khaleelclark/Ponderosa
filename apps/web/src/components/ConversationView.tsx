@@ -134,16 +134,13 @@ export function ConversationView({
     collaborationMessages,
     collaborationQuery,
     detailQuery,
-    expandedOperationalEventGroups,
     loadOlderHistory,
     loadingOlder,
     mainHistory,
     mainTimeline,
     messages,
-    operationalEventGroups,
     operationalEvents,
     operationalLayoutKey,
-    setExpandedOperationalEventGroups,
     setOlderCollaboration,
     setOlderMain,
   } = useConversationHistory(conversationId, activeView);
@@ -821,23 +818,11 @@ export function ConversationView({
                 loading: loadingOlder,
                 onLoadEarlier: () => void loadOlderHistory(),
               }}
-              beforeMessages={
-                <Alert severity="info" sx={{ mb: 1.5 }}>
-                  Team chat is a read-only audit trail of agent-to-agent
-                  coordination. Message an agent from its Agent chat;
-                  collaboration will appear here automatically.
-                </Alert>
-              }
             >
               <CollaborationTimeline
-                operationalEventGroups={operationalEventGroups}
-                expandedOperationalEventGroups={expandedOperationalEventGroups}
-                setExpandedOperationalEventGroups={setExpandedOperationalEventGroups}
                 operationalEvents={operationalEvents}
                 collaborationMessages={collaborationMessages}
-                onOpenAgentWork={onOpenAgentWork}
                 projectId={conversation.projectId}
-                conversationId={conversationId}
                 healthByAgentId={healthByAgentId}
                 operatorProfile={preferencesQuery.data?.profile}
                 agentTitle={agentTitle}

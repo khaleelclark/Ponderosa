@@ -1,5 +1,9 @@
 import type { EngineId } from "../adapter.js";
-import type { CommunicationDocumentReference, VerifiedCitationRecord } from "../communication.js";
+import type {
+  CommunicationDocumentReference,
+  CommunicationIntent,
+  VerifiedCitationRecord,
+} from "../communication.js";
 import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
@@ -214,6 +218,8 @@ export interface TeamOperationalEventDto {
   id: string;
   kind: "run" | "activation" | "request" | "join" | "trigger" | "decision" | "organization";
   state: string;
+  /** Server-classified exception state. Presentation text never determines this. */
+  attentionRequired: boolean;
   text: string;
   agentIds: string[];
   createdAt: string;
@@ -463,6 +469,8 @@ export interface MessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
+  /** Canonical scope used to explain where this audit projection originated. */
+  communicationIntent?: CommunicationIntent;
   /** Immutable Project-chat scope of the canonical communication, when present. */
   conversationId?: string;
   agentId: string;

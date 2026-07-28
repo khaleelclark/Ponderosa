@@ -60,7 +60,6 @@ import {
   agentRelationshipPresentation,
   agentTranscriptMarkdown,
   compareAgentChatMessages,
-  finalizedRunDurationLabels,
   mcpPresentation,
   mergeAgentDetailProjection,
   mergeTelemetryPage,
@@ -108,7 +107,7 @@ export function AgentDetail({
   conversations,
   onOpenProject,
   onOpenAgent,
-  onOpenBroadcast,
+  onOpenCommunicationSource,
   onOpenMaster,
   onOpenArtifact,
   onOpenArtifactInNewTab,
@@ -131,7 +130,7 @@ export function AgentDetail({
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId);
   const [tab, setTab] = useState<AgentTab>(() => {
-    if (initialView) return initialView;
+    if (initialView) return initialView === "activity" ? "chat" : initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
     return AGENT_DETAIL_TABS.some(item => item.value === saved) ||
       saved === "technical"
@@ -170,7 +169,7 @@ export function AgentDetail({
   useEffect(() => {
     mobileComposer.reset();
     if (initialView) {
-      setTab(initialView);
+      setTab(initialView === "activity" ? "chat" : initialView);
       return;
     }
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -526,31 +525,64 @@ export function AgentDetail({
     onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
 
-  const loadOlderMessages = useCallback(async () => {
-    const cursor = detail?.history?.cursor;
-    if (!detail?.history?.hasMore || !cursor || loadingOlder) return;
+  const loadOlderCombinedTimeline = useCallback(async () => {
+    const messageCursor = detail?.history?.cursor;
+    const loadMessages = Boolean(
+      detail?.history?.hasMore && messageCursor,
+    );
+    const telemetryStreams = (
+      ["runOutput", "activity", "runs"] as const
+    ).filter(stream => detail?.telemetryHistory?.[stream]?.hasMore);
+    if ((!loadMessages && telemetryStreams.length === 0) || loadingOlder) {
+      return;
+    }
     setLoadingOlder(true);
     try {
-      const page = await api.getAgent(agentId, 100, cursor);
-      setOlderMessages(current => ({
-        messages: uniqueBy(
-          [
-            ...page.messages,
-            ...(current?.messages ?? []),
-            ...(agentQuery.data?.messages ?? []),
-          ],
-          message => message.id,
-          compareAgentChatMessages,
+      const [messagePage, telemetryPages] = await Promise.all([
+        loadMessages
+          ? api.getAgent(agentId, 100, messageCursor)
+          : Promise.resolve(undefined),
+        Promise.all(
+          telemetryStreams.map(stream =>
+            api.getAgentHistory(
+              agentId,
+              stream,
+              100,
+              detail?.telemetryHistory?.[stream]?.cursor,
+            ),
+          ),
         ),
-        cursor: page.history?.cursor,
-        hasMore: page.history?.hasMore ?? false,
-      }));
+      ]);
+      if (messagePage) {
+        setOlderMessages(current => ({
+          messages: uniqueBy(
+            [
+              ...messagePage.messages,
+              ...(current?.messages ?? []),
+              ...(agentQuery.data?.messages ?? []),
+            ],
+            message => message.id,
+            compareAgentChatMessages,
+          ),
+          cursor: messagePage.history?.cursor,
+          hasMore: messagePage.history?.hasMore ?? false,
+        }));
+      }
+      if (telemetryPages.length) {
+        setOlderTelemetry(current =>
+          telemetryPages.reduce(
+            (state, page) => mergeTelemetryPage(state, page),
+            current,
+          ),
+        );
+      }
     } finally {
       setLoadingOlder(false);
     }
   }, [
     agentId,
     agentQuery.data?.messages,
+    detail?.telemetryHistory,
     detail?.history?.cursor,
     detail?.history?.hasMore,
     loadingOlder,
@@ -566,21 +598,16 @@ export function AgentDetail({
       agents.find(candidate => candidate.id === candidateId)?.title,
     [agents],
   );
-  const finalizedDurationLabels = useMemo(
-    () => finalizedRunDurationLabels(detail?.runs ?? []),
-    [detail?.runs],
-  );
-  const completedWorkDurationLabel = useCallback(
-    (message: MessageDto): string | undefined =>
-      message.executionId
-        ? finalizedDurationLabels.get(message.executionId)
-        : undefined,
-    [finalizedDurationLabels],
-  );
-  const openBroadcastFromMessage = useCallback(
+  const openCommunicationSourceFromMessage = useCallback(
     (message: MessageDto) =>
-      onOpenBroadcast(message.conversationId!, message.communicationEventId!),
-    [onOpenBroadcast],
+      onOpenCommunicationSource(
+        message.conversationId!,
+        message.communicationEventId!,
+        message.communicationIntent === "collaboration"
+          ? "collaboration"
+          : "main",
+      ),
+    [onOpenCommunicationSource],
   );
   const mentionCurrentAgent = useCallback(() => {
     if (!detail) return;
@@ -589,9 +616,6 @@ export function AgentDetail({
       text: `#${agentMentionHandle(detail.agent.title)}`,
     });
   }, [detail?.agent.title]);
-  const loadOlderChatMessages = useCallback(() => {
-    void loadOlderMessages();
-  }, [loadOlderMessages]);
   const chatPreviewScope = useMemo(
     () =>
       detail && projectedHealth?.runtimeActivity?.executionId
@@ -907,13 +931,10 @@ export function AgentDetail({
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}
-        completedWorkDurationLabel={completedWorkDurationLabel}
         chatPreviewScope={chatPreviewScope}
         mobileScrollObserver={mobileComposer.observeScroll}
         loadingOlder={loadingOlder}
         hasOlderTelemetry={hasOlderTelemetry}
-        connected={stream.connected}
-        running={stream.running}
         activeExecutionId={runtimeActivity?.executionId}
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
@@ -923,13 +944,12 @@ export function AgentDetail({
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
-        onOpenBroadcast={openBroadcastFromMessage}
+        onOpenMessageSource={openCommunicationSourceFromMessage}
         onMentionAgent={() => mentionCurrentAgent()}
-        onLoadOlderChat={() => void loadOlderChatMessages()}
+        onLoadOlderChat={() => void loadOlderCombinedTimeline()}
         onLoadOlderTelemetry={() => void loadOlderTelemetry()}
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
-        onOpenReview={() => onOpenReview()}
         onNewSubagent={onNewSubagent}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}

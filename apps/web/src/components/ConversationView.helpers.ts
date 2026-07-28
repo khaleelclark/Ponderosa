@@ -56,38 +56,6 @@ function mergeOperationalEvents(
   );
 }
 
-interface OperationalEventGroup {
-  id: string;
-  representative: TeamOperationalEventDto;
-  events: TeamOperationalEventDto[];
-}
-
-/**
- * Team Chat is an audit projection, so only collapse consecutive rows that
- * are indistinguishable to the reader. The source events stay available in a
- * disclosure and are never removed from the canonical response.
- */
-function groupAdjacentOperationalEvents(
-  events: TeamOperationalEventDto[],
-): OperationalEventGroup[] {
-  const groups: OperationalEventGroup[] = [];
-  for (const event of events) {
-    const previous = groups.at(-1);
-    const sameAsPrevious = previous &&
-      event.kind !== "request" &&
-      previous.representative.kind === event.kind &&
-      previous.representative.state === event.state &&
-      previous.representative.text === event.text &&
-      previous.representative.agentIds.join("\u0000") === event.agentIds.join("\u0000");
-    if (sameAsPrevious) {
-      previous.events.push(event);
-      continue;
-    }
-    groups.push({ id: event.id, representative: event, events: [event] });
-  }
-  return groups;
-}
-
 function conversationComposerRuntime(
   engine:
     | (Pick<EngineDto, "id" | "authenticated" | "available"> & {
@@ -113,9 +81,8 @@ function conversationComposerRuntime(
 export {
   conversationComposerRuntime,
   decisionChoice,
-  groupAdjacentOperationalEvents,
   mergeConversationMessages,
   mergeDecisionEvents,
   mergeOperationalEvents,
 };
-export type { MainTimelineEntry, OperationalEventGroup };
+export type { MainTimelineEntry };

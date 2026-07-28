@@ -1,6 +1,7 @@
 import type {
   AgentDto,
   AgentHealthDto,
+  AgentMessageChannel,
   ConversationDto,
   EngineDto,
   ProjectEngineCapabilitiesDto,
@@ -33,7 +34,11 @@ export interface AgentDetailProps {
   conversations: ConversationDto[];
   onOpenProject(): void;
   onOpenAgent(agentId: string): void;
-  onOpenBroadcast(conversationId: string, communicationEventId: string): void;
+  onOpenCommunicationSource(
+    conversationId: string,
+    communicationEventId: string,
+    channel: Extract<AgentMessageChannel, "main" | "collaboration">,
+  ): void;
   onOpenMaster(conversationId: string): void;
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;

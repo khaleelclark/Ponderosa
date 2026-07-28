@@ -6,6 +6,7 @@ import {
   type CollaborationViewDto,
   type ConversationDetailDto,
   type DecisionDto,
+  type TeamOperationalEventDto,
   type TeamDirectoryDto,
 } from "@ponderosa/core";
 import type {
@@ -39,6 +40,32 @@ interface ReadModelContext {
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   publish(agentId: string, stored: StoredLogEvent): void;
   isClosed(): boolean;
+}
+
+const TEAM_ATTENTION_STATES = new Set([
+  "blocked",
+  "cancelled",
+  "expired",
+  "failed",
+  "interrupted",
+  "outcome_unknown",
+  "recipient_unavailable",
+  "rejected",
+  "stalled",
+  "superseded",
+  "teardown_failed",
+  "timed_out",
+  "unavailable",
+  "unknown",
+]);
+
+function teamOperationNeedsAttention(
+  kind: TeamOperationalEventDto["kind"],
+  state: string,
+): boolean {
+  return kind === "decision"
+    ? state === "pending"
+    : TEAM_ATTENTION_STATES.has(state);
 }
 
 export function createServerReadModels(context: ReadModelContext) {
@@ -207,7 +234,14 @@ export function createServerReadModels(context: ReadModelContext) {
                 : record.state === "pending" ? `${record.subtype ?? "A trigger"} is waiting to wake ${owner}`
                   : `${record.subtype ?? "A trigger"} ended ${record.state.replaceAll("_", " ")}`;
       return {
-        id: record.id, kind: record.kind, state: record.state, text,
+        id: record.id,
+        kind: record.kind,
+        state: record.state,
+        attentionRequired: teamOperationNeedsAttention(
+          record.kind,
+          record.state,
+        ),
+        text,
         agentIds: [record.primaryAgentId, ...(record.secondaryAgentId ? [record.secondaryAgentId] : [])],
         createdAt: record.createdAt, updatedAt: record.updatedAt,
         ...(record.kind === "request" && record.recipientAgentId
@@ -244,6 +278,10 @@ export function createServerReadModels(context: ReadModelContext) {
         id: decisionId,
         kind: "decision",
         state: decision.status,
+        attentionRequired: teamOperationNeedsAttention(
+          "decision",
+          decision.status,
+        ),
         text: decision.status === "pending" ? `${agentName} is waiting for your decision` : `You answered ${agentName}'s decision`,
         agentIds: [decision.agentId],
         createdAt: decision.createdAt,
@@ -259,6 +297,7 @@ export function createServerReadModels(context: ReadModelContext) {
         id: planId,
         kind: "organization",
         state: plan.appliedAt ? "applied" : "planned",
+        attentionRequired: false,
         text: plan.appliedAt
           ? `${agentName} updated its organization`
           : `${agentName} prepared an organization change`,

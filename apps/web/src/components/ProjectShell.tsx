@@ -339,7 +339,13 @@ export function ProjectShell({
         conversations={conversations}
         onOpenProject={() => navigate({ kind: "project", projectId })}
         onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
-        onOpenBroadcast={(conversationId, communicationEventId) => navigate({ kind: "conversation", projectId, conversationId, focusMessageId: communicationEventId })}
+        onOpenCommunicationSource={(conversationId, communicationEventId, channel) => navigate({
+          kind: "conversation",
+          projectId,
+          conversationId,
+          focusMessageId: communicationEventId,
+          ...(channel === "collaboration" ? { channel } : {}),
+        })}
         onOpenMaster={(conversationId) => {
           navigate({ kind: "conversation", projectId, conversationId });
         }}

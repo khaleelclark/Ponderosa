@@ -9,8 +9,6 @@ import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import {
   Box,
-  Button,
-  ButtonBase,
   Chip,
   IconButton,
   Stack,
@@ -31,7 +29,6 @@ import {
   type SetStateAction,
 } from "react";
 import { agentMentionHandle } from "../mentions";
-import { mobileOperationalStatus } from "../mobileChat";
 import { transcriptFileName } from "../chatTranscript";
 import { CopyMessageButton } from "./CopyMessageButton";
 import { ResponseFileActivity } from "./activity/ResponseFileActivity";
@@ -45,9 +42,31 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
-import { RequestLifecycleCard } from "./RequestLifecycleCard";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import type { MainTimelineEntry } from "./ConversationView.helpers";
+
+function stripLeadingAgentMentions(
+  text: string,
+  mentions: ConversationMessageDto["agentMentions"],
+): string {
+  if (!mentions?.length) return text;
+  const handles = new Set(
+    mentions.map(mention => mention.handle.toLocaleLowerCase()),
+  );
+  let visible = text.trimStart();
+  let stripped = false;
+  while (visible) {
+    const match = visible.match(
+      /^#([\p{L}\p{N}_-]+)(?=$|\s|[.,!?;:])(?:[.,!?;:]?\s*)/u,
+    );
+    if (!match || !handles.has(match[1]!.toLocaleLowerCase())) break;
+    visible = visible.slice(match[0].length);
+    stripped = true;
+  }
+  return stripped && visible.trim()
+    ? visible.trimStart()
+    : text;
+}
 
 function ConversationMessageComponent({
   message,
@@ -83,16 +102,31 @@ function ConversationMessageComponent({
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const fromManager = !message.authorAgentId;
-  // Routing prefixes are presentation chips, but remain in canonical/copyable
-  // text. Do not hide a prefix merely because the scope is also structured.
+  // Routing prefixes remain canonical and copyable. Team Chat can omit the
+  // redundant leading token because its stable recipient is shown in the
+  // sender → recipient header.
   const routedText = message.text;
-  const visibleText = stripDocumentPrefixText(
+  const copyableText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
   );
+  const visibleText =
+    conversation === "collaboration"
+      ? stripLeadingAgentMentions(copyableText, message.agentMentions)
+      : copyableText;
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
+  const recipientNames = [
+    ...new Set(
+      (message.agentMentions ?? []).map(mention =>
+        agentTitle(mention.agentId),
+      ),
+    ),
+  ];
+  const visibleRecipients = recipientNames.slice(0, 2);
+  const hiddenRecipientCount =
+    recipientNames.length - visibleRecipients.length;
 
   return (
     <ChatMessageFrame
@@ -108,6 +142,26 @@ function ConversationMessageComponent({
               onOpen: () => onOpenAgent(message.authorAgentId!),
             },
         createdAt: message.createdAt,
+        source:
+          conversation === "collaboration" && recipientNames.length ? (
+            <Typography
+              component="span"
+              variant="caption"
+              color="text.secondary"
+              sx={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {"→ "}
+              {visibleRecipients.join(", ")}
+              {hiddenRecipientCount > 0
+                ? ` +${hiddenRecipientCount} more`
+                : ""}
+            </Typography>
+          ) : undefined,
         onVisible,
         body: (
           <ChatMessageBody
@@ -197,10 +251,11 @@ function ConversationMessageComponent({
               onOpenAgent={onOpenAgent}
             />
           ) : undefined,
-        actions:
-          conversation === "main" ? (
-            <>
-              <CopyMessageButton text={visibleText} />
+        actions: (
+          <>
+            <CopyMessageButton text={copyableText} />
+            {conversation === "main" ? (
+              <>
               {message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
@@ -223,8 +278,10 @@ function ConversationMessageComponent({
                   </IconButton>
                 </Tooltip>
               ) : null}
-            </>
-          ) : undefined,
+              </>
+            ) : null}
+          </>
+        ),
       }}
     />
   );
@@ -428,21 +485,10 @@ function MainConversationTimeline({
   );
 }
 
-interface OperationalEventGroup {
-  id: string;
-  representative: TeamOperationalEventDto;
-  events: TeamOperationalEventDto[];
-}
-
 function CollaborationTimeline({
-  operationalEventGroups,
-  expandedOperationalEventGroups,
-  setExpandedOperationalEventGroups,
   operationalEvents,
   collaborationMessages,
-  onOpenAgentWork,
   projectId,
-  conversationId,
   healthByAgentId,
   operatorProfile,
   agentTitle,
@@ -451,14 +497,9 @@ function CollaborationTimeline({
   onOpenReview,
   onOpenFileActivity,
 }: {
-  operationalEventGroups: OperationalEventGroup[];
-  expandedOperationalEventGroups: Set<string>;
-  setExpandedOperationalEventGroups: Dispatch<SetStateAction<Set<string>>>;
   operationalEvents: TeamOperationalEventDto[];
   collaborationMessages: ConversationMessageDto[];
-  onOpenAgentWork(focusId?: string): void;
   projectId: string;
-  conversationId: string;
   healthByAgentId: Map<string, AgentHealthDto>;
   operatorProfile?: OperatorProfileDto;
   agentTitle(agentId: string | undefined): string;
@@ -471,201 +512,172 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
-  const messageCommunicationIds = new Set(
-    collaborationMessages.flatMap((message) =>
-      message.communicationEventId ? [message.communicationEventId] : []),
+  const requestsByCommunicationId = new Map<
+    string,
+    Map<string, TeamOperationalEventDto>
+  >();
+  const loadedCommunicationIds = new Set(
+    collaborationMessages.flatMap(message =>
+      message.communicationEventId ? [message.communicationEventId] : [],
+    ),
   );
-  const requestGroupsByCommunicationId = new Map<string, OperationalEventGroup[]>();
-  const linkedRequestGroupIds = new Set<string>();
-  for (const group of operationalEventGroups) {
-    const event = group.representative;
-    const communicationEventId = event.kind === "request"
-      ? event.request?.communicationEventId
-      : undefined;
-    if (!communicationEventId || !messageCommunicationIds.has(communicationEventId)) continue;
-    const groups = requestGroupsByCommunicationId.get(communicationEventId) ?? [];
-    groups.push(group);
-    requestGroupsByCommunicationId.set(communicationEventId, groups);
-    linkedRequestGroupIds.add(group.id);
+  const linkedRequestEventIds = new Set<string>();
+  for (const event of operationalEvents) {
+    const communicationEventId =
+      event.kind === "request"
+        ? event.request?.communicationEventId
+        : undefined;
+    if (!communicationEventId || !event.request) continue;
+    const requests =
+      requestsByCommunicationId.get(communicationEventId) ??
+      new Map<string, TeamOperationalEventDto>();
+    const previous = requests.get(event.request.recordId);
+    if (!previous || previous.updatedAt <= event.updatedAt) {
+      requests.set(event.request.recordId, event);
+    }
+    requestsByCommunicationId.set(communicationEventId, requests);
+    if (loadedCommunicationIds.has(communicationEventId)) {
+      linkedRequestEventIds.add(event.id);
+    }
   }
-  const standaloneOperationalGroups = operationalEventGroups.filter(
-    (group) => !linkedRequestGroupIds.has(group.id),
+  const timeline = [
+    ...collaborationMessages.map(message => ({
+      kind: "message" as const,
+      id: `message:${message.id}`,
+      at: message.createdAt,
+      message,
+    })),
+    ...operationalEvents
+      .filter(
+        event =>
+          !linkedRequestEventIds.has(event.id) &&
+          event.attentionRequired,
+      )
+      .map(event => ({
+        kind: "operation" as const,
+        id: `operation:${event.id}`,
+        at: event.updatedAt,
+        event,
+      })),
+  ].sort(
+    (left, right) =>
+      left.at.localeCompare(right.at) || left.id.localeCompare(right.id),
   );
-  const requestCard = (
-    group: OperationalEventGroup,
-    requestText?: string,
-  ): JSX.Element => {
-    const event = group.representative;
-    const request = event.request!;
-    return (
-      <RequestLifecycleCard
-        key={event.id}
-        projectId={projectId}
-        conversationId={conversationId}
-        requestId={request.recordId}
-        state={event.state}
-        requesterAgentId={request.requesterAgentId}
-        recipientAgentId={request.recipientAgentId}
-        requestText={requestText ?? request.preview}
-        hasUpdates={request.hasUpdates}
-        hasResult={request.hasResult}
-        updatedAt={event.updatedAt}
-        agentTitle={agentTitle}
-        onOpenWork={onOpenAgentWork}
-      />
-    );
-  };
+
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
-      {standaloneOperationalGroups.length ? (
-        <Stack spacing={0.5} aria-label="Team operational activity">
-          {standaloneOperationalGroups.map(group => {
-            const event = group.representative;
-            if (event.kind === "request" && event.request) {
-              return requestCard(group);
-            }
-            const content = (
-              <>
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={
-                    event.kind === "run"
-                      ? "Agent"
-                      : event.kind === "join"
-                        ? "Waiting"
-                        : event.kind === "request"
-                          ? "Work"
-                          : event.kind === "trigger"
-                            ? "Trigger"
-                            : event.kind === "decision"
-                              ? "Decision"
-                              : event.kind === "organization"
-                                ? "Team"
-                                : "Ready"
-                  }
-                />
-                <Typography
-                  variant="body2"
-                  sx={{
-                    display: { xs: "none", sm: "block" },
-                    flex: 1,
-                  }}
-                >
-                  {event.text}
-                </Typography>
-                <Typography
-                  variant="body2"
-                  sx={{
-                    display: { xs: "block", sm: "none" },
-                    flex: 1,
-                  }}
-                >
-                  {mobileOperationalStatus(event.state)}
-                </Typography>
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ display: { xs: "none", sm: "block" } }}
-                >
-                  {new Date(event.updatedAt).toLocaleTimeString([], {
-                    hour: "numeric",
-                    minute: "2-digit",
-                  })}
-                </Typography>
-              </>
-            );
-            const sx = {
-              display: "flex",
-              width: "100%",
-              gap: 1,
-              alignItems: "center",
-              px: 1.25,
-              py: 0.75,
-              borderRadius: 1.5,
-              bgcolor: "action.hover",
-              textAlign: "left",
-            } as const;
-            const row = event.kind === "organization" ? (
-              <Box key={event.id} sx={sx}>
-                {content}
-              </Box>
-            ) : (
-              <ButtonBase
-                key={event.id}
-                onClick={() => onOpenAgentWork(event.id)}
-                aria-label={`${event.text}. Open Work details`}
-                sx={sx}
-              >
-                {content}
-              </ButtonBase>
-            );
-            if (group.events.length === 1) return row;
-            const expanded = expandedOperationalEventGroups.has(group.id);
-            return <Stack key={group.id} spacing={0.5}>
-              <Box sx={{ display: "flex", gap: 0.5, alignItems: "center" }}>
-                <Box sx={{ flex: 1, minWidth: 0 }}>{row}</Box>
-                <Button
-                  size="small"
-                  aria-expanded={expanded}
-                  onClick={() => setExpandedOperationalEventGroups(current => {
-                    const next = new Set(current);
-                    if (next.has(group.id)) next.delete(group.id); else next.add(group.id);
-                    return next;
-                  })}
-                >{expanded ? "Hide duplicates" : `×${group.events.length}`}</Button>
-              </Box>
-              {expanded ? <Stack spacing={0.5} sx={{ pl: 1.5 }} aria-label={`${group.events.length} duplicate operational events`}>
-                {group.events.map(raw => <ButtonBase
-                  key={raw.id}
-                  onClick={() => onOpenAgentWork(raw.id)}
-                  aria-label={`${raw.text}. Open Work details`}
-                  sx={sx}
-                >
-                  <Typography variant="body2" sx={{ flex: 1, textAlign: "left" }}>{raw.text}</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(raw.updatedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</Typography>
-                </ButtonBase>)}
-              </Stack> : null}
-            </Stack>;
-          })}
-        </Stack>
+      {timeline.length === 0 ? (
+        <Box sx={{ py: 5, textAlign: "center" }}>
+          <Typography variant="body2" color="text.secondary">
+            No Agent-to-Agent messages yet.
+          </Typography>
+          <Typography variant="caption" color="text.secondary">
+            Mentions and replies will appear here automatically.
+          </Typography>
+        </Box>
       ) : null}
-      {collaborationMessages.length + operationalEvents.length ===
-      0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No agent-to-agent messages yet.
-        </Typography>
-      ) : null}
-      {collaborationMessages.map(message => {
-        const requestGroups = message.communicationEventId
-          ? requestGroupsByCommunicationId.get(message.communicationEventId)
-          : undefined;
-        if (requestGroups?.length) {
+      {timeline.map(entry => {
+        if (entry.kind === "operation") {
+          const event = entry.event;
           return (
-            <Stack key={message.id} spacing={0.5}>
-              {requestGroups.map((group) => requestCard(group, message.text))}
-            </Stack>
+            <Box
+              key={entry.id}
+              sx={{
+                display: "flex",
+                width: "100%",
+                gap: 1.25,
+                alignItems: "center",
+                py: 1,
+                borderTop: 1,
+                borderColor: "divider",
+                textAlign: "left",
+              }}
+            >
+              <Typography
+                variant="caption"
+                sx={{
+                  color:
+                    event.kind === "decision"
+                      ? "warning.light"
+                      : "error.light",
+                  fontWeight: 700,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {event.kind === "decision"
+                  ? "Decision needed"
+                  : "Coordination issue"}
+              </Typography>
+              <Typography variant="body2" sx={{ flex: 1, minWidth: 0 }}>
+                {event.text}
+              </Typography>
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ whiteSpace: "nowrap" }}
+              >
+                {new Date(event.updatedAt).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+              </Typography>
+            </Box>
           );
         }
+        const message = entry.message;
+        const linkedRequests = message.communicationEventId
+          ? [
+              ...(
+                requestsByCommunicationId.get(message.communicationEventId)
+                  ?.values() ?? []
+              ),
+            ].sort((left, right) =>
+              left.updatedAt.localeCompare(right.updatedAt),
+            )
+          : [];
         return (
-          <ConversationMessage
-            key={message.id}
-            message={message}
-            conversation="collaboration"
-            projectId={projectId}
-            activeRunId={
-              message.authorAgentId
-                ? healthByAgentId.get(message.authorAgentId)
-                    ?.runtimeActivity?.executionId
-                : undefined
-            }
-            operatorProfile={operatorProfile}
-            agentTitle={agentTitle}
-            agentIdForHandle={agentIdForHandle}
-            onOpenAgent={onOpenAgent}
-            onOpenReview={onOpenReview}
-            onOpenFileActivity={onOpenFileActivity}
-          />
+          <Box key={entry.id}>
+            <ConversationMessage
+              message={message}
+              conversation="collaboration"
+              projectId={projectId}
+              activeRunId={
+                message.authorAgentId
+                  ? healthByAgentId.get(message.authorAgentId)
+                      ?.runtimeActivity?.executionId
+                  : undefined
+              }
+              operatorProfile={operatorProfile}
+              agentTitle={agentTitle}
+              agentIdForHandle={agentIdForHandle}
+              onOpenAgent={onOpenAgent}
+              onOpenReview={onOpenReview}
+              onOpenFileActivity={onOpenFileActivity}
+            />
+            {linkedRequests
+              .filter(event => event.attentionRequired)
+              .map(event => (
+                <Stack
+                  key={event.request!.recordId}
+                  direction="row"
+                  spacing={0.75}
+                  sx={{
+                    ml: { xs: 5, sm: 6.5 },
+                    mt: -0.5,
+                    mb: 0.75,
+                    alignItems: "baseline",
+                    color: "warning.light",
+                  }}
+                >
+                  <Typography variant="caption" sx={{ fontWeight: 700 }}>
+                    {event.state.replaceAll("_", " ")}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {event.text}
+                  </Typography>
+                </Stack>
+              ))}
+          </Box>
         );
       })}
     </Stack>

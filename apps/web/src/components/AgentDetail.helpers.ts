@@ -13,17 +13,17 @@ import type {
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
-import { formatFinalizedWorkDuration } from "../time";
+import { projectAgentChat } from "./chat/agentChatProjection";
 import { orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 
-type AgentTab = AgentDetailView;
+type AgentTab = Exclude<AgentDetailView, "activity">;
 
 const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
   stream === "artifacts" || stream === "changedFiles"
     ? "artifacts"
     : stream === "runs" || stream === "workItems"
       ? "technical"
-      : "activity";
+      : "chat";
 
 type TelemetryPageState = {
   [K in AgentTelemetryStream]?: {
@@ -103,7 +103,7 @@ function mergeTelemetryPage(
 }
 
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
-  tab === "activity"
+  tab === "chat"
     ? ["runOutput", "activity", "runs"]
     : tab === "artifacts"
       ? ["artifacts"]
@@ -306,26 +306,6 @@ function mcpPresentation(
   };
 }
 
-function finalizedRunDurationLabels(
-  runs: AgentDetailDto["runs"],
-): Map<string, string> {
-  return new Map(
-    runs.flatMap(run => {
-      if (!run.completedAt) return [];
-      const duration =
-        new Date(run.completedAt).getTime() - new Date(run.startedAt).getTime();
-      return Number.isFinite(duration) && duration >= 0
-        ? [
-            [
-              run.id,
-              `Worked for ${formatFinalizedWorkDuration(duration)}`,
-            ] as const,
-          ]
-        : [];
-    }),
-  );
-}
-
 function agentTranscriptMarkdown(
   detail: AgentDetailDto | undefined,
   agentNameForId: (agentId: string) => string | undefined,
@@ -333,18 +313,20 @@ function agentTranscriptMarkdown(
   return detail
     ? buildMarkdownTranscript(
         `${detail.agent.title} — Agent chat`,
-        detail.messages.map(message => ({
-          author:
-            message.role === "user"
-              ? "You"
-              : message.authorAgentId
-                ? (agentNameForId(message.authorAgentId) ?? "Agent")
-                : detail.agent.title,
-          text: message.text,
-          createdAt: message.createdAt,
-          attachments: message.attachments,
-          document: message.document,
-        })),
+        projectAgentChat(detail.messages, detail.runs)
+          .messages
+          .map(message => ({
+            author:
+              message.role === "user"
+                ? "You"
+                : message.authorAgentId
+                  ? (agentNameForId(message.authorAgentId) ?? "Agent")
+                  : detail.agent.title,
+            text: message.text,
+            createdAt: message.createdAt,
+            attachments: message.attachments,
+            document: message.document,
+          })),
       )
     : "";
 }
@@ -401,7 +383,6 @@ export {
   directAgentDeliveryNotice,
   downloadJson,
   eligibleOrganizationParents,
-  finalizedRunDurationLabels,
   mcpPresentation,
   mergeAgentDetailProjection,
   mergeTelemetryPage,

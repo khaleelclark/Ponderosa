@@ -19,15 +19,15 @@ import {
 import { buildActivityStream } from "./activityStream";
 import type { ActivityStreamEntry } from "./activityStream";
 
-type GroupedActionEntry = Extract<
+export type GroupedActionEntry = Extract<
   ActivityStreamEntry,
   { kind: "command" | "tool" | "file" | "browser" | "notice" }
 >;
-type ActivityDisplayEntry =
+export type ActivityDisplayEntry =
   | ActivityStreamEntry
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
 
-function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
+export function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDisplayEntry[] {
   const grouped: ActivityDisplayEntry[] = [];
   let actions: GroupedActionEntry[] = [];
   const flush = () => {

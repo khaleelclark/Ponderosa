@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 type ChatAuthor =
   | { kind: "operator"; profile?: OperatorProfileDto }
+  | { kind: "inbound_agent"; name: string; onOpen?(): void }
   | { kind: "agent"; name: string; onOpen?(): void }
   | { kind: "notice"; name?: string };
 
@@ -32,6 +33,8 @@ export interface ChatMessagePresentation {
   author: ChatAuthor;
   createdAt: string;
   body: ReactNode;
+  /** Quiet cross-surface context rendered beside the author and timestamp. */
+  source?: ReactNode;
   attachments?: ImageAttachmentDto[];
   attachmentDensity?: "comfortable" | "compact";
   afterBody?: ReactNode;
