@@ -304,7 +304,13 @@ export function createServerReadModels(context: ReadModelContext) {
     };
   }
 
-  function publishCoordinationV3Changed(agentId: string, publishWorkspaceEvent = true): void {
+  function publishCoordinationV3Changed(
+    agentId: string,
+    options: {
+      publishWorkspaceEvent?: boolean;
+      conversationIds?: string[];
+    } = {},
+  ): void {
     const agent = store.getAgent(agentId);
     if (isClosed() || !agent) return;
     const stored = store.appendEvent(agentId, {
@@ -312,12 +318,12 @@ export function createServerReadModels(context: ReadModelContext) {
       coordination: coordinationV3.agentSnapshot(agentId),
     });
     publish(agentId, stored);
-    if (publishWorkspaceEvent) {
+    if (options.publishWorkspaceEvent !== false) {
       appendWorkspace({
         type: "coordination_changed",
         projectId: agent.projectId,
         agentId,
-        conversationIds: agent.conversationIds,
+        conversationIds: options.conversationIds ?? agent.conversationIds,
       });
     }
   }
@@ -325,7 +331,7 @@ export function createServerReadModels(context: ReadModelContext) {
   function publishMessageDeliveryChanged(agentId: string): void {
     const agent = store.getAgent(agentId);
     if (isClosed() || !agent) return;
-    publishCoordinationV3Changed(agentId, false);
+    publishCoordinationV3Changed(agentId, { publishWorkspaceEvent: false });
     appendWorkspace({
       type: "message_delivery_changed",
       projectId: agent.projectId,

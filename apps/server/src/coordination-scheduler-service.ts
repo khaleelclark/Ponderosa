@@ -53,7 +53,10 @@ interface CoordinationSchedulerContext {
   clearRunLeaseTimer(run: ActiveRun): void;
   clearRunLivenessTimer(run: ActiveRun): void;
   renewExecutionLease(agentId: string, run: ActiveRun): boolean;
-  publishCoordinationV3Changed(agentId: string, publishWorkspaceEvent?: boolean): void;
+  publishCoordinationV3Changed(
+    agentId: string,
+    options?: { publishWorkspaceEvent?: boolean; conversationIds?: string[] },
+  ): void;
   publishMessageDeliveryChanged(agentId: string): void;
   drainDeploymentIdleAuthorities(): void;
   communicationArtifactAccess: ArtifactAuthority["communicationArtifactAccess"];

@@ -471,49 +471,58 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
-  const requestCommunicationIds = new Set(
-    operationalEventGroups.flatMap((group) =>
-      group.events.flatMap((event) =>
-        event.kind === "request" && event.request?.communicationEventId
-          ? [event.request.communicationEventId]
-          : [])),
-  );
-  const messagesByCommunicationId = new Map(
+  const messageCommunicationIds = new Set(
     collaborationMessages.flatMap((message) =>
-      message.communicationEventId
-        ? [[message.communicationEventId, message] as const]
-        : []),
+      message.communicationEventId ? [message.communicationEventId] : []),
   );
-  const standaloneMessages = collaborationMessages.filter((message) =>
-    !message.communicationEventId
-    || !requestCommunicationIds.has(message.communicationEventId));
+  const requestGroupsByCommunicationId = new Map<string, OperationalEventGroup[]>();
+  const linkedRequestGroupIds = new Set<string>();
+  for (const group of operationalEventGroups) {
+    const event = group.representative;
+    const communicationEventId = event.kind === "request"
+      ? event.request?.communicationEventId
+      : undefined;
+    if (!communicationEventId || !messageCommunicationIds.has(communicationEventId)) continue;
+    const groups = requestGroupsByCommunicationId.get(communicationEventId) ?? [];
+    groups.push(group);
+    requestGroupsByCommunicationId.set(communicationEventId, groups);
+    linkedRequestGroupIds.add(group.id);
+  }
+  const standaloneOperationalGroups = operationalEventGroups.filter(
+    (group) => !linkedRequestGroupIds.has(group.id),
+  );
+  const requestCard = (
+    group: OperationalEventGroup,
+    requestText?: string,
+  ): JSX.Element => {
+    const event = group.representative;
+    const request = event.request!;
+    return (
+      <RequestLifecycleCard
+        key={event.id}
+        projectId={projectId}
+        conversationId={conversationId}
+        requestId={request.recordId}
+        state={event.state}
+        requesterAgentId={request.requesterAgentId}
+        recipientAgentId={request.recipientAgentId}
+        requestText={requestText ?? request.preview}
+        hasUpdates={request.hasUpdates}
+        hasResult={request.hasResult}
+        updatedAt={event.updatedAt}
+        agentTitle={agentTitle}
+        onOpenWork={onOpenAgentWork}
+      />
+    );
+  };
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
-      {operationalEventGroups.length ? (
+      {standaloneOperationalGroups.length ? (
         <Stack spacing={0.5} aria-label="Team operational activity">
-          {operationalEventGroups.map(group => {
+          {standaloneOperationalGroups.map(group => {
             const event = group.representative;
             if (event.kind === "request" && event.request) {
-              const requestMessage = event.request.communicationEventId
-                ? messagesByCommunicationId.get(event.request.communicationEventId)
-                : undefined;
-              return (
-                <RequestLifecycleCard
-                  key={event.id}
-                  projectId={projectId}
-                  conversationId={conversationId}
-                  requestId={event.request.recordId}
-                  state={event.state}
-                  requesterAgentId={event.request.requesterAgentId}
-                  recipientAgentId={event.request.recipientAgentId}
-                  requestText={requestMessage?.text ?? event.request.preview}
-                  hasUpdates={event.request.hasUpdates}
-                  hasResult={event.request.hasResult}
-                  updatedAt={event.updatedAt}
-                  agentTitle={agentTitle}
-                  onOpenWork={onOpenAgentWork}
-                />
-              );
+              return requestCard(group);
             }
             const content = (
               <>
@@ -621,32 +630,44 @@ function CollaborationTimeline({
           })}
         </Stack>
       ) : null}
-      {standaloneMessages.length + operationalEvents.length ===
+      {collaborationMessages.length + operationalEvents.length ===
       0 ? (
         <Typography variant="body2" color="text.secondary">
           No agent-to-agent messages yet.
         </Typography>
       ) : null}
-      {standaloneMessages.map(message => (
-        <ConversationMessage
-          key={message.id}
-          message={message}
-          conversation="collaboration"
-          projectId={projectId}
-          activeRunId={
-            message.authorAgentId
-              ? healthByAgentId.get(message.authorAgentId)
-                  ?.runtimeActivity?.executionId
-              : undefined
-          }
-          operatorProfile={operatorProfile}
-          agentTitle={agentTitle}
-          agentIdForHandle={agentIdForHandle}
-          onOpenAgent={onOpenAgent}
-          onOpenReview={onOpenReview}
-          onOpenFileActivity={onOpenFileActivity}
-        />
-      ))}
+      {collaborationMessages.map(message => {
+        const requestGroups = message.communicationEventId
+          ? requestGroupsByCommunicationId.get(message.communicationEventId)
+          : undefined;
+        if (requestGroups?.length) {
+          return (
+            <Stack key={message.id} spacing={0.5}>
+              {requestGroups.map((group) => requestCard(group, message.text))}
+            </Stack>
+          );
+        }
+        return (
+          <ConversationMessage
+            key={message.id}
+            message={message}
+            conversation="collaboration"
+            projectId={projectId}
+            activeRunId={
+              message.authorAgentId
+                ? healthByAgentId.get(message.authorAgentId)
+                    ?.runtimeActivity?.executionId
+                : undefined
+            }
+            operatorProfile={operatorProfile}
+            agentTitle={agentTitle}
+            agentIdForHandle={agentIdForHandle}
+            onOpenAgent={onOpenAgent}
+            onOpenReview={onOpenReview}
+            onOpenFileActivity={onOpenFileActivity}
+          />
+        );
+      })}
     </Stack>
   );
 }

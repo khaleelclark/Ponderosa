@@ -44,7 +44,10 @@ interface AgentCoordinationRoutesContext {
     renderedText: string,
     attachments?: ImageAttachmentDto[],
   ): void;
-  publishCoordinationV3Changed(agentId: string): void;
+  publishCoordinationV3Changed(
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ): void;
   notifyScheduler(): void;
   runAuthorization(capability: AgentMessageCapability): {
     runId: string;
@@ -171,8 +174,12 @@ export function registerAgentCoordinationRoutes(
     projectCommunicationToAgentAudit(manager.id, openingCommunication, text);
     projectCommunicationToAgentAudit(child!.id, openingCommunication, text);
     coordinationV3.attachRequestCommunication(coordinated!.requestIds[0]!, openingEventId, manager.projectId);
-    publishCoordinationV3Changed(manager.id);
-    publishCoordinationV3Changed(child!.id);
+    const openingRequest = coordinationV3.getRequest(coordinated!.requestIds[0]!);
+    const conversationIds = openingRequest?.conversationId
+      ? [openingRequest.conversationId]
+      : [];
+    publishCoordinationV3Changed(manager.id, { conversationIds });
+    publishCoordinationV3Changed(child!.id, { conversationIds });
     notifyScheduler();
     return {
       agent: child!, requestId: coordinated!.requestIds[0], joinId: coordinated!.joinId, replayed: false,
@@ -448,8 +455,14 @@ export function registerAgentCoordinationRoutes(
         }
       }
     }
-    publishCoordinationV3Changed(author.id);
-    for (const item of normalized) publishCoordinationV3Changed(item.recipientAgentId);
+    const conversationIds = [...new Set(result.requestIds.flatMap((requestId) => {
+      const changedRequest = coordinationV3.getRequest(requestId);
+      return changedRequest?.conversationId ? [changedRequest.conversationId] : [];
+    }))];
+    publishCoordinationV3Changed(author.id, { conversationIds });
+    for (const item of normalized) {
+      publishCoordinationV3Changed(item.recipientAgentId, { conversationIds });
+    }
     notifyScheduler();
     const requestDeliveries = result.requestIds.flatMap((requestId) => {
       const delivery = coordinationV3.requestDelivery(requestId);

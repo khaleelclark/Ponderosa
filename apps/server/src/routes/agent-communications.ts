@@ -60,7 +60,10 @@ interface AgentCommunicationRoutesContext {
   projectCommunicationArtifact: CommunicationArtifactAuthority["projectCommunicationArtifact"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
-  publishCoordinationV3Changed(agentId: string): void;
+  publishCoordinationV3Changed(
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ): void;
   publishWorkspaceSince(cursor: number): void;
   notifyScheduler(): void;
   messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
@@ -570,8 +573,11 @@ export function registerAgentCommunicationRoutes(
           }
         }
         publishWorkspaceSince(notificationCursor);
-        publishCoordinationV3Changed(requester.id);
-        publishCoordinationV3Changed(recipient.id);
+        const conversationIds = original.conversationId
+          ? [original.conversationId]
+          : [];
+        publishCoordinationV3Changed(requester.id, { conversationIds });
+        publishCoordinationV3Changed(recipient.id, { conversationIds });
         notifyScheduler();
         return { ...result, retryOfRequestId: original.id };
       } catch (error) {
@@ -599,8 +605,13 @@ export function registerAgentCommunicationRoutes(
           actor: { kind: "user", id: "local-operator" },
           payload: { reason: reason || "cancelled by operator" },
         });
-        if (current.requesterAgentId) publishCoordinationV3Changed(current.requesterAgentId);
-        publishCoordinationV3Changed(current.recipientAgentId);
+        const conversationIds = current.conversationId
+          ? [current.conversationId]
+          : [];
+        if (current.requesterAgentId) {
+          publishCoordinationV3Changed(current.requesterAgentId, { conversationIds });
+        }
+        publishCoordinationV3Changed(current.recipientAgentId, { conversationIds });
         notifyScheduler();
         return result;
       } catch (error) {
