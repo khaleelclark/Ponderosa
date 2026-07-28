@@ -41,7 +41,6 @@ import {
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
-import { AgentCreateDialog } from "./AgentCreateDialog";
 
 type ChatDirectoryResource = {
   route: Route;
@@ -148,19 +147,16 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   </CollectionWorkspace>;
 }
 
-export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab }: {
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void;
+  onCreate(projectId?: string, managerAgentId?: string): void;
 }): JSX.Element {
   const agentQueries = useProjectAgents(projects);
   const conversationQueries = useProjectConversations(projects);
   const healthQueries = useProjectAgentHealth(projects);
   const [projectId, setProjectId] = useState(filterProjectId ?? "");
-  const [createAgent, setCreateAgent] = useState<{
-    projectId?: string;
-    managerAgentId?: string;
-  }>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "agent");
   const rows = projects.flatMap((project, index) => (agentQueries[index]?.data ?? []).filter((agent) => !agent.archived).map((agent) => ({ project, agent })));
@@ -191,36 +187,12 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
       />
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => setCreateAgent({
-      projectId: managerAgentId
+    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+      managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,
       managerAgentId,
-    })} />
-    <AgentCreateDialog
-      open={Boolean(createAgent)}
-      projects={projects}
-      engines={engines}
-      initialProjectId={createAgent?.projectId}
-      initialManagerAgentId={createAgent?.managerAgentId}
-      onCancel={() => setCreateAgent(undefined)}
-      onCreated={(createdProjectId, agent) => {
-        setCreateAgent(undefined);
-        onNavigate({
-          kind: "agent",
-          projectId: createdProjectId,
-          agentId: agent.id,
-        });
-      }}
-      onImported={(createdProjectId, agentId) => {
-        setCreateAgent(undefined);
-        onNavigate({
-          kind: "agent",
-          projectId: createdProjectId,
-          agentId,
-        });
-      }}
-    />
+    )} />
   </Box>;
 }
 

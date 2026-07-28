@@ -17,7 +17,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { mergeAgentStatuses } from "../agents";
-import { pickAgentName } from "../parkNames";
 import { useAgent, useAgentHealth, useAgentPresets, useConversations, useAgents } from "../hooks/queries";
 import { queryKeys } from "../queryKeys";
 import { enginesWithModelCatalog } from "../conversationEngine";
@@ -26,7 +25,6 @@ import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
 import { CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
-import { AgentCreateDialog } from "./AgentCreateDialog";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
@@ -35,17 +33,6 @@ import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
-
-interface AgentDialogState {
-  open: boolean;
-  fixedConversationId?: string;
-  defaultEngine?: string;
-  defaultModel?: string;
-  defaultEffort?: string;
-  defaultName?: string;
-  defaultManagerAgentId?: string;
-  continueToTrigger?: boolean;
-}
 
 export function ProjectShell({
   projectId,
@@ -63,6 +50,7 @@ export function ProjectShell({
   onBrowserRequestHandled,
   openInNewTab,
   onResourceDeleted,
+  onCreateAgent,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -79,6 +67,11 @@ export function ProjectShell({
   onBrowserRequestHandled?(requestId: number): void;
   openInNewTab?(route: Route): void;
   onResourceDeleted?(route: Route): void;
+  onCreateAgent(context: {
+    projectId: string;
+    conversationId?: string;
+    managerAgentId?: string;
+  }): void;
 }): JSX.Element {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("md"));
@@ -142,7 +135,6 @@ export function ProjectShell({
   }, [capabilityQueryKey, projectId, queryClient]);
   const presets = presetsQuery.data ?? [];
   const [masterDialogOpen, setMasterDialogOpen] = useState(false);
-  const [agentDialog, setAgentDialog] = useState<AgentDialogState>({ open: false });
   const [presetsOpen, setPresetsOpen] = useState(false);
 
   const statusByAgentId = useMemo(() => {
@@ -165,25 +157,14 @@ export function ProjectShell({
     },
   });
 
-  const suggestedName = () => pickAgentName(agents.map((agent) => agent.title));
-
-  const openNewAgentFromMaster = (master: ConversationDto) =>
-    setAgentDialog({
-      open: true,
-      fixedConversationId: master.id,
-      defaultEngine: master.defaultEngine,
-      defaultModel: master.defaultModel,
-      defaultEffort: master.defaultEffort,
-      defaultName: suggestedName(),
-    });
   const openNewSubagent = (managerAgentId: string) => {
     const manager = agents.find((agent) => agent.id === managerAgentId);
-    setAgentDialog({
-      open: true,
-      fixedConversationId: manager?.conversationId,
-      defaultEngine: manager?.activeEngine,
-      defaultName: suggestedName(),
-      defaultManagerAgentId: managerAgentId,
+    onCreateAgent({
+      projectId,
+      ...(manager?.conversationId
+        ? { conversationId: manager.conversationId }
+        : {}),
+      managerAgentId,
     });
   };
 
@@ -223,14 +204,20 @@ export function ProjectShell({
 
   useEffect(() => {
     if (loading || route.kind !== "agents" || !route.create) return;
-    setAgentDialog({
-      open: true,
-      defaultName: suggestedName(),
-      defaultManagerAgentId: route.managerAgentId,
-      continueToTrigger: route.continueToTrigger,
+    const manager = route.managerAgentId
+      ? agents.find((agent) => agent.id === route.managerAgentId)
+      : undefined;
+    onCreateAgent({
+      projectId,
+      ...(manager?.conversationId
+        ? { conversationId: manager.conversationId }
+        : {}),
+      ...(route.managerAgentId
+        ? { managerAgentId: route.managerAgentId }
+        : {}),
     });
     navigate({ kind: "agents", projectId }, { replace: true });
-  }, [loading, route, projectId, navigate]);
+  }, [agents, loading, navigate, onCreateAgent, projectId, route]);
 
   if (conversationsQuery.isError || agentsQuery.isError) {
     return (
@@ -279,7 +266,11 @@ export function ProjectShell({
         onOpenAgentWork={(focusId) => navigate({ kind: "projectWork", projectId, conversationId: route.conversationId, ...(focusId ? { focusId } : {}) })}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenFileActivity={openAgentFileActivity}
-        onNewAgent={(master, managerAgentId) => managerAgentId ? openNewSubagent(managerAgentId) : openNewAgentFromMaster(master)}
+        onNewAgent={(master, managerAgentId) => onCreateAgent({
+          projectId,
+          conversationId: master.id,
+          ...(managerAgentId ? { managerAgentId } : {}),
+        })}
         preferences={preferences}
         onPreferences={onPreferences}
         onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
@@ -369,7 +360,7 @@ export function ProjectShell({
         onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
-          : setAgentDialog({ open: true, defaultName: suggestedName() })}
+          : onCreateAgent({ projectId })}
         scopeLabel={project.label}
       />
     );
@@ -419,7 +410,7 @@ export function ProjectShell({
         onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
-          : setAgentDialog({ open: true, defaultName: suggestedName() })}
+          : onCreateAgent({ projectId })}
         onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
         onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
         onCreateTrigger={() => navigate({
@@ -450,30 +441,6 @@ export function ProjectShell({
         error={createConversation.isError ? String(createConversation.error) : undefined}
         onClose={() => setMasterDialogOpen(false)}
         onCreate={(input) => createConversation.mutate(input)}
-      />
-      <AgentCreateDialog
-        open={agentDialog.open}
-        projects={[project]}
-        engines={projectEngines}
-        fixedProjectId={projectId}
-        fixedConversationId={agentDialog.fixedConversationId}
-        initialEngine={agentDialog.defaultEngine}
-        initialModel={agentDialog.defaultModel}
-        initialEffort={agentDialog.defaultEffort}
-        initialName={agentDialog.defaultName}
-        initialManagerAgentId={agentDialog.defaultManagerAgentId}
-        onCancel={() => setAgentDialog({ open: false })}
-        onCreated={(_createdProjectId, agent) => {
-          const continueToTrigger = agentDialog.continueToTrigger;
-          setAgentDialog({ open: false });
-          navigate(continueToTrigger
-            ? { kind: "agent", projectId, agentId: agent.id, view: "triggers", createTrigger: true }
-            : { kind: "agent", projectId, agentId: agent.id });
-        }}
-        onImported={(_createdProjectId, agentId) => {
-          setAgentDialog({ open: false });
-          navigate({ kind: "agent", projectId, agentId });
-        }}
       />
       <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);

@@ -51,7 +51,14 @@ export function isProjectDetailView(value: unknown): value is ProjectDetailView 
 
 export type Route =
   | { kind: "home" }
-  | { kind: "create"; resource: CreateResourceKind; projectId?: string; managerAgentId?: string; agentId?: string }
+  | {
+      kind: "create";
+      resource: CreateResourceKind;
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    }
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allChats"; filterProjectId?: string }
@@ -98,6 +105,9 @@ export function parseRoute(pathname: string, search = ""): Route {
       resource: parts[1] as CreateResourceKind,
       ...(query.get("project")?.trim()
         ? { projectId: query.get("project")!.trim() }
+        : {}),
+      ...(query.get("chat")?.trim()
+        ? { conversationId: query.get("chat")!.trim() }
         : {}),
       ...(query.get("manager")?.trim()
         ? { managerAgentId: query.get("manager")!.trim() }

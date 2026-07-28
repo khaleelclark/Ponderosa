@@ -667,6 +667,7 @@ export function CreateWorkspace({
           projects={projects}
           engines={engines}
           initialProjectId={route.projectId}
+          fixedConversationId={route.conversationId}
           initialManagerAgentId={route.managerAgentId}
           onCancel={onCancel}
           onCreated={(projectId, agent) =>

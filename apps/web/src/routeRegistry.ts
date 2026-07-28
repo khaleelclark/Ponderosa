@@ -63,6 +63,7 @@ const ROUTE_REGISTRY = {
     toPath: route => {
       const query = new URLSearchParams();
       if (route.projectId) query.set("project", route.projectId);
+      if (route.conversationId) query.set("chat", route.conversationId);
       if (route.managerAgentId) query.set("manager", route.managerAgentId);
       if (route.agentId) query.set("agent", route.agentId);
       return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;

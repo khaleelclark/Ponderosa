@@ -428,12 +428,20 @@ export default function App({
   };
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
-    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
   ) => {
     const destination: Route = {
       kind: "create",
       resource: kind,
       ...(context?.projectId ? { projectId: context.projectId } : {}),
+      ...(context?.conversationId
+        ? { conversationId: context.conversationId }
+        : {}),
       ...(context?.managerAgentId
         ? { managerAgentId: context.managerAgentId }
         : {}),

@@ -78,6 +78,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
       ) &&
         (candidate.projectId === undefined ||
           typeof candidate.projectId === "string") &&
+        (candidate.conversationId === undefined ||
+          typeof candidate.conversationId === "string") &&
         (candidate.managerAgentId === undefined ||
           typeof candidate.managerAgentId === "string") &&
         (candidate.agentId === undefined ||
