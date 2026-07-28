@@ -20,7 +20,6 @@ import { createClientId } from "../../clientId";
 import { findMentionedHandles, hasBroadcastMention } from "../../mentions";
 import { queryKeys } from "../../queryKeys";
 import { removeHandle, replaceDestination } from "./Composer.helpers";
-import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
@@ -43,9 +42,9 @@ import {
   matchingComposerCapabilities,
   matchingEngineCommands,
   providerSlashSubmission,
-  selectComposerFiles,
   shouldShowQueueControl,
 } from "./composerUtils";
+import { useComposerDraftAttachments } from "./useComposerDraftAttachments";
 import {
   useComposerDraftStorageReset,
   useComposerDraftStorageWrite,
@@ -53,6 +52,8 @@ import {
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
 import { composerSurfaceSx } from "./Composer.styles";
+
+const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
 
 export type { ComposerProps } from "./Composer.types";
 
@@ -115,7 +116,7 @@ export function Composer({
     if (typeof window === "undefined") return "server";
     const key = "ponderosa.draft.owner.v1";
     const existing = window.localStorage.getItem(key);
-    if (existing) return existing;
+    if (existing && DRAFT_OWNER_ID.test(existing)) return existing;
     const created = createClientId();
     window.localStorage.setItem(key, created);
     return created;
@@ -142,18 +143,10 @@ export function Composer({
   const draftRevision = useRef(0);
   const draftReady = useRef(false);
   const draftClientId = useRef<string>();
-  const draftAttachmentIds = useRef(new Map<File, string>());
-  const [draftUploadStates, setDraftUploadStates] = useState<
-    Map<File, { status: DraftUploadStatus; error?: string }>
-  >(() => new Map());
-  const pendingDraftUploads = useRef<File[]>([]);
-  const activeDraftUploads = useRef(0);
-  const pumpDraftUploads = useRef<() => void>(() => undefined);
   const draftWriteChain = useRef<Promise<void>>(Promise.resolve());
   const draftGeneration = useRef(0);
   const draftEditVersion = useRef(0);
   const draftLocallyEdited = useRef(false);
-  const [draftAttachmentVersion, setDraftAttachmentVersion] = useState(0);
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
@@ -172,6 +165,23 @@ export function Composer({
   const [implicitContinueSelected, setImplicitContinueSelected] = useState(
     Boolean(continueWith?.responding),
   );
+  const draftAttachments = useComposerDraftAttachments({
+    assetLimits,
+    conversationDraftId,
+    dispatch: dispatchAttachments,
+    draftOwnerId,
+    files,
+  });
+  const {
+    addFiles,
+    attachmentIds: draftAttachmentIds,
+    attachmentVersion: draftAttachmentVersion,
+    clear: clearDraftAttachments,
+    removeFile,
+    replaceRestored: replaceRestoredDraftAttachments,
+    retryUpload: retryDraftUpload,
+    uploadStates: draftUploadStates,
+  } = draftAttachments;
   useEffect(() => {
     setImplicitContinueSelected(Boolean(continueWith?.responding));
   }, [continueWith?.handle, continueWith?.responding]);
@@ -367,11 +377,7 @@ export function Composer({
       draftReady.current = false;
       draftLocallyEdited.current = false;
       draftRevision.current = 0;
-      draftAttachmentIds.current.clear();
-      pendingDraftUploads.current = [];
-      activeDraftUploads.current = 0;
-      setDraftUploadStates(new Map());
-      dispatchAttachments({ type: "clear" });
+      clearDraftAttachments();
     }
     if (!conversationDraftId || typeof window === "undefined") return;
     const key = "ponderosa.draft.client.v1";
@@ -402,19 +408,7 @@ export function Composer({
         ),
       );
       if (cancelled || draft.revision < draftRevision.current) return;
-      draftAttachmentIds.current = new Map(
-        restored.map(({ attachment, file }) => [file, attachment.id]),
-      );
-      setDraftUploadStates(
-        new Map(
-          restored.map(({ file }) => [file, { status: "complete" as const }]),
-        ),
-      );
-      dispatchAttachments({
-        type: "replace",
-        files: restored.map(({ file }) => file),
-      });
-      setDraftAttachmentVersion(value => value + 1);
+      replaceRestoredDraftAttachments(restored);
       draftRevision.current = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
@@ -529,91 +523,6 @@ export function Composer({
     queryClient,
     text,
   ]);
-
-  pumpDraftUploads.current = () => {
-    if (!conversationDraftId) return;
-    while (
-      activeDraftUploads.current < 4 &&
-      pendingDraftUploads.current.length > 0
-    ) {
-      const file = pendingDraftUploads.current.shift()!;
-      const state = draftUploadStates.get(file);
-      if (state?.status === "complete" || draftAttachmentIds.current.has(file))
-        continue;
-      activeDraftUploads.current += 1;
-      setDraftUploadStates(current =>
-        new Map(current).set(file, { status: "uploading" }),
-      );
-      void api
-        .uploadDraftAttachment(conversationDraftId, draftOwnerId, file)
-        .then(attachment => {
-          draftAttachmentIds.current.set(file, attachment.id);
-          setDraftUploadStates(current =>
-            new Map(current).set(file, { status: "complete" }),
-          );
-          setDraftAttachmentVersion(value => value + 1);
-        })
-        .catch((error: unknown) => {
-          setDraftUploadStates(current =>
-            new Map(current).set(file, {
-              status: "failed",
-              error: error instanceof Error ? error.message : "Upload failed.",
-            }),
-          );
-        })
-        .finally(() => {
-          activeDraftUploads.current -= 1;
-          pumpDraftUploads.current();
-        });
-    }
-  };
-
-  const queueDraftUploads = (candidates: File[]) => {
-    if (!conversationDraftId || candidates.length === 0) return;
-    setDraftUploadStates(current => {
-      const next = new Map(current);
-      for (const file of candidates) next.set(file, { status: "queued" });
-      return next;
-    });
-    pendingDraftUploads.current.push(...candidates);
-    window.queueMicrotask(() => pumpDraftUploads.current());
-  };
-
-  const addFiles = (candidates: File[]) => {
-    const selection = selectComposerFiles(files, candidates, assetLimits);
-    dispatchAttachments({ type: "add", candidates, limits: assetLimits });
-    queueDraftUploads(selection.accepted);
-  };
-
-  const retryDraftUpload = (file: File) => {
-    if (!conversationDraftId || draftAttachmentIds.current.has(file)) return;
-    setDraftUploadStates(current =>
-      new Map(current).set(file, { status: "queued" }),
-    );
-    pendingDraftUploads.current.push(file);
-    pumpDraftUploads.current();
-  };
-
-  const removeFile = (index: number) => {
-    const file = files[index];
-    if (!file) return;
-    const id = draftAttachmentIds.current.get(file);
-    draftAttachmentIds.current.delete(file);
-    pendingDraftUploads.current = pendingDraftUploads.current.filter(
-      candidate => candidate !== file,
-    );
-    setDraftUploadStates(current => {
-      const next = new Map(current);
-      next.delete(file);
-      return next;
-    });
-    dispatchAttachments({ type: "remove", index });
-    setDraftAttachmentVersion(value => value + 1);
-    if (conversationDraftId && id)
-      void api
-        .deleteDraftAttachment(conversationDraftId, draftOwnerId, id)
-        .catch(() => undefined);
-  };
 
   // Agent routing uses #; @ is reserved for project file/folder references.
   const mentionMatch = /(?:^|\s)#([\p{L}\p{N}_-]*)$/u.exec(
@@ -789,6 +698,9 @@ export function Composer({
     sendingRef.current = true;
     setSending(true);
     setSendError(undefined);
+    const submittedText = text;
+    const submittedPastedText = pastedText;
+    const submittedEditVersion = draftEditVersion.current;
     const stagedIds = files
       .map(file => draftAttachmentIds.current.get(file))
       .filter((id): id is string => Boolean(id));
@@ -808,11 +720,7 @@ export function Composer({
       .then(() => {
         update("");
         setPastedText(undefined);
-        dispatchAttachments({ type: "clear" });
-        draftAttachmentIds.current.clear();
-        pendingDraftUploads.current = [];
-        setDraftUploadStates(new Map());
-        setDraftAttachmentVersion(value => value + 1);
+        clearDraftAttachments();
         if (conversationDraftId)
           for (const id of stagedIds)
             void api
@@ -820,11 +728,16 @@ export function Composer({
               .catch(() => undefined);
         setCaret(0);
       })
-      .catch((error: unknown) =>
+      .catch((error: unknown) => {
+        if (draftEditVersion.current === submittedEditVersion) {
+          setText(submittedText);
+          setPastedText(submittedPastedText);
+          if (draftStorageKey) writeChatState(draftStorageKey, submittedText);
+        }
         setSendError(
           error instanceof Error ? error.message : "Upload failed; try again.",
-        ),
-      )
+        );
+      })
       .finally(() => {
         sendingRef.current = false;
         setSending(false);
@@ -890,6 +803,10 @@ export function Composer({
           setDraftConflict(undefined);
           inputRef.current?.focus();
         }}
+        onClearError={() => {
+          setSendError(undefined);
+          dispatchAttachments({ type: "clear_error" });
+        }}
       />
       <Stack
         direction="row"
@@ -949,6 +866,7 @@ export function Composer({
             canSend={canSend}
             onTextChange={(value, nextCaret) => {
               update(value);
+              setSendError(undefined);
               setCaret(nextCaret);
               setHighlighted(0);
               setSuppressMenu(false);

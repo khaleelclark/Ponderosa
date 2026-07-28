@@ -1,8 +1,6 @@
-import { promises as fs } from "node:fs";
 import type {
   AssetDto,
   CommunicationEvent,
-  DraftAttachmentDto,
   ModelOption,
 } from "@ponderosa/core";
 import type {
@@ -146,7 +144,13 @@ export function registerAgentCreationRoutes(
         return reply.code(400).send({ error: "first-turn draft owner is required" });
       }
       const draftAttachments = request.body.conversationId && firstTurnDraftOwnerId
-        ? await Promise.all(draftAttachmentIds.map((id) => drafts.read(request.body.conversationId!, firstTurnDraftOwnerId, id)))
+        ? await Promise.all(draftAttachmentIds.map((id) =>
+            drafts.prepared(
+              request.body.conversationId!,
+              firstTurnDraftOwnerId,
+              id,
+            ),
+          ))
         : [];
       if (draftAttachments.some((attachment) => !attachment)) {
         return reply.code(400).send({ error: "draft attachment is missing or belongs to another conversation" });
@@ -164,11 +168,11 @@ export function registerAgentCreationRoutes(
       }
       let openingAttachments: AssetDto[] = [];
       try {
-        for (const attachment of draftAttachments as DraftAttachmentDto[]) {
+        for (const attachment of draftAttachments as NonNullable<(typeof draftAttachments)[number]>[]) {
           const staged = await assets.stage({
             projectId: agent.projectId, agentId: agent.id,
-            body: await fs.readFile(drafts.files(request.body.conversationId!, firstTurnDraftOwnerId!, attachment.id).body),
-            name: attachment.name, declaredType: attachment.mediaType,
+            body: attachment.body,
+            prepared: attachment.prepared,
           });
           openingAttachments.push({ ...staged, state: "associated" as const });
         }

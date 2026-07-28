@@ -44,7 +44,9 @@ export type {
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
-const MAX_PIXELS = 25_000_000;
+// Preserve ordinary high-resolution screenshots and phone photos. The encoded
+// body remains capped at 8 MiB, and draft promotion reuses this one decode.
+const MAX_PIXELS = 64_000_000;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
 
 function normalizeName(value: unknown): string {
@@ -100,7 +102,155 @@ function extensionMatches(name: string, mediaType: AssetDto["mediaType"]): boole
 
 function contentTypeMatches(declared: string | undefined, detected: AssetDto["mediaType"]): boolean {
   if (!declared || declared === "application/octet-stream") return true;
-  return declared.split(";", 1)[0]?.trim().toLocaleLowerCase() === detected;
+  const normalized = declared.split(";", 1)[0]?.trim().toLocaleLowerCase();
+  if (
+    detected === "text/plain"
+    && ["text/markdown", "text/x-markdown", "text/csv"].includes(normalized ?? "")
+  ) return true;
+  return normalized === detected;
+}
+
+export interface PreparedAssetUpload {
+  name: string;
+  mediaType: AssetDto["mediaType"];
+  sha256: string;
+  width?: number;
+  height?: number;
+  preview?: Buffer;
+  previewSha256?: string;
+}
+
+/**
+ * One admission path for both durable drafts and Agent-owned assets. A draft is
+ * only ready once the exact bytes are known to survive final message staging.
+ */
+export async function prepareAssetUpload(input: {
+  body: Buffer;
+  name: unknown;
+  declaredType?: string;
+}): Promise<PreparedAssetUpload> {
+  if (!input.body.length) throw new AssetError(400, "asset body is required");
+  if (input.body.length > ASSET_LIMITS.maxFileBytes) {
+    throw new AssetError(413, "asset exceeds 8 MiB limit");
+  }
+  const name = normalizeName(input.name);
+  const mediaType = detectType(input.body);
+  if (
+    !mediaType
+    || !extensionMatches(name, mediaType)
+    || !contentTypeMatches(input.declaredType, mediaType)
+  ) {
+    throw new AssetError(
+      415,
+      "file content, media type, and extension must agree",
+    );
+  }
+  if (
+    mediaType.startsWith("image/")
+    && !hasStrictImageContainer(input.body, mediaType)
+  ) {
+    throw new AssetError(
+      415,
+      "image container is truncated or contains trailing data",
+    );
+  }
+  const sha256 = createHash("sha256").update(input.body).digest("hex");
+  if (!mediaType.startsWith("image/")) return { name, mediaType, sha256 };
+
+  let width: number;
+  let height: number;
+  let preview: Buffer;
+  try {
+    const image = sharp(input.body, {
+      animated: false,
+      failOn: "error",
+      limitInputPixels: MAX_PIXELS,
+      sequentialRead: true,
+    });
+    const metadata = await image.metadata();
+    if (
+      !metadata.width
+      || !metadata.height
+      || (metadata.pages ?? 1) !== 1
+      || metadata.width * metadata.height > MAX_PIXELS
+    ) {
+      throw new Error("unsafe image dimensions");
+    }
+    width = metadata.width;
+    height = metadata.height;
+    preview = await image
+      .rotate()
+      .resize({
+        width: 2048,
+        height: 2048,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .timeout({ seconds: 10 })
+      .png({ compressionLevel: 9, adaptiveFiltering: true })
+      .toBuffer();
+  } catch {
+    throw new AssetError(
+      415,
+      `image could not be safely decoded as one bounded frame of at most ${MAX_PIXELS.toLocaleString("en-US")} pixels`,
+    );
+  }
+  if (preview.length > ASSET_LIMITS.maxFileBytes) {
+    throw new AssetError(413, "generated image preview exceeds 8 MiB limit");
+  }
+  return {
+    name,
+    mediaType,
+    sha256,
+    width,
+    height,
+    preview,
+    previewSha256: createHash("sha256").update(preview).digest("hex"),
+  };
+}
+
+function validatePreparedAssetUpload(
+  body: Buffer,
+  prepared: PreparedAssetUpload,
+): PreparedAssetUpload {
+  const bodyHash = createHash("sha256").update(body).digest("hex");
+  const image = prepared.mediaType.startsWith("image/");
+  const validImage =
+    image
+    && Number.isSafeInteger(prepared.width)
+    && (prepared.width ?? 0) > 0
+    && Number.isSafeInteger(prepared.height)
+    && (prepared.height ?? 0) > 0
+    && (prepared.width ?? 0) * (prepared.height ?? 0) <= MAX_PIXELS
+    && Buffer.isBuffer(prepared.preview)
+    && prepared.preview.length > 0
+    && prepared.preview.length <= ASSET_LIMITS.maxFileBytes
+    && detectType(prepared.preview) === "image/png"
+    && hasStrictImageContainer(prepared.preview, "image/png")
+    && createHash("sha256").update(prepared.preview).digest("hex")
+      === prepared.previewSha256;
+  const validNonImage =
+    !image
+    && prepared.width === undefined
+    && prepared.height === undefined
+    && prepared.preview === undefined
+    && prepared.previewSha256 === undefined;
+  if (
+    body.length < 1
+    || body.length > ASSET_LIMITS.maxFileBytes
+    || prepared.name !== normalizeName(prepared.name)
+    || bodyHash !== prepared.sha256
+    || detectType(body) !== prepared.mediaType
+    || !extensionMatches(prepared.name, prepared.mediaType)
+    || !hasStrictImageContainer(body, prepared.mediaType)
+    || (!validImage && !validNonImage)
+  ) {
+    throw new AssetError(
+      409,
+      "prepared asset no longer matches its validated bytes",
+    );
+  }
+  return prepared;
 }
 
 async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
@@ -522,18 +672,23 @@ export class AssetStore {
     return { associated, released, unavailable };
   }
 
-  async stage(input: { projectId: string; agentId: string; body: Buffer; name: unknown; declaredType?: string }): Promise<AssetDto> {
+  async stage(input: {
+    projectId: string;
+    agentId: string;
+    body: Buffer;
+    name?: unknown;
+    declaredType?: string;
+    prepared?: PreparedAssetUpload;
+  }): Promise<AssetDto> {
     const { projectId, agentId, body } = input;
-    if (!body.length) throw new AssetError(400, "asset body is required");
-    if (body.length > ASSET_LIMITS.maxFileBytes) throw new AssetError(413, "asset exceeds 8 MiB limit");
-    const name = normalizeName(input.name);
-    const mediaType = detectType(body);
-    if (!mediaType || !extensionMatches(name, mediaType) || !contentTypeMatches(input.declaredType, mediaType)) {
-      throw new AssetError(415, "file content, media type, and extension must agree");
-    }
-    if (mediaType.startsWith("image/") && !hasStrictImageContainer(body, mediaType)) {
-      throw new AssetError(415, "image container is truncated or contains trailing data");
-    }
+    const prepared = input.prepared
+      ? validatePreparedAssetUpload(body, input.prepared)
+      : await prepareAssetUpload({
+          body,
+          name: input.name,
+          declaredType: input.declaredType,
+        });
+    const { name, mediaType, width, height, preview } = prepared;
     const now = Date.now();
     const openedDirectory = await this.safeDirectory(projectId, agentId, true);
     const directory = openedDirectory.path;
@@ -549,24 +704,6 @@ export class AssetStore {
     const reservationId = (() => { try { return this.authority.reserve(projectId, agentId, id, body.length); } catch (error) { void openedDirectory.handle.close(); throw error; } })();
     try {
       this.authority.recordAudit(path.join(directory, "audit.jsonl"), projectId, agentId, { action: "upload_reserved", agentId, projectId, at: new Date(now).toISOString() });
-
-      let width: number | undefined, height: number | undefined, preview: Buffer | undefined;
-      if (mediaType.startsWith("image/")) {
-        try {
-          const image = sharp(body, { animated: false, failOn: "error", limitInputPixels: MAX_PIXELS, sequentialRead: true });
-          const metadata = await image.metadata();
-          if (!metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1 || metadata.width * metadata.height > MAX_PIXELS) throw new Error("unsafe image dimensions");
-          width = metadata.width; height = metadata.height;
-          const renderedPreview = await image
-            .rotate()
-            .resize({ width: 2048, height: 2048, fit: "inside", withoutEnlargement: true })
-            .timeout({ seconds: 5 })
-            .png({ compressionLevel: 9, adaptiveFiltering: true })
-            .toBuffer();
-          if (renderedPreview.length > ASSET_LIMITS.maxFileBytes) throw new Error("preview exceeds size limit");
-          preview = renderedPreview;
-        } catch { throw new AssetError(415, "image could not be safely decoded as one bounded frame"); }
-      }
 
       const { originalFile, previewFile: canonicalPreview } = canonicalFiles(id);
       const previewFile = preview ? canonicalPreview : undefined;

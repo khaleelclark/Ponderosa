@@ -101,6 +101,8 @@ export interface ImportAgentPackageRequest {
 export interface CopyAgentPackageRequest {
   sourceAgentId: string;
   conversationId: string;
+  /** Template copies omit history, files, and Triggers. Defaults to full. */
+  mode?: "template" | "full";
   /** Copy the source Agent's complete managed descendant organization. */
   organization?: boolean;
   /** Required when any copied Agent receives autonomous destructive authority. */

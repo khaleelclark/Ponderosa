@@ -160,9 +160,39 @@ const COMPOSER_ACCEPTED_MEDIA_TYPES = new Set([
   "application/json",
   "application/zip",
 ]);
+const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
+  ".csv": "text/plain",
+  ".json": "application/json",
+  ".log": "text/plain",
+  ".md": "text/plain",
+  ".pdf": "application/pdf",
+  ".txt": "text/plain",
+  ".zip": "application/zip",
+};
+const COMPOSER_MEDIA_TYPE_ALIASES: Record<string, string> = {
+  "text/csv": "text/plain",
+  "text/markdown": "text/plain",
+  "text/x-markdown": "text/plain",
+};
 export const COMPOSER_MAX_FILES = 20;
 export const COMPOSER_MAX_FILE_BYTES = 8 * 1024 * 1024;
 const COMPOSER_MAX_MESSAGE_BYTES = 80 * 1024 * 1024;
+
+function composerFileMediaType(file: Pick<File, "name" | "type">): string {
+  const declared = file.type
+    .split(";", 1)[0]
+    ?.trim()
+    .toLocaleLowerCase();
+  const aliased = declared
+    ? (COMPOSER_MEDIA_TYPE_ALIASES[declared] ?? declared)
+    : undefined;
+  if (aliased && aliased !== "application/octet-stream") return aliased;
+  const dot = file.name.lastIndexOf(".");
+  const extension = dot >= 0
+    ? file.name.slice(dot).toLocaleLowerCase()
+    : "";
+  return COMPOSER_EXTENSION_MEDIA_TYPES[extension] ?? aliased ?? "";
+}
 
 export function filesFromClipboard(
   items: ArrayLike<Pick<DataTransferItem, "kind" | "getAsFile">>,
@@ -187,25 +217,30 @@ export function selectComposerFiles(
     ? new Set<string>(limits.acceptedMediaTypes)
     : COMPOSER_ACCEPTED_MEDIA_TYPES;
   const accepted: File[] = [];
+  const rejected: string[] = [];
   let bytes = current.reduce((total, file) => total + file.size, 0);
   for (const file of candidates) {
-    if (
-      current.length + accepted.length < maxFiles &&
-      acceptedMediaTypes.has(file.type) &&
-      file.size <= maxFileBytes &&
-      bytes + file.size <= maxMessageBytes
-    ) {
-      accepted.push(file);
-      bytes += file.size;
+    const mediaType = composerFileMediaType(file);
+    const reason =
+      current.length + accepted.length >= maxFiles
+        ? `the ${maxFiles}-file limit was reached`
+        : !acceptedMediaTypes.has(mediaType)
+          ? "its file type is not supported"
+          : file.size > maxFileBytes
+            ? `it exceeds ${Math.floor(maxFileBytes / 1024 / 1024)} MiB`
+            : bytes + file.size > maxMessageBytes
+              ? `the message would exceed ${Math.floor(maxMessageBytes / 1024 / 1024)} MiB`
+              : undefined;
+    if (reason) {
+      rejected.push(`${file.name || "Unnamed file"} wasn’t attached because ${reason}.`);
+      continue;
     }
+    accepted.push(file);
+    bytes += file.size;
   }
-  const rejected = candidates.length - accepted.length;
   return {
     accepted,
-    error:
-      rejected > 0
-        ? `${rejected} pasted or selected ${rejected === 1 ? "file was" : "files were"} not attached. Use up to ${maxFiles} supported files, ${Math.floor(maxFileBytes / 1024 / 1024)} MiB each and ${Math.floor(maxMessageBytes / 1024 / 1024)} MiB total.`
-        : undefined,
+    error: rejected.length > 0 ? rejected.join(" ") : undefined,
   };
 }
 
@@ -214,6 +249,7 @@ export type ComposerAttachmentAction =
   | { type: "add"; candidates: File[]; limits?: AssetLimitsDto }
   | { type: "remove"; index: number }
   | { type: "replace"; files: File[]; error?: string }
+  | { type: "clear_error" }
   | { type: "clear" };
 
 export function composerAttachmentReducer(
@@ -221,6 +257,7 @@ export function composerAttachmentReducer(
   action: ComposerAttachmentAction,
 ): ComposerAttachmentState {
   if (action.type === "clear") return { files: [] };
+  if (action.type === "clear_error") return { files: state.files };
   if (action.type === "remove") {
     return {
       files: state.files.filter((_, index) => index !== action.index),

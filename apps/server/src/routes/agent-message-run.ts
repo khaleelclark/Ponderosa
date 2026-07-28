@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   unicodeCodePointLength,
@@ -355,14 +354,17 @@ export function registerAgentMessageRunRoute(
       const promotedDraftAssets: AssetDto[] = [];
       try {
         for (const draftAttachmentId of stagedDraftIds) {
-          const attachment = await drafts.read(stagedDraftSurface!, stagedDraftOwner!, draftAttachmentId);
+          const attachment = await drafts.prepared(
+            stagedDraftSurface!,
+            stagedDraftOwner!,
+            draftAttachmentId,
+          );
           if (!attachment) throw new AssetError(404, "draft attachment is missing or belongs to another draft");
           promotedDraftAssets.push(await assets.stage({
             projectId: agent.projectId,
             agentId: agent.id,
-            body: await fs.readFile(drafts.files(stagedDraftSurface!, stagedDraftOwner!, attachment.id).body),
-            name: attachment.name,
-            declaredType: attachment.mediaType,
+            body: attachment.body,
+            prepared: attachment.prepared,
           }));
         }
       } catch (error) {

@@ -51,6 +51,7 @@ export function ComposerNotices({
   onShowPastedText,
   onRemovePastedText,
   onRestoreDraft,
+  onClearError,
 }: {
   pastedText?: string;
   pastedTextBytes: number;
@@ -59,6 +60,7 @@ export function ComposerNotices({
   onShowPastedText(): void;
   onRemovePastedText(): void;
   onRestoreDraft(): void;
+  onClearError(): void;
 }): JSX.Element {
   return (
     <>
@@ -101,7 +103,7 @@ export function ComposerNotices({
         </Paper>
       ) : null}
       {error ? (
-        <Alert severity="error" sx={{ mb: 1 }}>
+        <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
           Message not sent. {error}
         </Alert>
       ) : null}

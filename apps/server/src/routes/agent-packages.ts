@@ -963,6 +963,11 @@ export function registerAgentPackageRoutes(
         !sourceAgentId
         || !conversationId
         || (
+          request.body.mode !== undefined
+          && request.body.mode !== "template"
+          && request.body.mode !== "full"
+        )
+        || (
           request.body.organization !== undefined
           && typeof request.body.organization !== "boolean"
         )
@@ -980,7 +985,7 @@ export function registerAgentPackageRoutes(
       if (!source) return reply.code(404).send({ error: "agent not found" });
       const portable = await buildPortablePackage(
         source.id,
-        "full",
+        request.body.mode ?? "full",
         request.body.organization === true,
       );
       const engineMapping = Object.fromEntries(
