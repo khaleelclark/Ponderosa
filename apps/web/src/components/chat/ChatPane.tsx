@@ -458,24 +458,27 @@ function ChatPaneComponent({
                   ) : null}
                 </>
               ),
+              footer: attachedRuns.length ? (
+                <>
+                  {attachedRuns.map(run => (
+                    <AgentWorkReceipt
+                      key={`run:${run.id}`}
+                      agentName={agentName}
+                      run={run}
+                      entries={activityByRun.get(run.id) ?? []}
+                      projectId={projectId}
+                      projectRoot={projectRoot}
+                      onOpenFile={onOpenFile}
+                      onOpenFileInNewTab={onOpenFileInNewTab}
+                      focusId={focusId}
+                      active={run.id === activeExecutionId}
+                      inline
+                    />
+                  ))}
+                </>
+              ) : undefined,
               }}
             />
-            {attachedRuns.map(run => {
-              return (
-                <AgentWorkReceipt
-                  key={`run:${run.id}`}
-                  agentName={agentName}
-                  run={run}
-                  entries={activityByRun.get(run.id) ?? []}
-                  projectId={projectId}
-                  projectRoot={projectRoot}
-                  onOpenFile={onOpenFile}
-                  onOpenFileInNewTab={onOpenFileInNewTab}
-                  focusId={focusId}
-                  active={run.id === activeExecutionId}
-                />
-              );
-            })}
           </Fragment>
         );
       })}

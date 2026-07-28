@@ -41,6 +41,8 @@ export interface ChatMessagePresentation {
   belowBody?: ReactNode;
   status?: ReactNode;
   actions?: ReactNode;
+  /** Persistent message context rendered immediately beside hover actions. */
+  footer?: ReactNode;
   ariaLabel?: string;
   onSelect?(): void;
   /** Called only while this exact message row intersects the visible page. */

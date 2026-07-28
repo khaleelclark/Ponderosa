@@ -221,6 +221,7 @@ export function ChatMessageFrame({
             showTimestamp={false}
             value={message.createdAt}
             status={message.status}
+            footer={message.footer}
             actions={<>
               {message.actions}
             </>}
