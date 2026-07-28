@@ -72,11 +72,6 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
     case "allTriggers":
     case "profile":
       return true;
-    case "new":
-      return candidate.createKind === undefined ||
-        ["project", "chat", "agent", "trigger"].includes(
-          String(candidate.createKind),
-        );
     case "allChats":
     case "allAgents":
       return candidate.filterProjectId === undefined ||

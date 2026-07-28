@@ -468,10 +468,14 @@ export default function App({
     setActiveWorkspaceTabKey(tab.key);
     navigate(next);
   };
-  const openNewWorkspace = (
-    createKind: "project" | "chat" | "agent" | "trigger",
+  const openCreationForm = (
+    kind: "project" | "chat" | "agent" | "trigger",
   ) => {
-    openWorkspaceRoute({ kind: "new", createKind });
+    if (kind === "project") {
+      openProjectCreator();
+      return;
+    }
+    beginHomeCreate(kind);
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -787,10 +791,10 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreateProject={() => openNewWorkspace("project")}
-              onCreateChat={() => openNewWorkspace("chat")}
-              onCreateAgent={() => openNewWorkspace("agent")}
-              onCreateTrigger={() => openNewWorkspace("trigger")}
+              onCreateProject={() => openCreationForm("project")}
+              onCreateChat={() => openCreationForm("chat")}
+              onCreateAgent={() => openCreationForm("agent")}
+              onCreateTrigger={() => openCreationForm("trigger")}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -897,7 +901,7 @@ export default function App({
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onOpenInNewTab={openWorkspaceRoute}
-          onCreate={openNewWorkspace}
+          onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}

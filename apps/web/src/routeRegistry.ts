@@ -5,7 +5,6 @@ type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
 
 export type ProjectRoute = Extract<Route, { projectId: string }>;
 export type RouteTabIcon =
-  | "add"
   | "agent"
   | "bolt"
   | "chat"
@@ -55,15 +54,6 @@ const ROUTE_REGISTRY = {
     workspaceTabKey: () => "home",
     tabLabel: () => "Home",
     tabIcon: "home",
-    scope: "global",
-    initialSidebarSection: "home",
-  },
-  new: {
-    toPath: route =>
-      `/new${route.createKind ? `?kind=${route.createKind}` : ""}`,
-    workspaceTabKey: () => "new",
-    tabLabel: () => "Create New",
-    tabIcon: "add",
     scope: "global",
     initialSidebarSection: "home",
   },

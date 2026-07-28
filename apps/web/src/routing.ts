@@ -24,7 +24,6 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
-export type NewWorkspaceKind = "project" | "chat" | "agent" | "trigger";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "triggers", "artifacts", "settings", "technical"];
 
@@ -34,7 +33,6 @@ export function isAgentDetailView(value: unknown): value is AgentDetailView {
 
 export type Route =
   | { kind: "home" }
-  | { kind: "new"; createKind?: NewWorkspaceKind }
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allChats"; filterProjectId?: string }
@@ -71,15 +69,6 @@ export function parseRoute(pathname: string, search = ""): Route {
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "home" };
-  if (parts.length === 1 && parts[0] === "new") {
-    const createKind = query.get("kind");
-    return {
-      kind: "new",
-      ...(["project", "chat", "agent", "trigger"].includes(createKind ?? "")
-        ? { createKind: createKind as NewWorkspaceKind }
-        : {}),
-    };
-  }
   if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChats", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };
