@@ -2,6 +2,7 @@ import { Chip, Stack, Typography } from "@mui/material";
 import type {
   AgentActivityDto,
   AgentRunDto,
+  MessageDto,
   ResponseFileActivityDto,
   RunOutputDto,
 } from "@ponderosa/core";
@@ -10,18 +11,18 @@ import { chatStateKey } from "../../chatState";
 import { ChatSurface } from "../chat/ChatSurface";
 import {
   ActionGroupRow,
-  CommandRow,
   CompactActivityRow,
-  FileRow,
   ResponseRow,
   RunHeaderRow,
   ThinkingRow,
-  ToolRow,
 } from "./ActivityRows";
 import { buildActivityStream } from "./activityStream";
 import type { ActivityStreamEntry } from "./activityStream";
 
-type GroupedActionEntry = Extract<ActivityStreamEntry, { kind: "command" | "tool" }>;
+type GroupedActionEntry = Extract<
+  ActivityStreamEntry,
+  { kind: "command" | "tool" | "file" | "browser" | "notice" }
+>;
 type ActivityDisplayEntry =
   | ActivityStreamEntry
   | { kind: "action_group"; id: string; entries: GroupedActionEntry[] };
@@ -40,8 +41,13 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
     actions = [];
   };
   for (const entry of entries) {
-    if (entry.kind === "command" || entry.kind === "tool") {
-      if (actions.length > 0 && actions[0]!.kind !== entry.kind) flush();
+    if (
+      entry.kind === "command" ||
+      entry.kind === "tool" ||
+      entry.kind === "file" ||
+      entry.kind === "browser" ||
+      (entry.kind === "notice" && entry.result)
+    ) {
       actions.push(entry);
       continue;
     }
@@ -57,6 +63,7 @@ export function ActivityStreamPane({
   activity,
   runOutput = [],
   runs = [],
+  messages = [],
   connected,
   running,
   activeExecutionId,
@@ -74,6 +81,7 @@ export function ActivityStreamPane({
   activity: AgentActivityDto[];
   runOutput?: RunOutputDto[];
   runs?: AgentRunDto[];
+  messages?: MessageDto[];
   connected: boolean;
   running: boolean;
   activeExecutionId?: string;
@@ -91,8 +99,9 @@ export function ActivityStreamPane({
     activity,
     runOutput,
     runs,
+    messages,
     ...(activeExecutionId ? { activeExecutionId } : {}),
-  }), [activity, runOutput, runs, activeExecutionId]);
+  }), [activity, runOutput, runs, messages, activeExecutionId]);
   const displayEntries = useMemo(() => groupConsecutiveActions(entries), [entries]);
   const latestRunOutputSeq = runOutput.reduce(
     (latest, item) => Math.max(latest, item.sourceSeqEnd),
@@ -144,15 +153,6 @@ export function ActivityStreamPane({
         onOpenFileInNewTab={onOpenFileInNewTab}
         onViewAll={onViewAll}
         projectId={projectId}
-      />;
-      if (entry.kind === "command") return <CommandRow key={entry.id} entry={entry} focusId={focusId} projectRoot={projectRoot} />;
-      if (entry.kind === "tool") return <ToolRow key={entry.id} entry={entry} focusId={focusId} />;
-      if (entry.kind === "file") return <FileRow
-        key={entry.id}
-        entry={entry}
-        focusId={focusId}
-        onOpenFile={onOpenFile}
-        onOpenFileInNewTab={onOpenFileInNewTab}
       />;
       if (entry.kind === "test" || entry.kind === "error" || entry.kind === "browser" || entry.kind === "notice") {
         return <CompactActivityRow key={entry.id} entry={entry} focusId={focusId} />;

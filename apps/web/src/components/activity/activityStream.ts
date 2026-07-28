@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentRunDto,
   FileChangeKind,
+  MessageDto,
   RunOutputDto,
 } from "@ponderosa/core";
 import { unifiedDiffLineTotals } from "@ponderosa/core";
@@ -11,6 +12,7 @@ export interface ActivityStreamInput {
   activity: AgentActivityDto[];
   runOutput: RunOutputDto[];
   runs: AgentRunDto[];
+  messages?: MessageDto[];
   activeExecutionId?: string;
 }
 
@@ -34,6 +36,7 @@ export type ActivityStreamEntry =
   | (ActivityStreamBase & {
       kind: "run_header";
       run?: AgentRunDto;
+      prompt?: MessageDto;
       executionId?: string;
       active: boolean;
     })
@@ -286,6 +289,12 @@ export function buildActivityStream(input: ActivityStreamInput): ActivityStreamE
   ].sort((a, b) => a.entry.seq - b.entry.seq || a.entry.id.localeCompare(b.entry.id));
 
   const runById = new Map(input.runs.map((run) => [run.id, run]));
+  const messageByCommunicationId = new Map(
+    (input.messages ?? []).flatMap(message =>
+      message.communicationEventId
+        ? [[message.communicationEventId, message] as const]
+        : []),
+  );
   const emittedHeaders = new Set<string>();
   const entries: ActivityStreamEntry[] = [];
   for (const candidate of candidates) {
@@ -298,6 +307,9 @@ export function buildActivityStream(input: ActivityStreamInput): ActivityStreamE
         seq: candidate.entry.seq,
         createdAt: run?.startedAt ?? candidate.entry.createdAt,
         ...(run ? { run } : {}),
+        ...(run?.communicationEventId && messageByCommunicationId.has(run.communicationEventId)
+          ? { prompt: messageByCommunicationId.get(run.communicationEventId)! }
+          : {}),
         ...(candidate.executionId ? { executionId: candidate.executionId } : {}),
         active: candidate.executionId !== undefined &&
           candidate.executionId === input.activeExecutionId,
@@ -317,6 +329,9 @@ export function buildActivityStream(input: ActivityStreamInput): ActivityStreamE
       seq: Number.MAX_SAFE_INTEGER - emptyRuns.length + index,
       createdAt: run.startedAt,
       run,
+      ...(run.communicationEventId && messageByCommunicationId.has(run.communicationEventId)
+        ? { prompt: messageByCommunicationId.get(run.communicationEventId)! }
+        : {}),
       executionId: run.id,
       active: run.id === input.activeExecutionId,
     });
