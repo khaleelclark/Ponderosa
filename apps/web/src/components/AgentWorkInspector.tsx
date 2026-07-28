@@ -1,3 +1,4 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import {
@@ -124,6 +125,7 @@ export function AgentWorkInspector({
   agentId,
   focus,
   onClose,
+  backLabel = "Back to Project",
 }: {
   open: boolean;
   projectId: string;
@@ -131,6 +133,7 @@ export function AgentWorkInspector({
   agentId?: string;
   focus?: AgentWorkFocus;
   onClose(): void;
+  backLabel?: string;
 }): JSX.Element {
   const query = useQuery({
     queryKey: queryKeys.agentWork.list(
@@ -180,6 +183,7 @@ export function AgentWorkInspector({
 
   return <Stack data-testid="technical-details-workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+        <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="h6">Technical Details</Typography>
           <Typography variant="caption" color="text.secondary">Read-only coordination and execution evidence</Typography>

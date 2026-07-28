@@ -1,4 +1,5 @@
 import CloseIcon from "@mui/icons-material/Close";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import {
   Alert, Box, Button, Chip, Dialog, DialogContent, DialogTitle,
@@ -16,7 +17,7 @@ import { FeatureErrorBoundary } from "./FeatureErrorBoundary";
 import type { ProjectBrowserRequest } from "./ProjectBrowserContext";
 
 export function ProjectBrowserDialog({
-  projectId, open, request, onRequestHandled, onClose, embedded = false,
+  projectId, open, request, onRequestHandled, onClose, embedded = false, backLabel = "Back to Project",
 }: {
   projectId?: string;
   open: boolean;
@@ -24,6 +25,7 @@ export function ProjectBrowserDialog({
   onRequestHandled?(requestId: number): void;
   onClose(): void;
   embedded?: boolean;
+  backLabel?: string;
 }): JSX.Element {
   const adapter = useMemo(() => projectBrowserAdapter(projectId ?? ""), [projectId]);
   const [address, setAddress] = useState("");
@@ -95,6 +97,7 @@ export function ProjectBrowserDialog({
     <DialogTitle id="project-browser-title">
       <Stack spacing={.25}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+          {embedded ? <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip> : null}
           <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
           {session ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
           {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}

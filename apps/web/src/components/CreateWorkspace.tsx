@@ -1,3 +1,4 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -9,6 +10,7 @@ import {
   Button,
   FormControl,
   FormControlLabel,
+  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -17,6 +19,7 @@ import {
   Select,
   Stack,
   TextField,
+  Tooltip,
   Typography,
   createFilterOptions,
 } from "@mui/material";
@@ -98,9 +101,11 @@ const resourcePresentation = {
 
 function CreateSurface({
   route,
+  onBack,
   children,
 }: {
   route: Extract<Route, { kind: "create" }>;
+  onBack(): void;
   children: ReactNode;
 }): JSX.Element {
   const presentation = resourcePresentation[route.resource];
@@ -110,10 +115,23 @@ function CreateSurface({
       sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 4 }, py: 3 }}
     >
       <Box sx={{ width: "100%", maxWidth: 780, mx: "auto" }}>
-        <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
-        <Typography color="text.secondary" sx={{ mt: 0.5, mb: 2.5 }}>
-          {presentation.description}
-        </Typography>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start", mb: 2.5 }}>
+          <Tooltip title="Return to previous workspace">
+            <IconButton
+              aria-label="Return to previous workspace"
+              onClick={onBack}
+              sx={{ mt: -0.75, ml: -1 }}
+            >
+              <ArrowBackIcon />
+            </IconButton>
+          </Tooltip>
+          <Box sx={{ minWidth: 0 }}>
+            <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
+            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+              {presentation.description}
+            </Typography>
+          </Box>
+        </Stack>
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           {children}
         </Paper>
@@ -798,7 +816,7 @@ export function CreateWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   return (
-    <CreateSurface route={route}>
+    <CreateSurface route={route} onBack={onCancel}>
       {route.resource === "project" ? (
         <ProjectCreateForm
           engines={engines}

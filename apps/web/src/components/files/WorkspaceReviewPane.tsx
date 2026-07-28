@@ -1,3 +1,4 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import RefreshIcon from "@mui/icons-material/Refresh";
 import { Alert, Box, Button, Chip, CircularProgress, IconButton, Paper, Stack, Tooltip, Typography } from "@mui/material";
@@ -34,12 +35,13 @@ function recordedDiffTotals(diff?: string): { additions: number; deletions: numb
   return { additions, deletions };
 }
 
-export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onOpenInNewTab }: {
+export function WorkspaceReviewPane({ projectId, agentId, files, running, initialPath, onBack, onOpenInNewTab }: {
   projectId: string;
   agentId?: string;
   files: ChangedFileDto[];
   running: boolean;
   initialPath?: string;
+  onBack(): void;
   onOpenInNewTab?(path: string): void;
 }): JSX.Element {
   const workspace = useQuery({
@@ -92,6 +94,7 @@ export function WorkspaceReviewPane({ projectId, agentId, files, running, initia
 
   return <Box data-testid="workspace-review" sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
+      <Tooltip title="Back to Agent"><IconButton aria-label="Back to Agent" size="small" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Typography variant="overline" color="text.secondary">Review</Typography>
       {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}

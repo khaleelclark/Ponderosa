@@ -356,7 +356,15 @@ export function ProjectShell({
       />
     );
 } else if (route.kind === "browser") {
-  main = <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
+  main = <ProjectBrowserDialog
+    projectId={projectId}
+    open
+    embedded
+    request={browserRequest}
+    onRequestHandled={onBrowserRequestHandled}
+    backLabel={route.agentId ? "Back to Agent" : "Back to Project"}
+    onClose={() => navigate(route.agentId ? { kind: "agent", projectId, agentId: route.agentId } : { kind: "project", projectId })}
+  />;
 } else if (route.kind === "agents") {
     main = (
       <AgentsTab
@@ -382,12 +390,20 @@ export function ProjectShell({
       files={detail?.changedFiles ?? []}
       running={running}
       initialPath={route.path}
+      onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
       onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
     />;
   } else if (route.kind === "workspaceFile") {
-    main = <WorkspaceFileView projectId={projectId} path={route.path} />;
+    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "projectWork") {
-    main = <AgentWorkInspector open projectId={projectId} conversationId={route.conversationId} focus={route.focusId ? { id: route.focusId } : undefined} onClose={() => navigate({ kind: "project", projectId })} />;
+    main = <AgentWorkInspector
+      open
+      projectId={projectId}
+      conversationId={route.conversationId}
+      focus={route.focusId ? { id: route.focusId } : undefined}
+      backLabel={route.conversationId ? "Back to Chat" : "Back to Project"}
+      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "project", projectId })}
+    />;
   } else if (route.kind === "project") {
     main =
       <ProjectArtifactsView
