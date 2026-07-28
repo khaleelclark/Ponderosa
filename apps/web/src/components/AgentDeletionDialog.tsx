@@ -9,13 +9,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
+import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 
 export function AgentDeletionDialog({
   open,
   projectId,
   rootAgentIds,
-  title = "Delete agent?",
+  title,
   confirmationText,
   onClose,
   onDeleted,
@@ -80,8 +80,10 @@ export function AgentDeletionDialog({
   };
 
   return (
-    <DestructiveConfirmDialog
+    <ResourceDeletionDialog
       open={open}
+      resourceType={roots.length === 1 ? "Agent" : "Agents"}
+      resourceName={affected.length === 1 ? affected[0]?.title : undefined}
       title={title}
       pending={deletion.isPending}
       pendingLabel="Deleting"
@@ -110,6 +112,6 @@ export function AgentDeletionDialog({
           onChange={(event) => setConfirmation(event.target.value)}
         /> : null}
       </> : null}
-    </DestructiveConfirmDialog>
+    </ResourceDeletionDialog>
   );
 }

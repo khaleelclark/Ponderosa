@@ -107,6 +107,37 @@ export function DestructiveConfirmDialog({
   );
 }
 
+export interface ResourceDeletionDialogProps
+  extends Omit<ConfirmDialogProps, "title"> {
+  resourceType: string;
+  resourceName?: string;
+  title?: ReactNode;
+}
+
+/**
+ * Shared destructive-action language for workspace resources. Callers provide
+ * the resource-specific consequences while the title, confirmation action,
+ * pending state, and error treatment remain consistent.
+ */
+export function ResourceDeletionDialog({
+  resourceType,
+  resourceName,
+  title,
+  confirmLabel,
+  ...props
+}: ResourceDeletionDialogProps): JSX.Element {
+  return (
+    <DestructiveConfirmDialog
+      {...props}
+      title={
+        title ??
+        `Delete ${resourceType}${resourceName ? ` “${resourceName}”` : ""}?`
+      }
+      confirmLabel={confirmLabel ?? `Delete ${resourceType}`}
+    />
+  );
+}
+
 export interface TextInputDialogProps extends Omit<ConfirmDialogProps, "children" | "onConfirm"> {
   label: string;
   initialValue?: string;

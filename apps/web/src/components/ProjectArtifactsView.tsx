@@ -1,8 +1,10 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -19,6 +21,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  IconButton,
   InputAdornment,
   InputLabel,
   List,
@@ -26,6 +29,7 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
+  Menu,
   Select,
   Stack,
   TextField,
@@ -57,7 +61,8 @@ import {
   projectHealthDetail,
   projectHealthPresentation,
 } from "./ProjectOverview";
-import { ProjectSettingsPanel } from "./ProjectSettingsDialog";
+import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import {
   ResourceContextMenu,
@@ -150,6 +155,9 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [projectMenuAnchor, setProjectMenuAnchor] =
+    useState<HTMLElement | null>(null);
+  const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
   const [artifactMenu, setArtifactMenu] =
     useState<
       ResourceContextMenuState<{ agentId: string; artifactId: string }>
@@ -297,6 +305,47 @@ export function ProjectArtifactsView({
               {projectHealth.label}
             </Button>
           </Tooltip>
+        }
+        actions={
+          <>
+            <Tooltip title={`Actions for ${project.label}`}>
+              <IconButton
+                aria-label={`Actions for ${project.label}`}
+                onClick={event => setProjectMenuAnchor(event.currentTarget)}
+              >
+                <MoreVertIcon />
+              </IconButton>
+            </Tooltip>
+            <Menu
+              anchorEl={projectMenuAnchor}
+              open={Boolean(projectMenuAnchor)}
+              onClose={() => setProjectMenuAnchor(null)}
+            >
+              <MenuItem
+                onClick={() => {
+                  setProjectMenuAnchor(null);
+                  setTab("settings");
+                }}
+              >
+                <ListItemIcon>
+                  <SettingsOutlinedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Project Settings</ListItemText>
+              </MenuItem>
+              <MenuItem
+                sx={{ color: "error.main" }}
+                onClick={() => {
+                  setProjectMenuAnchor(null);
+                  setProjectDeleteOpen(true);
+                }}
+              >
+                <ListItemIcon sx={{ color: "inherit" }}>
+                  <DeleteOutlineIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Delete Project</ListItemText>
+              </MenuItem>
+            </Menu>
+          </>
         }
         tabs={{
           value: tab,
@@ -937,6 +986,12 @@ export function ProjectArtifactsView({
           <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
         </DialogActions>
       </Dialog>
+      <ProjectDeletionDialog
+        project={project}
+        open={projectDeleteOpen}
+        onClose={() => setProjectDeleteOpen(false)}
+        onDeleted={onProjectDeleted}
+      />
     </Box>
   );
 }

@@ -1042,7 +1042,9 @@ export function AgentsTab({
           onClose={() => setDeleteSelectedGroups([])}
           onDeleted={() => {
             if (deleteSelectedGroups.length > 1) {
-              const deletedIds = new Set(deleteSelectedGroups[0].agentIds);
+              const deletedIds = new Set(
+                deleteSelectedGroups[0]?.agentIds ?? [],
+              );
               setSelectedAgentIds(current => {
                 const next = new Set(current);
                 deletedIds.forEach(id => next.delete(id));

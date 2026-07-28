@@ -40,7 +40,7 @@ import {
 } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
-import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 
 type ChatDirectoryResource = {
   route: Route;
@@ -387,10 +387,10 @@ export function AllTriggersWorkspace({
           renameTrigger.mutate({ trigger: triggerAction.trigger, name: name.trim() });
       }}
     />
-    <DestructiveConfirmDialog
+    <ResourceDeletionDialog
       open={triggerAction?.kind === "delete"}
-      title="Delete Trigger?"
-      confirmLabel="Delete"
+      resourceType="Trigger"
+      resourceName={triggerAction?.trigger.name}
       pendingLabel="Deleting…"
       pending={deleteTrigger.isPending}
       error={deleteTrigger.isError ? String(deleteTrigger.error) : undefined}
@@ -403,9 +403,10 @@ export function AllTriggersWorkspace({
       }}
     >
       <Typography sx={{ pt: 1 }}>
-        This permanently deletes the Trigger and stops future automatic work from it.
+        Pending occurrences will be cancelled. Immutable occurrence history
+        remains available.
       </Typography>
-    </DestructiveConfirmDialog>
+    </ResourceDeletionDialog>
   </CollectionWorkspace>;
 }
 

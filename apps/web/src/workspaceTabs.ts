@@ -243,6 +243,65 @@ export function removeWorkspaceRoute(current: WorkspaceTabState[], route: Route)
   return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
 }
 
+/**
+ * Removes every tab for a deleted resource while replacing its active tab with
+ * the nearest surviving parent. Keeping the active tab key makes deletion and
+ * navigation one state transition instead of racing missing-tab recovery.
+ */
+export function removeWorkspaceRouteWithFallback(
+  current: WorkspaceTabState[],
+  activeKey: string,
+  removedRoute: Route,
+  fallbackRoute: Route,
+  now = Date.now(),
+): WorkspaceTabState[] {
+  const resourceKey = workspaceTabKey(removedRoute);
+  const fallbackActivatedAt = Math.max(
+    now,
+    ...current.map((tab) => tab.lastActivatedAt + 1),
+    0,
+  );
+  const next = current.flatMap((tab) => {
+    if (workspaceTabKey(tab.route) !== resourceKey) return [tab];
+    if (tab.key !== activeKey) return [];
+    return [{
+      ...tab,
+      route: fallbackRoute,
+      title: undefined,
+      lastActivatedAt: fallbackActivatedAt,
+    }];
+  });
+  return next.length > 0 ? next : [createWorkspaceTab(fallbackRoute)];
+}
+
+/** Project deletion also removes every child workspace owned by that Project. */
+export function removeProjectWorkspaceTabsWithFallback(
+  current: WorkspaceTabState[],
+  activeKey: string,
+  projectId: string,
+  fallbackRoute: Route = { kind: "projects" },
+  now = Date.now(),
+): WorkspaceTabState[] {
+  const fallbackActivatedAt = Math.max(
+    now,
+    ...current.map((tab) => tab.lastActivatedAt + 1),
+    0,
+  );
+  const next = current.flatMap((tab) => {
+    const belongsToDeletedProject =
+      "projectId" in tab.route && tab.route.projectId === projectId;
+    if (!belongsToDeletedProject) return [tab];
+    if (tab.key !== activeKey) return [];
+    return [{
+      ...tab,
+      route: fallbackRoute,
+      title: undefined,
+      lastActivatedAt: fallbackActivatedAt,
+    }];
+  });
+  return next.length > 0 ? next : [createWorkspaceTab(fallbackRoute)];
+}
+
 export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], projectIds: Set<string>): WorkspaceTabState[] {
   const retained = current.filter((tab) => !("projectId" in tab.route) || typeof tab.route.projectId !== "string" || projectIds.has(tab.route.projectId));
   return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];

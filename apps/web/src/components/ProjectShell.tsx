@@ -283,7 +283,6 @@ export function ProjectShell({
         })}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "conversation", projectId, conversationId: route.conversationId });
-          navigate({ kind: "agents", projectId });
         }}
       />
     );
@@ -333,7 +332,6 @@ export function ProjectShell({
         onNewSubagent={openNewSubagent}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "agent", projectId, agentId: route.agentId });
-          navigate({ kind: "agents", projectId });
         }}
       />
     );
@@ -420,7 +418,6 @@ export function ProjectShell({
         })}
         onProjectDeleted={() => {
           onResourceDeleted?.({ kind: "project", projectId });
-          navigate({ kind: "home" });
         }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}

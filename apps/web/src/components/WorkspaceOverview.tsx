@@ -23,7 +23,8 @@ import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
-import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { TextInputDialog } from "./ConfirmationDialogs";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import {
   CollectionDirectoryControls,
@@ -99,14 +100,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       setProjectAction(undefined);
-    },
-  });
-  const deleteProject = useMutation({
-    mutationFn: (project: ProjectDto) => api.deleteProject(project.id),
-    onSuccess: (_deleted, project) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
-      setProjectAction(undefined);
-      onProjectDeleted(project.id);
     },
   });
   const normalizedFilter = filter.trim().toLocaleLowerCase();
@@ -257,24 +250,14 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           renameProject.mutate({ project: projectAction.project, label: label.trim() });
       }}
     />
-    <DestructiveConfirmDialog
+    {projectAction?.kind === "delete" ? <ProjectDeletionDialog
+      project={projectAction.project}
       open={projectAction?.kind === "delete"}
-      title="Delete Project?"
-      confirmLabel="Delete Permanently"
-      pendingLabel="Deleting…"
-      pending={deleteProject.isPending}
-      error={deleteProject.isError ? String(deleteProject.error) : undefined}
-      onCancel={() => {
-        deleteProject.reset();
+      onClose={() => setProjectAction(undefined)}
+      onDeleted={(projectId) => {
         setProjectAction(undefined);
+        onProjectDeleted(projectId);
       }}
-      onConfirm={() => {
-        if (projectAction?.kind === "delete") deleteProject.mutate(projectAction.project);
-      }}
-    >
-      <Typography sx={{ pt: 1 }}>
-        This permanently deletes its Project chats, Agents, Runs, work items, and Files &amp; Results. The working folder and its source files are not deleted.
-      </Typography>
-    </DestructiveConfirmDialog>
+    /> : null}
   </CollectionWorkspace>;
 }

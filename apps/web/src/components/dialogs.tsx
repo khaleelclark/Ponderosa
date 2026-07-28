@@ -23,7 +23,7 @@ import type {
 } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { effortSelectionIsCompatible, engineIsAvailable, modelSelectionIsCompatible } from "../conversationEngine";
-import { DestructiveConfirmDialog } from "./ConfirmationDialogs";
+import { ResourceDeletionDialog } from "./ConfirmationDialogs";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 
 const UNSET = "";
@@ -170,10 +170,10 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
       </DialogContent>
       <DialogActions><Button onClick={close} disabled={Boolean(pendingAction)}>Done</Button></DialogActions>
     </Dialog>
-    <DestructiveConfirmDialog
+    <ResourceDeletionDialog
       open={Boolean(deleting)}
-      title="Delete preset?"
-      confirmLabel="Delete Preset"
+      resourceType="Preset"
+      resourceName={deleting?.name}
       pending={pendingAction === "delete"}
       pendingLabel="Deleting"
       error={actionError?.action === "delete" ? actionError.message : undefined}
@@ -185,8 +185,8 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
       }}
       onConfirm={() => void remove()}
     >
-      Delete <strong>{deleting?.name}</strong>? Agents already created from this preset keep their saved guidance.
-    </DestructiveConfirmDialog>
+      Agents already created from this Preset keep their saved guidance.
+    </ResourceDeletionDialog>
   </>;
 }
 
