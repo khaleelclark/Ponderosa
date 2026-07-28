@@ -517,6 +517,22 @@ export default function App({
   const removeWorkspaceView = (removedRoute: Route) => {
     setWorkspaceTabs(current => removeWorkspaceRoute(current, removedRoute));
   };
+  const handleProjectDeleted = (projectId: string) => {
+    const next = nextProjectAfterDelete(projects, projectId);
+    const survivingProjectIds = new Set(
+      projects
+        .filter(project => project.id !== projectId)
+        .map(project => project.id),
+    );
+    setWorkspaceTabs(current =>
+      removeProjectWorkspaceTabs(current, survivingProjectIds),
+    );
+    setSettingsProject(undefined);
+    if (next) {
+      saveLastProjectId(next.id);
+      navigate({ kind: "project", projectId: next.id });
+    } else navigate({ kind: "home" });
+  };
   useEffect(() => {
     const onWorkspaceTabShortcut = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey) return;
@@ -707,6 +723,7 @@ export default function App({
                 onCancelCreate={cancelCreationWorkspace}
                 onOpenInbox={() => setNotificationPanelOpen(true)}
                 onManageProject={openProjectSettings}
+                onProjectDeleted={handleProjectDeleted}
                 onConversationAction={openSidebarConversationAction}
                 onOpenEngineStatus={() => setEngineStatusOpen(true)}
                 onBrowserRequestHandled={requestId =>
@@ -840,22 +857,7 @@ export default function App({
         <ProjectSettingsDialog
           project={settingsProject}
           onClose={() => setSettingsProject(undefined)}
-          onDeleted={projectId => {
-            const next = nextProjectAfterDelete(projects, projectId);
-            const survivingProjectIds = new Set(
-              projects
-                .filter(project => project.id !== projectId)
-                .map(project => project.id),
-            );
-            setWorkspaceTabs(current =>
-              removeProjectWorkspaceTabs(current, survivingProjectIds),
-            );
-            setSettingsProject(undefined);
-            if (next) {
-              saveLastProjectId(next.id);
-              navigate({ kind: "project", projectId: next.id });
-            } else navigate({ kind: "home" });
-          }}
+          onDeleted={handleProjectDeleted}
         />
       </Box>
     </ProjectBrowserContext.Provider>

@@ -10,8 +10,8 @@ import {
   Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
-import type { ConversationDto, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import {
@@ -31,6 +31,7 @@ import { mergeAgentStatuses } from "../agents";
 import { CollectionDirectoryControls, CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
+import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 
 type ChatDirectoryResource = {
   route: Route;
@@ -150,9 +151,14 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
       />
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={(sourceId, targetId) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} />
+    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={(sourceId, targetId) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} />
   </Box>;
 }
+
+type TriggerDirectoryResource = {
+  route: Route;
+  trigger: TriggerDefinitionDto;
+};
 
 export function AllTriggersWorkspace({ projects, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -161,7 +167,28 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   const queryClient = useQueryClient();
   const triggers = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const agents = useProjectAgents(projects);
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
+  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
+  const [triggerAction, setTriggerAction] = useState<{
+    kind: "rename" | "delete";
+    trigger: TriggerDefinitionDto;
+  }>();
+  const renameTrigger = useMutation({
+    mutationFn: ({ trigger, name }: { trigger: TriggerDefinitionDto; name: string }) =>
+      api.updateTrigger(trigger.id, { name }),
+    onSuccess: (_updated, { trigger }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      setTriggerAction(undefined);
+    },
+  });
+  const deleteTrigger = useMutation({
+    mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
+    onSuccess: (_deleted, trigger) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      setTriggerAction(undefined);
+    },
+  });
   const sort = workspaceResourceSort(preferences, "trigger"); const starred = starredWorkspaceResources(preferences);
   const destinations = useMemo(() => new Map(projects.flatMap((project, index) => (agents[index]?.data ?? []).map((agent) => [agent.id, { project, agent }] as const))), [projects, agents.map((query) => query.data)]);
   const rows = (triggers.data ?? []).flatMap((trigger) => { const destination = destinations.get(trigger.agentId); return destination ? [{ trigger, ...destination }] : []; });
@@ -186,6 +213,7 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   >
     {ordered.map(({ project, agent, trigger }) => {
       const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };
+      const menuResource = { route, trigger };
       const key = resourcePreferenceKey("trigger", trigger.id);
       return <ResourceRow
         key={trigger.id}
@@ -202,12 +230,12 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
           <Typography variant="caption" color="text.secondary">{new Date(trigger.updatedAt).toLocaleString()}</Typography>
         </Stack>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => {
           markWorkspaceResourceUsed(queryClient, "trigger", trigger.id);
           onNavigate(route);
         }}
-        onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
+        onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
         draggable
         onDragStart={() => setDragged(trigger.id)}
         onDragEnd={() => setDragged(undefined)}
@@ -221,7 +249,64 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
       title={rows.length === 0 && !filtersActive ? "No Triggers yet" : "No Triggers match these filters"}
       detail={rows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : "Try a different search or Project filter."}
     /> : null}
-    <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+    <ResourceContextMenu
+      state={menu}
+      onClose={() => setMenu(undefined)}
+      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      actions={[
+        {
+          id: "rename",
+          label: "Rename",
+          icon: <EditOutlinedIcon fontSize="small" />,
+          onSelect: ({ trigger }) => setTriggerAction({ kind: "rename", trigger }),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <DeleteOutlineIcon fontSize="small" />,
+          color: "error",
+          onSelect: ({ trigger }) => setTriggerAction({ kind: "delete", trigger }),
+        },
+      ]}
+    />
+    <TextInputDialog
+      open={triggerAction?.kind === "rename"}
+      title="Rename Trigger"
+      label="Trigger name"
+      initialValue={triggerAction?.trigger.name ?? ""}
+      confirmLabel="Save"
+      pendingLabel="Saving…"
+      pending={renameTrigger.isPending}
+      error={renameTrigger.isError ? String(renameTrigger.error) : undefined}
+      validate={(value) => value.trim() ? undefined : "Enter a Trigger name."}
+      onCancel={() => {
+        renameTrigger.reset();
+        setTriggerAction(undefined);
+      }}
+      onConfirm={(name) => {
+        if (triggerAction?.kind === "rename")
+          renameTrigger.mutate({ trigger: triggerAction.trigger, name: name.trim() });
+      }}
+    />
+    <DestructiveConfirmDialog
+      open={triggerAction?.kind === "delete"}
+      title="Delete Trigger?"
+      confirmLabel="Delete"
+      pendingLabel="Deleting…"
+      pending={deleteTrigger.isPending}
+      error={deleteTrigger.isError ? String(deleteTrigger.error) : undefined}
+      onCancel={() => {
+        deleteTrigger.reset();
+        setTriggerAction(undefined);
+      }}
+      onConfirm={() => {
+        if (triggerAction?.kind === "delete") deleteTrigger.mutate(triggerAction.trigger);
+      }}
+    >
+      <Typography sx={{ pt: 1 }}>
+        This permanently deletes the Trigger and stops future automatic work from it.
+      </Typography>
+    </DestructiveConfirmDialog>
   </CollectionWorkspace>;
 }
 

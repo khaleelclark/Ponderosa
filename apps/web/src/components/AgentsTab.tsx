@@ -1,6 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -11,6 +12,7 @@ import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import ViewListOutlinedIcon from "@mui/icons-material/ViewListOutlined";
 import {
   Alert,
@@ -44,6 +46,7 @@ import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
+import { TextInputDialog } from "./ConfirmationDialogs";
 import {
   ResourceContextMenu,
   type ResourceContextMenuState,
@@ -157,6 +160,7 @@ export function AgentsTab({
   healthByAgentId,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onOpenAgentSettings,
   onNewAgent,
   projectByAgentId,
   starredAgentIds,
@@ -177,6 +181,7 @@ export function AgentsTab({
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onOpenAgentSettings?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
   projectByAgentId?: Map<string, { id: string; label: string }>;
   starredAgentIds?: ReadonlySet<string>;
@@ -201,6 +206,7 @@ export function AgentsTab({
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
+  const [pendingRename, setPendingRename] = useState<AgentDto | undefined>();
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -231,6 +237,20 @@ export function AgentsTab({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(updated.id),
       });
+    },
+  });
+  const renameAgent = useMutation({
+    mutationFn: ({ agent, title }: { agent: AgentDto; title: string }) =>
+      api.updateAgent(agent.id, { title }),
+    onSuccess: updated => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.project(updated.projectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detailPrefix(updated.id),
+      });
+      setPendingRename(undefined);
     },
   });
 
@@ -914,6 +934,25 @@ export function AgentsTab({
           onDeleted={() => setPendingDelete(undefined)}
         />
       ) : null}
+      <TextInputDialog
+        open={Boolean(pendingRename)}
+        title="Rename Agent"
+        label="Agent name"
+        initialValue={pendingRename?.title ?? ""}
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        pending={renameAgent.isPending}
+        error={renameAgent.isError ? String(renameAgent.error) : undefined}
+        validate={(value) => value.trim() ? undefined : "Enter an Agent name."}
+        onCancel={() => {
+          renameAgent.reset();
+          setPendingRename(undefined);
+        }}
+        onConfirm={(title) => {
+          if (pendingRename)
+            renameAgent.mutate({ agent: pendingRename, title: title.trim() });
+        }}
+      />
       <ResourceContextMenu
         state={agentMenu}
         onClose={() => setAgentMenu(undefined)}
@@ -921,6 +960,23 @@ export function AgentsTab({
         actions={
           agentMenu
             ? [
+                ...(onOpenAgentSettings
+                  ? [
+                      {
+                        id: "settings",
+                        label: "Agent Settings",
+                        icon: <SettingsOutlinedIcon fontSize="small" />,
+                        onSelect: onOpenAgentSettings,
+                      },
+                    ]
+                  : []),
+                {
+                  id: "rename",
+                  label: "Rename",
+                  icon: <EditOutlinedIcon fontSize="small" />,
+                  onSelect: (agentId: string) =>
+                    setPendingRename(agentsById.get(agentId)),
+                },
                 {
                   id: "delegate",
                   label: "Add Delegated Agent",
@@ -941,7 +997,7 @@ export function AgentsTab({
                   : []),
                 {
                   id: "delete",
-                  label: "Delete Agent",
+                  label: "Delete",
                   icon: <DeleteOutlineIcon fontSize="small" />,
                   color: "error" as const,
                   onSelect: (agentId: string) =>
