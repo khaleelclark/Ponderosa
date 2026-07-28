@@ -13,7 +13,6 @@ import {
 import { chatMessageLayoutKey } from "./chat/ChatMessages";
 import {
   decisionChoice,
-  groupAdjacentOperationalEvents,
   mergeConversationMessages,
   mergeDecisionEvents,
   mergeOperationalEvents,
@@ -131,12 +130,6 @@ export function useConversationHistory(
       ),
     [collaborationQuery.data?.operations, olderCollaboration?.operations],
   );
-  const operationalEventGroups = useMemo(
-    () => groupAdjacentOperationalEvents(operationalEvents),
-    [operationalEvents],
-  );
-  const [expandedOperationalEventGroups, setExpandedOperationalEventGroups] =
-    useState<Set<string>>(() => new Set());
   const messageLayoutKey = mainTimeline.map(entry => entry.id).join(":");
   const collaborationLayoutKey = chatMessageLayoutKey(collaborationMessages);
   const operationalLayoutKey = operationalEvents.length
@@ -233,17 +226,14 @@ export function useConversationHistory(
     collaborationMessages,
     collaborationQuery,
     detailQuery,
-    expandedOperationalEventGroups,
     loadOlderHistory,
     loadingOlder,
     mainHistory,
     mainTimeline,
     messageLayoutKey,
     messages,
-    operationalEventGroups,
     operationalEvents,
     operationalLayoutKey,
-    setExpandedOperationalEventGroups,
     setOlderCollaboration,
     setOlderMain,
   };
