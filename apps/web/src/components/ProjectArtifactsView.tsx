@@ -1,4 +1,5 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
@@ -41,7 +42,7 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
-import type { ProjectDetailView } from "../routing";
+import type { ProjectDetailView, Route } from "../routing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -70,6 +71,7 @@ import {
   projectOutputKinds,
   type ProjectFileCategory,
 } from "./ProjectArtifactsView.helpers";
+import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
 
 export function ProjectArtifactsView({
   projectId,
@@ -90,6 +92,9 @@ export function ProjectArtifactsView({
   onOpenAgent,
   onOpenAgentInNewTab,
   onNewAgent,
+  onNavigateTrigger,
+  onOpenTriggerInNewTab,
+  onCreateTrigger,
   onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
@@ -118,6 +123,9 @@ export function ProjectArtifactsView({
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
+  onNavigateTrigger(route: Route): void;
+  onOpenTriggerInNewTab(route: Route): void;
+  onCreateTrigger(): void;
   onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
@@ -256,7 +264,7 @@ export function ProjectArtifactsView({
       className="ponderosa-scroll"
       sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}
     >
-      <TabbedWorkspaceFrame<"overview" | "files" | "agents" | "settings">
+      <TabbedWorkspaceFrame<ProjectDetailView>
         icon={<FolderOutlinedIcon />}
         title={project.label}
         context={
@@ -306,6 +314,11 @@ export function ProjectArtifactsView({
               icon: <SmartToyOutlinedIcon />,
             },
             {
+              value: "triggers",
+              label: "Project Triggers",
+              icon: <BoltOutlinedIcon />,
+            },
+            {
               value: "settings",
               label: "Project Settings",
               icon: <SettingsOutlinedIcon />,
@@ -316,7 +329,7 @@ export function ProjectArtifactsView({
       <Box
         sx={{
           p:
-            tab === "agents" || tab === "settings"
+            tab === "agents" || tab === "triggers" || tab === "settings"
               ? 0
               : { xs: 1.5, sm: 3 },
         }}
@@ -732,6 +745,18 @@ export function ProjectArtifactsView({
               onOpenAgent={onOpenAgent}
               onOpenAgentInNewTab={onOpenAgentInNewTab}
               onNewAgent={onNewAgent}
+            />
+          ) : null}
+          {tab === "triggers" ? (
+            <AllTriggersWorkspace
+              projects={[project]}
+              filterProjectId={projectId}
+              embedded
+              preferences={preferences}
+              onPreferences={onPreferences}
+              onNavigate={onNavigateTrigger}
+              onOpenInNewTab={onOpenTriggerInNewTab}
+              onCreate={onCreateTrigger}
             />
           ) : null}
           {tab === "settings" ? (

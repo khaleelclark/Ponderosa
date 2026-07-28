@@ -410,6 +410,13 @@ export function ProjectShell({
         onNewAgent={(managerAgentId) => managerAgentId
           ? openNewSubagent(managerAgentId)
           : setAgentDialog({ open: true, defaultName: suggestedName() })}
+        onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
+        onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
+        onCreateTrigger={() => navigate({
+          kind: "create",
+          resource: "trigger",
+          projectId,
+        })}
         onProjectDeleted={() => {
           onResourceDeleted?.({ kind: "project", projectId });
           navigate({ kind: "home" });

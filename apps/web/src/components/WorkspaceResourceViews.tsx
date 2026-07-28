@@ -195,14 +195,26 @@ type TriggerDirectoryResource = {
   trigger: TriggerDefinitionDto;
 };
 
-export function AllTriggersWorkspace({ projects, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+export function AllTriggersWorkspace({
+  projects,
+  filterProjectId,
+  embedded = false,
+  preferences,
+  onPreferences,
+  onNavigate,
+  onOpenInNewTab,
+  onCreate,
+}: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  filterProjectId?: string;
+  embedded?: boolean;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const triggers = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const agents = useProjectAgents(projects);
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
+  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
+  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const [triggerAction, setTriggerAction] = useState<{
     kind: "rename" | "delete";
     trigger: TriggerDefinitionDto;
@@ -230,21 +242,37 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
   const filtersActive = Boolean(projectId || search.trim());
+  const scopedProject = filterProjectId
+    ? projects.find(project => project.id === filterProjectId)
+    : undefined;
+  const createButton = (
+    <Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>
+      New Trigger
+    </Button>
+  );
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
-    title="All Triggers"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} Triggers` : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`}
-    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
+    title={scopedProject ? "Project Triggers" : "All Triggers"}
+    detail={
+      scopedProject
+        ? `${ordered.length} ${ordered.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+        : filtersActive
+          ? `${ordered.length} of ${rows.length} Triggers`
+          : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+    }
+    primaryAction={createButton}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers">
       <CollectionDirectoryControls
-        projects={projects}
-        projectId={projectId}
-        onProject={setProjectId}
+        projects={filterProjectId ? undefined : projects}
+        projectId={filterProjectId ? undefined : projectId}
+        onProject={filterProjectId ? undefined : setProjectId}
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("trigger", value))}
       />
+      {embedded ? createButton : null}
     </CollectionToolbar>}
     listLabel="All Triggers"
+    variant={embedded ? "embedded" : "page"}
   >
     {ordered.map(({ project, agent, trigger }) => {
       const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };

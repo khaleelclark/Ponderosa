@@ -24,11 +24,22 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
-export type ProjectDetailView = "overview" | "files" | "agents" | "settings";
+export type ProjectDetailView =
+  | "overview"
+  | "files"
+  | "agents"
+  | "triggers"
+  | "settings";
 export type CreateResourceKind = "project" | "chat" | "agent" | "trigger";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "triggers", "artifacts", "settings", "technical"];
-const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = ["overview", "files", "agents", "settings"];
+const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = [
+  "overview",
+  "files",
+  "agents",
+  "triggers",
+  "settings",
+];
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
