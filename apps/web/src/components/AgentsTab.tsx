@@ -887,7 +887,9 @@ export function AgentsTab({
                         ? undefined
                         : anchor => setAgentMenu({ anchor, resource: agent.id })
                     }
-                    draggable={Boolean(onReorder)}
+                    draggable={
+                      organizationView === "flat" && Boolean(onReorder)
+                    }
                     onDragStart={() => setDraggedAgentId(agent.id)}
                     onDragEnd={() => setDraggedAgentId(undefined)}
                     onDrop={() => {
