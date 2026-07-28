@@ -3,7 +3,7 @@ import {
   useMediaQuery,
   useTheme,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
@@ -21,8 +21,11 @@ import { NotificationPanel } from "./components/NotificationPanel";
 import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
+import { TriggersPane } from "./components/TriggersPane";
 import {
+  CreateAgentDialog,
   CreateConversationDialog,
+  type CreateAgentInput,
   type CreateConversationInput,
 } from "./components/dialogs";
 import {
@@ -34,11 +37,15 @@ import {
 } from "./components/WorkspaceDialogs";
 import {
   useEngines,
+  useAgentPresets,
   useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "./hooks/queries";
-import { useProjectAgents } from "./hooks/useProjectCollections";
+import {
+  useProjectAgents,
+  useProjectConversations,
+} from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -85,10 +92,7 @@ import {
   restoreWorkspaceSidebarState,
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
-import {
-  routeForTriggerAgentSelection,
-  triggerAgentDestinations,
-} from "./triggerCreation";
+import { triggerAgentDestinations } from "./triggerCreation";
 import { queryKeys } from "./queryKeys";
 import { MobileWorkspaceDrawer, MobileWorkspaceHeader } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
@@ -96,6 +100,7 @@ import {
   markWorkspaceResourceUsed,
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
+import { pickAgentName } from "./parkNames";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -182,6 +187,16 @@ export default function App({
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent">();
   const [homeChatProjectId, setHomeChatProjectId] = useState<string>();
+  const [homeAgentCreation, setHomeAgentCreation] = useState<{
+    projectId: string;
+    continueToTrigger: boolean;
+    managerAgentId?: string;
+  }>();
+  const [homeTriggerCreation, setHomeTriggerCreation] = useState<{
+    projectId: string;
+    agent: AgentDto;
+    instance: number;
+  }>();
   const [homeCreateContinueToTrigger, setHomeCreateContinueToTrigger] =
     useState(false);
   const [triggerCreateOpen, setTriggerCreateOpen] = useState(false);
@@ -197,6 +212,8 @@ export default function App({
     staleTime: 30_000,
   });
   const projectAgentQueries = useProjectAgents(projects);
+  const projectConversationQueries = useProjectConversations(projects);
+  const homeAgentPresetsQuery = useAgentPresets(homeAgentCreation?.projectId);
   const preferredQuotaProvider = route.kind === "agent"
     ? projectAgentQueries[
         projects.findIndex((project) => project.id === route.projectId)
@@ -501,6 +518,72 @@ export default function App({
       });
     },
   });
+  const homeAgentProjectIndex = projects.findIndex(
+    project => project.id === homeAgentCreation?.projectId,
+  );
+  const homeAgentProject =
+    homeAgentProjectIndex >= 0 ? projects[homeAgentProjectIndex] : undefined;
+  const homeAgentAgents =
+    homeAgentProjectIndex >= 0
+      ? (projectAgentQueries[homeAgentProjectIndex]?.data ?? [])
+      : [];
+  const homeAgentConversations =
+    homeAgentProjectIndex >= 0
+      ? (projectConversationQueries[homeAgentProjectIndex]?.data ?? [])
+      : [];
+  const homeAgentCreationMutation = useMutation({
+    mutationFn: ({
+      projectId,
+      input,
+    }: {
+      projectId: string;
+      input: CreateAgentInput;
+    }) =>
+      api.createAgent(projectId, input.conversationId, {
+        title: input.title,
+        engine: input.engine,
+        model: input.model,
+        effort: input.effort,
+        presetId: input.presetId,
+        managerAgentId: input.managerAgentId,
+        initialMessage: input.initialMessage,
+      }),
+    onSuccess: (agent, variables) => {
+      queryClient.setQueryData<AgentDto[]>(
+        queryKeys.agents.project(variables.projectId),
+        (current = []) =>
+          current.some(item => item.id === agent.id)
+            ? current
+            : [...current, agent],
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.project(variables.projectId),
+      });
+      if (agent.conversationId) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.conversations.detailPrefix(agent.conversationId),
+        });
+      }
+      const continueToTrigger =
+        homeAgentCreation?.continueToTrigger === true;
+      setHomeAgentCreation(undefined);
+      if (continueToTrigger) {
+        setHomeTriggerCreation({
+          projectId: variables.projectId,
+          agent,
+          instance: Date.now(),
+        });
+        return;
+      }
+      navigateWorkspace(
+        {
+          kind: "agent",
+          projectId: variables.projectId,
+          agentId: agent.id,
+        },
+      );
+    },
+  });
   const createHomeAgent = (
     projectId?: string,
     continueToTrigger = false,
@@ -508,14 +591,13 @@ export default function App({
   ) => {
     const project =
       projects.find(candidate => candidate.id === projectId) ?? projects[0];
-    if (project)
-      navigateWorkspace({
-        kind: "agents",
-        projectId: project.id,
-        create: true,
-        ...(managerAgentId ? { managerAgentId } : {}),
-        ...(continueToTrigger ? { continueToTrigger: true } : {}),
-      });
+    if (!project) return;
+    homeAgentCreationMutation.reset();
+    setHomeAgentCreation({
+      projectId: project.id,
+      continueToTrigger,
+      ...(managerAgentId ? { managerAgentId } : {}),
+    });
   };
   const beginTriggerCreate = () => {
     setTriggerCreateOpen(true);
@@ -900,6 +982,37 @@ export default function App({
           onClose={() => setHomeCreateKind(undefined)}
           onContinue={continueHomeCreate}
         />
+        <CreateAgentDialog
+          open={Boolean(homeAgentCreation && homeAgentProject)}
+          engines={engines}
+          conversations={homeAgentConversations}
+          presets={homeAgentPresetsQuery.data ?? []}
+          agents={homeAgentAgents}
+          defaultEngine={homeAgentProject?.defaultEngine}
+          defaultModel={homeAgentProject?.defaultModel}
+          defaultEffort={homeAgentProject?.defaultEffort}
+          defaultName={pickAgentName(
+            homeAgentAgents.map(agent => agent.title),
+          )}
+          defaultManagerAgentId={homeAgentCreation?.managerAgentId}
+          pending={homeAgentCreationMutation.isPending}
+          error={
+            homeAgentCreationMutation.isError
+              ? String(homeAgentCreationMutation.error)
+              : undefined
+          }
+          onClose={() => {
+            homeAgentCreationMutation.reset();
+            setHomeAgentCreation(undefined);
+          }}
+          onCreate={input => {
+            if (!homeAgentCreation) return;
+            homeAgentCreationMutation.mutate({
+              projectId: homeAgentCreation.projectId,
+              input,
+            });
+          }}
+        />
         <CreateConversationDialog
           open={Boolean(homeChatProjectId)}
           pending={homeChatCreation.isPending}
@@ -933,15 +1046,37 @@ export default function App({
             else setHomeCreateKind("agent");
           }}
           onContinue={agentId => {
-            const destination = routeForTriggerAgentSelection(
-              agentId,
-              triggerAgentOptions,
+            const destination = triggerAgentOptions.find(
+              candidate =>
+                candidate.agent.id === agentId &&
+                candidate.agent.conversationIds.length > 0,
             );
             if (!destination) return;
             setTriggerCreateOpen(false);
-            navigateWorkspace(destination);
+            setHomeTriggerCreation({
+              projectId: destination.project.id,
+              agent: destination.agent,
+              instance: Date.now(),
+            });
           }}
         />
+        {homeTriggerCreation ? (
+          <TriggersPane
+            key={homeTriggerCreation.instance}
+            agent={homeTriggerCreation.agent}
+            initialCreateOpen
+            createOnly
+            onTriggerCreated={() =>
+              navigateWorkspace({
+                kind: "agent",
+                projectId: homeTriggerCreation.projectId,
+                agentId: homeTriggerCreation.agent.id,
+                view: "triggers",
+              })
+            }
+            onCreateFlowComplete={() => setHomeTriggerCreation(undefined)}
+          />
+        ) : null}
         <OnboardingCompleteDialog
           open={onboardingCompleteOpen}
           onClose={() => setOnboardingCompleteOpen(false)}

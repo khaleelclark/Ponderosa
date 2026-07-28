@@ -110,7 +110,21 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
   </Box>;
 }
 
-export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false }: { agent: AgentDto; onOpenAgentWork?(occurrenceId: string): void; initialCreateOpen?: boolean }): JSX.Element {
+export function TriggersPane({
+  agent,
+  onOpenAgentWork,
+  initialCreateOpen = false,
+  createOnly = false,
+  onTriggerCreated,
+  onCreateFlowComplete,
+}: {
+  agent: AgentDto;
+  onOpenAgentWork?(occurrenceId: string): void;
+  initialCreateOpen?: boolean;
+  createOnly?: boolean;
+  onTriggerCreated?(trigger: TriggerDefinitionDto): void;
+  onCreateFlowComplete?(): void;
+}): JSX.Element {
   const queryClient = useQueryClient();
   const queryKey = queryKeys.triggers.agent(agent.id);
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
@@ -219,7 +233,12 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
       setCreateOpen(false);
       setName("");
       setInstructions("");
-      if (response.webhookSecret) setSecret({ trigger: response.trigger, value: response.webhookSecret });
+      onTriggerCreated?.(response.trigger);
+      if (response.webhookSecret) {
+        setSecret({ trigger: response.trigger, value: response.webhookSecret });
+      } else {
+        onCreateFlowComplete?.();
+      }
     },
   });
   const saveEdit = useMutation({
@@ -281,7 +300,17 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
     await navigator.clipboard.writeText(value);
   };
 
-  return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 960, mx: "auto" }}>
+  const closeCreateEditor = (): void => {
+    setCreateOpen(false);
+    setEditing(undefined);
+    if (!editing) onCreateFlowComplete?.();
+  };
+  const closeSecret = (): void => {
+    setSecret(undefined);
+    onCreateFlowComplete?.();
+  };
+
+  return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 960, mx: "auto", ...(createOnly ? { display: "none" } : {}) }}>
     <Stack spacing={2}>
       <Alert severity="warning">
         <strong>Triggers run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but a Trigger can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
@@ -399,7 +428,7 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
       <Typography sx={{ pt: 1 }}>Pending occurrences will be cancelled. Immutable occurrence history remains available.</Typography>
     </DestructiveConfirmDialog>
 
-    <Dialog open={createOpen} onClose={() => { setCreateOpen(false); setEditing(undefined); }} fullWidth maxWidth="sm">
+    <Dialog open={createOpen} onClose={closeCreateEditor} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -421,10 +450,10 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
           {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
         </Stack>
       </DialogContent>
-      <DialogActions><Button onClick={() => { setCreateOpen(false); setEditing(undefined); }}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions><Button onClick={closeCreateEditor}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button></DialogActions>
     </Dialog>
 
-    <Dialog open={Boolean(secret)} onClose={() => setSecret(undefined)} fullWidth maxWidth="sm">
+    <Dialog open={Boolean(secret)} onClose={closeSecret} fullWidth maxWidth="sm">
       <DialogTitle>Save webhook secret now</DialogTitle>
       <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
         <Alert severity="warning">This secret is shown only once. Store it in the sending system&apos;s secret manager.</Alert>
@@ -432,7 +461,7 @@ export function TriggersPane({ agent, onOpenAgentWork, initialCreateOpen = false
         <TextField label="Signing secret" value={secret?.value ?? ""} InputProps={{ readOnly: true, endAdornment: <Button aria-label="Copy signing secret" onClick={() => secret && copy(secret.value)}><ContentCopyIcon /></Button> }} />
         <Typography variant="body2" color="text.secondary">Sign the exact raw JSON bytes as <code>timestamp.eventId.body</code>. Send <code>X-Ponderosa-Timestamp</code>, <code>X-Ponderosa-Event-Id</code>, and <code>X-Ponderosa-Signature: v1=&lt;hex&gt;</code>.</Typography>
       </Stack></DialogContent>
-      <DialogActions><Button variant="contained" onClick={() => setSecret(undefined)}>I Saved It</Button></DialogActions>
+      <DialogActions><Button variant="contained" onClick={closeSecret}>I Saved It</Button></DialogActions>
     </Dialog>
   </Box>;
 }
