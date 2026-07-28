@@ -157,6 +157,7 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreate={projectId => onCreate("chat", { projectId })}
+          onConversationAction={onConversationAction}
         />
       ) : route.kind === "allTriggers" ? (
         <AllTriggersWorkspace

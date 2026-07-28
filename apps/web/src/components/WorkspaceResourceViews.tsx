@@ -1,6 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
@@ -8,7 +10,7 @@ import {
   Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
-import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { ConversationDto, EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -30,12 +32,18 @@ import { CollectionDirectoryControls, CollectionEmptyState, CollectionHeader, Co
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 
-export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+type ChatDirectoryResource = {
+  route: Route;
+  conversation: ConversationDto;
+};
+
+export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onConversationAction }: {
   projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string): void;
+  onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
 }): JSX.Element {
   const queries = useProjectConversations(projects);
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
+  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
   const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
@@ -60,6 +68,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   >
     {ordered.map(({ project, conversation }) => {
       const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
+      const menuResource = { route, conversation };
       const key = resourcePreferenceKey("conversation", conversation.id);
       return <ResourceRow
         key={conversation.id}
@@ -68,9 +77,9 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         icon={<ChatBubbleOutlineIcon />}
         meta={<Typography variant="caption" color="text.secondary">{new Date(conversation.updatedAt).toLocaleString()}</Typography>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
-        onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
+        onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
         draggable
         onDragStart={() => setDragged(conversation.id)}
         onDragEnd={() => setDragged(undefined)}
@@ -84,7 +93,26 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       title={rows.length === 0 && !filtersActive ? "No Chats yet" : "No Chats match these filters"}
       detail={rows.length === 0 && !filtersActive ? "Create a Chat to get started." : "Try a different search or Project filter."}
     /> : null}
-    <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+    <ResourceContextMenu
+      state={menu}
+      onClose={() => setMenu(undefined)}
+      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      actions={[
+        {
+          id: "rename",
+          label: "Rename",
+          icon: <EditOutlinedIcon fontSize="small" />,
+          onSelect: ({ conversation }) => onConversationAction("rename", conversation),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <DeleteOutlineIcon fontSize="small" />,
+          color: "error",
+          onSelect: ({ conversation }) => onConversationAction("delete", conversation),
+        },
+      ]}
+    />
   </CollectionWorkspace>;
 }
 
