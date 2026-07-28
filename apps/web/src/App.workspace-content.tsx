@@ -211,7 +211,6 @@ export function WorkspaceRouteOutlet({
             notifications={notifications}
             preferences={preferences}
             onPreferences={onPreferences}
-            onManageProject={onManageProject}
             onRenameConversation={conversation =>
               onConversationAction("rename", conversation)
             }

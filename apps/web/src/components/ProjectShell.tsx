@@ -54,7 +54,6 @@ export function ProjectShell({
   notifications,
   preferences,
   onPreferences,
-  onManageProject,
   onRenameConversation,
   onDeleteConversation,
   onOpenEngineStatus,
@@ -71,7 +70,6 @@ export function ProjectShell({
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onManageProject(project: ProjectDto): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onOpenEngineStatus(): void;
@@ -408,8 +406,16 @@ export function ProjectShell({
         onOpenConversationInNewTab={openInNewTab ? (conversationId) => openInNewTab({ kind: "conversation", projectId, conversationId }) : undefined}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
-        onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
-        onManageProject={() => onManageProject(project)}
+        statusByAgentId={statusByAgentId}
+        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
+        onNewAgent={(managerAgentId) => managerAgentId
+          ? openNewSubagent(managerAgentId)
+          : setAgentDialog({ open: true, defaultName: suggestedName() })}
+        onProjectDeleted={() => {
+          onResourceDeleted?.({ kind: "project", projectId });
+          navigate({ kind: "home" });
+        }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}
