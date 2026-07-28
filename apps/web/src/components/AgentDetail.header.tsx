@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DataObjectOutlinedIcon from "@mui/icons-material/DataObjectOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
@@ -256,10 +257,15 @@ export function AgentDetailHeader({
                 icon: <ForumOutlinedIcon fontSize="small" />,
                 onSelect: onAssignChats,
               },
+              {
+                label: "Download Agent JSON",
+                icon: <DownloadOutlinedIcon fontSize="small" />,
+                onSelect: () => onDownloadPackage("full"),
+              },
               ...(onQuickCopy
                 ? [
                     {
-                      label: "Quick Copy into Project Chat",
+                      label: "Duplicate Agent into Project Chat",
                       icon: <ContentCopyOutlinedIcon fontSize="small" />,
                       onSelect: onQuickCopy,
                     },

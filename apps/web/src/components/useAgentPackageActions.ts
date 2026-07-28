@@ -62,6 +62,7 @@ export function useAgentPackageActions({
     const imported = await api.copyAgent(projectId, {
       sourceAgentId: agentId,
       conversationId,
+      mode: "template",
       ...(elevated ? { acknowledgeElevatedManagementPermissions: true } : {}),
     });
     await queryClient.invalidateQueries({
