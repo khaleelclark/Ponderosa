@@ -101,15 +101,6 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
       actions={[
         {
-          id: "settings",
-          label: "Trigger Settings",
-          icon: <SettingsOutlinedIcon fontSize="small" />,
-          onSelect: ({ route, trigger }) => {
-            if (route.kind === "agent")
-              onNavigate({ ...route, triggerId: trigger.id });
-          },
-        },
-        {
           id: "rename",
           label: "Rename",
           icon: <EditOutlinedIcon fontSize="small" />,
@@ -264,6 +255,15 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
       onClose={() => setMenu(undefined)}
       onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
       actions={[
+        {
+          id: "settings",
+          label: "Trigger Settings",
+          icon: <SettingsOutlinedIcon fontSize="small" />,
+          onSelect: ({ route, trigger }) => {
+            if (route.kind === "agent")
+              onNavigate({ ...route, triggerId: trigger.id });
+          },
+        },
         {
           id: "rename",
           label: "Rename",
