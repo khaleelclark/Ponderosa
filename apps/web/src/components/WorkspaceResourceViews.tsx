@@ -8,7 +8,7 @@ import {
   Alert, Box, Button, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
-import type { EngineDto, ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
+import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -26,20 +26,9 @@ import type { Route } from "../routing";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
-import { CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import { CollectionDirectoryControls, CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
-
-function ResourceToolbar({ search, onSearch, searchLabel, sort, onSort, projectId, projects, onProject }: {
-  search: string; onSearch(value: string): void; sort: ProjectSort; onSort(value: ProjectSort): void;
-  searchLabel: string;
-  projectId: string; projects: ProjectDto[]; onProject(value: string): void;
-}): JSX.Element {
-  return <CollectionToolbar search={search} onSearch={onSearch} searchLabel={searchLabel}>
-    <FormControl size="small" sx={{ minWidth: 190 }}><InputLabel id="resource-project-filter">Project</InputLabel><Select labelId="resource-project-filter" label="Project" value={projectId} onChange={(event) => onProject(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}</Select></FormControl>
-    <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="resource-sort">Sort</InputLabel><Select labelId="resource-sort" label="Sort" value={sort} onChange={(event) => onSort(event.target.value as ProjectSort)}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
-  </CollectionToolbar>;
-}
 
 export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
   projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
@@ -58,7 +47,15 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     title="All Chats"
     detail={filtersActive ? `${ordered.length} of ${rows.length} Project Chats` : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats">
+      <CollectionDirectoryControls
+        projects={projects}
+        projectId={projectId}
+        onProject={setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))}
+      />
+    </CollectionToolbar>}
     listLabel="All Chats"
   >
     {ordered.map(({ project, conversation }) => {
@@ -118,8 +115,13 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
       detail: `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
       totalCount: rows.length,
     }} toolbarControls={<>
-      <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
-      <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
+      <CollectionDirectoryControls
+        projects={projects}
+        projectId={projectId}
+        onProject={setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
+      />
     </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} />
   </Box>;
 }
@@ -141,9 +143,17 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
     title="All Triggers"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} configured automations` : `${rows.length} configured automation${rows.length === 1 ? "" : "s"}`}
+    detail={filtersActive ? `${ordered.length} of ${rows.length} configured automations` : `${rows.length} configured automation${rows.length === 1 ? "" : "s"} across Ponderosa`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers">
+      <CollectionDirectoryControls
+        projects={projects}
+        projectId={projectId}
+        onProject={setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("trigger", value))}
+      />
+    </CollectionToolbar>}
     listLabel="All Triggers"
   >
     {ordered.map(({ project, agent, trigger }) => {

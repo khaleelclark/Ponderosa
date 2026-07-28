@@ -10,11 +10,7 @@ import {
   Box,
   Button,
   Chip,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
-  Select,
   Stack,
   Tooltip,
   Typography,
@@ -26,7 +22,7 @@ import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import { CollectionDirectoryControls, CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -144,19 +140,10 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     detail={filteredSnapshots.length === projects.length ? `${projects.length} ${projects.length === 1 ? "Project" : "Projects"} across Ponderosa` : `${filteredSnapshots.length} of ${projects.length} Projects`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
     toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects">
-      <FormControl size="small" sx={{ minWidth: 170 }}>
-        <InputLabel id="project-sort">Sort</InputLabel>
-        <Select
-          labelId="project-sort"
-          label="Sort"
-          value={preferences.projectSort}
-          onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"] })}
-        >
-          <MenuItem value="last_used">Last Used</MenuItem>
-          <MenuItem value="alphabetical">Alphabetical</MenuItem>
-          <MenuItem value="custom">Custom</MenuItem>
-        </Select>
-      </FormControl>
+      <CollectionDirectoryControls
+        sort={preferences.projectSort}
+        onSort={projectSort => onPreferences({ projectSort })}
+      />
     </CollectionToolbar>}
     listLabel="All Projects"
   >

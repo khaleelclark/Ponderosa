@@ -2,13 +2,18 @@ import SearchIcon from "@mui/icons-material/Search";
 import {
   Box,
   Button,
+  FormControl,
   InputAdornment,
+  InputLabel,
+  MenuItem,
   Paper,
+  Select,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
-import type { DragEvent, ReactNode } from "react";
+import type { ProjectDto, ProjectSort } from "@ponderosa/core";
+import { useId, type DragEvent, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
 
 export interface CollectionWorkspaceProps {
@@ -109,6 +114,8 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
     aria-label="Collection controls"
     direction={{ xs: "column", md: "row" }}
     spacing={1.25}
+    useFlexGap
+    flexWrap="wrap"
     sx={{ px: { xs: 2, md: 3 }, py: 1.5, alignItems: { md: "center" } }}
   >
     <TextField
@@ -122,6 +129,61 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
     />
     {children}
   </Stack>;
+}
+
+export function CollectionDirectoryControls({
+  projects,
+  projectId,
+  onProject,
+  sort,
+  onSort,
+}: {
+  projects?: ProjectDto[];
+  projectId?: string;
+  onProject?(value: string): void;
+  sort: ProjectSort;
+  onSort(value: ProjectSort): void;
+}): JSX.Element {
+  const controlId = useId();
+  return <>
+    {projects && onProject ? (
+      <FormControl
+        size="small"
+        sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}
+      >
+        <InputLabel id={`${controlId}-project`}>Project</InputLabel>
+        <Select
+          labelId={`${controlId}-project`}
+          label="Project"
+          value={projectId ?? ""}
+          onChange={event => onProject(event.target.value)}
+        >
+          <MenuItem value="">All Projects</MenuItem>
+          {projects.map(project => (
+            <MenuItem key={project.id} value={project.id}>
+              {project.label}
+            </MenuItem>
+          ))}
+        </Select>
+      </FormControl>
+    ) : null}
+    <FormControl
+      size="small"
+      sx={{ minWidth: 170, width: { xs: "100%", sm: "auto" } }}
+    >
+      <InputLabel id={`${controlId}-sort`}>Sort</InputLabel>
+      <Select
+        labelId={`${controlId}-sort`}
+        label="Sort"
+        value={sort}
+        onChange={event => onSort(event.target.value as ProjectSort)}
+      >
+        <MenuItem value="last_used">Recent Activity</MenuItem>
+        <MenuItem value="alphabetical">Alphabetical</MenuItem>
+        <MenuItem value="custom">Custom Order</MenuItem>
+      </Select>
+    </FormControl>
+  </>;
 }
 
 export function CollectionEmptyState({

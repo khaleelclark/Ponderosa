@@ -665,7 +665,7 @@ export function AgentsTab({
             }
           />
         ) : (
-          <Stack spacing={0.5} role="tree" aria-label="Agent organization">
+          <Stack spacing={0.75} role="tree" aria-label="Agent organization">
             {filtered.map(({ agent, depth }) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
