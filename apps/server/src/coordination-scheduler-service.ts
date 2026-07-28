@@ -331,7 +331,9 @@ return new CoordinationV3Scheduler(
         deliveryId: payload.activationId,
         action: "edited",
       });
-      publishCoordinationV3Changed(payload.agentId);
+      publishCoordinationV3Changed(payload.agentId, {
+        conversationIds: [payload.conversationId],
+      });
     },
     blockedAgentIds: () => [...new Set([
       ...store.listProjects().flatMap((project) =>

@@ -37,7 +37,10 @@ interface AgentEventServiceContext {
   appendWorkspace(event: Parameters<WorkspaceStore["append"]>[0]): unknown;
   notifyScheduler(): void;
   isClosed(): boolean;
-  publishCoordinationV3Changed(agentId: string): void;
+  publishCoordinationV3Changed(
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ): void;
 }
 
 export function createAgentEventService(context: AgentEventServiceContext) {
@@ -290,6 +293,10 @@ export function createAgentEventService(context: AgentEventServiceContext) {
         `Failure: ${failure}`,
         "The agent remains in your organization and can be steered or retried.",
       ].join("\n");
+    const sharedConversationId = child.conversationId
+      && manager.conversationIds.includes(child.conversationId)
+      ? child.conversationId
+      : undefined;
     coordinationV3.recordRuntimeCommunication({
       id,
       projectId: child.projectId,
@@ -297,8 +304,8 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       intent: "managed_child_failure",
       audience: { kind: "agents", agentIds: [manager.id] },
       payload: { text, childAgentId: child.id, executionId, failure },
-      scopeKey: child.conversationId && manager.conversationIds.includes(child.conversationId)
-        ? `conversation:${child.conversationId}`
+      scopeKey: sharedConversationId
+        ? `conversation:${sharedConversationId}`
         : `agent:${manager.id}`,
       activation: {
         agentId: manager.id,
@@ -309,7 +316,9 @@ export function createAgentEventService(context: AgentEventServiceContext) {
       },
       now: createdAt,
     });
-    publishCoordinationV3Changed(manager.id);
+    publishCoordinationV3Changed(manager.id, {
+      conversationIds: sharedConversationId ? [sharedConversationId] : [],
+    });
     notifyScheduler();
   }
 

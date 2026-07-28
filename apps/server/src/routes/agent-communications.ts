@@ -514,7 +514,9 @@ export function registerAgentCommunicationRoutes(
         if (communication?.intent === "collaboration") {
           projectCommunicationToAgentAudit(delivery.targetAgentId, communication, renderedText);
         }
-        publishCoordinationV3Changed(delivery.targetAgentId);
+        publishCoordinationV3Changed(delivery.targetAgentId, {
+          conversationIds: [capability.conversationId],
+        });
       }
       notifyScheduler();
       appendBlockedMentionWarnings(capability.conversationId, routing.blocked);

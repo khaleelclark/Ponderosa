@@ -695,7 +695,9 @@ export function registerAgentMessageRunRoute(
           prompt: exactProviderInput,
           sourceManifest: providerInputManifest,
         });
-        publishCoordinationV3Changed(agent.id);
+        publishCoordinationV3Changed(agent.id, {
+          conversationIds: routingConversationId ? [routingConversationId] : [],
+        });
         durableClaim = { generation: v3FencingToken! };
       } catch {
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
