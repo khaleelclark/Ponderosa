@@ -22,6 +22,17 @@ function issueCopy(item: WorkspaceNotificationDto): {
   impact: string;
   recommendation: string;
 } {
+  if (item.decision?.runtimeAction?.kind === "mcp_elicitation") {
+    const provider = item.decision.runtimeAction.serverName
+      .replaceAll(/[_-]+/gu, " ")
+      .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
+    return {
+      title: `${provider} needs to be connected`,
+      explanation: item.body,
+      impact: "The Agent is paused at this step. Its current work remains open and will continue after you respond.",
+      recommendation: `Connect ${provider}, return to Ponderosa, and confirm the connection. Choose Not Now to let the Agent continue without it.`,
+    };
+  }
   const resolution = item.resolution;
   if (resolution?.kind !== "coordination_request") {
     return {

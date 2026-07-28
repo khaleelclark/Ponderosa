@@ -4,6 +4,7 @@ import type { DecisionPrompt, DecisionResponse } from "../../decisions";
 import { decisionAcceptsText, decisionTextActionLabel } from "../../decisions";
 import { useDecisionResponse } from "../../hooks/useDecisionResponse";
 import { DecisionResponseDialog } from "./DecisionResponseDialog";
+import { RuntimeElicitationActions } from "./RuntimeElicitationActions";
 
 export function DecisionActions({
   decision,
@@ -28,6 +29,16 @@ export function DecisionActions({
     : response.isError
       ? "The Decision response could not be sent."
       : undefined;
+  if (decision.runtimeAction) {
+    return (
+      <RuntimeElicitationActions
+        decision={decision}
+        pending={response.isPending}
+        error={error}
+        onRespond={respond}
+      />
+    );
+  }
 
   return (
     <>

@@ -174,6 +174,35 @@ export type RuntimeDynamicToolHandler = (
   call: RuntimeDynamicToolCall,
 ) => Promise<RuntimeDynamicToolResult>;
 
+/**
+ * A provider-owned request for information or an external account action.
+ * Engine adapters normalize their native protocol before this crosses into
+ * server/runtime code.
+ */
+export type RuntimeElicitationRequest =
+  | {
+      mode: "url";
+      serverName: string;
+      message: string;
+      elicitationId?: string;
+      url: string;
+    }
+  | {
+      mode: "form" | "openai/form";
+      serverName: string;
+      message: string;
+      requestedSchema: Record<string, unknown>;
+    };
+
+export interface RuntimeElicitationResponse {
+  action: "accept" | "decline" | "cancel";
+  content?: unknown;
+}
+
+export type RuntimeElicitationHandler = (
+  request: RuntimeElicitationRequest,
+) => Promise<RuntimeElicitationResponse>;
+
 export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
   | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
@@ -236,6 +265,9 @@ export interface OpenRuntimeSessionOptions {
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
   handleDynamicToolCall?: RuntimeDynamicToolHandler;
+  /** User-facing provider requests are handled by the host without exposing
+   * engine-specific request methods outside packages/engines. */
+  handleElicitation?: RuntimeElicitationHandler;
   /** Called synchronously after the adapter spawns a provider process and
    * before it awaits initialization/readiness. The host retains this authority
    * handle even when opening later rejects. */

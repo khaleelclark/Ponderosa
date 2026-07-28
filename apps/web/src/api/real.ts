@@ -71,6 +71,7 @@ import type {
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
   RetryCoordinationRequestResponse,
+  RuntimeElicitationActionDto,
   RunOutputTextDto,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
@@ -364,6 +365,7 @@ export const realApi = {
     });
   },
   listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
+  getDecisionAction(decisionId: string): Promise<RuntimeElicitationActionDto> { return requestJson<RuntimeElicitationActionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/action`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
   async upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void> {

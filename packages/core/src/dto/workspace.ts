@@ -182,7 +182,7 @@ export interface WorkspaceNotificationDto {
   createdAt: string;
   readAt?: string;
   resolvedAt?: string;
-  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status">;
+  decision?: Pick<DecisionDto, "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction">;
   /** Human-facing recovery context for one current coordination problem. */
   resolution?: {
     kind: "coordination_request";
@@ -222,6 +222,13 @@ export interface DecisionDto {
    * is pending. Server-owned; provider input cannot supply this lineage. */
   continuationRequestIds?: string[];
   blocking: boolean;
+  /** A live provider request that must be answered through the server-owned
+   * runtime bridge. Sensitive URLs and submitted fields are never persisted. */
+  runtimeAction?: {
+    kind: "mcp_elicitation";
+    mode: "url" | "form" | "openai/form";
+    serverName: string;
+  };
   /** Server-owned destructive authorization scope. Provider-authored Decisions
    * never populate this field. */
   approvalScope?: {
@@ -238,7 +245,29 @@ export interface DecisionDto {
   updatedAt: string;
 }
 
-export interface ResolveDecisionRequest { optionId?: string; text?: string }
+export interface ResolveDecisionRequest {
+  optionId?: string;
+  text?: string;
+  /** Ephemeral provider form content. The server forwards this to the waiting
+   * runtime request and deliberately excludes it from the Decision record. */
+  content?: unknown;
+}
+
+export type RuntimeElicitationActionDto =
+  | {
+      decisionId: string;
+      mode: "url";
+      serverName: string;
+      message: string;
+      url: string;
+    }
+  | {
+      decisionId: string;
+      mode: "form" | "openai/form";
+      serverName: string;
+      message: string;
+      requestedSchema: Record<string, unknown>;
+    };
 
 export interface WebPushSubscriptionDto {
   deviceId: string;

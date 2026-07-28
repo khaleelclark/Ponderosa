@@ -48,6 +48,7 @@ import type { createServerReadModels } from "../server-read-models.js";
 import type { createOperationalNotifications } from "../operational-notifications.js";
 import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
 import type { ContextCursorStore } from "../context-cursors.js";
+import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import {
   concreteRuntimeSelection,
   normalizedRuntimeSelection,
@@ -145,6 +146,8 @@ export type AgentMessageRunContext =
       agent: { id: string; conversationId?: string },
     ): Promise<string | undefined>;
     drainDeploymentIdleAuthorities(): void;
+    publishWorkspaceSince(cursor: number): void;
+    runtimeElicitations: RuntimeElicitationBroker;
   };
 
 export function registerAgentMessageRunRoute(
