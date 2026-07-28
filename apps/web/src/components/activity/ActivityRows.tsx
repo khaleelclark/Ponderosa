@@ -424,6 +424,15 @@ export function ActionGroupRow({
   const failureCount = entries.filter(
     entry => "result" in entry && entry.result?.isError,
   ).length;
+  if (entries.length === 1) {
+    return <GroupedActivityRow
+      entry={entries[0]!}
+      focusId={focusId}
+      projectRoot={projectRoot}
+      onOpenFile={onOpenFile}
+      onOpenFileInNewTab={onOpenFileInNewTab}
+    />;
+  }
   const summary = `Ran ${entries.length} ${entries.length === 1 ? "activity" : "activities"}`;
   return <Box data-activity-kind="action_group">
     <Stack
