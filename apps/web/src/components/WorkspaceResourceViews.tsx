@@ -192,7 +192,7 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,
       managerAgentId,
-    )} />
+    )} showImportAction={false} />
   </Box>;
 }
 

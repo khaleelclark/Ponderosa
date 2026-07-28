@@ -162,6 +162,7 @@ export function AgentsTab({
   onOpenAgentInNewTab,
   onOpenAgentSettings,
   onNewAgent,
+  showImportAction = true,
   projectByAgentId,
   starredAgentIds,
   onToggleStar,
@@ -183,6 +184,7 @@ export function AgentsTab({
   onOpenAgentInNewTab?(agentId: string): void;
   onOpenAgentSettings?(agentId: string): void;
   onNewAgent(managerAgentId?: string): void;
+  showImportAction?: boolean;
   projectByAgentId?: Map<string, { id: string; label: string }>;
   starredAgentIds?: ReadonlySet<string>;
   onToggleStar?(agentId: string): void;
@@ -514,16 +516,18 @@ export function AgentsTab({
           >
             Select Agents
           </MenuItem>
-          <MenuItem
-            disabled={!projectId}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              setImportOpen(true);
-            }}
-          >
-            <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-            Import Agent or Organization
-          </MenuItem>
+          {showImportAction ? (
+            <MenuItem
+              disabled={!projectId}
+              onClick={() => {
+                setActionsAnchor(undefined);
+                setImportOpen(true);
+              }}
+            >
+              <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
+              Import Agent or Organization
+            </MenuItem>
+          ) : null}
           <MenuItem
             onClick={() => {
               setActionsAnchor(undefined);
