@@ -272,7 +272,10 @@ export function useWorkspaceStream(): void {
         }
         agentWorkInvalidator.schedule(event.projectId);
       }
-      else if (event.type === "coordination_changed") agentWorkInvalidator.schedule(event.projectId);
+      else if (event.type === "coordination_changed") {
+        agentWorkInvalidator.schedule(event.projectId);
+        collaborationChatInvalidator.schedule(event.conversationIds);
+      }
       else if (event.type === "trigger_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(event.agentId) });
         void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.occurrence(event.triggerId) });

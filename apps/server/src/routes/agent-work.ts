@@ -13,10 +13,13 @@ import { sendInspectorJson } from "../inspector-response.js";
 
 export class AgentWorkProjection {
   constructor(
-    private readonly store: Pick<AgentStore, "listAgents">,
+    private readonly store: Pick<
+      AgentStore,
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact"
+    >,
     private readonly coordination: Pick<
       CoordinationV3Store,
-      "agentWorkItems" | "agentWorkItemDetails"
+      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails"
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
@@ -371,6 +374,7 @@ export class AgentWorkProjection {
     recordId: string;
   }): AgentWorkItemDetailsDto | undefined {
     let details: AgentWorkItemDetailsDto["details"] | undefined;
+    let requestLifecycle: AgentWorkItemDetailsDto["requestLifecycle"];
     if (input.kind === "decision") {
       const decision = this.workspace.getDecision(input.recordId);
       if (
@@ -393,6 +397,45 @@ export class AgentWorkProjection {
         ...input,
         kind: input.kind as Exclude<AgentWorkItemDto["kind"], "decision">,
       });
+      if (input.kind === "request") {
+        const lifecycle = this.coordination.requestLifecycleDetails({
+          projectId: input.projectId,
+          ...(input.conversationId
+            ? { conversationId: input.conversationId }
+            : {}),
+          recordId: input.recordId,
+        });
+        if (lifecycle) {
+          requestLifecycle = {
+            ...lifecycle,
+            updates: lifecycle.updates.map((update) => ({
+              ...update,
+              artifacts: update.artifacts.map((artifact) => {
+                const available = this.store.getProjectArtifact(
+                  input.projectId,
+                  artifact.id,
+                );
+                const operatorAuthorized = available
+                  && this.store.operatorCanReadProjectArtifact(
+                    input.projectId,
+                    artifact.id,
+                  );
+                return operatorAuthorized
+                  ? {
+                      ...artifact,
+                      ...(available.previewUrl
+                        ? { previewUrl: available.previewUrl }
+                        : {}),
+                      ...(available.downloadUrl
+                        ? { downloadUrl: available.downloadUrl }
+                        : {}),
+                    }
+                  : artifact;
+              }),
+            })),
+          };
+        }
+      }
     }
     return details
       ? {
@@ -400,6 +443,7 @@ export class AgentWorkProjection {
         itemId: `${input.kind}:${input.recordId}`,
         recordId: input.recordId,
         details,
+        ...(requestLifecycle ? { requestLifecycle } : {}),
       }
       : undefined;
   }

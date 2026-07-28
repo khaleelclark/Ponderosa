@@ -74,6 +74,7 @@ function groupAdjacentOperationalEvents(
   for (const event of events) {
     const previous = groups.at(-1);
     const sameAsPrevious = previous &&
+      event.kind !== "request" &&
       previous.representative.kind === event.kind &&
       previous.representative.state === event.state &&
       previous.representative.text === event.text &&

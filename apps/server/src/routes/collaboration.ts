@@ -67,7 +67,10 @@ export interface CollaborationRouteDependencies {
     attachments?: ImageAttachmentDto[],
   ) => void;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
-  publishCoordinationV3Changed: (agentId: string) => void;
+  publishCoordinationV3Changed: (
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ) => void;
   notifyScheduler: () => void;
   afterCommunicationArtifactCommit?: (context: {
     kind: "communication";
@@ -299,7 +302,9 @@ export function registerCollaborationRoutes(
         await assets.associate(master.projectId, intent.targetAgentId, recipientAttachments.map((item) => item.id));
       }
       projectCommunicationToAgentAudit(intent.targetAgentId, communication, publishedRenderedText, recipientAttachments);
-      publishCoordinationV3Changed(intent.targetAgentId);
+      publishCoordinationV3Changed(intent.targetAgentId, {
+        conversationIds: [master.id],
+      });
     }
     if (!intake.replayed) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
     notifyScheduler();

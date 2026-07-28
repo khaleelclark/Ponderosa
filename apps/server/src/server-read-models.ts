@@ -172,9 +172,23 @@ export function createServerReadModels(context: ReadModelContext) {
       ...(operationBoundary ? { before: operationBoundary } : {}),
     });
     const operations: NonNullable<CollaborationViewDto["operations"]> = coordinationRecords.map((record) => {
-      const owner = names.get(record.primaryAgentId) ?? "An Agent";
-      const recipient = record.secondaryAgentId ? names.get(record.secondaryAgentId) ?? "another Agent" : "another Agent";
-      const terminal = ["completed", "blocked", "cancelled", "expired", "outcome_unknown"].includes(record.state);
+      const owner = names.get(record.primaryAgentId) ??
+        (record.kind === "request" ? "Deleted Agent" : "An Agent");
+      const recipient = record.secondaryAgentId
+        ? names.get(record.secondaryAgentId) ?? "Deleted Agent"
+        : record.recipientAgentId
+          ? names.get(record.recipientAgentId) ?? "Deleted Agent"
+          : "another Agent";
+      const terminal = [
+        "completed",
+        "blocked",
+        "failed",
+        "cancelled",
+        "expired",
+        "outcome_unknown",
+        "recipient_unavailable",
+        "superseded",
+      ].includes(record.state);
       const text = record.kind === "run"
         ? ["leased", "running"].includes(record.state) ? `${owner} is running`
           : record.state === "completed" ? `${owner} finished`
@@ -196,6 +210,29 @@ export function createServerReadModels(context: ReadModelContext) {
         id: record.id, kind: record.kind, state: record.state, text,
         agentIds: [record.primaryAgentId, ...(record.secondaryAgentId ? [record.secondaryAgentId] : [])],
         createdAt: record.createdAt, updatedAt: record.updatedAt,
+        ...(record.kind === "request" && record.recipientAgentId
+          ? {
+              request: {
+                recordId: record.id.slice("request:".length),
+                ...(record.requesterAgentId
+                  ? { requesterAgentId: record.requesterAgentId }
+                  : {}),
+                recipientAgentId: record.recipientAgentId,
+                ...(record.communicationEventId
+                  ? { communicationEventId: record.communicationEventId }
+                  : {}),
+                ...(record.requestPreview ? { preview: record.requestPreview } : {}),
+                hasUpdates: record.hasUpdates ?? false,
+                ...(record.latestUpdateKind
+                  ? { latestUpdateKind: record.latestUpdateKind }
+                  : {}),
+                ...(record.latestUpdateAt
+                  ? { latestUpdateAt: record.latestUpdateAt }
+                  : {}),
+                hasResult: record.hasResult ?? false,
+              },
+            }
+          : {}),
       };
     });
     for (const decision of workspace.listDecisions({ conversationId })) {
@@ -267,7 +304,13 @@ export function createServerReadModels(context: ReadModelContext) {
     };
   }
 
-  function publishCoordinationV3Changed(agentId: string, publishWorkspaceEvent = true): void {
+  function publishCoordinationV3Changed(
+    agentId: string,
+    options: {
+      publishWorkspaceEvent?: boolean;
+      conversationIds?: string[];
+    } = {},
+  ): void {
     const agent = store.getAgent(agentId);
     if (isClosed() || !agent) return;
     const stored = store.appendEvent(agentId, {
@@ -275,13 +318,20 @@ export function createServerReadModels(context: ReadModelContext) {
       coordination: coordinationV3.agentSnapshot(agentId),
     });
     publish(agentId, stored);
-    if (publishWorkspaceEvent) appendWorkspace({ type: "coordination_changed", projectId: agent.projectId, agentId });
+    if (options.publishWorkspaceEvent !== false) {
+      appendWorkspace({
+        type: "coordination_changed",
+        projectId: agent.projectId,
+        agentId,
+        conversationIds: options.conversationIds ?? agent.conversationIds,
+      });
+    }
   }
 
   function publishMessageDeliveryChanged(agentId: string): void {
     const agent = store.getAgent(agentId);
     if (isClosed() || !agent) return;
-    publishCoordinationV3Changed(agentId, false);
+    publishCoordinationV3Changed(agentId, { publishWorkspaceEvent: false });
     appendWorkspace({
       type: "message_delivery_changed",
       projectId: agent.projectId,

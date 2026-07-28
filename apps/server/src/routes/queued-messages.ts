@@ -53,7 +53,10 @@ export interface QueuedMessageRouteDependencies {
   runtimeArtifactMetadata: (artifact: PreparedCommunicationArtifact) => RuntimeArtifactInput;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
   publishWorkspaceSince: (cursor: number) => void;
-  publishCoordinationV3Changed: (agentId: string) => void;
+  publishCoordinationV3Changed: (
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ) => void;
   publishMessageDeliveryChanged: (agentId: string) => void;
   notifyScheduler: () => void;
   afterQueuedEditSqliteCommit?: (context: {
@@ -120,7 +123,9 @@ export function registerQueuedMessageRoutes(
     });
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     appendWorkspace({ type: "queued_message_changed", conversationId: conversation.id, deliveryId: activation.id, action: "cancelled" });
-    publishCoordinationV3Changed(activation.agentId);
+    publishCoordinationV3Changed(activation.agentId, {
+      conversationIds: [conversation.id],
+    });
     return result satisfies CancelQueuedMessageResponse;
   });
 
@@ -175,7 +180,9 @@ export function registerQueuedMessageRoutes(
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
     if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "cancelled" });
-    publishCoordinationV3Changed(agent.id);
+    publishCoordinationV3Changed(agent.id, {
+      conversationIds: conversationId ? [conversationId] : [],
+    });
     return result satisfies CancelQueuedMessageResponse;
   });
 
@@ -257,7 +264,9 @@ export function registerQueuedMessageRoutes(
       activationId: activation.id,
       revisionId,
     });
-    publishCoordinationV3Changed(agent.id);
+    publishCoordinationV3Changed(agent.id, {
+      conversationIds: [conversationId],
+    });
     notifyScheduler();
     return result satisfies EditQueuedMessageResponse;
   });
@@ -287,7 +296,9 @@ export function registerQueuedMessageRoutes(
     if (!result.steered) return reply.code(409).send(result satisfies SteerQueuedMessageResponse);
     const conversationId = payload.communication.conversationId ?? agent.conversationId;
     if (conversationId) appendWorkspace({ type: "queued_message_changed", conversationId, deliveryId: activation.id, action: "steered" });
-    publishCoordinationV3Changed(agent.id);
+    publishCoordinationV3Changed(agent.id, {
+      conversationIds: conversationId ? [conversationId] : [],
+    });
     notifyScheduler();
     return result satisfies SteerQueuedMessageResponse;
   });

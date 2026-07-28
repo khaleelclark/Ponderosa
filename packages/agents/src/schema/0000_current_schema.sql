@@ -632,6 +632,8 @@ CREATE INDEX idx_coordination_joins_conversation_updated
   ON coordination_joins (project_id, conversation_id, updated_at DESC, id DESC);
 CREATE INDEX idx_coordination_request_late_results_request
   ON coordination_request_late_results (request_id, created_at, id);
+CREATE INDEX idx_coordination_request_updates_request_created
+  ON coordination_request_updates (request_id, created_at, id);
 CREATE INDEX idx_coordination_requests_conversation_created
   ON coordination_requests (project_id, conversation_id, created_at DESC, id DESC);
 CREATE INDEX idx_coordination_requests_conversation_updated
@@ -672,6 +674,8 @@ CREATE INDEX provider_operation_outbox_runnable
   ON provider_operation_outbox(state, available_at, claimed_at, id);
 CREATE INDEX runtime_artifacts_project
   ON runtime_artifacts(project_id, created_at, id);
+CREATE INDEX idx_runtime_artifacts_owner
+  ON runtime_artifacts(owner_kind, owner_id, created_at, id);
 CREATE INDEX runtime_communications_authored_event
   ON runtime_communications(json_extract(payload_json, '$.communication.eventId'))
   WHERE json_valid(payload_json);

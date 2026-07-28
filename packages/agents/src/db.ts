@@ -128,6 +128,17 @@ function establishSchema(sqlite: Database.Database): void {
   })();
 }
 
+/** Additive read indexes are safe to establish for both adopted and already
+ * baselined databases without rewriting canonical rows. */
+function establishReadIndexes(sqlite: Database.Database): void {
+  sqlite.exec(`
+    CREATE INDEX IF NOT EXISTS idx_coordination_request_updates_request_created
+      ON coordination_request_updates (request_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_runtime_artifacts_owner
+      ON runtime_artifacts (owner_kind, owner_id, created_at, id);
+  `);
+}
+
 /**
  * Open (or create) the projection DB at `file` and establish its launch schema.
  * Pass ":memory:" for isolated callers.
@@ -137,5 +148,6 @@ export function openDb(file: string): OpenedDb {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   establishSchema(sqlite);
+  establishReadIndexes(sqlite);
   return { db: drizzle(sqlite, { schema }), client: sqlite };
 }

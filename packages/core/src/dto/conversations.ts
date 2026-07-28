@@ -1,5 +1,9 @@
 import type { EngineId } from "../adapter.js";
 import type { CommunicationDocumentReference, VerifiedCitationRecord } from "../communication.js";
+import type {
+  CoordinationRequestState,
+  CoordinationRequestUpdateKind,
+} from "../coordination-v3.js";
 import type { AgentDto } from "./agents.js";
 import type { ArtifactKind, ImageAttachmentDto } from "./artifacts.js";
 import type { HistoryWindowDto } from "./common.js";
@@ -214,6 +218,18 @@ export interface TeamOperationalEventDto {
   agentIds: string[];
   createdAt: string;
   updatedAt: string;
+  /** Lightweight Request metadata. Full lifecycle payloads remain lazy. */
+  request?: {
+    recordId: string;
+    requesterAgentId?: string;
+    recipientAgentId: string;
+    communicationEventId?: string;
+    preview?: string;
+    hasUpdates: boolean;
+    latestUpdateKind?: CoordinationRequestUpdateKind;
+    latestUpdateAt?: string;
+    hasResult: boolean;
+  };
 }
 
 /** One canonical record shown in the read-only Agent work inspector. */
@@ -270,6 +286,49 @@ export interface AgentWorkItemDetailsDto {
   itemId: string;
   recordId: string;
   details: Array<{ label: string; value: string }>;
+  /** Present only for Request records; loaded lazily from canonical updates. */
+  requestLifecycle?: CoordinationRequestLifecycleDto;
+}
+
+export interface CoordinationRequestArtifactDto {
+  id: string;
+  title: string;
+  mediaType: string;
+  byteLength: number;
+  /** Present only while the authorized managed artifact remains available. */
+  previewUrl?: string;
+  downloadUrl?: string;
+}
+
+export interface CoordinationRequestUpdateDto {
+  id: string;
+  kind: CoordinationRequestUpdateKind;
+  actorKind: "agent" | "user" | "system" | "supervisor";
+  actorId?: string;
+  inReplyToUpdateId?: string;
+  text?: string;
+  refs: string[];
+  artifacts: CoordinationRequestArtifactDto[];
+  resultingState: CoordinationRequestState;
+  resultingVersion: number;
+  createdAt: string;
+}
+
+/** Canonical, read-only lifecycle of one scoped coordination Request. */
+export interface CoordinationRequestLifecycleDto {
+  request: {
+    id: string;
+    requesterAgentId?: string;
+    recipientAgentId: string;
+    state: CoordinationRequestState;
+    version: number;
+    text?: string;
+    refs: string[];
+    communicationEventId?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  updates: CoordinationRequestUpdateDto[];
 }
 
 /** GET /api/conversations/:id response. */
