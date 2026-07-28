@@ -93,6 +93,7 @@ export function AgentDetail({
   technicalFocusId,
   initialView,
   createTrigger,
+  triggerSettingsId,
   onViewChange,
   onOpenTechnicalDetails,
   engines,
@@ -941,6 +942,8 @@ export function AgentDetail({
         timeline={stream.timeline}
         delegatedAgentCount={relationships.delegatedAgentCount}
         createTrigger={createTrigger}
+        triggerSettingsId={triggerSettingsId}
+        onCloseTriggerSettings={() => onViewChange?.("triggers")}
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}

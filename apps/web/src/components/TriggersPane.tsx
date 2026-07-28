@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import KeyIcon from "@mui/icons-material/Key";
@@ -119,6 +120,8 @@ export function TriggersPane({
   onTriggerCreated,
   onCreateFlowComplete,
   onCancelCreate,
+  settingsTriggerId,
+  onCloseTriggerSettings,
 }: {
   agent: AgentDto;
   onOpenAgentWork?(occurrenceId: string): void;
@@ -128,6 +131,8 @@ export function TriggersPane({
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
   onCancelCreate?(): void;
+  settingsTriggerId?: string;
+  onCloseTriggerSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const preferredConversationId =
@@ -236,6 +241,14 @@ export function TriggersPane({
     }
     setCreateOpen(true);
   };
+  useEffect(() => {
+    if (!settingsTriggerId || editing?.id === settingsTriggerId) return;
+    const trigger = triggers.data?.find(candidate => candidate.id === settingsTriggerId);
+    if (trigger) openEditor(trigger);
+  }, [editing?.id, settingsTriggerId, triggers.data]);
+  const inlineSettings = Boolean(
+    settingsTriggerId && editing?.id === settingsTriggerId,
+  );
 
   const create = useMutation({
     mutationFn: async () => {
@@ -270,6 +283,7 @@ export function TriggersPane({
       void queryClient.invalidateQueries({ queryKey });
       setCreateOpen(false);
       setEditing(undefined);
+      onCloseTriggerSettings?.();
     },
   });
   const update = useMutation({
@@ -317,7 +331,8 @@ export function TriggersPane({
   const closeCreateEditor = (): void => {
     setCreateOpen(false);
     setEditing(undefined);
-    if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
+    if (inlineSettings) onCloseTriggerSettings?.();
+    else if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
   };
   const closeSecret = (): void => {
     if (createOnly && secret) onTriggerCreated?.(secret.trigger);
@@ -352,7 +367,29 @@ export function TriggersPane({
   );
 
   return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: createOnly ? 760 : 960, mx: "auto" }}>
-    <Stack spacing={2} sx={{ display: createOnly ? "none" : undefined }}>
+    {inlineSettings ? (
+      <Stack spacing={2}>
+        <Box>
+          <Button
+            color="inherit"
+            startIcon={<ArrowBackIcon />}
+            onClick={closeCreateEditor}
+            sx={{ mb: 1 }}
+          >
+            Back to Triggers
+          </Button>
+          <Typography variant="h5" component="h2" fontWeight={800}>
+            Trigger Settings
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Manage {editing?.name} without leaving this Agent.
+          </Typography>
+        </Box>
+        {editorFields}
+        {editorActions}
+      </Stack>
+    ) : null}
+    <Stack spacing={2} sx={{ display: createOnly || inlineSettings ? "none" : undefined }}>
       <Alert severity="warning">
         <strong>Triggers run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but a Trigger can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
       </Alert>
@@ -475,7 +512,7 @@ export function TriggersPane({
       <Typography sx={{ pt: 1 }}>Pending occurrences will be cancelled. Immutable occurrence history remains available.</Typography>
     </DestructiveConfirmDialog>
 
-    <Dialog open={!createOnly && createOpen} onClose={closeCreateEditor} fullWidth maxWidth="sm">
+    <Dialog open={!createOnly && createOpen && !inlineSettings} onClose={closeCreateEditor} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
       <DialogContent>
         <Box sx={{ pt: 1 }}>{editorFields}</Box>

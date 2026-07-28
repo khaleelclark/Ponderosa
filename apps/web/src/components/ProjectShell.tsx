@@ -322,6 +322,7 @@ export function ProjectShell({
         technicalFocusId={route.technicalFocusId}
         initialView={route.view}
         createTrigger={route.createTrigger}
+        triggerSettingsId={route.triggerId}
         onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
         onOpenTechnicalDetails={(technicalFocusId) => navigate({
           kind: "agent", projectId, agentId: route.agentId, view: "technical",
@@ -415,6 +416,7 @@ export function ProjectShell({
       <ProjectArtifactsView
         projectId={projectId}
         project={project}
+        initialView={route.view}
         agents={agents}
         health={healthQuery.data?.agents}
         healthByAgentId={healthByAgentId}

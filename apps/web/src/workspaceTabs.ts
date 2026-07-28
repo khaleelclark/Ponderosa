@@ -1,4 +1,4 @@
-import { isAgentDetailView, type Route } from "./routing";
+import { isAgentDetailView, isProjectDetailView, type Route } from "./routing";
 import { createClientId } from "./clientId";
 import { isRouteKind, workspaceTabKey } from "./routeRegistry";
 
@@ -99,7 +99,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         typeof candidate.articleId === "string";
     case "project":
       return typeof candidate.projectId === "string" &&
-        Boolean(candidate.projectId);
+        Boolean(candidate.projectId) &&
+        (candidate.view === undefined || isProjectDetailView(candidate.view));
     case "workspaceFile":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
@@ -141,7 +142,9 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         Boolean(candidate.agentId) &&
         (candidate.view === undefined || isAgentDetailView(candidate.view)) &&
         (candidate.createTrigger === undefined ||
-          typeof candidate.createTrigger === "boolean");
+          typeof candidate.createTrigger === "boolean") &&
+        (candidate.triggerId === undefined ||
+          typeof candidate.triggerId === "string");
     case "review":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&

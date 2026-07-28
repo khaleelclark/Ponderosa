@@ -4,6 +4,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
@@ -99,6 +100,15 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       onClose={() => setMenu(undefined)}
       onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
       actions={[
+        {
+          id: "settings",
+          label: "Trigger Settings",
+          icon: <SettingsOutlinedIcon fontSize="small" />,
+          onSelect: ({ route, trigger }) => {
+            if (route.kind === "agent")
+              onNavigate({ ...route, triggerId: trigger.id });
+          },
+        },
         {
           id: "rename",
           label: "Rename",

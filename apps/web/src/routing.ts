@@ -24,12 +24,18 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
+export type ProjectDetailView = "overview" | "files" | "agents" | "settings";
 export type CreateResourceKind = "project" | "chat" | "agent" | "trigger";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "triggers", "artifacts", "settings", "technical"];
+const PROJECT_DETAIL_VIEWS: readonly ProjectDetailView[] = ["overview", "files", "agents", "settings"];
 
 export function isAgentDetailView(value: unknown): value is AgentDetailView {
   return typeof value === "string" && (AGENT_DETAIL_VIEWS as readonly string[]).includes(value);
+}
+
+export function isProjectDetailView(value: unknown): value is ProjectDetailView {
+  return typeof value === "string" && (PROJECT_DETAIL_VIEWS as readonly string[]).includes(value);
 }
 
 export type Route =
@@ -44,13 +50,13 @@ export type Route =
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
   | { kind: "wiki"; articleId?: string }
-  | { kind: "project"; projectId: string }
+  | { kind: "project"; projectId: string; view?: ProjectDetailView }
   | { kind: "workspaceFile"; projectId: string; path: string }
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
   | { kind: "agents"; projectId: string; create?: boolean; managerAgentId?: string; continueToTrigger?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; createTrigger?: boolean }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; createTrigger?: boolean; triggerId?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -69,6 +75,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   const channel = query.get("view") === "team" ? "collaboration" as const : undefined;
   const requestedAgentView = query.get("view")?.trim();
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
+  const projectView = isProjectDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "home" };
   if (
@@ -136,6 +143,7 @@ export function parseRoute(pathname: string, search = ""): Route {
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView === "technical" && technicalFocusId ? { technicalFocusId } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView === "triggers" && query.get("create") === "1" ? { createTrigger: true } : {}),
+      ...(!focusMessageId && !focusTelemetry && agentView === "triggers" && query.get("trigger")?.trim() ? { triggerId: query.get("trigger")!.trim() } : {}),
     };
   }
   if (parts[2] === "reviews" && parts[3]) {
@@ -150,7 +158,11 @@ export function parseRoute(pathname: string, search = ""): Route {
       ...(query.get("continue") === "trigger" ? { continueToTrigger: true } : {}),
     };
   }
-  return { kind: "project", projectId };
+  return {
+    kind: "project",
+    projectId,
+    ...(projectView ? { view: projectView } : {}),
+  };
 }
 
 export function routeProjectId(route: Route): string | undefined {

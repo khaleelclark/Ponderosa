@@ -47,6 +47,7 @@ interface AgentDetailPanelsProps {
   timeline: ComponentProps<typeof ArtifactsPane>["timeline"];
   delegatedAgentCount: number;
   createTrigger?: boolean;
+  triggerSettingsId?: string;
   agentWorkFocus?: string;
   settingsPane: JSX.Element;
   onOpenAgent(agentId: string): void;
@@ -62,6 +63,7 @@ interface AgentDetailPanelsProps {
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;
+  onCloseTriggerSettings(): void;
 }
 
 export function AgentDetailPanels({
@@ -88,6 +90,7 @@ export function AgentDetailPanels({
   timeline,
   delegatedAgentCount,
   createTrigger,
+  triggerSettingsId,
   agentWorkFocus,
   settingsPane,
   onOpenAgent,
@@ -101,6 +104,7 @@ export function AgentDetailPanels({
   onOpenTechnical,
   onOpenArtifact,
   onOpenArtifactInNewTab,
+  onCloseTriggerSettings,
 }: AgentDetailPanelsProps): JSX.Element {
   const panes: Record<AgentTab, JSX.Element> = {
     chat: (
@@ -167,6 +171,8 @@ export function AgentDetailPanels({
       <TriggersPane
         agent={detail.agent}
         initialCreateOpen={createTrigger}
+        settingsTriggerId={triggerSettingsId}
+        onCloseTriggerSettings={onCloseTriggerSettings}
         onOpenAgentWork={occurrenceId =>
           onOpenTechnical(`trigger:${occurrenceId}`)
         }

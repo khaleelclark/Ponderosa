@@ -155,7 +155,8 @@ const ROUTE_REGISTRY = {
     synchronizedSidebarSection: "wiki",
   },
   project: {
-    toPath: route => `/projects/${encodeURIComponent(route.projectId)}`,
+    toPath: route =>
+      `/projects/${encodeURIComponent(route.projectId)}${route.view && route.view !== "overview" ? `?view=${route.view}` : ""}`,
     workspaceTabKey: route => `project:${route.projectId}`,
     tabLabel: (_route, context) => context.projectLabel ?? "Project Overview",
     tabIcon: "folder",
@@ -241,6 +242,8 @@ const ROUTE_REGISTRY = {
         query.set("focus", route.technicalFocusId);
       if (route.view === "triggers" && route.createTrigger)
         query.set("create", "1");
+      if (route.view === "triggers" && route.triggerId)
+        query.set("trigger", route.triggerId);
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
     },
     workspaceTabKey: route => `agent:${route.projectId}:${route.agentId}`,

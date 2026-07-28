@@ -16,6 +16,7 @@ export interface AgentDetailProps {
   technicalFocusId?: string;
   initialView?: AgentDetailView;
   createTrigger?: boolean;
+  triggerSettingsId?: string;
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
   engines: EngineDto[];

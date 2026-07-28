@@ -41,6 +41,7 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
+import type { ProjectDetailView } from "../routing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -97,6 +98,7 @@ export function ProjectArtifactsView({
   onOpenAgentWork,
   conversations,
   onOpenBrowser = () => undefined,
+  initialView,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -124,12 +126,11 @@ export function ProjectArtifactsView({
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
   onOpenBrowser?(): void;
+  initialView?: ProjectDetailView;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
-  const [tab, setTab] = useState<
-    "overview" | "files" | "agents" | "settings"
-  >("overview");
+  const [tab, setTab] = useState<ProjectDetailView>(initialView ?? "overview");
   const [fileCategories, setFileCategories] = useState<
     Array<Exclude<ProjectFileCategory, "all">>
   >([]);
@@ -145,10 +146,11 @@ export function ProjectArtifactsView({
       ResourceContextMenuState<{ agentId: string; artifactId: string }>
     >();
   useEffect(() => {
+    setTab(initialView ?? "overview");
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
     setFileCategories([]);
-  }, [projectId]);
+  }, [projectId, initialView]);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
     queryKey: queryKeys.projectArtifacts.project(projectId),

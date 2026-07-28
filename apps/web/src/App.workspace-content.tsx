@@ -47,7 +47,6 @@ interface WorkspaceRouteOutletProps {
   ): void;
   onCancelCreate(): void;
   onOpenInbox(): void;
-  onManageProject(project: ProjectDto): void;
   onProjectDeleted(projectId: string): void;
   onConversationAction(
     kind: "rename" | "delete",
@@ -76,7 +75,6 @@ export function WorkspaceRouteOutlet({
   onCreate,
   onCancelCreate,
   onOpenInbox,
-  onManageProject,
   onProjectDeleted,
   onConversationAction,
   onOpenEngineStatus,
@@ -135,7 +133,6 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreateProject={() => onCreate("project")}
-          onManageProject={onManageProject}
           onProjectDeleted={onProjectDeleted}
           onPreferences={onPreferences}
         />

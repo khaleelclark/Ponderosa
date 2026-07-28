@@ -67,13 +67,12 @@ function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
-export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onManageProject, onProjectDeleted, onPreferences }: {
+export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onProjectDeleted, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
   onOpenInNewTab?(route: Route): void;
   onCreateProject(): void;
-  onManageProject(project: ProjectDto): void;
   onProjectDeleted(projectId: string): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
@@ -200,7 +199,8 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           id: "settings",
           label: "Project Settings",
           icon: <SettingsOutlinedIcon fontSize="small" />,
-          onSelect: ({ project }) => onManageProject(project),
+          onSelect: ({ project }) =>
+            onNavigate({ kind: "project", projectId: project.id, view: "settings" }),
         },
         {
           id: "rename",

@@ -20,7 +20,6 @@ import {
 import { NotificationPanel } from "./components/NotificationPanel";
 import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
-import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
 import {
   OnboardingCompleteDialog,
   SidebarConversationDialogs,
@@ -168,7 +167,6 @@ export default function App({
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [settingsProject, setSettingsProject] = useState<ProjectDto>();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
@@ -527,7 +525,6 @@ export default function App({
     setWorkspaceTabs(current =>
       removeProjectWorkspaceTabs(current, survivingProjectIds),
     );
-    setSettingsProject(undefined);
     if (next) {
       saveLastProjectId(next.id);
       navigate({ kind: "project", projectId: next.id });
@@ -565,10 +562,6 @@ export default function App({
   const openOperatorProfile = () => {
     setOperatorProfileOpen(true);
   };
-  const openProjectSettings = (project: ProjectDto) => {
-    setSettingsProject(project);
-  };
-
   return (
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
@@ -722,7 +715,6 @@ export default function App({
                 onCreate={openCreationForm}
                 onCancelCreate={cancelCreationWorkspace}
                 onOpenInbox={() => setNotificationPanelOpen(true)}
-                onManageProject={openProjectSettings}
                 onProjectDeleted={handleProjectDeleted}
                 onConversationAction={openSidebarConversationAction}
                 onOpenEngineStatus={() => setEngineStatusOpen(true)}
@@ -853,11 +845,6 @@ export default function App({
           profile={preferences.profile}
           onClose={() => setOperatorProfileOpen(false)}
           onSave={profile => savePreferences({ profile })}
-        />
-        <ProjectSettingsDialog
-          project={settingsProject}
-          onClose={() => setSettingsProject(undefined)}
-          onDeleted={handleProjectDeleted}
         />
       </Box>
     </ProjectBrowserContext.Provider>
