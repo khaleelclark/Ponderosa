@@ -5,7 +5,7 @@ import MoreVertIcon from "@mui/icons-material/MoreVert";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
-  Alert, Box, Button, FormControl, IconButton, InputLabel, LinearProgress,
+  Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
@@ -143,7 +143,7 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
     title="All Triggers"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} configured automations` : `${rows.length} configured automation${rows.length === 1 ? "" : "s"} across Ponderosa`}
+    detail={filtersActive ? `${ordered.length} of ${rows.length} Triggers` : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers">
       <CollectionDirectoryControls
@@ -162,9 +162,17 @@ export function AllTriggersWorkspace({ projects, preferences, onPreferences, onN
       return <ResourceRow
         key={trigger.id}
         label={trigger.name}
-        description={`${project.label} · ${agent.title} · ${trigger.sourceKind}`}
-        icon={<BoltOutlinedIcon color={trigger.enabled ? "primary" : "disabled"} />}
-        meta={<Typography variant="caption" color={trigger.enabled ? "success.main" : "text.disabled"}>{trigger.enabled ? "Enabled" : "Disabled"}</Typography>}
+        description={`${project.label} · ${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
+        icon={<BoltOutlinedIcon />}
+        meta={<Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <Chip
+            size="small"
+            label={trigger.enabled ? "Enabled" : "Disabled"}
+            color={trigger.enabled ? "success" : "default"}
+            variant={trigger.enabled ? "filled" : "outlined"}
+          />
+          <Typography variant="caption" color="text.secondary">{new Date(trigger.updatedAt).toLocaleString()}</Typography>
+        </Stack>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => {
