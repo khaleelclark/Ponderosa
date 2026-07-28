@@ -16,7 +16,7 @@ import type { AgentDetailView } from "../routing";
 import { projectAgentChat } from "./chat/agentChatProjection";
 import { orderedAgentHeaderChats } from "./HeaderRelationshipLinks";
 
-type AgentTab = AgentDetailView;
+type AgentTab = Exclude<AgentDetailView, "activity">;
 
 const telemetryTab = (stream: AgentTelemetryStream): AgentTab =>
   stream === "artifacts" || stream === "changedFiles"
@@ -103,7 +103,7 @@ function mergeTelemetryPage(
 }
 
 const telemetryStreamsForTab = (tab: AgentTab): AgentTelemetryStream[] =>
-  tab === "chat" || tab === "activity"
+  tab === "chat"
     ? ["runOutput", "activity", "runs"]
     : tab === "artifacts"
       ? ["artifacts"]

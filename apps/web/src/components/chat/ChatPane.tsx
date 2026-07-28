@@ -8,7 +8,7 @@ import type {
   ResponseFileActivityDto,
   RunOutputDto,
 } from "@ponderosa/core";
-import { Fragment, memo, useMemo } from "react";
+import { memo, useMemo } from "react";
 import { agentMentionHandle } from "../../mentions";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
@@ -28,7 +28,7 @@ import {
 import type { LinkPreviewScope } from "./ChatMessages";
 import { projectAgentChat } from "./agentChatProjection";
 
-function TeamChatSourceLink({
+function CommunicationSourceLink({
   message,
   outgoing,
   onOpen,
@@ -37,10 +37,16 @@ function TeamChatSourceLink({
   outgoing: boolean;
   onOpen(message: MessageDto): void;
 }): JSX.Element {
+  const projectBroadcast = message.communicationIntent === "broadcast";
+  const sourceLabel = projectBroadcast
+    ? "to Project Chat"
+    : outgoing
+      ? "to Team Chat"
+      : "via Team Chat";
   return (
     <ButtonBase
       onClick={() => onOpen(message)}
-      aria-label={`${outgoing ? "Sent to" : "Received via"} Team Chat. Open source message.`}
+      aria-label={`${sourceLabel}. Open source message.`}
       sx={{
         minWidth: 0,
         p: 0,
@@ -57,9 +63,22 @@ function TeamChatSourceLink({
         },
       }}
     >
-      {outgoing ? "to Team Chat" : "via Team Chat"}
+      {sourceLabel}
     </ButtonBase>
   );
+}
+
+function visibleAgentMessageText(message: MessageDto): string {
+  const text = stripDocumentPrefixText(
+    message.text,
+    Boolean(message.document),
+  );
+  if (message.communicationIntent !== "broadcast") return text;
+  const withoutRoutingPrefix = text.replace(
+    /^\s*#broadcast(?:\s+|$)/iu,
+    "",
+  );
+  return withoutRoutingPrefix.trim() ? withoutRoutingPrefix : text;
 }
 
 function ChatPaneComponent({
@@ -123,7 +142,7 @@ function ChatPaneComponent({
   const visibleActivity = useMemo(
     () =>
       activity.filter(
-        item => item.executionId && visibleRunIds.has(item.executionId),
+        item => !item.executionId || visibleRunIds.has(item.executionId),
       ),
     [activity, visibleRunIds],
   );
@@ -154,43 +173,31 @@ function ChatPaneComponent({
   );
   const activityByRun = useMemo(() => {
     const grouped = new Map<string, ActivityStreamEntry[]>();
-    let runId: string | undefined;
+    let groupKey: string | undefined;
     for (const entry of activityEntries) {
       if (entry.kind === "run_header") {
-        runId = entry.executionId;
+        groupKey = entry.executionId ?? "unscoped";
         continue;
       }
-      if (!runId) continue;
-      grouped.set(runId, [...(grouped.get(runId) ?? []), entry]);
+      if (!groupKey) continue;
+      const entries = grouped.get(groupKey);
+      if (entries) entries.push(entry);
+      else grouped.set(groupKey, [entry]);
     }
     return grouped;
   }, [activityEntries]);
-  const runPlacement = useMemo(() => {
-    const afterMessage = new Map<string, AgentRunDto[]>();
-    const standalone: AgentRunDto[] = [];
-    for (const run of agentChat.runs) {
-      const initiatingMessage = run.communicationEventId
-        ? chatMessages.find(
-            message =>
-              message.communicationEventId === run.communicationEventId,
-          )
-        : undefined;
-      const authoredMessages = chatMessages.filter(
-        message =>
-          message.role === "assistant" && message.executionId === run.id,
-      );
-      const anchor = initiatingMessage ?? authoredMessages.at(-1);
-      if (!anchor) {
-        standalone.push(run);
-        continue;
-      }
-      afterMessage.set(anchor.id, [
-        ...(afterMessage.get(anchor.id) ?? []),
-        run,
-      ]);
-    }
-    return { afterMessage, standalone };
-  }, [agentChat.runs, chatMessages]);
+  const unscopedActivity = activityByRun.get("unscoped") ?? [];
+  const messageByCommunicationId = useMemo(
+    () =>
+      new Map(
+        chatMessages.flatMap(message =>
+          message.communicationEventId
+            ? [[message.communicationEventId, message] as const]
+            : [],
+        ),
+      ),
+    [chatMessages],
+  );
   const timeline = useMemo(
     () =>
       [
@@ -200,12 +207,19 @@ function ChatPaneComponent({
           createdAt: message.createdAt,
           message,
         })),
-        ...runPlacement.standalone.map(run => ({
+        ...agentChat.runs.map(run => ({
           kind: "run" as const,
           id: `run:${run.id}`,
           createdAt: run.startedAt,
           run,
         })),
+        ...(unscopedActivity.length
+          ? [{
+              kind: "unscoped" as const,
+              id: "run:unscoped",
+              createdAt: unscopedActivity[0]!.createdAt,
+            }]
+          : []),
       ].sort(
         (left, right) =>
           left.createdAt.localeCompare(right.createdAt) ||
@@ -215,15 +229,20 @@ function ChatPaneComponent({
               ? -1
               : 1),
       ),
-    [chatMessages, runPlacement.standalone],
+    [agentChat.runs, chatMessages, unscopedActivity],
   );
   const latestTimelineItem = timeline.at(-1);
   const latestActivity = activityEntries.at(-1);
+  const latestRunOutputSeq = visibleRunOutput.reduce(
+    (latest, item) => Math.max(latest, item.sourceSeqEnd),
+    0,
+  );
   const messageLayoutKey = [
     chatMessageLayoutKey(chatMessages),
     timeline.length,
     latestTimelineItem?.id ?? "none",
     latestActivity?.id ?? "none",
+    latestRunOutputSeq,
   ].join(":");
 
   return (
@@ -245,12 +264,35 @@ function ChatPaneComponent({
     >
       {timeline.map(item => {
         if (item.kind === "run") {
+          const contextMessage = item.run.communicationEventId
+            ? messageByCommunicationId.get(item.run.communicationEventId)
+            : undefined;
           return (
             <AgentWorkReceipt
               key={item.id}
               agentName={agentName}
               run={item.run}
               entries={activityByRun.get(item.run.id) ?? []}
+              projectId={projectId}
+              projectRoot={projectRoot}
+              onOpenFile={onOpenFile}
+              onOpenFileInNewTab={onOpenFileInNewTab}
+              focusId={focusId}
+              active={item.run.id === activeExecutionId}
+              contextText={
+                contextMessage
+                  ? visibleAgentMessageText(contextMessage)
+                  : undefined
+              }
+            />
+          );
+        }
+        if (item.kind === "unscoped") {
+          return (
+            <AgentWorkReceipt
+              key={item.id}
+              agentName={agentName}
+              entries={unscopedActivity}
               projectId={projectId}
               projectRoot={projectRoot}
               onOpenFile={onOpenFile}
@@ -268,38 +310,27 @@ function ChatPaneComponent({
             ? operatorProfile.displayName
             : individualChatSenderLabel(message.role, visibleAgentName);
         const fromUser = message.role === "user";
-        const fromTeamChat =
-          message.communicationIntent === "collaboration" &&
+        const fromSourceChat =
+          (message.communicationIntent === "collaboration" ||
+            message.communicationIntent === "broadcast") &&
           Boolean(
             message.conversationId &&
               message.communicationEventId &&
               onOpenMessageSource,
           );
         const outgoingTeamMessage =
-          fromTeamChat && message.authorAgentId === message.agentId;
+          fromSourceChat && message.authorAgentId === message.agentId;
         const receivedFromAgent =
-          fromTeamChat &&
+          message.communicationIntent === "collaboration" &&
           Boolean(
             message.authorAgentId &&
               message.authorAgentId !== message.agentId,
           );
         const receivedInput = fromUser || receivedFromAgent;
-        const visibleText = stripDocumentPrefixText(
-          message.text,
-          Boolean(message.document),
-        );
-        const attachedRuns = runPlacement.afterMessage.get(message.id) ?? [];
-        const initiatedRuns = attachedRuns.filter(
-          run =>
-            run.communicationEventId === message.communicationEventId,
-        );
-        const nestedRuns = attachedRuns.filter(
-          run => !initiatedRuns.includes(run),
-        );
-        const standaloneRuns = initiatedRuns;
+        const visibleText = visibleAgentMessageText(message);
         return (
-          <Fragment key={item.id}>
-            <ChatMessageFrame
+          <ChatMessageFrame
+            key={item.id}
               message={{
               id: `message-${message.id}`,
               author: fromUser
@@ -326,8 +357,8 @@ function ChatPaneComponent({
                       : {}),
                   },
               createdAt: message.createdAt,
-              source: fromTeamChat ? (
-                <TeamChatSourceLink
+              source: fromSourceChat ? (
+                <CommunicationSourceLink
                   message={message}
                   outgoing={outgoingTeamMessage}
                   onOpen={onOpenMessageSource!}
@@ -374,24 +405,6 @@ function ChatPaneComponent({
               ),
               attachments: message.attachments,
               attachmentDensity: "compact",
-              belowBody: nestedRuns.length ? (
-                <>
-                  {nestedRuns.map(run => (
-                    <AgentWorkReceipt
-                      key={`run:${run.id}`}
-                      nested
-                      agentName={agentName}
-                      run={run}
-                      entries={activityByRun.get(run.id) ?? []}
-                      projectId={projectId}
-                      projectRoot={projectRoot}
-                      onOpenFile={onOpenFile}
-                      onOpenFileInNewTab={onOpenFileInNewTab}
-                      focusId={focusId}
-                    />
-                  ))}
-                </>
-              ) : undefined,
               status:
                 message.role === "user" && message.deliveryReceipts?.length ? (
                   <MessageDeliveryStatus
@@ -422,20 +435,6 @@ function ChatPaneComponent({
               ),
               }}
             />
-            {standaloneRuns.map(run => (
-              <AgentWorkReceipt
-                key={`run:${run.id}`}
-                agentName={agentName}
-                run={run}
-                entries={activityByRun.get(run.id) ?? []}
-                projectId={projectId}
-                projectRoot={projectRoot}
-                onOpenFile={onOpenFile}
-                onOpenFileInNewTab={onOpenFileInNewTab}
-                focusId={focusId}
-              />
-            ))}
-          </Fragment>
         );
       })}
     </ChatSurface>

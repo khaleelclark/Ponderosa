@@ -29,9 +29,9 @@ function workDuration(run: AgentRunDto): string | undefined {
 
 function receiptTitle(
   agentName: string,
-  run: AgentRunDto,
-  nested: boolean,
+  run: AgentRunDto | undefined,
 ): string {
+  if (!run) return "Unscoped work";
   if (run.status === "running" || run.status === "compacting") {
     return `${agentName} is working`;
   }
@@ -42,16 +42,12 @@ function receiptTitle(
     run.status === "stalled" ||
     run.status === "blocked"
   ) {
-    return nested ? "Work stopped" : `${agentName}'s work stopped`;
+    return `${agentName}'s work stopped`;
   }
   const duration = workDuration(run);
   return duration
-    ? nested
-      ? `Worked for ${duration}`
-      : `${agentName} worked for ${duration}`
-    : nested
-      ? "Finished working"
-      : `${agentName} finished working`;
+    ? `${agentName} worked for ${duration}`
+    : `${agentName} finished working`;
 }
 
 function receiptStatus(run: AgentRunDto): {
@@ -68,9 +64,10 @@ function receiptStatus(run: AgentRunDto): {
 }
 
 export function AgentWorkReceipt({
-  nested = false,
   agentName,
   run,
+  active = false,
+  contextText,
   entries,
   projectId,
   projectRoot,
@@ -78,9 +75,10 @@ export function AgentWorkReceipt({
   onOpenFileInNewTab,
   focusId,
 }: {
-  nested?: boolean;
   agentName: string;
-  run: AgentRunDto;
+  run?: AgentRunDto;
+  active?: boolean;
+  contextText?: string;
   entries: ActivityStreamEntry[];
   projectId?: string;
   projectRoot?: string;
@@ -89,11 +87,11 @@ export function AgentWorkReceipt({
   focusId?: string;
 }): JSX.Element {
   const containsFocus =
-    run.id === focusId || entries.some(entry => entry.id === focusId);
-  const [expanded, setExpanded] = useState(containsFocus);
+    run?.id === focusId || entries.some(entry => entry.id === focusId);
+  const [expanded, setExpanded] = useState(containsFocus || active);
   useEffect(() => {
-    if (containsFocus) setExpanded(true);
-  }, [containsFocus]);
+    if (containsFocus || active) setExpanded(true);
+  }, [active, containsFocus]);
   const visibleEntries = useMemo(
     () => entries.filter(entry => entry.kind !== "run_header"),
     [entries],
@@ -105,29 +103,29 @@ export function AgentWorkReceipt({
   const activityCount = visibleEntries.filter(
     entry => entry.kind !== "thinking" && entry.kind !== "response",
   ).length;
-  const status = receiptStatus(run);
+  const status = run ? receiptStatus(run) : undefined;
   const activitySummary = activityCount === 1
     ? "1 activity"
     : `${activityCount} activities`;
 
   return (
     <Box
-      id={telemetryElementId("runs", run.id)}
+      id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}
       component="article"
-      aria-label={`${agentName} work details`}
-      tabIndex={run.id === focusId ? -1 : undefined}
+      aria-label={run ? `${agentName} work details` : "Unscoped work details"}
+      tabIndex={run?.id === focusId ? -1 : undefined}
       sx={{
-        width: nested ? "100%" : "min(1120px, 100%)",
+        width: "min(1120px, 100%)",
         maxWidth: "100%",
-        pl: nested ? 0 : { xs: 5, sm: 6.5 },
-        pt: nested ? 0.5 : 0.25,
+        pl: { xs: 5, sm: 6.5 },
+        pt: 0.25,
         pb: 0.25,
       }}
     >
       <Box
         sx={{
-          maxWidth: nested ? "100%" : 960,
-          pt: nested ? 0.25 : 0,
+          maxWidth: 960,
+          pt: 0,
         }}
       >
         <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
@@ -156,7 +154,7 @@ export function AgentWorkReceipt({
                 fontWeight: 700,
               }}
             >
-              {receiptTitle(agentName, run, nested)}
+              {receiptTitle(agentName, run)}
             </Box>
             <Box
               component="span"
@@ -180,6 +178,23 @@ export function AgentWorkReceipt({
             />
           ) : null}
         </Stack>
+        {contextText ? (
+          <Typography
+            variant="caption"
+            color="text.secondary"
+            title={contextText}
+            sx={{
+              display: "block",
+              ml: 0.75,
+              maxWidth: "min(90%, 760px)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            For “{contextText}”
+          </Typography>
+        ) : null}
         {expanded ? (
           <Box
             sx={{

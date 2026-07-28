@@ -13,7 +13,6 @@ import type { AgentStatus } from "../agents";
 import { chatStateKey, readChatState } from "../chatState";
 import type { AgentTelemetryFocus } from "../routing";
 import { notificationTechnicalFocusId } from "../technicalFocus";
-import { ActivityStreamPane } from "./activity/ActivityStreamPane";
 import { AgentsTab } from "./AgentsTab";
 import { AttentionSurface } from "./AttentionSurface";
 import type { AgentTab } from "./AgentDetail.helpers";
@@ -42,8 +41,6 @@ interface AgentDetailPanelsProps {
   >;
   loadingOlder: boolean;
   hasOlderTelemetry: boolean;
-  connected: boolean;
-  running: boolean;
   activeExecutionId?: string;
   focusTelemetry?: AgentTelemetryFocus;
   projectRoot?: string;
@@ -61,7 +58,6 @@ interface AgentDetailPanelsProps {
   onLoadOlderTelemetry(): void;
   onOpenFile(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab(file: ResponseFileActivityDto): void;
-  onOpenReview(): void;
   onNewSubagent(managerAgentId: string): void;
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
@@ -86,8 +82,6 @@ export function AgentDetailPanels({
   mobileScrollObserver,
   loadingOlder,
   hasOlderTelemetry,
-  connected,
-  running,
   activeExecutionId,
   focusTelemetry,
   projectRoot,
@@ -103,7 +97,6 @@ export function AgentDetailPanels({
   onLoadOlderTelemetry,
   onOpenFile,
   onOpenFileInNewTab,
-  onOpenReview,
   onNewSubagent,
   onOpenTechnical,
   onOpenArtifact,
@@ -147,32 +140,6 @@ export function AgentDetailPanels({
           onLoadOlder={onLoadOlderChat}
         />
       </Box>
-    ),
-    activity: (
-      <ActivityStreamPane
-        agentId={agentId}
-        activity={detail.activity}
-        runOutput={detail.runOutput}
-        runs={detail.runs}
-        messages={chatMessages}
-        connected={connected}
-        running={running}
-        activeExecutionId={activeExecutionId}
-        focusId={
-          focusTelemetry?.stream === "activity" ||
-          focusTelemetry?.stream === "runOutput"
-            ? focusTelemetry.id
-            : undefined
-        }
-        projectId={detail.agent.projectId}
-        projectRoot={projectRoot}
-        hasEarlier={hasOlderTelemetry}
-        loadingEarlier={loadingOlder}
-        onLoadEarlier={onLoadOlderTelemetry}
-        onOpenFile={onOpenFile}
-        onOpenFileInNewTab={onOpenFileInNewTab}
-        onViewAll={onOpenReview}
-      />
     ),
     subagents: (
       <AgentsTab
@@ -278,17 +245,16 @@ export function AgentDetailPanels({
             maxHeight: "100%",
             minHeight: 0,
             minWidth: 0,
-            overflow:
-              tab === "activity" || tab === "technical" ? "hidden" : "auto",
+            overflow: tab === "technical" ? "hidden" : "auto",
             outlineOffset: -2,
             display: "grid",
             gridTemplateRows:
-              hasOlderTelemetry && tab !== "activity"
+              hasOlderTelemetry
                 ? "auto minmax(0, 1fr)"
                 : "minmax(0, 1fr)",
           }}
         >
-          {hasOlderTelemetry && tab !== "activity" ? (
+          {hasOlderTelemetry ? (
             <Button
               size="small"
               color="inherit"

@@ -935,8 +935,6 @@ export function AgentDetail({
         mobileScrollObserver={mobileComposer.observeScroll}
         loadingOlder={loadingOlder}
         hasOlderTelemetry={hasOlderTelemetry}
-        connected={stream.connected}
-        running={stream.running}
         activeExecutionId={runtimeActivity?.executionId}
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
@@ -952,7 +950,6 @@ export function AgentDetail({
         onLoadOlderTelemetry={() => void loadOlderTelemetry()}
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
-        onOpenReview={() => onOpenReview()}
         onNewSubagent={onNewSubagent}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}

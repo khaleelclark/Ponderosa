@@ -63,7 +63,9 @@ function stripLeadingAgentMentions(
     visible = visible.slice(match[0].length);
     stripped = true;
   }
-  return stripped ? visible.trimStart() : text;
+  return stripped && visible.trim()
+    ? visible.trimStart()
+    : text;
 }
 
 function ConversationMessageComponent({
@@ -115,6 +117,16 @@ function ConversationMessageComponent({
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
+  const recipientNames = [
+    ...new Set(
+      (message.agentMentions ?? []).map(mention =>
+        agentTitle(mention.agentId),
+      ),
+    ),
+  ];
+  const visibleRecipients = recipientNames.slice(0, 2);
+  const hiddenRecipientCount =
+    recipientNames.length - visibleRecipients.length;
 
   return (
     <ChatMessageFrame
@@ -131,17 +143,23 @@ function ConversationMessageComponent({
             },
         createdAt: message.createdAt,
         source:
-          conversation === "collaboration" && message.agentMentions?.length ? (
+          conversation === "collaboration" && recipientNames.length ? (
             <Typography
               component="span"
               variant="caption"
               color="text.secondary"
-              sx={{ whiteSpace: "nowrap" }}
+              sx={{
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
             >
               {"→ "}
-              {message.agentMentions
-                .map(mention => agentTitle(mention.agentId))
-                .join(", ")}
+              {visibleRecipients.join(", ")}
+              {hiddenRecipientCount > 0
+                ? ` +${hiddenRecipientCount} more`
+                : ""}
             </Typography>
           ) : undefined,
         onVisible,
@@ -233,10 +251,11 @@ function ConversationMessageComponent({
               onOpenAgent={onOpenAgent}
             />
           ) : undefined,
-        actions:
-          conversation === "main" ? (
-            <>
-              <CopyMessageButton text={copyableText} />
+        actions: (
+          <>
+            <CopyMessageButton text={copyableText} />
+            {conversation === "main" ? (
+              <>
               {message.authorAgentId && onMentionAgent ? (
                 <Tooltip title={`Mention ${senderName}`}>
                   <IconButton
@@ -259,8 +278,10 @@ function ConversationMessageComponent({
                   </IconButton>
                 </Tooltip>
               ) : null}
-            </>
-          ) : undefined,
+              </>
+            ) : null}
+          </>
+        ),
       }}
     />
   );
@@ -464,19 +485,6 @@ function MainConversationTimeline({
   );
 }
 
-function isImportantOperationalEvent(
-  event: TeamOperationalEventDto,
-): boolean {
-  const signal = `${event.state} ${event.text}`;
-  return (
-    /(?:fail|block|stall|interrupt|cancel|reject|expire|timed?[\s_-]?out|unknown|unavailable|error|needs?[\s_-]?(?:attention|decision))/iu.test(
-      signal,
-    ) ||
-    (event.kind === "decision" &&
-      !/(?:resolved|completed|dismissed|cancelled)/iu.test(event.state))
-  );
-}
-
 function CollaborationTimeline({
   operationalEvents,
   collaborationMessages,
@@ -508,6 +516,11 @@ function CollaborationTimeline({
     string,
     Map<string, TeamOperationalEventDto>
   >();
+  const loadedCommunicationIds = new Set(
+    collaborationMessages.flatMap(message =>
+      message.communicationEventId ? [message.communicationEventId] : [],
+    ),
+  );
   const linkedRequestEventIds = new Set<string>();
   for (const event of operationalEvents) {
     const communicationEventId =
@@ -523,7 +536,9 @@ function CollaborationTimeline({
       requests.set(event.request.recordId, event);
     }
     requestsByCommunicationId.set(communicationEventId, requests);
-    linkedRequestEventIds.add(event.id);
+    if (loadedCommunicationIds.has(communicationEventId)) {
+      linkedRequestEventIds.add(event.id);
+    }
   }
   const timeline = [
     ...collaborationMessages.map(message => ({
@@ -536,7 +551,7 @@ function CollaborationTimeline({
       .filter(
         event =>
           !linkedRequestEventIds.has(event.id) &&
-          isImportantOperationalEvent(event),
+          event.attentionRequired,
       )
       .map(event => ({
         kind: "operation" as const,
@@ -640,7 +655,7 @@ function CollaborationTimeline({
               onOpenFileActivity={onOpenFileActivity}
             />
             {linkedRequests
-              .filter(isImportantOperationalEvent)
+              .filter(event => event.attentionRequired)
               .map(event => (
                 <Stack
                   key={event.request!.recordId}
