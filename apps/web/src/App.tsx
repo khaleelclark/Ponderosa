@@ -965,15 +965,7 @@ export default function App({
               setOnboardingProjectCreation(false);
               setOnboardingCompleteOpen(true);
             }
-            navigate(
-              project.lastConversationId
-                ? {
-                    kind: "conversation",
-                    projectId: project.id,
-                    conversationId: project.lastConversationId,
-                  }
-                : { kind: "project", projectId: project.id },
-            );
+            navigate({ kind: "project", projectId: project.id });
           }}
         />
         <HomeCreateDestinationDialog
