@@ -67,7 +67,6 @@ export function AgentWorkReceipt({
   agentName,
   run,
   active = false,
-  contextText,
   entries,
   projectId,
   projectRoot,
@@ -78,7 +77,6 @@ export function AgentWorkReceipt({
   agentName: string;
   run?: AgentRunDto;
   active?: boolean;
-  contextText?: string;
   entries: ActivityStreamEntry[];
   projectId?: string;
   projectRoot?: string;
@@ -178,23 +176,6 @@ export function AgentWorkReceipt({
             />
           ) : null}
         </Stack>
-        {contextText ? (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            title={contextText}
-            sx={{
-              display: "block",
-              ml: 0.75,
-              maxWidth: "min(90%, 760px)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            For “{contextText}”
-          </Typography>
-        ) : null}
         {expanded ? (
           <Box
             sx={{

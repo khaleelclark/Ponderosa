@@ -296,9 +296,6 @@ function ChatPaneComponent({
     >
       {timeline.map(item => {
         if (item.kind === "run") {
-          const contextMessage = item.run.communicationEventId
-            ? messageByCommunicationId.get(item.run.communicationEventId)
-            : undefined;
           return (
             <AgentWorkReceipt
               key={item.id}
@@ -311,11 +308,6 @@ function ChatPaneComponent({
               onOpenFileInNewTab={onOpenFileInNewTab}
               focusId={focusId}
               active={item.run.id === activeExecutionId}
-              contextText={
-                contextMessage
-                  ? visibleAgentMessageText(contextMessage)
-                  : undefined
-              }
             />
           );
         }
@@ -469,9 +461,6 @@ function ChatPaneComponent({
               }}
             />
             {attachedRuns.map(run => {
-              const contextMessage = run.communicationEventId
-                ? messageByCommunicationId.get(run.communicationEventId)
-                : undefined;
               return (
                 <AgentWorkReceipt
                   key={`run:${run.id}`}
@@ -484,11 +473,6 @@ function ChatPaneComponent({
                   onOpenFileInNewTab={onOpenFileInNewTab}
                   focusId={focusId}
                   active={run.id === activeExecutionId}
-                  contextText={
-                    contextMessage
-                      ? visibleAgentMessageText(contextMessage)
-                      : undefined
-                  }
                 />
               );
             })}
