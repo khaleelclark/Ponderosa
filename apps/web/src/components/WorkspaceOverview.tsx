@@ -12,7 +12,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
@@ -69,6 +69,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
+  const dragPreviewRef = useRef<HTMLElement>();
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -117,16 +118,49 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           draggable
           onDragStart={(event) => {
             const bounds = event.currentTarget.getBoundingClientRect();
+            dragPreviewRef.current?.remove();
+            const preview = document.createElement("div");
+            const content = event.currentTarget.firstElementChild?.cloneNode(true);
+            const rowStyles = window.getComputedStyle(event.currentTarget);
+            preview.setAttribute("aria-hidden", "true");
+            Object.assign(preview.style, {
+              position: "fixed",
+              left: `${bounds.left}px`,
+              top: `${bounds.top}px`,
+              zIndex: "2147483647",
+              boxSizing: "border-box",
+              width: `${bounds.width}px`,
+              height: `${bounds.height}px`,
+              display: "flex",
+              overflow: "hidden",
+              pointerEvents: "none",
+              background: rowStyles.background,
+              border: rowStyles.border,
+              borderRadius: rowStyles.borderRadius,
+              boxShadow: "0 12px 32px rgba(0, 0, 0, 0.28)",
+            });
+            if (content instanceof HTMLElement) {
+              content.removeAttribute("role");
+              content.removeAttribute("tabindex");
+              content.removeAttribute("aria-label");
+              content.style.width = "100%";
+              content.style.pointerEvents = "none";
+              preview.appendChild(content);
+            }
+            document.body.appendChild(preview);
+            dragPreviewRef.current = preview;
             event.dataTransfer.effectAllowed = "move";
             event.dataTransfer.setData("text/plain", snapshot.project.id);
             event.dataTransfer.setDragImage(
-              event.currentTarget,
+              preview,
               event.clientX - bounds.left,
               event.clientY - bounds.top,
             );
             setDraggedProjectId(snapshot.project.id);
           }}
           onDragEnd={() => {
+            dragPreviewRef.current?.remove();
+            dragPreviewRef.current = undefined;
             setDraggedProjectId(undefined);
             setDropTarget(undefined);
           }}
