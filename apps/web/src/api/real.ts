@@ -70,6 +70,7 @@ import type {
   MarkWorkspaceResourceUsedRequest,
   RetryMessageDeliveryRequest,
   RetryMessageDeliveryResponse,
+  RetryCoordinationRequestResponse,
   RunOutputTextDto,
   MultiAgentDirectMessageResponse,
   ProjectBrowserControlRequest,
@@ -356,6 +357,12 @@ export const realApi = {
   async clearAllNotifications(): Promise<void> { await requestJson("/api/notifications", { method: "DELETE" }); },
   async clearProjectNotifications(projectId: string): Promise<void> { await requestJson(`/api/projects/${encodeURIComponent(projectId)}/notifications`, { method: "DELETE" }); },
   setNotificationStatus(notificationId: string, status: "resolved" | "dismissed"): Promise<WorkspaceNotificationDto> { return requestJson(`/api/notifications/${encodeURIComponent(notificationId)}/status`, { method: "POST", body: JSON.stringify({ status }) }); },
+  retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
+    return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
+      method: "POST",
+      body: JSON.stringify(request),
+    });
+  },
   listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
   respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
