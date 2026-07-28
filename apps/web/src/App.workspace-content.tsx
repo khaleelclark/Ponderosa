@@ -145,8 +145,6 @@ export function WorkspaceRouteOutlet({
           onPreferences={onPreferences}
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
-          onCreate={(projectId, managerAgentId) =>
-            onCreate("agent", { projectId, managerAgentId })}
         />
       ) : route.kind === "allChats" ? (
         <AllChatsWorkspace

@@ -213,7 +213,9 @@ export function AgentsTab({
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
+  const [deleteSelectedGroups, setDeleteSelectedGroups] = useState<
+    Array<{ projectId: string; agentIds: string[] }>
+  >([]);
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();
@@ -369,7 +371,30 @@ export function AgentsTab({
   const leaveSelectionMode = () => {
     setSelectionMode(false);
     setSelectedAgentIds(new Set());
-    setDeleteSelectedOpen(false);
+    setDeleteSelectedGroups([]);
+  };
+  const beginSelectedDeletion = () => {
+    const grouped = new Map<string, string[]>();
+    for (const agentId of selectedAgentIds) {
+      const owningProjectId = projectByAgentId?.get(agentId)?.id ?? projectId;
+      if (!owningProjectId) {
+        setBulkError(
+          "Ponderosa could not determine the Project for every selected Agent.",
+        );
+        return;
+      }
+      grouped.set(owningProjectId, [
+        ...(grouped.get(owningProjectId) ?? []),
+        agentId,
+      ]);
+    }
+    setBulkError(undefined);
+    setDeleteSelectedGroups(
+      [...grouped].map(([owningProjectId, agentIds]) => ({
+        projectId: owningProjectId,
+        agentIds,
+      })),
+    );
   };
   const stopAll = async () => {
     setStoppingAll(true);
@@ -447,7 +472,7 @@ export function AgentsTab({
             variant="outlined"
             size="small"
             disabled={selectedAgentIds.size === 0}
-            onClick={() => setDeleteSelectedOpen(true)}
+            onClick={beginSelectedDeletion}
           >
             Delete Selected ({selectedAgentIds.size})
           </Button>
@@ -1007,15 +1032,31 @@ export function AgentsTab({
             : []
         }
       />
-      {projectId ? (
+      {deleteSelectedGroups[0] ? (
         <AgentDeletionDialog
-          open={deleteSelectedOpen}
-          projectId={projectId}
-          rootAgentIds={[...selectedAgentIds]}
-          title="Delete selected agents?"
+          open
+          projectId={deleteSelectedGroups[0].projectId}
+          rootAgentIds={deleteSelectedGroups[0].agentIds}
+          title={
+            deleteSelectedGroups.length > 1
+              ? `Delete selected agents? (${deleteSelectedGroups.length} Projects remaining)`
+              : "Delete selected agents?"
+          }
           confirmationText="DELETE SELECTED"
-          onClose={() => setDeleteSelectedOpen(false)}
-          onDeleted={leaveSelectionMode}
+          onClose={() => setDeleteSelectedGroups([])}
+          onDeleted={() => {
+            if (deleteSelectedGroups.length > 1) {
+              const deletedIds = new Set(deleteSelectedGroups[0].agentIds);
+              setSelectedAgentIds(current => {
+                const next = new Set(current);
+                deletedIds.forEach(id => next.delete(id));
+                return next;
+              });
+              setDeleteSelectedGroups(current => current.slice(1));
+            } else {
+              leaveSelectionMode();
+            }
+          }}
         />
       ) : null}
     </AgentRosterShell>

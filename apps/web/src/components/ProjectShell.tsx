@@ -25,7 +25,8 @@ import { assertNeverRoute, type ProjectRoute } from "../routeRegistry";
 import type { Route } from "../routing";
 import { AgentDetail } from "./AgentDetail";
 import { AgentsTab } from "./AgentsTab";
-import { CreateAgentDialog, type CreateAgentInput, CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
+import { CreateConversationDialog, type CreateConversationInput, PresetManagerDialog } from "./dialogs";
+import { AgentCreateDialog } from "./AgentCreateDialog";
 import { ConversationView } from "./ConversationView";
 import { ProjectArtifactsView } from "./ProjectArtifactsView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
@@ -161,33 +162,6 @@ export function ProjectShell({
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(projectId) });
       setMasterDialogOpen(false);
       navigate({ kind: "conversation", projectId, conversationId: master.id });
-    },
-  });
-
-  const createAgent = useMutation({
-    mutationFn: (input: CreateAgentInput) =>
-      api.createAgent(projectId, input.conversationId, {
-        title: input.title,
-        engine: input.engine,
-        model: input.model,
-        effort: input.effort,
-        presetId: input.presetId,
-        managerAgentId: input.managerAgentId,
-        initialMessage: input.initialMessage,
-      }),
-    onSuccess: (agent) => {
-      queryClient.setQueryData<AgentDto[]>(queryKeys.agents.project(projectId), (current = []) =>
-        current.some((item) => item.id === agent.id) ? current : [...current, agent],
-      );
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
-      if (agent.conversationId) {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(agent.conversationId) });
-      }
-      const continueToTrigger = agentDialog.continueToTrigger;
-      setAgentDialog({ open: false });
-      navigate(continueToTrigger
-        ? { kind: "agent", projectId, agentId: agent.id, view: "triggers", createTrigger: true }
-        : { kind: "agent", projectId, agentId: agent.id });
     },
   });
 
@@ -460,22 +434,25 @@ export function ProjectShell({
         onClose={() => setMasterDialogOpen(false)}
         onCreate={(input) => createConversation.mutate(input)}
       />
-      <CreateAgentDialog
+      <AgentCreateDialog
         open={agentDialog.open}
+        projects={[project]}
         engines={projectEngines}
-        conversations={conversations}
-        presets={presets}
-        agents={agents}
+        fixedProjectId={projectId}
         fixedConversationId={agentDialog.fixedConversationId}
-        defaultEngine={agentDialog.defaultEngine}
-        defaultModel={agentDialog.defaultModel}
-        defaultEffort={agentDialog.defaultEffort}
-        defaultName={agentDialog.defaultName}
-        defaultManagerAgentId={agentDialog.defaultManagerAgentId}
-        pending={createAgent.isPending}
-        error={createAgent.isError ? String(createAgent.error) : undefined}
-        onClose={() => setAgentDialog({ open: false })}
-        onCreate={(input) => createAgent.mutate(input)}
+        initialEngine={agentDialog.defaultEngine}
+        initialModel={agentDialog.defaultModel}
+        initialEffort={agentDialog.defaultEffort}
+        initialName={agentDialog.defaultName}
+        initialManagerAgentId={agentDialog.defaultManagerAgentId}
+        onCancel={() => setAgentDialog({ open: false })}
+        onCreated={(_createdProjectId, agent) => {
+          const continueToTrigger = agentDialog.continueToTrigger;
+          setAgentDialog({ open: false });
+          navigate(continueToTrigger
+            ? { kind: "agent", projectId, agentId: agent.id, view: "triggers", createTrigger: true }
+            : { kind: "agent", projectId, agentId: agent.id });
+        }}
       />
       <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);
