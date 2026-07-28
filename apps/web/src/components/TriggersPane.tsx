@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import KeyIcon from "@mui/icons-material/Key";
@@ -369,6 +370,14 @@ export function TriggersPane({
     {inlineSettings ? (
       <Stack spacing={2}>
         <Box>
+          <Button
+            color="inherit"
+            startIcon={<ArrowBackIcon />}
+            onClick={closeCreateEditor}
+            sx={{ mb: 1 }}
+          >
+            Back to Triggers
+          </Button>
           <Typography variant="h5" component="h2" fontWeight={800}>
             Trigger Settings
           </Typography>
