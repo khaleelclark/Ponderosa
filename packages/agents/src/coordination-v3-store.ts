@@ -631,6 +631,14 @@ export class CoordinationV3Store {
     subtype?: string;
     completed?: number;
     total?: number;
+    requesterAgentId?: string;
+    recipientAgentId?: string;
+    communicationEventId?: string;
+    requestPreview?: string;
+    hasUpdates?: boolean;
+    latestUpdateKind?: import("@ponderosa/core").CoordinationRequestUpdateKind;
+    latestUpdateAt?: string;
+    hasResult?: boolean;
     createdAt: string;
     updatedAt: string;
   }> {
@@ -647,6 +655,15 @@ export class CoordinationV3Store {
     limit?: number;
   }): { items: import("@ponderosa/core").AgentWorkItemDto[]; truncated: boolean } {
     return this.readModel.agentWorkItems(input);
+  }
+
+  /** Loads one scoped Request and its canonical update history on demand. */
+  requestLifecycleDetails(input: {
+    projectId: string;
+    conversationId?: string;
+    recordId: string;
+  }): import("@ponderosa/core").CoordinationRequestLifecycleDto | undefined {
+    return this.readModel.requestLifecycleDetails(input);
   }
 
   /** Loads the technical fields for one canonical inspector record without

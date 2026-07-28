@@ -37,7 +37,10 @@ interface AgentRequestCommandRoutesContext {
   requestArtifactAccess: CommunicationArtifactAuthority["requestArtifactAccess"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
-  publishCoordinationV3Changed(agentId: string): void;
+  publishCoordinationV3Changed(
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ): void;
   notifyScheduler(): void;
   messageLifecycleFaults: CreateServerOptions["messageLifecycleFaults"];
 }
@@ -164,8 +167,15 @@ export function registerAgentRequestCommandRoutes(
         artifact,
         requestArtifactAccess(updateId, changedRequest),
       );
-      if (changedRequest?.requesterAgentId) publishCoordinationV3Changed(changedRequest.requesterAgentId);
-      if (changedRequest) publishCoordinationV3Changed(changedRequest.recipientAgentId);
+      const conversationIds = changedRequest?.conversationId
+        ? [changedRequest.conversationId]
+        : [];
+      if (changedRequest?.requesterAgentId) {
+        publishCoordinationV3Changed(changedRequest.requesterAgentId, { conversationIds });
+      }
+      if (changedRequest) {
+        publishCoordinationV3Changed(changedRequest.recipientAgentId, { conversationIds });
+      }
       notifyScheduler();
       return { ...result, ...(artifact ? { resultRef: `ponderosa://artifact/${artifact.id}` } : {}) };
     } catch (error) {
