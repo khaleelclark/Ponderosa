@@ -9,7 +9,7 @@ import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import { Box, Button, ButtonBase, Chip, Paper, Stack, Typography } from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import { api } from "../api";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
@@ -30,6 +30,64 @@ type RecentResource = { id: string; title: string; detail: string; updatedAt: st
 function Stat({ label, value, onClick }: { label: string; value: string | number; onClick?(): void }): JSX.Element {
   const content = <Stack spacing={0.25} sx={{ p: 1.5, minWidth: 0, textAlign: "left" }}><Typography variant="h5" fontWeight={800}>{value}</Typography><Typography variant="body2" color="text.secondary">{label}</Typography></Stack>;
   return <Paper variant="outlined" sx={{ minWidth: 0, overflow: "hidden" }}>{onClick ? <ButtonBase onClick={onClick} sx={{ display: "block", width: "100%" }}>{content}</ButtonBase> : content}</Paper>;
+}
+
+function CreateEntry({
+  icon,
+  title,
+  description,
+  disabled,
+  onCreate,
+}: {
+  icon: ReactElement;
+  title: string;
+  description: string;
+  disabled?: boolean;
+  onCreate(): void;
+}): JSX.Element {
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5 }}>
+      <Stack
+        direction="row"
+        spacing={1.5}
+        sx={{ alignItems: "center", minWidth: 0 }}
+      >
+        <Box
+          sx={{
+            width: 44,
+            height: 44,
+            flex: "0 0 auto",
+            borderRadius: 1.5,
+            bgcolor: "action.selected",
+            color: "primary.main",
+            display: "grid",
+            placeItems: "center",
+          }}
+        >
+          {icon}
+        </Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography fontWeight={800}>{title}</Typography>
+          <Typography variant="body2" color="text.secondary">
+            {description}
+          </Typography>
+        </Box>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          disabled={disabled}
+          onClick={onCreate}
+          sx={{
+            width: { xs: 176, sm: 200 },
+            minHeight: 48,
+            flexShrink: 0,
+          }}
+        >
+          Create {title}
+        </Button>
+      </Stack>
+    </Paper>
+  );
 }
 
 export function HomeView({ projects, engines, notifications, preferences, onNavigate, onOpenInNewTab, onPreferences, onCreateProject, onCreateChat, onCreateAgent, onCreateTrigger, onOpenInbox }: {
@@ -111,15 +169,45 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
         <Stat label="Provider Health" value={provider.label} />
       </Box>
 
-      <Paper variant="outlined" sx={{ p: 2 }}>
-        <Box sx={{ mb: 1.5 }}><Typography variant="h6" fontWeight={800}>Create</Typography><Typography variant="body2" color="text.secondary">Start with the thing you want; Ponderosa will ask for its scope next.</Typography></Box>
-        <Box sx={{ display: "grid", gridTemplateColumns: { xs: "repeat(2, minmax(0, 1fr))", md: "repeat(4, minmax(0, 1fr))" }, gap: 1 }}>
-          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} onClick={onCreateProject}>New Project</Button>
-          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateChat}>New Chat</Button>
-          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateAgent}>New Agent</Button>
-          <Button fullWidth size="large" variant="contained" startIcon={<AddIcon />} disabled={!projects.length} onClick={onCreateTrigger}>New Trigger</Button>
+      <Box component="section" aria-labelledby="home-create-heading">
+        <Box sx={{ mb: 1.5 }}>
+          <Typography id="home-create-heading" variant="h6" fontWeight={800}>
+            Create
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Open the form for exactly what you want to add.
+          </Typography>
         </Box>
-      </Paper>
+        <Stack spacing={1}>
+          <CreateEntry
+            icon={<FolderOutlinedIcon />}
+            title="Project"
+            description="A workspace with its own folder, runtime defaults, Chats, and Agents."
+            onCreate={onCreateProject}
+          />
+          <CreateEntry
+            icon={<ChatBubbleOutlineIcon />}
+            title="Chat"
+            description="A shared Project conversation for requests, decisions, and coordinated Agent work."
+            disabled={!projects.length}
+            onCreate={onCreateChat}
+          />
+          <CreateEntry
+            icon={<SmartToyOutlinedIcon />}
+            title="Agent"
+            description="A managed worker with its own role, provider session, and Project authority."
+            disabled={!projects.length}
+            onCreate={onCreateAgent}
+          />
+          <CreateEntry
+            icon={<BoltOutlinedIcon />}
+            title="Trigger"
+            description="An automation that starts Agent work from schedules or filesystem events."
+            disabled={!projects.length}
+            onCreate={onCreateTrigger}
+          />
+        </Stack>
+      </Box>
 
       {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
 

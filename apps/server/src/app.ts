@@ -50,6 +50,7 @@ import {
 import { registerServerControlRoutes } from "./routes/server-control.js";
 import { createRuntimeAuthority } from "./runtime-authority.js";
 import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
+import { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 import type { ServerContext } from "./server-context.js";
 import { registerServerLifecycle } from "./server-lifecycle.js";
 import { createServerReadModels } from "./server-read-models.js";
@@ -137,6 +138,16 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
   const coordinationV3WorkerId = `server:${process.pid}`;
   const workspace = new WorkspaceStore(opts.dataDir);
+  const runtimeElicitations = new RuntimeElicitationBroker();
+  // Provider processes do not survive a server restart. Retire any durable
+  // prompt whose sensitive live half disappeared with its provider process.
+  for (const decision of workspace.listDecisions({ status: "pending" })) {
+    if (!decision.runtimeAction) continue;
+    workspace.cancelDecision(decision.id);
+    const notification = workspace.listNotifications().find((item) =>
+      item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+  }
   const workspaceSubscribers = new Set<(event: WorkspaceEventEnvelope) => void>();
   const liveSseClosures = new Set<() => void>();
   const publishWorkspace = (event: WorkspaceEventEnvelope): void => {
@@ -589,6 +600,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     store,
     coordinationV3,
     workspace,
+    runtimeElicitations,
     activeRuns,
     subscribers,
     scheduledSessionRollovers,
@@ -860,6 +872,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     runtimeArtifactMetadata,
     coordinationV3WorkerId,
     workspace,
+    runtimeElicitations,
     workspaceSubscribers,
     liveSseClosures,
     appendWorkspace,

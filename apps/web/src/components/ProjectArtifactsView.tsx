@@ -1,10 +1,9 @@
-import AddIcon from "@mui/icons-material/Add";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Alert,
@@ -18,7 +17,6 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
-  IconButton,
   InputAdornment,
   InputLabel,
   List,
@@ -46,14 +44,17 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
+import type { AgentStatus } from "../agents";
 import { uniqueBy } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { AgentsTab } from "./AgentsTab";
 import { artifactDisplayLabel } from "./filePreview/ArtifactsPane";
 import {
   ProjectOverview,
   projectHealthDetail,
   projectHealthPresentation,
 } from "./ProjectOverview";
+import { ProjectSettingsPanel } from "./ProjectSettingsDialog";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import {
   ResourceContextMenu,
@@ -84,8 +85,11 @@ export function ProjectArtifactsView({
   onOpenConversationInNewTab,
   onRenameConversation,
   onDeleteConversation,
-  onOpenProjectAgents,
-  onManageProject,
+  statusByAgentId,
+  onOpenAgent,
+  onOpenAgentInNewTab,
+  onNewAgent,
+  onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
   onOpenArtifactInNewTab,
@@ -108,8 +112,11 @@ export function ProjectArtifactsView({
   onOpenConversationInNewTab?(conversationId: string): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
-  onOpenProjectAgents(): void;
-  onManageProject(): void;
+  statusByAgentId: ReadonlyMap<string, AgentStatus>;
+  onOpenAgent(agentId: string): void;
+  onOpenAgentInNewTab?(agentId: string): void;
+  onNewAgent(managerAgentId?: string): void;
+  onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
@@ -120,7 +127,9 @@ export function ProjectArtifactsView({
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
-  const [tab, setTab] = useState<"overview" | "files">("overview");
+  const [tab, setTab] = useState<
+    "overview" | "files" | "agents" | "settings"
+  >("overview");
   const [fileCategories, setFileCategories] = useState<
     Array<Exclude<ProjectFileCategory, "all">>
   >([]);
@@ -245,7 +254,7 @@ export function ProjectArtifactsView({
       className="ponderosa-scroll"
       sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}
     >
-      <TabbedWorkspaceFrame<"overview" | "files">
+      <TabbedWorkspaceFrame<"overview" | "files" | "agents" | "settings">
         icon={<FolderOutlinedIcon />}
         title={project.label}
         context={
@@ -278,34 +287,6 @@ export function ProjectArtifactsView({
             </Button>
           </Tooltip>
         }
-        actions={
-          <>
-            <Button
-              size="small"
-              variant="contained"
-              startIcon={<AddIcon />}
-              onClick={onCreateConversation}
-            >
-              New Chat
-            </Button>
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={<SmartToyOutlinedIcon />}
-              onClick={onOpenProjectAgents}
-            >
-              Project Agents
-            </Button>
-            <Tooltip title="Project Settings">
-              <IconButton
-                aria-label={`Project settings for ${project.label}`}
-                onClick={onManageProject}
-              >
-                <MoreVertIcon />
-              </IconButton>
-            </Tooltip>
-          </>
-        }
         tabs={{
           value: tab,
           onChange: setTab,
@@ -317,10 +298,27 @@ export function ProjectArtifactsView({
               label: "Files & Results",
               icon: <Inventory2OutlinedIcon />,
             },
+            {
+              value: "agents",
+              label: "Project Agents",
+              icon: <SmartToyOutlinedIcon />,
+            },
+            {
+              value: "settings",
+              label: "Project Settings",
+              icon: <SettingsOutlinedIcon />,
+            },
           ],
         }}
       />
-      <Box sx={{ p: { xs: 1.5, sm: 3 } }}>
+      <Box
+        sx={{
+          p:
+            tab === "agents" || tab === "settings"
+              ? 0
+              : { xs: 1.5, sm: 3 },
+        }}
+      >
         <Stack spacing={1.5} sx={{ width: "100%", minWidth: 0 }}>
           {tab === "overview" ? (
             <>
@@ -714,6 +712,31 @@ export function ProjectArtifactsView({
                 ))}
               </Box>
             </>
+          ) : null}
+          {tab === "agents" ? (
+            <AgentsTab
+              collection={{
+                title: "Project Agents",
+                detail: `${agents.length} ${agents.length === 1 ? "Agent" : "Agents"} in ${project.label}`,
+                totalCount: agents.length,
+                variant: "embedded",
+              }}
+              agents={agents}
+              projectId={projectId}
+              engines={engines}
+              conversations={conversations}
+              statusByAgentId={statusByAgentId}
+              healthByAgentId={healthByAgentId}
+              onOpenAgent={onOpenAgent}
+              onOpenAgentInNewTab={onOpenAgentInNewTab}
+              onNewAgent={onNewAgent}
+            />
+          ) : null}
+          {tab === "settings" ? (
+            <ProjectSettingsPanel
+              project={project}
+              onDeleted={onProjectDeleted}
+            />
           ) : null}
         </Stack>
         <ResourceContextMenu

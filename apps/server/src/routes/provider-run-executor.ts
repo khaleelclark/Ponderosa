@@ -18,6 +18,7 @@ import {
   type ProviderInputSourceManifest,
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
+import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
@@ -34,6 +35,12 @@ import type {
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
+
+function humanizeProviderName(value: string): string {
+  return value
+    .replaceAll(/[_-]+/gu, " ")
+    .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
+}
 
 export interface ProviderRunExecutionInput {
   activeRun: ActiveRun;
@@ -142,6 +149,8 @@ export function startProviderRunExecution(
     waitBeforeRuntimePersist,
     publish,
     publishMessageDeliveryChanged,
+    publishWorkspaceSince,
+    runtimeElicitations,
     createOperationalNotification,
     resolveOperationalNotification,
   } = context;
@@ -299,6 +308,101 @@ export function startProviderRunExecution(
               success: response.statusCode >= 200 && response.statusCode < 300,
               text: response.body,
             };
+          },
+          handleElicitation: async (request) => {
+            // Persistent provider sessions outlive the Run that opened them,
+            // so resolve authority from the current Run instead of this
+            // callback's original closure.
+            const currentRun = activeRuns.get(agent.id);
+            if (!currentRun || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted) {
+              return { action: "cancel" };
+            }
+            if (request.mode === "url") {
+              try {
+                const parsed = new URL(request.url);
+                if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return { action: "cancel" };
+              } catch {
+                return { action: "cancel" };
+              }
+            }
+            const cursor = workspace.cursor();
+            const providerName = humanizeProviderName(request.serverName);
+            const decision = workspace.createDecision({
+              idempotencyKey: `runtime-elicitation:${currentRun.runId}:${request.mode === "url" ? request.elicitationId ?? randomUUID() : randomUUID()}`,
+              projectId: agent.projectId,
+              ...(currentRun.conversationId ? { conversationId: currentRun.conversationId } : {}),
+              agentId: agent.id,
+              runId: currentRun.runId,
+              ...(currentRun.v3SchedulerRunId ? { coordinationRunId: currentRun.v3SchedulerRunId } : {}),
+              mode: "choice",
+              question: request.mode === "url"
+                ? `${agent.title} needs a secure ${providerName} connection before it can continue.`
+                : `${agent.title} needs information for ${providerName} before it can continue.`,
+              context: request.mode === "url"
+                ? `Open the secure ${providerName} connection page, then return here to confirm.`
+                : `${providerName} needs this information to continue. Submitted values are sent directly to the provider and are not saved in Ponderosa.`,
+              options: request.mode === "url"
+                ? [
+                    { id: "accept", label: "I've Connected" },
+                    { id: "decline", label: "Not Now" },
+                  ]
+                : [
+                    { id: "submit", label: "Submit" },
+                    { id: "decline", label: "Not Now" },
+                  ],
+              allowOther: false,
+              blocking: true,
+              runtimeAction: {
+                kind: "mcp_elicitation",
+                mode: request.mode,
+                serverName: request.serverName,
+              },
+            });
+            // A provider may reuse an elicitation ID after its durable Decision
+            // has already resolved. Never attach a fresh live request to that
+            // unreachable historical prompt.
+            if (decision.status !== "pending") {
+              runtimeElicitations.cancel(decision.id);
+              return { action: "cancel" };
+            }
+            const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
+            workspace.createNotification({
+              projectId: decision.projectId,
+              conversationId: decision.conversationId,
+              conversationIds: agent.conversationIds,
+              agentId: decision.agentId,
+              agentIds: [decision.agentId],
+              kind: "decision",
+              category: "decision",
+              severity: "urgent",
+              status: "open",
+              dedupeKey: `decision:${decision.id}`,
+              action: { kind: "open_decision", targetId: decision.id },
+              title: request.mode === "url"
+                ? `${agent.title} needs you to connect ${providerName}`
+                : `${agent.title} needs information for ${providerName}`,
+              body: decision.question,
+              decision: {
+                id: decision.id,
+                mode: decision.mode,
+                options: decision.options,
+                allowOther: decision.allowOther,
+                status: decision.status,
+                runtimeAction: decision.runtimeAction,
+              },
+            }, true);
+            publishWorkspaceSince(cursor);
+            const response = await waiting;
+            if (currentRun.controller.signal.aborted && !isClosed()) {
+              const cancelCursor = workspace.cursor();
+              runtimeElicitations.cancel(decision.id);
+              workspace.cancelDecision(decision.id);
+              const notification = workspace.listNotifications().find((item) =>
+                item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
+              if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+              publishWorkspaceSince(cancelCursor);
+            }
+            return response;
           },
           onRuntimeSpawned,
           onRuntimeRootExit: (detail) => persistentRootExited(agent.id, identity, detail),

@@ -1,14 +1,16 @@
-import type {
-  AgentEvent,
-  EngineCapabilities,
-  EngineMcpServer,
-  TokenUsage,
-  OpenRuntimeSessionOptions,
-  RuntimeSession,
-  RuntimeCommandResult,
-  RuntimeSteerResult,
-  RuntimeTurnInput,
-  RuntimeProcessHandle,
+import {
+  truncateUnicodeCodePoints,
+  type AgentEvent,
+  type EngineCapabilities,
+  type EngineMcpServer,
+  type TokenUsage,
+  type OpenRuntimeSessionOptions,
+  type RuntimeSession,
+  type RuntimeCommandResult,
+  type RuntimeElicitationRequest,
+  type RuntimeSteerResult,
+  type RuntimeTurnInput,
+  type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
@@ -23,6 +25,44 @@ interface DynamicToolCallParams {
   tool: string;
   namespace?: string | null;
   arguments: unknown;
+}
+
+function normalizeElicitationRequest(params: unknown): RuntimeElicitationRequest {
+  const value = object(params);
+  if (!value) throw new Error("invalid MCP elicitation request");
+  const serverName = typeof value?.serverName === "string"
+    ? truncateUnicodeCodePoints(
+        value.serverName
+          .normalize("NFC")
+          .replace(/[\u0000-\u001f\u007f]/gu, " ")
+          .replace(/\s+/gu, " ")
+          .trim(),
+        200,
+      )
+    : "";
+  const message = typeof value?.message === "string" ? value.message.trim() : "";
+  const mode = value?.mode;
+  if (!serverName || !message) throw new Error("invalid MCP elicitation request");
+  if (mode === "url") {
+    if (typeof value.url !== "string" || !value.url.trim()) {
+      throw new Error("MCP URL elicitation is missing its URL");
+    }
+    return {
+      mode,
+      serverName,
+      message,
+      ...(typeof value.elicitationId === "string" && value.elicitationId.trim()
+        ? { elicitationId: value.elicitationId.trim() }
+        : {}),
+      url: value.url,
+    };
+  }
+  if (mode === "form" || mode === "openai/form") {
+    const requestedSchema = object(value.requestedSchema);
+    if (!requestedSchema) throw new Error("MCP form elicitation is missing its schema");
+    return { mode, serverName, message, requestedSchema };
+  }
+  throw new Error("unsupported MCP elicitation mode");
 }
 
 interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
@@ -387,6 +427,10 @@ export class CodexAppServerSession implements RuntimeSession {
       onRuntimeRootExit: opts.onRuntimeRootExit,
       onNotification: (notification) => session?.observeCapabilityNotification(notification),
       handleServerRequest: async (method, params) => {
+        if (method === "mcpServer/elicitation/request") {
+          if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
+          return opts.handleElicitation(normalizeElicitationRequest(params));
+        }
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
         }

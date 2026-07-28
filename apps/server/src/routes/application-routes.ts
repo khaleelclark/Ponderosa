@@ -26,6 +26,7 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
+import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
@@ -128,6 +129,7 @@ type ApplicationRoutesContext =
     isClosed(): boolean;
     isDeploymentDraining(): boolean;
     notifyScheduler(): void;
+    runtimeElicitations: RuntimeElicitationBroker;
     setMaxConcurrentRuns: Parameters<typeof registerWorkspacePreferenceRoutes>[1]["setMaxConcurrentRuns"];
   };
 
@@ -236,6 +238,7 @@ export function registerApplicationRoutes(
     collaborationViewDetail,
     conversationDetail,
     ensureDecisionResponseActivation,
+    runtimeElicitations,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     teamDirectory,
@@ -575,7 +578,7 @@ registerAgentMessageRunRoute(app, {
   publish, publishCoordinationV3Changed, publishMessageDeliveryChanged, teamDirectory,
   canonicalConversationContext, agentCanReadRuntimeArtifact,
   createOperationalNotification, resolveOperationalNotification, reconcileProjectWorkspace,
-  drainDeploymentIdleAuthorities,
+  drainDeploymentIdleAuthorities, publishWorkspaceSince, runtimeElicitations,
   ownsActiveRun, cancelRuntimeIdleClose, reconcileAgentRuntimeAuthority,
   scheduleRuntimeLivenessHeartbeat,
 });
@@ -614,7 +617,15 @@ app.get<{ Querystring: { projectId?: string; conversationId?: string; agentId?: 
     status: status as "pending" | "resolved" | "cancelled" | undefined,
   });
 });
-app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>("/api/decisions/:id/respond", async (request, reply) => {
+app.get<{ Params: { id: string } }>("/api/decisions/:id/action", async (request, reply) => {
+  const current = workspace.getDecision(request.params.id);
+  if (!current || !current.runtimeAction) return reply.code(404).send({ error: "Connection request not found" });
+  if (current.status !== "pending") return reply.code(409).send({ error: "Connection request is no longer pending" });
+  const action = runtimeElicitations.action(current.id);
+  if (!action) return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
+  return reply.header("cache-control", "no-store").send(action);
+});
+app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; content?: unknown } }>("/api/decisions/:id/respond", async (request, reply) => {
   const current = workspace.getDecision(request.params.id);
   if (!current) return reply.code(404).send({ error: "Decision not found" });
   if (deletingProjectIds.has(current.projectId)) return reply.code(409).send({ error: "Project deletion is in progress" });
@@ -630,6 +641,20 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
   if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
   if (!optionId && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+  if (current.runtimeAction) {
+    if (!runtimeElicitations.action(current.id)) {
+      return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
+    }
+    if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
+      return reply.code(400).send({ error: "Confirm the connection or choose Not Now" });
+    }
+    if (current.runtimeAction.mode !== "url" && optionId !== "submit" && optionId !== "decline") {
+      return reply.code(400).send({ error: "Submit the requested information or choose Not Now" });
+    }
+    if (optionId === "submit" && request.body?.content === undefined) {
+      return reply.code(400).send({ error: "The requested form is incomplete" });
+    }
+  }
   const respondedAt = new Date().toISOString();
   if (current.approvalScope?.kind === "agent_management") {
     try {
@@ -645,7 +670,15 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string } }>
   const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
   if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
-  ensureDecisionResponseActivation(decision);
+  if (current.runtimeAction) {
+    runtimeElicitations.respond(current.id, optionId === "decline"
+      ? { action: "decline" }
+      : optionId === "submit"
+        ? { action: "accept", content: request.body.content }
+        : { action: "accept" });
+  } else {
+    ensureDecisionResponseActivation(decision);
+  }
   publishMessageDeliveryChanged(decision.agentId);
   notifyScheduler();
   return decision;

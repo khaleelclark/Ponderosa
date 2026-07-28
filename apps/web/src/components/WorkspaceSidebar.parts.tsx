@@ -71,9 +71,9 @@ function SharedSidebarPanel({
   starredRows: ReactNode;
   allRows: ReactNode;
   empty?: ReactNode;
-  newLabel: string;
+  newLabel?: string;
   newIcon?: ReactNode;
-  onNew(): void;
+  onNew?(): void;
   onNewContextMenu?(anchor: HTMLElement): void;
   newDisabled?: boolean;
   viewAllLabel: string;
@@ -152,24 +152,26 @@ function SharedSidebarPanel({
           boxShadow: theme => `inset 0 1px 0 ${theme.palette.divider}`,
         }}
       >
-        <Button
-          fullWidth
-          color="inherit"
-          startIcon={newIcon ?? <AddIcon />}
-          onClick={onNew}
-          onContextMenu={event => {
-            if (!onNewContextMenu) return;
-            event.preventDefault();
-            onNewContextMenu(event.currentTarget);
-          }}
-          disabled={newDisabled}
-          sx={{
-            justifyContent: "flex-start",
-            color: "text.secondary",
-          }}
-        >
-          {newLabel}
-        </Button>
+        {newLabel && onNew ? (
+          <Button
+            fullWidth
+            color="inherit"
+            startIcon={newIcon ?? <AddIcon />}
+            onClick={onNew}
+            onContextMenu={event => {
+              if (!onNewContextMenu) return;
+              event.preventDefault();
+              onNewContextMenu(event.currentTarget);
+            }}
+            disabled={newDisabled}
+            sx={{
+              justifyContent: "flex-start",
+              color: "text.secondary",
+            }}
+          >
+            {newLabel}
+          </Button>
+        ) : null}
         <Button
           fullWidth
           startIcon={viewAllIcon}

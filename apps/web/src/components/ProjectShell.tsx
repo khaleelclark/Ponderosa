@@ -54,7 +54,6 @@ export function ProjectShell({
   notifications,
   preferences,
   onPreferences,
-  onManageProject,
   onRenameConversation,
   onDeleteConversation,
   onOpenEngineStatus,
@@ -71,7 +70,6 @@ export function ProjectShell({
   notifications: WorkspaceNotificationDto[];
   preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onManageProject(project: ProjectDto): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
   onOpenEngineStatus(): void;
@@ -358,7 +356,15 @@ export function ProjectShell({
       />
     );
 } else if (route.kind === "browser") {
-  main = <ProjectBrowserDialog projectId={projectId} open embedded request={browserRequest} onRequestHandled={onBrowserRequestHandled} onClose={() => navigate({ kind: "project", projectId })} />;
+  main = <ProjectBrowserDialog
+    projectId={projectId}
+    open
+    embedded
+    request={browserRequest}
+    onRequestHandled={onBrowserRequestHandled}
+    backLabel={route.agentId ? "Back to Agent" : "Back to Project"}
+    onClose={() => navigate(route.agentId ? { kind: "agent", projectId, agentId: route.agentId } : { kind: "project", projectId })}
+  />;
 } else if (route.kind === "agents") {
     main = (
       <AgentsTab
@@ -384,12 +390,20 @@ export function ProjectShell({
       files={detail?.changedFiles ?? []}
       running={running}
       initialPath={route.path}
+      onBack={() => navigate({ kind: "agent", projectId, agentId: route.agentId })}
       onOpenInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, path })}
     />;
   } else if (route.kind === "workspaceFile") {
-    main = <WorkspaceFileView projectId={projectId} path={route.path} />;
+    main = <WorkspaceFileView projectId={projectId} path={route.path} onBack={() => navigate({ kind: "project", projectId })} />;
   } else if (route.kind === "projectWork") {
-    main = <AgentWorkInspector open projectId={projectId} conversationId={route.conversationId} focus={route.focusId ? { id: route.focusId } : undefined} onClose={() => navigate({ kind: "project", projectId })} />;
+    main = <AgentWorkInspector
+      open
+      projectId={projectId}
+      conversationId={route.conversationId}
+      focus={route.focusId ? { id: route.focusId } : undefined}
+      backLabel={route.conversationId ? "Back to Chat" : "Back to Project"}
+      onClose={() => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "project", projectId })}
+    />;
   } else if (route.kind === "project") {
     main =
       <ProjectArtifactsView
@@ -408,8 +422,16 @@ export function ProjectShell({
         onOpenConversationInNewTab={openInNewTab ? (conversationId) => openInNewTab({ kind: "conversation", projectId, conversationId }) : undefined}
         onRenameConversation={onRenameConversation}
         onDeleteConversation={onDeleteConversation}
-        onOpenProjectAgents={() => navigate({ kind: "agents", projectId })}
-        onManageProject={() => onManageProject(project)}
+        statusByAgentId={statusByAgentId}
+        onOpenAgent={(agentId) => navigate({ kind: "agent", projectId, agentId })}
+        onOpenAgentInNewTab={(agentId) => openInNewTab?.({ kind: "agent", projectId, agentId })}
+        onNewAgent={(managerAgentId) => managerAgentId
+          ? openNewSubagent(managerAgentId)
+          : setAgentDialog({ open: true, defaultName: suggestedName() })}
+        onProjectDeleted={() => {
+          onResourceDeleted?.({ kind: "project", projectId });
+          navigate({ kind: "home" });
+        }}
         onOpenEngineStatus={onOpenEngineStatus}
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}

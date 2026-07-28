@@ -4,7 +4,7 @@ import {
   useTheme,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { ProjectShell } from "./components/ProjectShell";
@@ -22,14 +22,8 @@ import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
 import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
 import {
-  CreateConversationDialog,
-  type CreateConversationInput,
-} from "./components/dialogs";
-import {
-  HomeCreateDestinationDialog,
   OnboardingCompleteDialog,
   SidebarConversationDialogs,
-  TriggerOwnerDialog,
   type SidebarConversationAction,
 } from "./components/WorkspaceDialogs";
 import {
@@ -85,10 +79,6 @@ import {
   restoreWorkspaceSidebarState,
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
-import {
-  routeForTriggerAgentSelection,
-  triggerAgentDestinations,
-} from "./triggerCreation";
 import { queryKeys } from "./queryKeys";
 import { MobileWorkspaceDrawer, MobileWorkspaceHeader } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
@@ -180,11 +170,6 @@ export default function App({
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [settingsProject, setSettingsProject] = useState<ProjectDto>();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
-  const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent">();
-  const [homeChatProjectId, setHomeChatProjectId] = useState<string>();
-  const [homeCreateContinueToTrigger, setHomeCreateContinueToTrigger] =
-    useState(false);
-  const [triggerCreateOpen, setTriggerCreateOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
   const [projectBrowserRequest, setProjectBrowserRequest] =
@@ -202,11 +187,6 @@ export default function App({
         projects.findIndex((project) => project.id === route.projectId)
       ]?.data?.find((agent) => agent.id === route.agentId)?.activeEngine
     : undefined;
-  const triggerAgentOptions = triggerAgentDestinations(
-    projects,
-    projectAgentQueries.map(query => query.data),
-  );
-
   useEffect(() => {
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, route),
@@ -351,10 +331,6 @@ export default function App({
       }
     });
   };
-  const openProjectCreator = (onboarding = false) => {
-    setOnboardingProjectCreation(onboarding);
-    setProjectDialogOpen(true);
-  };
   const closeProjectCreator = () => {
     setProjectDialogOpen(false);
     setOnboardingProjectCreation(false);
@@ -452,10 +428,21 @@ export default function App({
     setActiveWorkspaceTabKey(tab.key);
     navigate(next);
   };
-  const openNewWorkspace = (
-    createKind: "project" | "chat" | "agent" | "trigger",
+  const openCreationForm = (
+    kind: "project" | "chat" | "agent" | "trigger",
+    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
   ) => {
-    openWorkspaceRoute({ kind: "new", createKind });
+    const destination: Route = {
+      kind: "create",
+      resource: kind,
+      ...(context?.projectId ? { projectId: context.projectId } : {}),
+      ...(context?.managerAgentId
+        ? { managerAgentId: context.managerAgentId }
+        : {}),
+      ...(context?.agentId ? { agentId: context.agentId } : {}),
+    };
+    if (route.kind === "create") navigateWorkspace(destination);
+    else openWorkspaceRoute(destination);
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -473,78 +460,6 @@ export default function App({
     });
     openWorkspaceRoute({ kind: "browser", projectId: selectedProjectId });
   };
-  const beginHomeChat = (projectId?: string) => {
-    const project =
-      projects.find(candidate => candidate.id === projectId) ?? projects[0];
-    if (!project) return;
-    homeChatCreation.reset();
-    setHomeChatProjectId(project.id);
-  };
-  const homeChatCreation = useMutation({
-    mutationFn: ({
-      projectId,
-      input,
-    }: {
-      projectId: string;
-      input: CreateConversationInput;
-    }) => api.createConversation(projectId, input),
-    onSuccess: async (conversation, variables) => {
-      await api.markProjectUsed(variables.projectId, conversation.id);
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.project(variables.projectId),
-      });
-      setHomeChatProjectId(undefined);
-      navigateWorkspace({
-        kind: "conversation",
-        projectId: variables.projectId,
-        conversationId: conversation.id,
-      });
-    },
-  });
-  const createHomeAgent = (
-    projectId?: string,
-    continueToTrigger = false,
-    managerAgentId?: string,
-  ) => {
-    const project =
-      projects.find(candidate => candidate.id === projectId) ?? projects[0];
-    if (project)
-      navigateWorkspace({
-        kind: "agents",
-        projectId: project.id,
-        create: true,
-        ...(managerAgentId ? { managerAgentId } : {}),
-        ...(continueToTrigger ? { continueToTrigger: true } : {}),
-      });
-  };
-  const beginTriggerCreate = () => {
-    setTriggerCreateOpen(true);
-  };
-  const beginHomeCreate = (kind: "chat" | "agent" | "trigger") => {
-    if (kind === "trigger") {
-      beginTriggerCreate();
-      return;
-    }
-    if (projects.length === 1) {
-      const projectId = projects[0]!.id;
-      if (kind === "chat") beginHomeChat(projectId);
-      else createHomeAgent(projectId);
-      return;
-    }
-    setHomeCreateContinueToTrigger(false);
-    setHomeCreateKind(kind);
-  };
-
-  const continueHomeCreate = (projectId: string) => {
-    if (!homeCreateKind) return;
-    const kind = homeCreateKind;
-    const continueToTrigger = homeCreateContinueToTrigger;
-    setHomeCreateKind(undefined);
-    setHomeCreateContinueToTrigger(false);
-    if (kind === "chat") beginHomeChat(projectId);
-    else createHomeAgent(projectId, continueToTrigger);
-  };
-
   useEffect(() => {
     const openNotificationRoute = (event: MessageEvent) => {
       if (
@@ -576,6 +491,13 @@ export default function App({
       recordWorkspaceRouteUse(nextActive.route);
       navigate(nextActive.route);
     }
+  };
+  const cancelCreationWorkspace = () => {
+    if (workspaceTabs.length > 1) {
+      closeWorkspaceView(activeWorkspaceTabKey);
+      return;
+    }
+    navigateWorkspace({ kind: "home" });
   };
   const closeOtherWorkspaceViews = (key: string) => {
     const retained = workspaceTabs.find(tab => tab.key === key);
@@ -681,7 +603,7 @@ export default function App({
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onCreateProject={() => openProjectCreator()}
+          onCreateProject={() => openCreationForm("project")}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
         />
@@ -705,10 +627,7 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreateProject={() => openNewWorkspace("project")}
-              onCreateChat={() => openNewWorkspace("chat")}
-              onCreateAgent={() => openNewWorkspace("agent")}
-              onCreateTrigger={() => openNewWorkspace("trigger")}
+              onCreate={kind => openCreationForm(kind)}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -784,12 +703,8 @@ export default function App({
                 onNavigate={navigateWorkspace}
                 onOpenInNewTab={openWorkspaceRouteInBackground}
                 onPreferences={savePreferences}
-                onCreateProject={() => openProjectCreator()}
-                onBeginHomeCreate={beginHomeCreate}
-                onCreateHomeChat={beginHomeChat}
-                onCreateHomeAgent={(projectId, managerAgentId) =>
-                  createHomeAgent(projectId, false, managerAgentId)
-                }
+                onCreate={openCreationForm}
+                onCancelCreate={cancelCreationWorkspace}
                 onOpenInbox={() => setNotificationPanelOpen(true)}
                 onManageProject={openProjectSettings}
                 onConversationAction={openSidebarConversationAction}
@@ -815,7 +730,7 @@ export default function App({
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onOpenInNewTab={openWorkspaceRoute}
-          onCreate={openNewWorkspace}
+          onCreate={openCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}
@@ -883,63 +798,7 @@ export default function App({
               setOnboardingProjectCreation(false);
               setOnboardingCompleteOpen(true);
             }
-            navigate(
-              project.lastConversationId
-                ? {
-                    kind: "conversation",
-                    projectId: project.id,
-                    conversationId: project.lastConversationId,
-                  }
-                : { kind: "project", projectId: project.id },
-            );
-          }}
-        />
-        <HomeCreateDestinationDialog
-          kind={homeCreateKind}
-          projects={projects}
-          onClose={() => setHomeCreateKind(undefined)}
-          onContinue={continueHomeCreate}
-        />
-        <CreateConversationDialog
-          open={Boolean(homeChatProjectId)}
-          pending={homeChatCreation.isPending}
-          error={
-            homeChatCreation.isError
-              ? String(homeChatCreation.error)
-              : undefined
-          }
-          onClose={() => {
-            homeChatCreation.reset();
-            setHomeChatProjectId(undefined);
-          }}
-          onCreate={input => {
-            if (homeChatProjectId) {
-              homeChatCreation.mutate({
-                projectId: homeChatProjectId,
-                input,
-              });
-            }
-          }}
-        />
-        <TriggerOwnerDialog
-          open={triggerCreateOpen}
-          options={triggerAgentOptions}
-          loading={projectAgentQueries.some(query => query.isLoading)}
-          onClose={() => setTriggerCreateOpen(false)}
-          onCreateAgent={() => {
-            setTriggerCreateOpen(false);
-            setHomeCreateContinueToTrigger(true);
-            if (projects.length === 1) createHomeAgent(projects[0]!.id, true);
-            else setHomeCreateKind("agent");
-          }}
-          onContinue={agentId => {
-            const destination = routeForTriggerAgentSelection(
-              agentId,
-              triggerAgentOptions,
-            );
-            if (!destination) return;
-            setTriggerCreateOpen(false);
-            navigateWorkspace(destination);
+            navigate({ kind: "project", projectId: project.id });
           }}
         />
         <OnboardingCompleteDialog

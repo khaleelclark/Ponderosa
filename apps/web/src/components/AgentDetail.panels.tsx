@@ -144,6 +144,7 @@ export function AgentDetailPanels({
         activity={detail.activity}
         runOutput={detail.runOutput}
         runs={detail.runs}
+        messages={chatMessages}
         connected={connected}
         running={running}
         activeExecutionId={activeExecutionId}

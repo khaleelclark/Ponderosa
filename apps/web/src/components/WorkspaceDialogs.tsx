@@ -7,18 +7,12 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControl,
-  InputLabel,
-  MenuItem,
-  Select,
   Stack,
   Typography,
 } from "@mui/material";
-import type { ConversationDto, ProjectDto } from "@ponderosa/core";
+import type { ConversationDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { TriggerAgentDestination } from "../triggerCreation";
 import { queryKeys } from "../queryKeys";
 import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 
@@ -93,91 +87,6 @@ export function SidebarConversationDialogs({
         <Typography sx={{ pt: 1 }}>This permanently deletes this Project chat and refuses deletion while an assigned agent is running.</Typography>
       </DestructiveConfirmDialog>
     </>
-  );
-}
-
-export function HomeCreateDestinationDialog({
-  kind,
-  projects,
-  onClose,
-  onContinue,
-}: {
-  kind?: "chat" | "agent";
-  projects: ProjectDto[];
-  onClose(): void;
-  onContinue(projectId: string): void;
-}): JSX.Element {
-  const [projectId, setProjectId] = useState("");
-  useEffect(() => {
-    if (kind) setProjectId("");
-  }, [kind]);
-  return (
-    <Dialog open={Boolean(kind)} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>Create {kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : ""}</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Typography color="text.secondary">Choose the Project where this {kind ?? "item"} belongs.</Typography>
-          <FormControl fullWidth>
-            <InputLabel id="home-create-project-label">Project</InputLabel>
-            <Select labelId="home-create-project-label" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-              {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
-            </Select>
-          </FormControl>
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button autoFocus variant="contained" disabled={!projectId} onClick={() => onContinue(projectId)}>Continue</Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-export function TriggerOwnerDialog({
-  open,
-  options,
-  loading,
-  onClose,
-  onCreateAgent,
-  onContinue,
-}: {
-  open: boolean;
-  options: TriggerAgentDestination[];
-  loading: boolean;
-  onClose(): void;
-  onCreateAgent(): void;
-  onContinue(agentId: string): void;
-}): JSX.Element {
-  const [agentId, setAgentId] = useState("");
-  useEffect(() => {
-    if (open) setAgentId("");
-  }, [open]);
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>Create Trigger</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Typography color="text.secondary">Choose the Agent that will own and run this Trigger. You will choose its Project chat in the next step.</Typography>
-          <FormControl fullWidth>
-            <InputLabel id="trigger-create-agent-label">Agent</InputLabel>
-            <Select labelId="trigger-create-agent-label" label="Agent" value={agentId} onChange={(event) => setAgentId(event.target.value)}>
-              {options.map(({ project, agent }) => (
-                <MenuItem key={agent.id} value={agent.id} disabled={agent.conversationIds.length === 0}>
-                  {agent.title} · {project.label}{agent.conversationIds.length === 0 ? " · assign to a Chat first" : ""}
-                </MenuItem>
-              ))}
-            </Select>
-          </FormControl>
-          {loading ? <Typography role="status" variant="body2" color="text.secondary">Loading Agents…</Typography> : null}
-          {!loading && options.length === 0 ? <Alert severity="info">Create an Agent first, then Ponderosa will continue directly to Trigger setup.</Alert> : null}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onCreateAgent}>Create New Agent</Button>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button autoFocus variant="contained" disabled={!agentId} onClick={() => onContinue(agentId)}>Continue</Button>
-      </DialogActions>
-    </Dialog>
   );
 }
 

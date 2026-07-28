@@ -1,10 +1,11 @@
-import { Alert, Box, Button, Stack, Typography } from "@mui/material";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import { Alert, Box, Button, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { FilePreview } from "./filePreview/FilePreview";
 
-export function WorkspaceFileView({ projectId, path }: { projectId: string; path: string }): JSX.Element {
+export function WorkspaceFileView({ projectId, path, onBack }: { projectId: string; path: string; onBack(): void }): JSX.Element {
   const query = useQuery({
     queryKey: queryKeys.workspaceFileView.detail(projectId, path),
     queryFn: () => api.getWorkspaceFileView(projectId, path),
@@ -15,10 +16,13 @@ export function WorkspaceFileView({ projectId, path }: { projectId: string; path
   const file = query.data;
   return <Box className="ponderosa-scroll" sx={{ height: "100%", overflowY: "auto", p: { xs: 1.5, md: 3 } }}>
     <Stack spacing={2} sx={{ width: "100%", maxWidth: 1280, mx: "auto" }}>
-      <Box>
-        <Typography variant="h5" fontWeight={850} noWrap>{file.name}</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.path} · {file.size.toLocaleString()} bytes</Typography>
-      </Box>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+        <Tooltip title="Back to Project"><IconButton aria-label="Back to Project" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h5" fontWeight={850} noWrap>{file.name}</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.path} · {file.size.toLocaleString()} bytes</Typography>
+        </Box>
+      </Stack>
       <FilePreview
         title={file.name}
         path={file.path}

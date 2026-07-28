@@ -2,7 +2,7 @@ import type { DecisionDto, WorkspaceNotificationDto } from "@ponderosa/core";
 
 export type DecisionPrompt = Pick<
   DecisionDto,
-  "id" | "mode" | "options" | "allowOther" | "status"
+  "id" | "mode" | "options" | "allowOther" | "status" | "runtimeAction"
 > & {
   question?: string;
   context?: string;
@@ -11,6 +11,7 @@ export type DecisionPrompt = Pick<
 export interface DecisionResponse {
   optionId?: string;
   text?: string;
+  content?: unknown;
 }
 
 export function notificationDecision(
