@@ -1,6 +1,6 @@
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Menu, MenuItem } from "@mui/material";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 export interface ResourceContextMenuState<T> {
   anchor: HTMLElement;
@@ -31,6 +31,18 @@ export function ResourceContextMenu<T>({
   onOpenInNewTab?(resource: T): void;
   actions?: readonly ResourceContextMenuAction<T>[];
 }): JSX.Element | null {
+  const menuListRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    if (!state) return;
+    const dismissOutside = (event: PointerEvent) => {
+      if (menuListRef.current?.contains(event.target as Node)) return;
+      onClose();
+    };
+    document.addEventListener("pointerdown", dismissOutside, true);
+    return () =>
+      document.removeEventListener("pointerdown", dismissOutside, true);
+  }, [state, onClose]);
+
   if (!state) return null;
   const select = (action: (resource: T) => void) => {
     action(state.resource);
@@ -40,7 +52,17 @@ export function ResourceContextMenu<T>({
     anchorEl={state.anchor}
     open
     onClose={onClose}
-    MenuListProps={{ "aria-label": "Resource actions" }}
+    disableEnforceFocus
+    disableRestoreFocus
+    MenuListProps={{
+      "aria-label": "Resource actions",
+      ref: menuListRef,
+    }}
+    sx={{
+      pointerEvents: "none",
+      "& .MuiBackdrop-root": { pointerEvents: "none" },
+      "& .MuiPaper-root": { pointerEvents: "auto" },
+    }}
   >
     <MenuItem disabled={!onOpenInNewTab} onClick={() => onOpenInNewTab && select(onOpenInNewTab)}>
       <OpenInNewIcon fontSize="small" sx={{ mr: 1 }} />
