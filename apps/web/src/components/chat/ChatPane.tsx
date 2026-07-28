@@ -8,7 +8,7 @@ import type {
   ResponseFileActivityDto,
   RunOutputDto,
 } from "@ponderosa/core";
-import { memo, useMemo } from "react";
+import { Fragment, memo, useMemo } from "react";
 import { agentMentionHandle } from "../../mentions";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
@@ -198,6 +198,37 @@ function ChatPaneComponent({
       ),
     [chatMessages],
   );
+  const runPlacement = useMemo(() => {
+    const lastResponseByRunId = new Map<string, MessageDto>();
+    for (const message of chatMessages) {
+      if (message.role !== "assistant" || !message.executionId) continue;
+      const current = lastResponseByRunId.get(message.executionId);
+      if (
+        !current ||
+        current.createdAt.localeCompare(message.createdAt) <= 0
+      ) {
+        lastResponseByRunId.set(message.executionId, message);
+      }
+    }
+
+    const afterMessage = new Map<string, AgentRunDto[]>();
+    const standalone: AgentRunDto[] = [];
+    for (const run of agentChat.runs) {
+      const response = lastResponseByRunId.get(run.id);
+      const request = run.communicationEventId
+        ? messageByCommunicationId.get(run.communicationEventId)
+        : undefined;
+      const anchor = response ?? request;
+      if (!anchor) {
+        standalone.push(run);
+        continue;
+      }
+      const placedRuns = afterMessage.get(anchor.id);
+      if (placedRuns) placedRuns.push(run);
+      else afterMessage.set(anchor.id, [run]);
+    }
+    return { afterMessage, standalone };
+  }, [agentChat.runs, chatMessages, messageByCommunicationId]);
   const timeline = useMemo(
     () =>
       [
@@ -207,7 +238,7 @@ function ChatPaneComponent({
           createdAt: message.createdAt,
           message,
         })),
-        ...agentChat.runs.map(run => ({
+        ...runPlacement.standalone.map(run => ({
           kind: "run" as const,
           id: `run:${run.id}`,
           createdAt: run.startedAt,
@@ -229,7 +260,7 @@ function ChatPaneComponent({
               ? -1
               : 1),
       ),
-    [agentChat.runs, chatMessages, unscopedActivity],
+    [chatMessages, runPlacement.standalone, unscopedActivity],
   );
   const latestTimelineItem = timeline.at(-1);
   const latestActivity = activityEntries.at(-1);
@@ -240,6 +271,7 @@ function ChatPaneComponent({
   const messageLayoutKey = [
     chatMessageLayoutKey(chatMessages),
     timeline.length,
+    agentChat.runs.length,
     latestTimelineItem?.id ?? "none",
     latestActivity?.id ?? "none",
     latestRunOutputSeq,
@@ -328,9 +360,10 @@ function ChatPaneComponent({
           );
         const receivedInput = fromUser || receivedFromAgent;
         const visibleText = visibleAgentMessageText(message);
+        const attachedRuns = runPlacement.afterMessage.get(message.id) ?? [];
         return (
-          <ChatMessageFrame
-            key={item.id}
+          <Fragment key={item.id}>
+            <ChatMessageFrame
               message={{
               id: `message-${message.id}`,
               author: fromUser
@@ -435,6 +468,31 @@ function ChatPaneComponent({
               ),
               }}
             />
+            {attachedRuns.map(run => {
+              const contextMessage = run.communicationEventId
+                ? messageByCommunicationId.get(run.communicationEventId)
+                : undefined;
+              return (
+                <AgentWorkReceipt
+                  key={`run:${run.id}`}
+                  agentName={agentName}
+                  run={run}
+                  entries={activityByRun.get(run.id) ?? []}
+                  projectId={projectId}
+                  projectRoot={projectRoot}
+                  onOpenFile={onOpenFile}
+                  onOpenFileInNewTab={onOpenFileInNewTab}
+                  focusId={focusId}
+                  active={run.id === activeExecutionId}
+                  contextText={
+                    contextMessage
+                      ? visibleAgentMessageText(contextMessage)
+                      : undefined
+                  }
+                />
+              );
+            })}
+          </Fragment>
         );
       })}
     </ChatSurface>
