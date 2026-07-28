@@ -1,4 +1,4 @@
-import { Alert, TextField, Typography } from "@mui/material";
+import { Alert, Checkbox, FormControlLabel } from "@mui/material";
 import type { ProjectDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
@@ -18,7 +18,7 @@ export function ProjectDeletionDialog({
   onDeleted(projectId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const [confirmation, setConfirmation] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteProject(project.id),
     onSuccess: () => {
@@ -29,7 +29,7 @@ export function ProjectDeletionDialog({
 
   useEffect(() => {
     if (!open) return;
-    setConfirmation("");
+    setAcknowledged(false);
     remove.reset();
   // A newly opened dialog is a new confirmation attempt.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -40,30 +40,30 @@ export function ProjectDeletionDialog({
       open={open}
       resourceType="Project"
       resourceName={project.label}
-      confirmLabel="Delete Project Permanently"
+      confirmLabel="Delete Project"
       pendingLabel="Deleting…"
       pending={remove.isPending}
-      confirmDisabled={confirmation !== project.label}
+      confirmDisabled={!acknowledged}
       error={remove.isError ? String(remove.error) : undefined}
       onCancel={() => {
         if (!remove.isPending) onClose();
       }}
       onConfirm={() => remove.mutate()}
     >
-      <Alert severity="error" sx={{ mb: 2 }}>
+      <Alert severity="warning" sx={{ mb: 1.5 }}>
         This permanently deletes the Project’s Chats, Agents, Triggers, Runs,
         work items, and Files &amp; Results. Active work is cancelled. The
         working folder and its source files are preserved.
       </Alert>
-      <Typography variant="body2" sx={{ mb: 1 }}>
-        Type <strong>{project.label}</strong> to confirm.
-      </Typography>
-      <TextField
-        autoFocus
-        fullWidth
-        label="Project name"
-        value={confirmation}
-        onChange={event => setConfirmation(event.target.value)}
+      <FormControlLabel
+        control={
+          <Checkbox
+            autoFocus
+            checked={acknowledged}
+            onChange={event => setAcknowledged(event.target.checked)}
+          />
+        }
+        label="I understand that this cannot be undone."
       />
     </ResourceDeletionDialog>
   );
