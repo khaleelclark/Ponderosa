@@ -29,7 +29,15 @@ import type { Route } from "../routing";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
-import { CollectionDirectoryControls, CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import {
+  CollectionDirectoryControls,
+  CollectionEmptyState,
+  CollectionHeader,
+  CollectionTimestamp,
+  CollectionToolbar,
+  CollectionWorkspace,
+  ResourceRow,
+} from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
 import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
@@ -50,19 +58,33 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
   const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
-  const filtered = rows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
+  const scopedProject = filterProjectId
+    ? projects.find(project => project.id === filterProjectId)
+    : undefined;
+  const scopedRows = filterProjectId
+    ? rows.filter(({ project }) => project.id === filterProjectId)
+    : rows;
+  const filtered = scopedRows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
-  const filtersActive = Boolean(projectId || search.trim());
+  const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   return <CollectionWorkspace
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} Project Chats` : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
+    detail={
+      scopedProject
+        ? filtersActive
+          ? `${ordered.length} of ${scopedRows.length} Chats in ${scopedProject.label}`
+          : `${scopedRows.length} ${scopedRows.length === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
+        : filtersActive
+          ? `${ordered.length} of ${rows.length} Project Chats`
+          : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`
+    }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
     toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats">
       <CollectionDirectoryControls
-        projects={projects}
-        projectId={projectId}
-        onProject={setProjectId}
+        projects={filterProjectId ? undefined : projects}
+        projectId={filterProjectId ? undefined : projectId}
+        onProject={filterProjectId ? undefined : setProjectId}
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))}
       />
@@ -76,9 +98,9 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
       return <ResourceRow
         key={conversation.id}
         label={conversation.title}
-        description={project.label}
+        description={filterProjectId ? undefined : project.label}
         icon={<ChatBubbleOutlineIcon />}
-        meta={<Typography variant="caption" color="text.secondary">{new Date(conversation.updatedAt).toLocaleString()}</Typography>}
+        meta={<CollectionTimestamp value={conversation.updatedAt} />}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
@@ -87,14 +109,21 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         onDragStart={() => setDragged(conversation.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, rows.map((row) => row.conversation.id), dragged, conversation.id) });
+          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, scopedRows.map((row) => row.conversation.id), dragged, conversation.id) });
           setDragged(undefined);
         }}
       />;
     })}
     {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <CollectionEmptyState
-      title={rows.length === 0 && !filtersActive ? "No Chats yet" : "No Chats match these filters"}
-      detail={rows.length === 0 && !filtersActive ? "Create a Chat to get started." : "Try a different search or Project filter."}
+      title={scopedRows.length === 0 && !filtersActive ? "No Chats Yet" : "No Chats match these filters"}
+      detail={scopedRows.length === 0 && !filtersActive ? "Create a Chat to get started." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+      action={filtersActive ? {
+        label: "Clear Filters",
+        onClick: () => {
+          setSearch("");
+          if (!filterProjectId) setProjectId("");
+        },
+      } : undefined}
     /> : null}
     <ResourceContextMenu
       state={menu}
@@ -144,11 +173,16 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
   const starredIds = starredWorkspaceResources(preferences);
+  const scopedProject = projectId
+    ? projects.find(project => project.id === projectId)
+    : undefined;
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab collection={{
       title: "All Agents",
-      detail: `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
-      totalCount: rows.length,
+      detail: scopedProject
+        ? `${scopedRows.length} ${scopedRows.length === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
+        : `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
+      totalCount: scopedRows.length,
     }} toolbarControls={<>
       <CollectionDirectoryControls
         projects={projects}
@@ -248,9 +282,12 @@ export function AllTriggersWorkspace({
     const destination = destinations.get(trigger.agentId);
     return destination ? [{ trigger, ...destination }] : [];
   });
-  const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
+  const scopedRows = filterProjectId
+    ? rows.filter(({ project }) => project.id === filterProjectId)
+    : rows;
+  const filtered = scopedRows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
-  const filtersActive = Boolean(projectId || search.trim());
+  const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   const scopedProject = filterProjectId
     ? projects.find(project => project.id === filterProjectId)
     : undefined;
@@ -264,7 +301,9 @@ export function AllTriggersWorkspace({
     title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
     detail={
       scopedProject
-        ? `${ordered.length} ${ordered.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+        ? filtersActive
+          ? `${ordered.length} of ${scopedRows.length} Triggers in ${scopedProject.label}`
+          : `${scopedRows.length} ${scopedRows.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
         : filtersActive
           ? `${ordered.length} of ${rows.length} Triggers`
           : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`
@@ -290,7 +329,7 @@ export function AllTriggersWorkspace({
       return <ResourceRow
         key={trigger.id}
         label={trigger.name}
-        description={`${project.label} · ${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
+        description={`${filterProjectId ? "" : `${project.label} · `}${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
         icon={<BoltOutlinedIcon />}
         meta={<Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
           <Chip
@@ -299,7 +338,7 @@ export function AllTriggersWorkspace({
             color={trigger.enabled ? "success" : "default"}
             variant={trigger.enabled ? "filled" : "outlined"}
           />
-          <Typography variant="caption" color="text.secondary">{new Date(trigger.updatedAt).toLocaleString()}</Typography>
+          <CollectionTimestamp value={trigger.updatedAt} hideBelow="md" />
         </Stack>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
         overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
@@ -312,14 +351,21 @@ export function AllTriggersWorkspace({
         onDragStart={() => setDragged(trigger.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, rows.map((row) => row.trigger.id), dragged, trigger.id) });
+          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, scopedRows.map((row) => row.trigger.id), dragged, trigger.id) });
           setDragged(undefined);
         }}
       />;
     })}
     {!triggers.isLoading && ordered.length === 0 ? <CollectionEmptyState
-      title={rows.length === 0 && !filtersActive ? "No Triggers yet" : "No Triggers match these filters"}
-      detail={rows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : "Try a different search or Project filter."}
+      title={scopedRows.length === 0 && !filtersActive ? "No Triggers Yet" : "No Triggers match these filters"}
+      detail={scopedRows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+      action={filtersActive ? {
+        label: "Clear Filters",
+        onClick: () => {
+          setSearch("");
+          if (!filterProjectId) setProjectId("");
+        },
+      } : undefined}
     /> : null}
     <ResourceContextMenu
       state={menu}

@@ -5,7 +5,6 @@ import {
   Button,
   Dialog,
   DialogContent,
-  DialogTitle,
   FormControl,
   InputLabel,
   MenuItem,
@@ -367,9 +366,14 @@ export function AgentCreateDialog({
   ...formProps
 }: AgentCreateSurfaceProps & { open: boolean }): JSX.Element {
   return (
-    <Dialog open={open} onClose={formProps.onCancel} fullWidth maxWidth="sm">
-      <DialogTitle>Agent</DialogTitle>
-      <DialogContent sx={{ pt: "12px !important" }}>
+    <Dialog
+      open={open}
+      onClose={formProps.onCancel}
+      fullWidth
+      maxWidth="sm"
+      aria-label="Create or import Agent"
+    >
+      <DialogContent sx={{ pt: "24px !important" }}>
         {open ? <AgentCreateSurface {...formProps} /> : null}
       </DialogContent>
     </Dialog>

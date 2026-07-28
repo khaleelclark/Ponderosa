@@ -51,13 +51,18 @@ export function reorderStableIds(
   sourceId: string,
   targetId: string,
 ): string[] {
-  const ordered = [...new Set([...(current ?? []).filter((id) => visibleIds.includes(id)), ...visibleIds])];
-  const source = ordered.indexOf(sourceId);
-  const target = ordered.indexOf(targetId);
-  if (source < 0 || target < 0 || source === target) return ordered;
-  ordered.splice(source, 1);
-  ordered.splice(target, 0, sourceId);
-  return ordered;
+  const visible = new Set(visibleIds);
+  const fullOrder = [...new Set([...(current ?? []), ...visibleIds])];
+  const visibleOrder = fullOrder.filter((id) => visible.has(id));
+  const source = visibleOrder.indexOf(sourceId);
+  const target = visibleOrder.indexOf(targetId);
+  if (source < 0 || target < 0 || source === target) return fullOrder;
+  visibleOrder.splice(source, 1);
+  visibleOrder.splice(target, 0, sourceId);
+  let visibleIndex = 0;
+  return fullOrder.map((id) =>
+    visible.has(id) ? visibleOrder[visibleIndex++]! : id,
+  );
 }
 
 export function sortWorkspaceResources<T>(

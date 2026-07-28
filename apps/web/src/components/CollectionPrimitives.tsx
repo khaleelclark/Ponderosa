@@ -10,11 +10,13 @@ import {
   Select,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
 import type { ProjectDto, ProjectSort } from "@ponderosa/core";
 import { useId, useRef, type DragEvent, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
+import { relativeTime } from "../agents";
 
 export interface CollectionWorkspaceProps {
   title: string;
@@ -48,7 +50,20 @@ export function CollectionHeader({
       </Stack>
       {detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>{detail}</Typography> : null}
     </Box>
-    {primaryAction}
+    {primaryAction ? (
+      <Box
+        sx={{
+          flexShrink: 0,
+          width: { xs: "100%", sm: "auto" },
+          "& .MuiButton-root": {
+            width: { xs: "100%", sm: "auto" },
+            whiteSpace: "nowrap",
+          },
+        }}
+      >
+        {primaryAction}
+      </Box>
+    ) : null}
   </Stack>;
 }
 
@@ -203,6 +218,40 @@ export function CollectionEmptyState({
     {detail ? <Typography variant="body2" color="text.secondary">{detail}</Typography> : null}
     {action ? <Button size="small" onClick={action.onClick} sx={{ mt: 0.5 }}>{action.label}</Button> : null}
   </Stack>;
+}
+
+/**
+ * Shared directory timestamp treatment. Relative time is easier to scan across
+ * mixed resources, while the tooltip preserves the exact local timestamp.
+ */
+export function CollectionTimestamp({
+  value,
+  hideBelow = "sm",
+}: {
+  value?: string;
+  hideBelow?: "sm" | "md" | "lg" | false;
+}): JSX.Element | null {
+  if (!value) return null;
+  const label = relativeTime(value);
+  if (!label) return null;
+  return (
+    <Tooltip title={new Date(value).toLocaleString()}>
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        noWrap
+        component="time"
+        dateTime={value}
+        sx={{
+          display: hideBelow ? { xs: "none", [hideBelow]: "block" } : "block",
+          minWidth: 72,
+          textAlign: "right",
+        }}
+      >
+        {label}
+      </Typography>
+    </Tooltip>
+  );
 }
 
 export interface ResourceRowProps {

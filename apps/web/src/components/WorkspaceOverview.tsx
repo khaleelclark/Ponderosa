@@ -25,7 +25,14 @@ import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResour
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
 import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { CollectionDirectoryControls, CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import {
+  CollectionDirectoryControls,
+  CollectionEmptyState,
+  CollectionTimestamp,
+  CollectionToolbar,
+  CollectionWorkspace,
+  ResourceRow,
+} from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -146,7 +153,17 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           label={snapshot.project.label}
           description={`${snapshot.project.hostPath}${recent ? " · Recent chat" : " · No Project chats"}`}
           icon={<FolderOutlinedIcon />}
-          meta={running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
+          meta={
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              {running > 0 ? (
+                <Chip size="small" color="info" label={`${running} running`} />
+              ) : null}
+              <CollectionTimestamp
+                value={recent?.updatedAt ?? snapshot.project.lastUsedAt ?? snapshot.project.createdAt}
+                hideBelow="md"
+              />
+            </Box>
+          }
           onOpen={() => onNavigate(route)}
           onContextMenu={(anchor) => setTabMenu({ anchor, resource: menuResource })}
           draggable
@@ -187,8 +204,12 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
         />;
       })}
     {filteredSnapshots.length === 0 ? <CollectionEmptyState
-      title={projects.length === 0 && !filter.trim() ? "No Projects yet" : `No Projects match “${filter.trim()}”`}
+      title={projects.length === 0 && !filter.trim() ? "No Projects Yet" : `No Projects match “${filter.trim()}”`}
       detail={projects.length === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
+      action={filter.trim() ? {
+        label: "Clear Search",
+        onClick: () => setFilter(""),
+      } : undefined}
     /> : null}
     <ResourceContextMenu
       state={tabMenu}

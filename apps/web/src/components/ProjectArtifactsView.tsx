@@ -1,5 +1,6 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
@@ -302,7 +303,11 @@ export function ProjectArtifactsView({
           onChange: setTab,
           label: "Project",
           items: [
-            { value: "overview", label: "Overview" },
+            {
+              value: "overview",
+              label: "Overview",
+              icon: <DashboardOutlinedIcon />,
+            },
             {
               value: "files",
               label: "Files & Results",

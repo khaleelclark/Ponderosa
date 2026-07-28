@@ -53,6 +53,7 @@ import {
 } from "./ResourceContextMenu";
 import {
   CollectionEmptyState,
+  CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,
   ResourceRow,
@@ -61,7 +62,6 @@ import {
   agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
-  relativeTime,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
@@ -259,7 +259,7 @@ export function AgentsTab({
   const masterName = (id: string | undefined): string =>
     id
       ? (conversations.find(master => master.id === id)?.title ??
-        "Unknown Project chat")
+        "Unknown Project Chat")
       : "Unassigned";
 
   const organizationRows = orderedAgentOrganization(agents);
@@ -629,11 +629,11 @@ export function AgentsTab({
               sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}
             >
               <InputLabel id="agents-master-filter-label">
-                Project chat
+                Project Chat
               </InputLabel>
               <Select
                 labelId="agents-master-filter-label"
-                label="Project chat"
+                label="Project Chat"
                 value={masterFilter}
                 onChange={(event: SelectChangeEvent) =>
                   setMasterFilter(event.target.value)
@@ -685,8 +685,8 @@ export function AgentsTab({
             title={
               scopedAgents.length === 0
                 ? organizationRootAgentId
-                  ? "No delegated Agents yet"
-                  : "No Agents yet"
+                  ? "No Delegated Agents Yet"
+                  : "No Agents Yet"
                 : "No Agents match these filters"
             }
             detail={
@@ -864,18 +864,10 @@ export function AgentsTab({
                         >
                           {agent.activeEngine}
                         </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          noWrap
-                          sx={{
-                            display: { xs: "none", lg: "block" },
-                            width: 92,
-                            textAlign: "right",
-                          }}
-                        >
-                          {relativeTime(agent.updatedAt)}
-                        </Typography>
+                        <CollectionTimestamp
+                          value={agent.updatedAt}
+                          hideBelow="lg"
+                        />
                       </Stack>
                     }
                     starAction={
