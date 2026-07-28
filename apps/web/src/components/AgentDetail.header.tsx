@@ -10,7 +10,6 @@ import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
-import TimelineIcon from "@mui/icons-material/Timeline";
 import { Button, Chip, Link, Stack, Typography } from "@mui/material";
 import type { AgentDto } from "@ponderosa/core";
 import {
@@ -35,7 +34,6 @@ export const AGENT_DETAIL_TABS: Array<{
   icon: JSX.Element;
 }> = [
   { value: "chat", label: "Chat", icon: <ChatBubbleOutlineIcon /> },
-  { value: "activity", label: "Activity", icon: <TimelineIcon /> },
   { value: "subagents", label: "Subagents", icon: <AccountTreeOutlinedIcon /> },
   { value: "triggers", label: "Triggers", icon: <BoltOutlinedIcon /> },
   {

@@ -297,12 +297,20 @@ export class AgentChatFeedProjection {
   }
 
   private projectedAgentMessageDtos(agentId: string, projected: ProjectedCommunicationMessage[]): MessageDto[] {
+    const projectId = this.rowToAgentDto(agentId)?.projectId;
+    const communicationById = projectId
+      ? this.communicationIndex(projectId).byId
+      : new Map<string, CommunicationEvent>();
     return projected
       .flatMap((message) => {
         if (message.sequence === undefined || message.role === "system") return [];
+        const communication = communicationById.get(message.eventId);
         return [{
           id: message.messageId,
           communicationEventId: message.eventId,
+          ...(communication
+            ? { communicationIntent: communication.intent }
+            : {}),
           ...(message.conversationId ? { conversationId: message.conversationId } : {}),
           agentId,
           seq: message.sequence,

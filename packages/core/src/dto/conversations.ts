@@ -1,5 +1,9 @@
 import type { EngineId } from "../adapter.js";
-import type { CommunicationDocumentReference, VerifiedCitationRecord } from "../communication.js";
+import type {
+  CommunicationDocumentReference,
+  CommunicationIntent,
+  VerifiedCitationRecord,
+} from "../communication.js";
 import type {
   CoordinationRequestState,
   CoordinationRequestUpdateKind,
@@ -463,6 +467,8 @@ export interface MessageDto {
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
+  /** Canonical scope used to explain where this audit projection originated. */
+  communicationIntent?: CommunicationIntent;
   /** Immutable Project-chat scope of the canonical communication, when present. */
   conversationId?: string;
   agentId: string;

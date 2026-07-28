@@ -36,9 +36,6 @@ interface AgentDetailPanelsProps {
   operatorProfile?: WorkspacePreferencesDto["profile"];
   agentNameForId: NonNullable<ComponentProps<typeof ChatPane>["agentNameForId"]>;
   agentIdForHandle: NonNullable<ComponentProps<typeof ChatPane>["agentIdForHandle"]>;
-  completedWorkDurationLabel: NonNullable<
-    ComponentProps<typeof ChatPane>["completedWorkDurationLabel"]
-  >;
   chatPreviewScope: ComponentProps<typeof ChatPane>["previewScope"];
   mobileScrollObserver: NonNullable<
     ComponentProps<typeof ChatPane>["onScrollPositionChange"]
@@ -56,8 +53,8 @@ interface AgentDetailPanelsProps {
   agentWorkFocus?: string;
   settingsPane: JSX.Element;
   onOpenAgent(agentId: string): void;
-  onOpenBroadcast: NonNullable<
-    ComponentProps<typeof ChatPane>["onOpenBroadcast"]
+  onOpenMessageSource: NonNullable<
+    ComponentProps<typeof ChatPane>["onOpenMessageSource"]
   >;
   onMentionAgent(): void;
   onLoadOlderChat(): void;
@@ -85,7 +82,6 @@ export function AgentDetailPanels({
   operatorProfile,
   agentNameForId,
   agentIdForHandle,
-  completedWorkDurationLabel,
   chatPreviewScope,
   mobileScrollObserver,
   loadingOlder,
@@ -101,7 +97,7 @@ export function AgentDetailPanels({
   agentWorkFocus,
   settingsPane,
   onOpenAgent,
-  onOpenBroadcast,
+  onOpenMessageSource,
   onMentionAgent,
   onLoadOlderChat,
   onLoadOlderTelemetry,
@@ -124,15 +120,29 @@ export function AgentDetailPanels({
           agentNameForId={agentNameForId}
           agentIdForHandle={agentIdForHandle}
           onOpenAgent={onOpenAgent}
-          onOpenBroadcast={onOpenBroadcast}
+          onOpenMessageSource={onOpenMessageSource}
           operatorProfile={operatorProfile}
           projectId={detail.agent.projectId}
-          completedWorkDurationLabel={completedWorkDurationLabel}
+          activity={detail.activity}
+          runOutput={detail.runOutput}
+          runs={detail.runs}
+          activeExecutionId={activeExecutionId}
+          projectRoot={projectRoot}
+          onOpenFile={onOpenFile}
+          onOpenFileInNewTab={onOpenFileInNewTab}
+          focusId={
+            focusTelemetry?.stream === "activity" ||
+            focusTelemetry?.stream === "runOutput"
+              ? focusTelemetry.id
+              : undefined
+          }
           previewScope={chatPreviewScope}
           scrollStorageKey={chatStateKey("scroll", `agent.${agentId}`)}
           onScrollPositionChange={mobileScrollObserver}
           onMentionAgent={onMentionAgent}
-          hasOlder={detail.history?.hasMore}
+          hasOlder={Boolean(
+            detail.history?.hasMore || hasOlderTelemetry,
+          )}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlderChat}
         />

@@ -21,7 +21,10 @@ export function ChatMessageFrame({
   const senderName = author.kind === "operator"
     ? author.profile?.displayName ?? "You"
     : author.name ?? "Ponderosa";
-  const openAuthor = author.kind === "agent" ? author.onOpen : undefined;
+  const openAuthor =
+    author.kind === "agent" || author.kind === "inbound_agent"
+      ? author.onOpen
+      : undefined;
   const selectable = message.onSelect !== undefined;
   const selectMessage = () => {
     setMobileTimestampRevealed((current) => !current);
@@ -114,9 +117,80 @@ export function ChatMessageFrame({
                 sx={{ borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
                 : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>}
+              {message.source}
               <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} compact align="start" desktopOnly /></Box>
             </Stack>
-          ) : author.kind === "operator" ? <Box sx={{ display: "flex", justifyContent: "flex-end", mb: 0.25 }}><ChatOperatorLabel profile={operatorProfile} createdAt={message.createdAt} /></Box> : null}
+          ) : author.kind === "operator" ? (
+            <Stack
+              direction="row"
+              spacing={0.75}
+              sx={{ justifyContent: "flex-end", alignItems: "center", mb: 0.25 }}
+            >
+              {message.source}
+              <ChatOperatorLabel profile={operatorProfile} createdAt={message.createdAt} />
+            </Stack>
+          ) : author.kind === "inbound_agent" ? (
+            <Stack
+              direction="row"
+              spacing={0.75}
+              sx={{
+                minHeight: { xs: 32, sm: 36 },
+                justifyContent: "flex-end",
+                alignItems: "center",
+                mb: 0.25,
+              }}
+            >
+              {message.source}
+              <Box sx={{ color: "text.secondary" }}>
+                <MessageTimestamp
+                  value={message.createdAt}
+                  compact
+                  align="end"
+                  desktopOnly
+                />
+              </Box>
+              {openAuthor ? (
+                <ButtonBase
+                  aria-label={`Open agent ${senderName} from name`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openAuthor();
+                  }}
+                  sx={{
+                    borderRadius: 0.75,
+                    textAlign: "right",
+                    "& [data-message-sender]": { mb: 0, fontSize: 14 },
+                  }}
+                >
+                  <MessageSenderLabel name={senderName} />
+                </ButtonBase>
+              ) : (
+                <Box
+                  sx={{
+                    "& [data-message-sender]": { mb: 0, fontSize: 14 },
+                  }}
+                >
+                  <MessageSenderLabel name={senderName} />
+                </Box>
+              )}
+              {openAuthor ? (
+                <Tooltip title={`Open ${senderName}`}>
+                  <ButtonBase
+                    aria-label={`Open agent ${senderName} from profile image`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openAuthor();
+                    }}
+                    sx={{ borderRadius: "50%", flex: "0 0 auto" }}
+                  >
+                    {avatar}
+                  </ButtonBase>
+                </Tooltip>
+              ) : (
+                avatar
+              )}
+            </Stack>
+          ) : null}
           <Box
             data-message-bubble="true"
             sx={{
@@ -132,7 +206,7 @@ export function ChatMessageFrame({
               minWidth: 0,
             }}
           >
-            {author.kind === "operator" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={senderName} /></Box> : null}
+            {author.kind !== "agent" ? <Box sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={senderName} /></Box> : null}
             {message.body}
             {message.afterBody}
             <ChatAttachments
