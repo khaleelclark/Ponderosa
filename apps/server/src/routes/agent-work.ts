@@ -13,7 +13,10 @@ import { sendInspectorJson } from "../inspector-response.js";
 
 export class AgentWorkProjection {
   constructor(
-    private readonly store: Pick<AgentStore, "listAgents" | "getProjectArtifact">,
+    private readonly store: Pick<
+      AgentStore,
+      "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact"
+    >,
     private readonly coordination: Pick<
       CoordinationV3Store,
       "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails"
@@ -412,7 +415,12 @@ export class AgentWorkProjection {
                   input.projectId,
                   artifact.id,
                 );
-                return available
+                const operatorAuthorized = available
+                  && this.store.operatorCanReadProjectArtifact(
+                    input.projectId,
+                    artifact.id,
+                  );
+                return operatorAuthorized
                   ? {
                       ...artifact,
                       ...(available.previewUrl
