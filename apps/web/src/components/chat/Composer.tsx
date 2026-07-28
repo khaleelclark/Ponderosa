@@ -53,6 +53,8 @@ import {
 } from "./useComposerTextEffects";
 import { composerSurfaceSx } from "./Composer.styles";
 
+const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
+
 export type { ComposerProps } from "./Composer.types";
 
 function providerCommandInput(
@@ -114,7 +116,7 @@ export function Composer({
     if (typeof window === "undefined") return "server";
     const key = "ponderosa.draft.owner.v1";
     const existing = window.localStorage.getItem(key);
-    if (existing) return existing;
+    if (existing && DRAFT_OWNER_ID.test(existing)) return existing;
     const created = createClientId();
     window.localStorage.setItem(key, created);
     return created;
