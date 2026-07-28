@@ -24,7 +24,6 @@ import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
 import { TriggersPane } from "./components/TriggersPane";
 import {
   CreateAgentDialog,
-  CreateConversationDialog,
   type CreateAgentInput,
   type CreateConversationInput,
 } from "./components/dialogs";
@@ -186,7 +185,7 @@ export default function App({
   const [settingsProject, setSettingsProject] = useState<ProjectDto>();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [homeCreateKind, setHomeCreateKind] = useState<"chat" | "agent">();
-  const [homeChatProjectId, setHomeChatProjectId] = useState<string>();
+  const [homeCreateProjectId, setHomeCreateProjectId] = useState<string>();
   const [homeAgentCreation, setHomeAgentCreation] = useState<{
     projectId: string;
     continueToTrigger: boolean;
@@ -491,11 +490,9 @@ export default function App({
     openWorkspaceRoute({ kind: "browser", projectId: selectedProjectId });
   };
   const beginHomeChat = (projectId?: string) => {
-    const project =
-      projects.find(candidate => candidate.id === projectId) ?? projects[0];
-    if (!project) return;
     homeChatCreation.reset();
-    setHomeChatProjectId(project.id);
+    setHomeCreateProjectId(projectId);
+    setHomeCreateKind("chat");
   };
   const homeChatCreation = useMutation({
     mutationFn: ({
@@ -510,7 +507,8 @@ export default function App({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.project(variables.projectId),
       });
-      setHomeChatProjectId(undefined);
+      setHomeCreateKind(undefined);
+      setHomeCreateProjectId(undefined);
       navigateWorkspace({
         kind: "conversation",
         projectId: variables.projectId,
@@ -607,10 +605,14 @@ export default function App({
       beginTriggerCreate();
       return;
     }
+    if (kind === "chat") {
+      setHomeCreateContinueToTrigger(false);
+      beginHomeChat();
+      return;
+    }
     if (projects.length === 1) {
       const projectId = projects[0]!.id;
-      if (kind === "chat") beginHomeChat(projectId);
-      else createHomeAgent(projectId);
+      createHomeAgent(projectId);
       return;
     }
     setHomeCreateContinueToTrigger(false);
@@ -618,13 +620,11 @@ export default function App({
   };
 
   const continueHomeCreate = (projectId: string) => {
-    if (!homeCreateKind) return;
-    const kind = homeCreateKind;
+    if (homeCreateKind !== "agent") return;
     const continueToTrigger = homeCreateContinueToTrigger;
     setHomeCreateKind(undefined);
     setHomeCreateContinueToTrigger(false);
-    if (kind === "chat") beginHomeChat(projectId);
-    else createHomeAgent(projectId, continueToTrigger);
+    createHomeAgent(projectId, continueToTrigger);
   };
 
   useEffect(() => {
@@ -971,8 +971,25 @@ export default function App({
         <HomeCreateDestinationDialog
           kind={homeCreateKind}
           projects={projects}
-          onClose={() => setHomeCreateKind(undefined)}
+          initialProjectId={homeCreateProjectId}
+          pending={homeChatCreation.isPending}
+          error={
+            homeChatCreation.isError
+              ? String(homeChatCreation.error)
+              : undefined
+          }
+          onClose={() => {
+            homeChatCreation.reset();
+            setHomeCreateKind(undefined);
+            setHomeCreateProjectId(undefined);
+          }}
           onContinue={continueHomeCreate}
+          onCreateChat={(projectId, title) =>
+            homeChatCreation.mutate({
+              projectId,
+              input: { title },
+            })
+          }
         />
         <CreateAgentDialog
           open={Boolean(homeAgentCreation && homeAgentProject)}
@@ -1003,27 +1020,6 @@ export default function App({
               projectId: homeAgentCreation.projectId,
               input,
             });
-          }}
-        />
-        <CreateConversationDialog
-          open={Boolean(homeChatProjectId)}
-          pending={homeChatCreation.isPending}
-          error={
-            homeChatCreation.isError
-              ? String(homeChatCreation.error)
-              : undefined
-          }
-          onClose={() => {
-            homeChatCreation.reset();
-            setHomeChatProjectId(undefined);
-          }}
-          onCreate={input => {
-            if (homeChatProjectId) {
-              homeChatCreation.mutate({
-                projectId: homeChatProjectId,
-                input,
-              });
-            }
           }}
         />
         <TriggerOwnerDialog

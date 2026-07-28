@@ -12,6 +12,7 @@ import {
   MenuItem,
   Select,
   Stack,
+  TextField,
   Typography,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto } from "@ponderosa/core";
@@ -99,20 +100,36 @@ export function SidebarConversationDialogs({
 export function HomeCreateDestinationDialog({
   kind,
   projects,
+  initialProjectId,
+  pending = false,
+  error,
   onClose,
   onContinue,
+  onCreateChat,
 }: {
   kind?: "chat" | "agent";
   projects: ProjectDto[];
+  initialProjectId?: string;
+  pending?: boolean;
+  error?: string;
   onClose(): void;
   onContinue(projectId: string): void;
+  onCreateChat(projectId: string, title: string): void;
 }): JSX.Element {
   const [projectId, setProjectId] = useState("");
+  const [title, setTitle] = useState("");
+  const singleProjectId = projects.length === 1 ? projects[0]!.id : "";
+  const presetProjectId =
+    projects.some(project => project.id === initialProjectId)
+      ? initialProjectId!
+      : singleProjectId;
   useEffect(() => {
-    if (kind) setProjectId("");
-  }, [kind]);
+    if (!kind) return;
+    setProjectId(presetProjectId);
+    setTitle("");
+  }, [kind, presetProjectId]);
   return (
-    <Dialog open={Boolean(kind)} onClose={onClose} fullWidth maxWidth="xs">
+    <Dialog open={Boolean(kind)} onClose={pending ? undefined : onClose} fullWidth maxWidth="xs">
       <DialogTitle>Create {kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : ""}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -123,11 +140,30 @@ export function HomeCreateDestinationDialog({
               {projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
             </Select>
           </FormControl>
+          {kind === "chat" && projectId ? (
+            <TextField
+              label="Chat Name"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              autoFocus
+              fullWidth
+            />
+          ) : null}
+          {error ? <Alert severity="error">{error}</Alert> : null}
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button autoFocus variant="contained" disabled={!projectId} onClick={() => onContinue(projectId)}>Continue</Button>
+        <Button disabled={pending} onClick={onClose}>Cancel</Button>
+        <Button
+          variant="contained"
+          disabled={!projectId || pending || (kind === "chat" && !title.trim())}
+          onClick={() => {
+            if (kind === "chat") onCreateChat(projectId, title.trim());
+            else onContinue(projectId);
+          }}
+        >
+          {pending ? "Creating…" : kind === "chat" ? "Create Chat" : "Continue"}
+        </Button>
       </DialogActions>
     </Dialog>
   );
