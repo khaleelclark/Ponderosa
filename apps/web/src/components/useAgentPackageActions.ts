@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
+import { copyDeferredText } from "../clipboard";
 import { queryKeys } from "../queryKeys";
 import {
   portablePackageFileName,
@@ -32,11 +33,22 @@ export function useAgentPackageActions({
     mode: "template" | "full",
     organization = false,
   ) => {
-    const portableJson = await api.exportAgentText(agentId, mode, organization);
-    await navigator.clipboard.writeText(portableJson);
-    onNotice(
-      `${mode === "template" ? `${organization ? "Organization" : "Agent"} template` : `Full ${organization ? "organization" : "Agent"}`} copied.`,
-    );
+    const label =
+      mode === "template"
+        ? `${organization ? "Organization" : "Agent"} template`
+        : `Full ${organization ? "organization" : "Agent"}`;
+    try {
+      await copyDeferredText(
+        api.exportAgentText(agentId, mode, organization),
+      );
+      onNotice(`${label} JSON copied.`);
+    } catch (error) {
+      onNotice(
+        error instanceof Error
+          ? `${label} JSON could not be copied: ${error.message}`
+          : `${label} JSON could not be copied.`,
+      );
+    }
   };
   const downloadAgentPackage = async (
     mode: "template" | "full",

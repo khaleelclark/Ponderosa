@@ -21,3 +21,26 @@ export async function copyText(text: string): Promise<void> {
   textarea.remove();
   if (!copied) throw new Error("Copy is unavailable in this browser");
 }
+
+/**
+ * Start an asynchronous text export without losing the transient user
+ * activation required by Safari and other clipboard-restricted browsers.
+ */
+export async function copyDeferredText(
+  text: Promise<string>,
+): Promise<void> {
+  if (navigator.clipboard?.write && typeof ClipboardItem !== "undefined") {
+    try {
+      const item = new ClipboardItem({
+        "text/plain": text.then(
+          value => new Blob([value], { type: "text/plain" }),
+        ),
+      });
+      await navigator.clipboard.write([item]);
+      return;
+    } catch {
+      // Fall through for browsers without deferred ClipboardItem support.
+    }
+  }
+  await copyText(await text);
+}
