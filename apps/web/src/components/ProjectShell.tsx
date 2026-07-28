@@ -453,6 +453,10 @@ export function ProjectShell({
             ? { kind: "agent", projectId, agentId: agent.id, view: "triggers", createTrigger: true }
             : { kind: "agent", projectId, agentId: agent.id });
         }}
+        onImported={(_createdProjectId, agentId) => {
+          setAgentDialog({ open: false });
+          navigate({ kind: "agent", projectId, agentId });
+        }}
       />
       <PresetManagerDialog open={presetsOpen} engines={projectEngines} presets={presets} onClose={() => setPresetsOpen(false)} onSave={async (id, input) => {
         const action = id ? api.updateAgentPreset(id, input) : api.createAgentPreset(projectId, input);

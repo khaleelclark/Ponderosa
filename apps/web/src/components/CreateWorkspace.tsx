@@ -54,7 +54,7 @@ import { HostFolderPicker } from "./HostFolderPicker";
 import { IconTitle } from "./IconTitle";
 import { ProjectRuntimeFields } from "./ProjectRuntimeFields";
 import { TriggersPane } from "./TriggersPane";
-import { AgentCreateForm } from "./AgentCreateDialog";
+import { AgentCreateSurface } from "./AgentCreateDialog";
 
 const UNSET = "";
 type TriggerAgentOption = {
@@ -663,7 +663,7 @@ export function CreateWorkspace({
             onNavigate({ kind: "conversation", projectId, conversationId })}
         />
       ) : route.resource === "agent" ? (
-        <AgentCreateForm
+        <AgentCreateSurface
           projects={projects}
           engines={engines}
           initialProjectId={route.projectId}
@@ -671,6 +671,8 @@ export function CreateWorkspace({
           onCancel={onCancel}
           onCreated={(projectId, agent) =>
             onNavigate({ kind: "agent", projectId, agentId: agent.id })}
+          onImported={(projectId, agentId) =>
+            onNavigate({ kind: "agent", projectId, agentId })}
         />
       ) : (
         <TriggerCreateForm

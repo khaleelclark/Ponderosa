@@ -4,7 +4,6 @@ import {
   Button,
   Checkbox,
   Dialog,
-  DialogActions,
   DialogContent,
   DialogTitle,
   FormControl,
@@ -37,21 +36,19 @@ interface PortableAgentPreview {
   invalidPermissionShape: boolean;
 }
 
-export function ImportAgentDialog({
-  open,
+export function ImportAgentForm({
   projectId,
   engines,
   conversations,
   initialConversationId,
-  onClose,
+  onCancel,
   onImported,
 }: {
-  open: boolean;
   projectId: string;
   engines: EngineDto[];
   conversations: ConversationDto[];
   initialConversationId?: string;
-  onClose(): void;
+  onCancel(): void;
   onImported(agentId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -79,10 +76,10 @@ export function ImportAgentDialog({
     setError(undefined);
   }, []);
 
-  const closeDialog = () => {
+  const closeForm = () => {
     clearPackageDraft();
     setConversationId("");
-    onClose();
+    onCancel();
   };
 
   useEffect(() => {
@@ -113,17 +110,12 @@ export function ImportAgentDialog({
   }, []);
 
   useEffect(() => {
-    if (!open) {
-      clearPackageDraft();
-      setConversationId("");
-      return;
-    }
     setConversationId(current =>
       conversations.some(conversation => conversation.id === current)
         ? current
         : initialConversationId ?? conversations[0]?.id ?? "",
     );
-  }, [clearPackageDraft, conversations, initialConversationId, open]);
+  }, [conversations, initialConversationId]);
 
   const invalidPermissionShape = packagePreview?.invalidPermissionShape ?? false;
   const elevatedAgents = invalidPermissionShape
@@ -138,7 +130,6 @@ export function ImportAgentDialog({
     onSuccess: (result) => {
       clearPackageDraft();
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
-      onClose();
       onImported(result.rootAgentId);
     },
     onError: (reason) => setError(reason instanceof Error ? reason.message : "Import failed"),
@@ -171,14 +162,14 @@ export function ImportAgentDialog({
   };
 
   useEffect(() => {
-    if (!open || !jsonText.trim()) return;
+    if (!jsonText.trim()) return;
     const timer = window.setTimeout(() => {
       inspectPackage(
         new Blob([jsonText], { type: "application/json" }),
       );
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [inspectPackage, jsonText, open]);
+  }, [inspectPackage, jsonText]);
 
   const updateJsonText = (value: string) => {
     previewRequestId.current += 1;
@@ -192,9 +183,7 @@ export function ImportAgentDialog({
     setError(undefined);
   };
 
-  return <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="md">
-    <DialogTitle>Import Agent or Organization</DialogTitle>
-    <DialogContent><Stack spacing={2} sx={{ pt: 1 }}>
+  return <Stack spacing={2}>
       <Alert severity="info">Imported history remains private historical context and does not appear as new chat messages. Triggers import disabled with new secrets.</Alert>
       <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
         <Button component="label" variant="outlined" startIcon={<UploadFileOutlinedIcon />}>
@@ -261,12 +250,50 @@ export function ImportAgentDialog({
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
-    </Stack></DialogContent>
-    <DialogActions>
-      <Button onClick={closeDialog}>Cancel</Button>
+      <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <Button onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={!packageBlob || !packagePreview || inspecting || invalidPermissionShape || !conversationId || sourceEngines.some((source) => !engineMapping[source]) || (elevatedAgents.length > 0 && !acknowledgeElevatedPermissions) || importAgents.isPending} onClick={() => importAgents.mutate()}>
         {importAgents.isPending ? "Importing…" : "Import"}
       </Button>
-    </DialogActions>
-  </Dialog>;
+      </Stack>
+  </Stack>;
+}
+
+export function ImportAgentDialog({
+  open,
+  projectId,
+  engines,
+  conversations,
+  initialConversationId,
+  onClose,
+  onImported,
+}: {
+  open: boolean;
+  projectId: string;
+  engines: EngineDto[];
+  conversations: ConversationDto[];
+  initialConversationId?: string;
+  onClose(): void;
+  onImported(agentId: string): void;
+}): JSX.Element {
+  return (
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
+      <DialogTitle>Import Agent or Organization</DialogTitle>
+      <DialogContent sx={{ pt: "12px !important" }}>
+        {open ? (
+          <ImportAgentForm
+            projectId={projectId}
+            engines={engines}
+            conversations={conversations}
+            initialConversationId={initialConversationId}
+            onCancel={onClose}
+            onImported={agentId => {
+              onClose();
+              onImported(agentId);
+            }}
+          />
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
 }

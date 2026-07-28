@@ -1,3 +1,5 @@
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
+import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import {
   Alert,
   Button,
@@ -10,6 +12,7 @@ import {
   Select,
   Stack,
   TextField,
+  Typography,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type { AgentDto, EngineDto, ProjectDto } from "@ponderosa/core";
@@ -25,6 +28,7 @@ import { useAgentPresets } from "../hooks/queries";
 import { pickAgentName } from "../parkNames";
 import { queryKeys } from "../queryKeys";
 import { EngineModelEffortFields } from "./ProjectRuntimeFields";
+import { ImportAgentForm } from "./ImportAgentDialog";
 
 const UNSET = "";
 
@@ -41,6 +45,10 @@ export interface AgentCreateFormProps {
   initialName?: string;
   onCancel(): void;
   onCreated(projectId: string, agent: AgentDto): void;
+}
+
+export interface AgentCreateSurfaceProps extends AgentCreateFormProps {
+  onImported(projectId: string, agentId: string): void;
 }
 
 export function AgentCreateForm({
@@ -357,13 +365,138 @@ export function AgentCreateForm({
 export function AgentCreateDialog({
   open,
   ...formProps
-}: AgentCreateFormProps & { open: boolean }): JSX.Element {
+}: AgentCreateSurfaceProps & { open: boolean }): JSX.Element {
   return (
     <Dialog open={open} onClose={formProps.onCancel} fullWidth maxWidth="sm">
-      <DialogTitle>New Agent</DialogTitle>
+      <DialogTitle>Agent</DialogTitle>
       <DialogContent sx={{ pt: "12px !important" }}>
-        {open ? <AgentCreateForm {...formProps} /> : null}
+        {open ? <AgentCreateSurface {...formProps} /> : null}
       </DialogContent>
     </Dialog>
+  );
+}
+
+export function AgentCreateSurface({
+  projects,
+  engines,
+  initialProjectId,
+  fixedProjectId,
+  fixedConversationId,
+  onCancel,
+  onImported,
+  ...createProps
+}: AgentCreateSurfaceProps): JSX.Element {
+  const [mode, setMode] = useState<"create" | "import">("create");
+  const [importProjectId, setImportProjectId] = useState(
+    fixedProjectId ??
+      (projects.some(project => project.id === initialProjectId)
+        ? initialProjectId!
+        : projects[0]?.id ?? ""),
+  );
+  const importConversations = useQuery({
+    queryKey: queryKeys.conversations.project(importProjectId),
+    queryFn: () => api.listConversations(importProjectId),
+    enabled: mode === "import" && Boolean(importProjectId),
+  });
+
+  if (mode === "import") {
+    const conversations =
+      importConversations.data?.filter(conversation => !conversation.archived) ??
+      [];
+    return (
+      <Stack spacing={2}>
+        <Stack
+          direction="row"
+          spacing={1}
+          sx={{ alignItems: "center", justifyContent: "space-between" }}
+        >
+          <div>
+            <Typography variant="h6">Import Agent or Organization</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Restore an exported Agent package into a Project.
+            </Typography>
+          </div>
+          <Button
+            color="inherit"
+            startIcon={<ArrowBackIcon />}
+            onClick={() => setMode("create")}
+          >
+            Create New
+          </Button>
+        </Stack>
+        {!fixedProjectId ? (
+          <FormControl fullWidth>
+            <InputLabel id="import-agent-project-label">Project</InputLabel>
+            <Select
+              labelId="import-agent-project-label"
+              label="Project"
+              value={importProjectId}
+              onChange={event => setImportProjectId(event.target.value)}
+            >
+              {projects.map(project => (
+                <MenuItem key={project.id} value={project.id}>
+                  {project.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        ) : null}
+        {importProjectId ? (
+          <ImportAgentForm
+            key={importProjectId}
+            projectId={importProjectId}
+            engines={engines}
+            conversations={conversations}
+            initialConversationId={
+              fixedConversationId &&
+              conversations.some(
+                conversation => conversation.id === fixedConversationId,
+              )
+                ? fixedConversationId
+                : conversations[0]?.id
+            }
+            onCancel={onCancel}
+            onImported={agentId => onImported(importProjectId, agentId)}
+          />
+        ) : (
+          <Alert severity="info">
+            Create a Project before importing an Agent.
+          </Alert>
+        )}
+      </Stack>
+    );
+  }
+
+  return (
+    <Stack spacing={1.5}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ alignItems: "center", justifyContent: "space-between" }}
+      >
+        <div>
+          <Typography variant="h6">Create Agent</Typography>
+          <Typography variant="body2" color="text.secondary">
+            Add a managed worker or restore one from an export.
+          </Typography>
+        </div>
+        <Button
+          variant="outlined"
+          startIcon={<UploadFileOutlinedIcon />}
+          onClick={() => setMode("import")}
+        >
+          Import Agent
+        </Button>
+      </Stack>
+      <AgentCreateForm
+        projects={projects}
+        engines={engines}
+        initialProjectId={initialProjectId}
+        fixedProjectId={fixedProjectId}
+        fixedConversationId={fixedConversationId}
+        onCancel={onCancel}
+        {...createProps}
+      />
+    </Stack>
   );
 }

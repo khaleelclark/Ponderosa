@@ -178,6 +178,14 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
           agentId: agent.id,
         });
       }}
+      onImported={(createdProjectId, agentId) => {
+        setCreateAgent(undefined);
+        onNavigate({
+          kind: "agent",
+          projectId: createdProjectId,
+          agentId,
+        });
+      }}
     />
   </Box>;
 }
