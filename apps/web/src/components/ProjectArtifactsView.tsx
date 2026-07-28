@@ -310,17 +310,17 @@ export function ProjectArtifactsView({
             },
             {
               value: "agents",
-              label: "Project Agents",
+              label: "Agents",
               icon: <SmartToyOutlinedIcon />,
             },
             {
               value: "triggers",
-              label: "Project Triggers",
+              label: "Triggers",
               icon: <BoltOutlinedIcon />,
             },
             {
               value: "settings",
-              label: "Project Settings",
+              label: "Settings",
               icon: <SettingsOutlinedIcon />,
             },
           ],
