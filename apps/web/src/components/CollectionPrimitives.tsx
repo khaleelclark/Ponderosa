@@ -13,7 +13,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, ProjectSort } from "@ponderosa/core";
-import { useId, type DragEvent, type ReactNode } from "react";
+import { useId, useRef, type DragEvent, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
 
 export interface CollectionWorkspaceProps {
@@ -242,11 +242,63 @@ export function ResourceRow({
   onDrop,
   highlighted = false,
 }: ResourceRowProps): JSX.Element {
+  const dragPreviewRef = useRef<HTMLElement>();
+  const clearDragPreview = () => {
+    dragPreviewRef.current?.remove();
+    dragPreviewRef.current = undefined;
+  };
+  const createDragPreview = (event: DragEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    clearDragPreview();
+    const preview = document.createElement("div");
+    const content = event.currentTarget.firstElementChild?.cloneNode(true);
+    const rowStyles = window.getComputedStyle(event.currentTarget);
+    preview.setAttribute("aria-hidden", "true");
+    Object.assign(preview.style, {
+      position: "fixed",
+      left: `${bounds.left}px`,
+      top: `${bounds.top}px`,
+      zIndex: "2147483647",
+      boxSizing: "border-box",
+      width: `${bounds.width}px`,
+      height: `${bounds.height}px`,
+      display: "flex",
+      overflow: "hidden",
+      pointerEvents: "none",
+      background: rowStyles.background,
+      border: rowStyles.border,
+      borderRadius: rowStyles.borderRadius,
+      boxShadow: "0 12px 32px rgba(0, 0, 0, 0.28)",
+    });
+    if (content instanceof HTMLElement) {
+      content.removeAttribute("role");
+      content.removeAttribute("tabindex");
+      content.removeAttribute("aria-label");
+      content.style.width = "100%";
+      content.style.pointerEvents = "none";
+      preview.appendChild(content);
+    }
+    document.body.appendChild(preview);
+    dragPreviewRef.current = preview;
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", label);
+    event.dataTransfer.setDragImage(
+      preview,
+      event.clientX - bounds.left,
+      event.clientY - bounds.top,
+    );
+  };
   return <Paper
     variant="outlined"
     draggable={draggable}
-    onDragStart={onDragStart}
-    onDragEnd={onDragEnd}
+    onDragStart={(event) => {
+      createDragPreview(event);
+      onDragStart?.(event);
+    }}
+    onDragEnd={() => {
+      clearDragPreview();
+      onDragEnd?.();
+    }}
     onDragOver={(event) => {
       if (!onDrop && !onDragOver) return;
       event.preventDefault();
