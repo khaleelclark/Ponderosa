@@ -198,6 +198,8 @@ type TriggerDirectoryResource = {
 export function AllTriggersWorkspace({
   projects,
   filterProjectId,
+  filterAgentIds,
+  scopeTitle,
   embedded = false,
   preferences,
   onPreferences,
@@ -207,6 +209,8 @@ export function AllTriggersWorkspace({
 }: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   filterProjectId?: string;
+  filterAgentIds?: readonly string[];
+  scopeTitle?: string;
   embedded?: boolean;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
 }): JSX.Element {
@@ -238,7 +242,12 @@ export function AllTriggersWorkspace({
   });
   const sort = workspaceResourceSort(preferences, "trigger"); const starred = starredWorkspaceResources(preferences);
   const destinations = useMemo(() => new Map(projects.flatMap((project, index) => (agents[index]?.data ?? []).map((agent) => [agent.id, { project, agent }] as const))), [projects, agents.map((query) => query.data)]);
-  const rows = (triggers.data ?? []).flatMap((trigger) => { const destination = destinations.get(trigger.agentId); return destination ? [{ trigger, ...destination }] : []; });
+  const scopedAgentIds = filterAgentIds ? new Set(filterAgentIds) : undefined;
+  const rows = (triggers.data ?? []).flatMap((trigger) => {
+    if (scopedAgentIds && !scopedAgentIds.has(trigger.agentId)) return [];
+    const destination = destinations.get(trigger.agentId);
+    return destination ? [{ trigger, ...destination }] : [];
+  });
   const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
   const filtersActive = Boolean(projectId || search.trim());
@@ -252,7 +261,7 @@ export function AllTriggersWorkspace({
   );
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
-    title={scopedProject ? "Project Triggers" : "All Triggers"}
+    title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
     detail={
       scopedProject
         ? `${ordered.length} ${ordered.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
@@ -271,7 +280,7 @@ export function AllTriggersWorkspace({
       />
       {embedded ? createButton : null}
     </CollectionToolbar>}
-    listLabel="All Triggers"
+    listLabel={scopeTitle ?? "All Triggers"}
     variant={embedded ? "embedded" : "page"}
   >
     {ordered.map(({ project, agent, trigger }) => {

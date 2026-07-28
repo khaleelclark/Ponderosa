@@ -8,7 +8,11 @@ import {
 } from "react";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 
-export type ConversationActiveView = "main" | "collaboration" | "agents";
+export type ConversationActiveView =
+  | "main"
+  | "collaboration"
+  | "agents"
+  | "triggers";
 
 export function useConversationActiveViewState(
   conversationId: string,
@@ -17,14 +21,16 @@ export function useConversationActiveViewState(
   ConversationActiveView,
   Dispatch<SetStateAction<ConversationActiveView>>,
 ] {
-  const [activeView, setActiveView] = useState<
-    "main" | "collaboration" | "agents"
-  >(() => {
+  const [activeView, setActiveView] = useState<ConversationActiveView>(() => {
     if (initialView) return initialView;
     const saved = readChatState(
       chatStateKey("view", `conversation.${conversationId}`),
     );
-    return saved === "collaboration" || saved === "agents" ? saved : "main";
+    return saved === "collaboration" ||
+      saved === "agents" ||
+      saved === "triggers"
+      ? saved
+      : "main";
   });
   return [activeView, setActiveView];
 }
@@ -59,7 +65,11 @@ export function useConversationResetEffect({
     );
     setActiveView(
       initialView ??
-        (saved === "collaboration" || saved === "agents" ? saved : "main"),
+        (saved === "collaboration" ||
+        saved === "agents" ||
+        saved === "triggers"
+          ? saved
+          : "main"),
     );
   }, [conversationId, initialView]);
 }

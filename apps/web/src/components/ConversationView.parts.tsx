@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
@@ -311,7 +312,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
-  activeView: "main" | "collaboration" | "agents";
+  activeView: "main" | "collaboration" | "agents" | "triggers";
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
@@ -325,7 +326,7 @@ function ConversationHeader({
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "agents">
+    SetStateAction<"main" | "collaboration" | "agents" | "triggers">
   >;
 }): JSX.Element {
   return (
@@ -400,6 +401,11 @@ function ConversationHeader({
             value: "agents",
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
+          },
+          {
+            value: "triggers",
+            label: "Triggers",
+            icon: <BoltOutlinedIcon fontSize="small" />,
           },
         ],
       }}

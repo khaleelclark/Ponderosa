@@ -280,6 +280,16 @@ export function ProjectShell({
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenFileActivity={openAgentFileActivity}
         onNewAgent={(master, managerAgentId) => managerAgentId ? openNewSubagent(managerAgentId) : openNewAgentFromMaster(master)}
+        preferences={preferences}
+        onPreferences={onPreferences}
+        onNavigateTrigger={(triggerRoute) => navigate(triggerRoute)}
+        onOpenTriggerInNewTab={(triggerRoute) => openInNewTab?.(triggerRoute)}
+        onCreateTrigger={(agentId) => navigate({
+          kind: "create",
+          resource: "trigger",
+          projectId,
+          ...(agentId ? { agentId } : {}),
+        })}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "conversation", projectId, conversationId: route.conversationId });
           navigate({ kind: "agents", projectId });
