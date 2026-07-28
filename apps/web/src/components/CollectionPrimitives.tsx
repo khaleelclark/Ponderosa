@@ -217,7 +217,7 @@ export interface ResourceRowProps {
   onOpen(): void;
   onContextMenu?(anchor: HTMLElement): void;
   draggable?: boolean;
-  onDragStart?(): void;
+  onDragStart?(event: DragEvent<HTMLElement>): void;
   onDragEnd?(): void;
   onDragOver?(event: DragEvent<HTMLElement>): void;
   onDrop?(event: DragEvent<HTMLElement>): void;

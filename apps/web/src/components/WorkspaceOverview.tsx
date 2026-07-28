@@ -115,7 +115,17 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           onOpen={() => onNavigate(openProjectRoute(snapshot))}
           onContextMenu={(anchor) => setTabMenu({ anchor, resource: openProjectRoute(snapshot) })}
           draggable
-          onDragStart={() => setDraggedProjectId(snapshot.project.id)}
+          onDragStart={(event) => {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", snapshot.project.id);
+            event.dataTransfer.setDragImage(
+              event.currentTarget,
+              event.clientX - bounds.left,
+              event.clientY - bounds.top,
+            );
+            setDraggedProjectId(snapshot.project.id);
+          }}
           onDragEnd={() => {
             setDraggedProjectId(undefined);
             setDropTarget(undefined);
