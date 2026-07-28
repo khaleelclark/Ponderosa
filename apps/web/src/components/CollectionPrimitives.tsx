@@ -273,12 +273,17 @@ export function ResourceRow({
     }}
   >
     <Box
-      component="button"
-      type="button"
+      component="div"
+      role="button"
+      tabIndex={0}
       aria-label={`Open ${label}`}
       onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpen();
+      }}
       sx={{
-        appearance: "none",
         border: 0,
         bgcolor: "transparent",
         color: "inherit",
