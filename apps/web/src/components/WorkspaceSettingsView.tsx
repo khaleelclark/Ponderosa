@@ -280,7 +280,7 @@ const NOTIFICATION_LABELS: Array<
   ["directReplies", "Direct Replies"],
   ["projectChatMessages", "Project Chat Messages"],
   ["broadcasts", "Broadcasts / #everyone"],
-  ["allMessages", "All Messages"],
+  ["allMessages", "Messages Across Ponderosa"],
 ];
 
 function NotificationSettingsSection({
@@ -327,7 +327,7 @@ function NotificationSettingsSection({
                   }
                 />
               }
-              label={included ? `${label} (Included by All Messages)` : label}
+              label={included ? `${label} (Included by Messages Across Ponderosa)` : label}
             />
           );
         })}

@@ -86,7 +86,7 @@ const ROUTE_REGISTRY = {
   allChat: {
     toPath: () => "/messages",
     workspaceTabKey: () => "all-chat",
-    tabLabel: () => "All Messages",
+    tabLabel: () => "Messages Across Ponderosa",
     tabIcon: "chat",
     scope: "global",
     initialSidebarSection: "home",

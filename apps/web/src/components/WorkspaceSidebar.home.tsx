@@ -228,6 +228,35 @@ export function HomeSidebarPanel({
       searchLabel="Search Home"
       searchValue={filter}
       onSearchValueChange={onFilterChange}
+      topContent={
+        <ListItemButton
+          onClick={onOpenAllMessages}
+          onContextMenu={event => {
+            event.preventDefault();
+            onOpenResourceMenu(event.currentTarget, { kind: "allChat" });
+          }}
+          sx={{
+            borderRadius: 1.25,
+            px: 1,
+            py: 0.75,
+            mb: 1.5,
+          }}
+        >
+          <ListItemIcon sx={{ minWidth: 38 }}>
+            <ChatBubbleOutlineIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText
+            primary="Messages Across Ponderosa"
+            secondary="Every Project, Chat, and Agent"
+            primaryTypographyProps={{
+              noWrap: true,
+              fontSize: 13,
+              fontWeight: 700,
+            }}
+            secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
+          />
+        </ListItemButton>
+      }
       starredRows={rows(starredResources)}
       allRows={rows(unstarredResources)}
       empty={
@@ -236,12 +265,6 @@ export function HomeSidebarPanel({
             Your work will appear here.
           </Typography>
         ) : undefined
-      }
-      newLabel="All Messages"
-      newIcon={<ChatBubbleOutlineIcon />}
-      onNew={onOpenAllMessages}
-      onNewContextMenu={anchor =>
-        onOpenResourceMenu(anchor, { kind: "allChat" })
       }
       viewAllLabel="View Home"
       viewAllIcon={<HomeOutlinedIcon />}

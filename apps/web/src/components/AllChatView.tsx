@@ -635,7 +635,7 @@ export function AllChatView({
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography variant="h5" component="h1" fontWeight={800}>
-            All Messages
+            Messages Across Ponderosa
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Everything sent to or from you across Ponderosa.
