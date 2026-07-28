@@ -8,6 +8,7 @@ import type {
 } from "@ponderosa/core";
 import { AllChatView } from "./components/AllChatView";
 import { HomeView } from "./components/HomeView";
+import { CreateWorkspace } from "./components/CreateWorkspace";
 import type { ProjectBrowserRequest } from "./components/ProjectBrowserContext";
 import { ProjectShell } from "./components/ProjectShell";
 import {
@@ -40,10 +41,11 @@ interface WorkspaceRouteOutletProps {
   onNavigate(route: Route): void;
   onOpenInNewTab(route: Route): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onCreateProject(): void;
-  onBeginHomeCreate(kind: "chat" | "agent" | "trigger"): void;
-  onCreateHomeChat(projectId?: string): void;
-  onCreateHomeAgent(projectId?: string, managerAgentId?: string): void;
+  onCreate(
+    kind: "project" | "chat" | "agent" | "trigger",
+    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
+  ): void;
+  onCancelCreate(): void;
   onOpenInbox(): void;
   onManageProject(project: ProjectDto): void;
   onConversationAction(
@@ -70,10 +72,8 @@ export function WorkspaceRouteOutlet({
   onNavigate,
   onOpenInNewTab,
   onPreferences,
-  onCreateProject,
-  onBeginHomeCreate,
-  onCreateHomeChat,
-  onCreateHomeAgent,
+  onCreate,
+  onCancelCreate,
   onOpenInbox,
   onManageProject,
   onConversationAction,
@@ -98,6 +98,15 @@ export function WorkspaceRouteOutlet({
             connection and try again.
           </Alert>
         </Box>
+      ) : route.kind === "create" ? (
+        <CreateWorkspace
+          route={route}
+          projects={projects}
+          engines={engines}
+          preferences={preferences}
+          onCancel={onCancelCreate}
+          onNavigate={onNavigate}
+        />
       ) : route.kind === "wiki" ? (
         <WikiView articleId={route.articleId} navigate={onNavigate} />
       ) : route.kind === "home" ? (
@@ -109,10 +118,10 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onPreferences={onPreferences}
-          onCreateProject={onCreateProject}
-          onCreateChat={() => onBeginHomeCreate("chat")}
-          onCreateAgent={() => onBeginHomeCreate("agent")}
-          onCreateTrigger={() => onBeginHomeCreate("trigger")}
+          onCreateProject={() => onCreate("project")}
+          onCreateChat={() => onCreate("chat")}
+          onCreateAgent={() => onCreate("agent")}
+          onCreateTrigger={() => onCreate("trigger")}
           onOpenInbox={onOpenInbox}
         />
       ) : route.kind === "allChat" ? (
@@ -123,7 +132,7 @@ export function WorkspaceRouteOutlet({
           preferences={preferences}
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
-          onCreateProject={onCreateProject}
+          onCreateProject={() => onCreate("project")}
           onManageProject={onManageProject}
           onPreferences={onPreferences}
         />
@@ -137,10 +146,7 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreate={(projectId, managerAgentId) =>
-            projectId
-              ? onCreateHomeAgent(projectId, managerAgentId)
-              : onBeginHomeCreate("agent")
-          }
+            onCreate("agent", { projectId, managerAgentId })}
         />
       ) : route.kind === "allChats" ? (
         <AllChatsWorkspace
@@ -150,11 +156,7 @@ export function WorkspaceRouteOutlet({
           onPreferences={onPreferences}
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
-          onCreate={projectId =>
-            projectId
-              ? onCreateHomeChat(projectId)
-              : onBeginHomeCreate("chat")
-          }
+          onCreate={projectId => onCreate("chat", { projectId })}
         />
       ) : route.kind === "allTriggers" ? (
         <AllTriggersWorkspace
@@ -163,7 +165,7 @@ export function WorkspaceRouteOutlet({
           onPreferences={onPreferences}
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
-          onCreate={() => onBeginHomeCreate("trigger")}
+          onCreate={() => onCreate("trigger")}
         />
       ) : route.kind === "settings" ? (
         <WorkspaceSettingsView

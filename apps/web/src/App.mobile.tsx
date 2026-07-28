@@ -245,21 +245,9 @@ export function MobileWorkspaceDrawer({
             close();
             onOpenInNewTab(next);
           }}
-          onCreateProject={() => {
+          onCreate={kind => {
             close();
-            onCreate("project");
-          }}
-          onCreateChat={() => {
-            close();
-            onCreate("chat");
-          }}
-          onCreateAgent={() => {
-            close();
-            onCreate("agent");
-          }}
-          onCreateTrigger={() => {
-            close();
-            onCreate("trigger");
+            onCreate(kind);
           }}
           onPreferences={onPreferences}
           onRenameConversation={conversation => {

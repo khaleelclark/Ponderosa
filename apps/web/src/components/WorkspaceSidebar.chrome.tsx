@@ -1,3 +1,4 @@
+import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
@@ -36,6 +37,7 @@ export function WorkspaceSidebarRail({
   showingAgents,
   showingChats,
   showingHome,
+  showingCreate,
   showingProjects,
   showingSettings,
   showingTriggers,
@@ -43,6 +45,7 @@ export function WorkspaceSidebarRail({
   onShowAgents,
   onShowChats,
   onShowHome,
+  onShowCreate,
   onShowProjects,
   onShowSettings,
   onShowTriggers,
@@ -53,6 +56,7 @@ export function WorkspaceSidebarRail({
   showingAgents: boolean;
   showingChats: boolean;
   showingHome: boolean;
+  showingCreate: boolean;
   showingProjects: boolean;
   showingSettings: boolean;
   showingTriggers: boolean;
@@ -60,6 +64,7 @@ export function WorkspaceSidebarRail({
   onShowAgents(): void;
   onShowChats(): void;
   onShowHome(): void;
+  onShowCreate(): void;
   onShowProjects(): void;
   onShowSettings(): void;
   onShowTriggers(): void;
@@ -131,6 +136,9 @@ export function WorkspaceSidebarRail({
       </Stack>
       <Box />
       <Stack spacing={0.65} sx={{ alignItems: "center" }}>
+        <RailButton label="Create" selected={showingCreate} onClick={onShowCreate}>
+          <AddIcon />
+        </RailButton>
         <Box
           aria-hidden
           sx={{
@@ -147,6 +155,102 @@ export function WorkspaceSidebarRail({
           <SettingsOutlinedIcon />
         </RailButton>
       </Stack>
+    </Box>
+  );
+}
+
+const createOptions = [
+  {
+    kind: "project",
+    label: "Project",
+    description: "A workspace with its own folder and runtime defaults.",
+    icon: <FolderOutlinedIcon />,
+  },
+  {
+    kind: "chat",
+    label: "Chat",
+    description: "A shared Project conversation for people and Agents.",
+    icon: <ChatBubbleOutlineIcon />,
+  },
+  {
+    kind: "agent",
+    label: "Agent",
+    description: "A managed worker with its own role and provider session.",
+    icon: <SmartToyOutlinedIcon />,
+  },
+  {
+    kind: "trigger",
+    label: "Trigger",
+    description: "Automation that starts Agent work from an event.",
+    icon: <BoltOutlinedIcon />,
+  },
+] as const;
+
+export function CreateSidebarPanel({
+  selected,
+  drawer,
+  onCreate,
+}: {
+  selected?: "project" | "chat" | "agent" | "trigger";
+  drawer: boolean;
+  onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
+}): JSX.Element {
+  return (
+    <Box
+      sx={{
+        minHeight: 0,
+        minWidth: 0,
+        display: "grid",
+        gridTemplateRows: "auto minmax(0, 1fr)",
+        bgcolor: sidebarSurface,
+      }}
+    >
+      <Stack
+        direction="row"
+        sx={{
+          alignItems: "center",
+          pl: 2.25,
+          pr: drawer ? 7 : 2.25,
+          pt: 2,
+          pb: 1.25,
+        }}
+      >
+        <IconTitle icon={<AddIcon />} title="Create" />
+      </Stack>
+      <List
+        component="nav"
+        aria-label="Choose what to create"
+        sx={{ px: 1.25, pb: 2 }}
+      >
+        {createOptions.map(option => (
+          <ListItemButton
+            key={option.kind}
+            selected={selected === option.kind}
+            onClick={() => onCreate(option.kind)}
+            sx={{
+              borderRadius: 1.25,
+              alignItems: "flex-start",
+              px: 1.25,
+              py: 1.15,
+              mb: 0.5,
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 38, mt: 0.1 }}>
+              {option.icon}
+            </ListItemIcon>
+            <ListItemText
+              primary={option.label}
+              secondary={option.description}
+              primaryTypographyProps={{ fontWeight: 750, fontSize: 14 }}
+              secondaryTypographyProps={{
+                fontSize: 11.5,
+                lineHeight: 1.35,
+                sx: { mt: 0.25 },
+              }}
+            />
+          </ListItemButton>
+        ))}
+      </List>
     </Box>
   );
 }

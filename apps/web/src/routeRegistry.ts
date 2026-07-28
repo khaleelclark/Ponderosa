@@ -5,6 +5,7 @@ type RouteOfKind<Kind extends RouteKind> = Extract<Route, { kind: Kind }>;
 
 export type ProjectRoute = Extract<Route, { projectId: string }>;
 export type RouteTabIcon =
+  | "add"
   | "agent"
   | "bolt"
   | "chat"
@@ -17,6 +18,7 @@ export type RouteTabIcon =
   | "person"
   | "settings";
 export type RouteSidebarSection =
+  | "create"
   | "home"
   | "projects"
   | "chats"
@@ -56,6 +58,22 @@ const ROUTE_REGISTRY = {
     tabIcon: "home",
     scope: "global",
     initialSidebarSection: "home",
+  },
+  create: {
+    toPath: route => {
+      const query = new URLSearchParams();
+      if (route.projectId) query.set("project", route.projectId);
+      if (route.managerAgentId) query.set("manager", route.managerAgentId);
+      if (route.agentId) query.set("agent", route.agentId);
+      return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;
+    },
+    workspaceTabKey: () => "create",
+    tabLabel: route =>
+      `Create ${route.resource.charAt(0).toUpperCase()}${route.resource.slice(1)}`,
+    tabIcon: "add",
+    scope: "global",
+    initialSidebarSection: "create",
+    synchronizedSidebarSection: "create",
   },
   projects: {
     toPath: () => "/projects",

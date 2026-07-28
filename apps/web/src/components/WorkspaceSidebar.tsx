@@ -62,6 +62,7 @@ import {
   SharedSidebarPanel,
 } from "./WorkspaceSidebar.parts";
 import {
+  CreateSidebarPanel,
   SettingsSidebarPanel,
   WikiSidebarPanel,
   WorkspaceSidebarRail,
@@ -80,10 +81,7 @@ export function WorkspaceSidebar({
   drawer = false,
   onNavigate,
   onOpenInNewTab,
-  onCreateProject,
-  onCreateChat,
-  onCreateAgent,
-  onCreateTrigger,
+  onCreate,
   onPreferences,
   onRenameConversation,
   onDeleteConversation,
@@ -100,10 +98,7 @@ export function WorkspaceSidebar({
   drawer?: boolean;
   onNavigate(route: Route): void;
   onOpenInNewTab?(route: Route): void;
-  onCreateProject(): void;
-  onCreateChat?(): void;
-  onCreateAgent?(): void;
-  onCreateTrigger?(): void;
+  onCreate(kind: "project" | "chat" | "agent" | "trigger"): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onRenameConversation(conversation: ConversationDto): void;
   onDeleteConversation(conversation: ConversationDto): void;
@@ -142,6 +137,7 @@ export function WorkspaceSidebar({
   const showingProjects = sidebarSection === "projects";
   const showingTriggers = sidebarSection === "triggers";
   const showingHome = sidebarSection === "home";
+  const showingCreate = sidebarSection === "create";
   const showingWiki = sidebarSection === "wiki";
   const showingSettings = sidebarSection === "settings";
   const allTriggersQuery = useQuery({
@@ -174,6 +170,7 @@ export function WorkspaceSidebar({
   const showChats = () => revealSection("chats");
   const showProjects = () => revealSection("projects");
   const showHome = () => revealSection("home");
+  const showCreate = () => revealSection("create");
   const openAllProjects = () => {
     setSidebarSection("projects");
     onNavigate({ kind: "projects" });
@@ -208,6 +205,7 @@ export function WorkspaceSidebar({
       showingAgents={showingAgents}
       showingChats={showingChats}
       showingHome={showingHome}
+      showingCreate={showingCreate}
       showingProjects={showingProjects}
       showingSettings={showingSettings}
       showingTriggers={showingTriggers}
@@ -215,6 +213,7 @@ export function WorkspaceSidebar({
       onShowAgents={showAgents}
       onShowChats={showChats}
       onShowHome={showHome}
+      onShowCreate={showCreate}
       onShowProjects={showProjects}
       onShowSettings={() => revealSection("settings")}
       onShowTriggers={showTriggers}
@@ -351,8 +350,6 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Project"
-      onNew={() => onCreateProject()}
       viewAllLabel="View All Projects"
       viewAllIcon={<FolderOutlinedIcon />}
       onViewAll={openAllProjects}
@@ -502,9 +499,6 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Chat"
-      onNew={() => onCreateChat?.()}
-      newDisabled={!projects.length}
       viewAllLabel="View All Chats"
       viewAllIcon={<ChatBubbleOutlineIcon />}
       onViewAll={() => onNavigate({ kind: "allChats" })}
@@ -659,8 +653,6 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Agent"
-      onNew={() => onCreateAgent?.()}
       viewAllLabel="View All Agents"
       viewAllIcon={<SmartToyOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allAgents" })}
@@ -841,8 +833,6 @@ export function WorkspaceSidebar({
           </Typography>
         ) : undefined
       }
-      newLabel="New Trigger"
-      onNew={() => onCreateTrigger?.()}
       viewAllLabel="View All Triggers"
       viewAllIcon={<BoltOutlinedIcon />}
       onViewAll={() => onNavigate({ kind: "allTriggers" })}
@@ -888,10 +878,19 @@ export function WorkspaceSidebar({
     />
   );
 
-    const settingsPanel = (
+  const settingsPanel = (
     <SettingsSidebarPanel route={route} onNavigate={onNavigate} />
   );
-  const panel = showingAgents
+  const createPanel = (
+    <CreateSidebarPanel
+      selected={route.kind === "create" ? route.resource : undefined}
+      drawer={drawer}
+      onCreate={onCreate}
+    />
+  );
+  const panel = showingCreate
+    ? createPanel
+    : showingAgents
     ? agentsPanel
     : showingChats
       ? globalChatsPanel

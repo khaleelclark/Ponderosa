@@ -24,6 +24,7 @@ export interface AgentTelemetryFocus {
 }
 
 export type AgentDetailView = "chat" | "activity" | "subagents" | "triggers" | "artifacts" | "settings" | "technical";
+export type CreateResourceKind = "project" | "chat" | "agent" | "trigger";
 
 const AGENT_DETAIL_VIEWS: readonly AgentDetailView[] = ["chat", "activity", "subagents", "triggers", "artifacts", "settings", "technical"];
 
@@ -33,6 +34,7 @@ export function isAgentDetailView(value: unknown): value is AgentDetailView {
 
 export type Route =
   | { kind: "home" }
+  | { kind: "create"; resource: CreateResourceKind; projectId?: string; managerAgentId?: string; agentId?: string }
   | { kind: "projects" }
   | { kind: "allChat" }
   | { kind: "allChats"; filterProjectId?: string }
@@ -69,6 +71,24 @@ export function parseRoute(pathname: string, search = ""): Route {
   const agentView = isAgentDetailView(requestedAgentView) ? requestedAgentView : undefined;
   const parts = cleanPathname!.split("/").filter(Boolean);
   if (parts.length === 0) return { kind: "home" };
+  if (
+    parts[0] === "create" &&
+    ["project", "chat", "agent", "trigger"].includes(parts[1] ?? "")
+  ) {
+    return {
+      kind: "create",
+      resource: parts[1] as CreateResourceKind,
+      ...(query.get("project")?.trim()
+        ? { projectId: query.get("project")!.trim() }
+        : {}),
+      ...(query.get("manager")?.trim()
+        ? { managerAgentId: query.get("manager")!.trim() }
+        : {}),
+      ...(query.get("agent")?.trim()
+        ? { agentId: query.get("agent")!.trim() }
+        : {}),
+    };
+  }
   if (parts.length === 1 && parts[0] === "messages") return { kind: "allChat" };
   if (parts.length === 1 && parts[0] === "projects") return { kind: "projects" };
   if (parts.length === 1 && parts[0] === "chats") return { kind: "allChats", ...(query.get("project") ? { filterProjectId: query.get("project")! } : {}) };

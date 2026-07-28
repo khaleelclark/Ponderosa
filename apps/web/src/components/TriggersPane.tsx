@@ -113,19 +113,28 @@ function OccurrenceAudit({ occurrence, onOpenAgentWork }: { occurrence: TriggerO
 export function TriggersPane({
   agent,
   onOpenAgentWork,
+  fixedConversationId,
   initialCreateOpen = false,
   createOnly = false,
   onTriggerCreated,
   onCreateFlowComplete,
+  onCancelCreate,
 }: {
   agent: AgentDto;
   onOpenAgentWork?(occurrenceId: string): void;
+  fixedConversationId?: string;
   initialCreateOpen?: boolean;
   createOnly?: boolean;
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
+  onCancelCreate?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const preferredConversationId =
+    fixedConversationId &&
+    agent.conversationIds.includes(fixedConversationId)
+      ? fixedConversationId
+      : agent.conversationId ?? agent.conversationIds[0] ?? "";
   const queryKey = queryKeys.triggers.agent(agent.id);
   const triggers = useQuery({ queryKey, queryFn: () => api.listTriggers(agent.id) });
   const [createOpen, setCreateOpen] = useState(initialCreateOpen);
@@ -137,7 +146,7 @@ export function TriggersPane({
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [conversationId, setConversationId] = useState(agent.conversationId ?? agent.conversationIds[0] ?? "");
+  const [conversationId, setConversationId] = useState(preferredConversationId);
   const [sourceKind, setSourceKind] = useState<TriggerSourceKind>("schedule");
   const [scheduleKind, setScheduleKind] = useState<"once" | "interval" | "cron">("interval");
   const [onceAt, setOnceAt] = useState(localFuture());
@@ -154,12 +163,16 @@ export function TriggersPane({
   useEffect(() => {
     if (initialCreateOpen && agent.conversationIds.length > 0) setCreateOpen(true);
   }, [agent.id, agent.conversationIds.length, initialCreateOpen]);
+  useEffect(() => {
+    setConversationId(preferredConversationId);
+  }, [agent.id, fixedConversationId]);
   const filesystemErrors = filesystemWindowErrors(quietSeconds, maxWindowSeconds);
   const sourceConfigurationInvalid = sourceKind === "filesystem" && Boolean(filesystemErrors.quiet || filesystemErrors.max);
 
   useEffect(() => {
-    if (!agent.conversationIds.includes(conversationId)) setConversationId(agent.conversationId ?? agent.conversationIds[0] ?? "");
-  }, [agent, conversationId]);
+    if (!agent.conversationIds.includes(conversationId))
+      setConversationId(preferredConversationId);
+  }, [agent, conversationId, preferredConversationId]);
 
   const sourceConfig = (): CreateTriggerRequest["sourceConfig"] => {
     if (sourceKind === "webhook") {
@@ -183,7 +196,7 @@ export function TriggersPane({
     setEditing(undefined);
     setName("");
     setInstructions("");
-    setConversationId(agent.conversationId ?? agent.conversationIds[0] ?? "");
+    setConversationId(preferredConversationId);
     setSourceKind("schedule");
     setScheduleKind("interval");
     setOnceAt(localFuture());
@@ -233,10 +246,11 @@ export function TriggersPane({
       setCreateOpen(false);
       setName("");
       setInstructions("");
-      onTriggerCreated?.(response.trigger);
       if (response.webhookSecret) {
+        if (!createOnly) onTriggerCreated?.(response.trigger);
         setSecret({ trigger: response.trigger, value: response.webhookSecret });
       } else {
+        onTriggerCreated?.(response.trigger);
         onCreateFlowComplete?.();
       }
     },
@@ -303,15 +317,42 @@ export function TriggersPane({
   const closeCreateEditor = (): void => {
     setCreateOpen(false);
     setEditing(undefined);
-    if (!editing) onCreateFlowComplete?.();
+    if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
   };
   const closeSecret = (): void => {
+    if (createOnly && secret) onTriggerCreated?.(secret.trigger);
     setSecret(undefined);
     onCreateFlowComplete?.();
   };
-
-  return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: 960, mx: "auto", ...(createOnly ? { display: "none" } : {}) }}>
+  const editorFields = (
     <Stack spacing={2}>
+      <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
+      <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
+      <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
+      {!fixedConversationId ? <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl> : null}
+      <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
+      {sourceKind === "schedule" ? <>
+        <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
+        {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
+        {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
+        {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
+      </> : null}
+      {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
+      {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
+      <FormControlLabel control={<Switch checked={budgetEnabled} onChange={(_, checked) => setBudgetEnabled(checked)} />} label={budgetEnabled ? "Limit automatic Runs" : "Automatic Runs are unlimited"} />
+      {budgetEnabled ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Run limit" type="number" value={budgetLimit} onChange={(event) => setBudgetLimit(event.target.value)} inputProps={{ min: 1, max: 1_000_000 }} /><FormControl fullWidth><InputLabel id="trigger-budget-period-label">Reset</InputLabel><Select labelId="trigger-budget-period-label" label="Reset" value={budgetPeriod} onChange={(event) => setBudgetPeriod(event.target.value as TriggerBudgetPeriod)}><MenuItem value="day">Daily</MenuItem><MenuItem value="week">Weekly</MenuItem><MenuItem value="month">Monthly</MenuItem><MenuItem value="lifetime">Never</MenuItem></Select></FormControl></Stack> : null}
+      {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
+    </Stack>
+  );
+  const editorActions = (
+    <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
+      <Button onClick={closeCreateEditor}>Cancel</Button>
+      <Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button>
+    </Stack>
+  );
+
+  return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: createOnly ? 760 : 960, mx: "auto" }}>
+    <Stack spacing={2} sx={{ display: createOnly ? "none" : undefined }}>
       <Alert severity="warning">
         <strong>Triggers run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but a Trigger can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
       </Alert>
@@ -373,6 +414,12 @@ export function TriggersPane({
         </CardContent>
       </Card> : null}
     </Stack>
+    {createOnly ? (
+      <Stack spacing={2.5}>
+        {editorFields}
+        {editorActions}
+      </Stack>
+    ) : null}
 
     <TextInputDialog
       open={Boolean(allowanceTrigger)}
@@ -428,29 +475,12 @@ export function TriggersPane({
       <Typography sx={{ pt: 1 }}>Pending occurrences will be cancelled. Immutable occurrence history remains available.</Typography>
     </DestructiveConfirmDialog>
 
-    <Dialog open={createOpen} onClose={closeCreateEditor} fullWidth maxWidth="sm">
+    <Dialog open={!createOnly && createOpen} onClose={closeCreateEditor} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <Alert severity="warning">This automation will run unattended with full Agent access. Event payloads are untrusted data.</Alert>
-          <TextField label="Name" value={name} onChange={(event) => setName(event.target.value)} inputProps={{ maxLength: 120 }} autoFocus required />
-          <TextField label="Trusted instructions" value={instructions} onChange={(event) => setInstructions(event.target.value)} multiline minRows={3} required helperText="Describe the action. Do not rely on event payload text as instructions." />
-          <FormControl fullWidth><InputLabel id="trigger-chat-label">Project chat</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-chat-label" label="Project chat" value={conversationId} onChange={(event) => setConversationId(event.target.value)}>{agent.conversationIds.map((id) => <MenuItem key={id} value={id}>{id === agent.conversationId ? `Primary · ${id}` : id}</MenuItem>)}</Select></FormControl>
-          <FormControl fullWidth><InputLabel id="trigger-source-label">Source</InputLabel><Select disabled={Boolean(editing)} labelId="trigger-source-label" label="Source" value={sourceKind} onChange={(event) => setSourceKind(event.target.value as TriggerSourceKind)}><MenuItem value="schedule">Schedule</MenuItem><MenuItem value="webhook">Signed Webhook</MenuItem><MenuItem value="filesystem">Project Folder Changes</MenuItem></Select></FormControl>
-          {sourceKind === "schedule" ? <>
-            <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
-            {scheduleKind === "interval" ? <TextField label="Every (minutes)" type="number" value={intervalMinutes} onChange={(event) => setIntervalMinutes(event.target.value)} inputProps={{ min: 1 }} /> : null}
-            {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}
-            {scheduleKind === "cron" ? <><TextField label="Cron expression" value={cronExpression} onChange={(event) => setCronExpression(event.target.value)} helperText="Five fields; minimum frequency is once per minute." /><TextField label="IANA timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} /></> : null}
-          </> : null}
-          {sourceKind === "filesystem" ? <><TextField label="Include globs" value={include} onChange={(event) => setInclude(event.target.value)} multiline minRows={2} /><TextField label="Exclude globs" value={exclude} onChange={(event) => setExclude(event.target.value)} multiline minRows={3} /><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Quiet window (seconds)" type="number" value={quietSeconds} onChange={(event) => setQuietSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.quiet)} helperText={filesystemErrors.quiet ?? "0.1 seconds–1 hour"} /><TextField fullWidth label="Maximum window (seconds)" type="number" value={maxWindowSeconds} onChange={(event) => setMaxWindowSeconds(event.target.value)} inputProps={{ min: 0.1, max: 3_600, step: 0.1 }} error={Boolean(filesystemErrors.max)} helperText={filesystemErrors.max ?? "At least quiet window; no more than 1 hour"} /></Stack><Typography variant="caption" color="text.secondary">Only paths and event types are captured; file contents are not injected.</Typography></> : null}
-          {sourceKind === "webhook" ? <Typography variant="body2" color="text.secondary">Ponderosa will show a signing secret once. Send a stable event ID, Unix timestamp, and v1 HMAC-SHA256 signature with each JSON request.</Typography> : null}
-          <FormControlLabel control={<Switch checked={budgetEnabled} onChange={(_, checked) => setBudgetEnabled(checked)} />} label={budgetEnabled ? "Limit automatic Runs" : "Automatic Runs are unlimited"} />
-          {budgetEnabled ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}><TextField fullWidth label="Run limit" type="number" value={budgetLimit} onChange={(event) => setBudgetLimit(event.target.value)} inputProps={{ min: 1, max: 1_000_000 }} /><FormControl fullWidth><InputLabel id="trigger-budget-period-label">Reset</InputLabel><Select labelId="trigger-budget-period-label" label="Reset" value={budgetPeriod} onChange={(event) => setBudgetPeriod(event.target.value as TriggerBudgetPeriod)}><MenuItem value="day">Daily</MenuItem><MenuItem value="week">Weekly</MenuItem><MenuItem value="month">Monthly</MenuItem><MenuItem value="lifetime">Never</MenuItem></Select></FormControl></Stack> : null}
-          {create.isError || saveEdit.isError ? <Alert severity="error">{(create.error ?? saveEdit.error)?.message}</Alert> : null}
-        </Stack>
+        <Box sx={{ pt: 1 }}>{editorFields}</Box>
       </DialogContent>
-      <DialogActions><Button onClick={closeCreateEditor}>Cancel</Button><Button variant="contained" disabled={create.isPending || saveEdit.isPending || !name.trim() || !instructions.trim() || !conversationId || sourceConfigurationInvalid || (budgetEnabled && (!Number.isSafeInteger(Number(budgetLimit)) || Number(budgetLimit) < 1))} onClick={() => editing ? saveEdit.mutate() : create.mutate()}>{create.isPending || saveEdit.isPending ? "Saving…" : editing ? "Save Changes" : "Create Trigger"}</Button></DialogActions>
+      <DialogActions>{editorActions}</DialogActions>
     </Dialog>
 
     <Dialog open={Boolean(secret)} onClose={closeSecret} fullWidth maxWidth="sm">

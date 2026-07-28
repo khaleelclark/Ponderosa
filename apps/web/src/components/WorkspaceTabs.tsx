@@ -45,6 +45,7 @@ import { OperatorAvatar, operatorInitials } from "./OperatorAvatar";
 import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
 const TAB_ICONS = {
+  add: AddIcon,
   agent: SmartToyOutlinedIcon,
   bolt: BoltOutlinedIcon,
   chat: ChatBubbleOutlineIcon,

@@ -470,12 +470,19 @@ export default function App({
   };
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
+    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
   ) => {
-    if (kind === "project") {
-      openProjectCreator();
-      return;
-    }
-    beginHomeCreate(kind);
+    const destination: Route = {
+      kind: "create",
+      resource: kind,
+      ...(context?.projectId ? { projectId: context.projectId } : {}),
+      ...(context?.managerAgentId
+        ? { managerAgentId: context.managerAgentId }
+        : {}),
+      ...(context?.agentId ? { agentId: context.agentId } : {}),
+    };
+    if (route.kind === "create") navigateWorkspace(destination);
+    else openWorkspaceRoute(destination);
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -663,6 +670,13 @@ export default function App({
       navigate(nextActive.route);
     }
   };
+  const cancelCreationWorkspace = () => {
+    if (workspaceTabs.length > 1) {
+      closeWorkspaceView(activeWorkspaceTabKey);
+      return;
+    }
+    navigateWorkspace({ kind: "home" });
+  };
   const closeOtherWorkspaceViews = (key: string) => {
     const retained = workspaceTabs.find(tab => tab.key === key);
     if (!retained) return;
@@ -767,7 +781,7 @@ export default function App({
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onCreateProject={() => openProjectCreator()}
+          onCreateProject={() => openCreationForm("project")}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
         />
@@ -791,10 +805,7 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreateProject={() => openCreationForm("project")}
-              onCreateChat={() => openCreationForm("chat")}
-              onCreateAgent={() => openCreationForm("agent")}
-              onCreateTrigger={() => openCreationForm("trigger")}
+              onCreate={kind => openCreationForm(kind)}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -870,12 +881,8 @@ export default function App({
                 onNavigate={navigateWorkspace}
                 onOpenInNewTab={openWorkspaceRouteInBackground}
                 onPreferences={savePreferences}
-                onCreateProject={() => openProjectCreator()}
-                onBeginHomeCreate={beginHomeCreate}
-                onCreateHomeChat={beginHomeChat}
-                onCreateHomeAgent={(projectId, managerAgentId) =>
-                  createHomeAgent(projectId, false, managerAgentId)
-                }
+                onCreate={openCreationForm}
+                onCancelCreate={cancelCreationWorkspace}
                 onOpenInbox={() => setNotificationPanelOpen(true)}
                 onManageProject={openProjectSettings}
                 onConversationAction={openSidebarConversationAction}
