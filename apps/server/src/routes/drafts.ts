@@ -7,15 +7,17 @@ import type {
   PutConversationDraftRequest,
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
-import { ASSET_LIMITS, contentDisposition } from "../assets.js";
+import {
+  ASSET_LIMITS,
+  AssetError,
+  contentDisposition,
+  prepareAssetUpload,
+} from "../assets.js";
 
 export class DraftService {
   private readonly root: string;
   private readonly attachmentId = /^[a-f0-9-]{36}$/i;
   private readonly ownerId = /^[A-Za-z0-9_-]{1,128}$/;
-  private readonly attachmentTypes = new Set<string>(
-    ASSET_LIMITS.acceptedMediaTypes,
-  );
 
   constructor(
     dataDir: string,
@@ -111,10 +113,6 @@ export class DraftService {
     }
     if (kind === "agent") return Boolean(this.store.getAgent(id));
     return false;
-  }
-
-  supports(mediaType: string): boolean {
-    return this.attachmentTypes.has(mediaType);
   }
 }
 
@@ -222,14 +220,9 @@ export function registerDraftRoutes(
           .code(413)
           .send({ error: "draft attachment exceeds 8 MiB" });
       }
-      const mediaType = String(
+      const declaredMediaType = String(
         request.headers["x-ponderosa-media-type"] ?? "",
       ).toLowerCase();
-      if (!service.supports(mediaType)) {
-        return reply
-          .code(415)
-          .send({ error: "unsupported draft attachment type" });
-      }
       const ownerId = service.normalizedOwner(
         request.headers["x-ponderosa-draft-owner"],
       );
@@ -239,7 +232,24 @@ export function registerDraftRoutes(
       const suppliedName = String(
         request.headers["x-ponderosa-filename"] ?? "attachment",
       ).replace(/[\u0000-\u001f\u007f]/g, "");
-      const name = path.basename(suppliedName).slice(0, 240) || "attachment";
+      const requestedName =
+        path.basename(suppliedName).slice(0, 240) || "attachment";
+      let prepared;
+      try {
+        prepared = await prepareAssetUpload({
+          body: request.body,
+          name: requestedName,
+          declaredType: declaredMediaType,
+        });
+      } catch (error) {
+        if (error instanceof AssetError) {
+          return reply.code(error.statusCode).send({
+            error: `${requestedName}: ${error.message}`,
+          });
+        }
+        throw error;
+      }
+      const { name, mediaType } = prepared;
       const id = randomUUID();
       const directory = service.attachmentDir(request.params.id, ownerId);
       const files = service.files(request.params.id, ownerId, id);
