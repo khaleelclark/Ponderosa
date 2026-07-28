@@ -1,15 +1,16 @@
-import type {
-  AgentEvent,
-  EngineCapabilities,
-  EngineMcpServer,
-  TokenUsage,
-  OpenRuntimeSessionOptions,
-  RuntimeSession,
-  RuntimeCommandResult,
-  RuntimeElicitationRequest,
-  RuntimeSteerResult,
-  RuntimeTurnInput,
-  RuntimeProcessHandle,
+import {
+  truncateUnicodeCodePoints,
+  type AgentEvent,
+  type EngineCapabilities,
+  type EngineMcpServer,
+  type TokenUsage,
+  type OpenRuntimeSessionOptions,
+  type RuntimeSession,
+  type RuntimeCommandResult,
+  type RuntimeElicitationRequest,
+  type RuntimeSteerResult,
+  type RuntimeTurnInput,
+  type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { mapFileChangeKind } from "./events.js";
 import { JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
@@ -29,7 +30,16 @@ interface DynamicToolCallParams {
 function normalizeElicitationRequest(params: unknown): RuntimeElicitationRequest {
   const value = object(params);
   if (!value) throw new Error("invalid MCP elicitation request");
-  const serverName = typeof value?.serverName === "string" ? value.serverName.trim() : "";
+  const serverName = typeof value?.serverName === "string"
+    ? truncateUnicodeCodePoints(
+        value.serverName
+          .normalize("NFC")
+          .replace(/[\u0000-\u001f\u007f]/gu, " ")
+          .replace(/\s+/gu, " ")
+          .trim(),
+        200,
+      )
+    : "";
   const message = typeof value?.message === "string" ? value.message.trim() : "";
   const mode = value?.mode;
   if (!serverName || !message) throw new Error("invalid MCP elicitation request");

@@ -71,7 +71,7 @@ const ponderosaColorTokens = {
     brandHover: "#4D8065",
     accent: "#4D8065",
     highlight: "#7CBF8A",
-    activityLabel: "#4D8065",
+    activityLabel: "#68A97C",
     star: "#BFA34A",
     userMessage: "#252B28",
   },

@@ -600,6 +600,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     store,
     coordinationV3,
     workspace,
+    runtimeElicitations,
     activeRuns,
     subscribers,
     scheduledSessionRollovers,

@@ -17,7 +17,6 @@ import {
   type ProjectDto,
   type ProviderInputSourceManifest,
   type RuntimeProcessHandle,
-  truncateUnicodeCodePoints,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import type { LogEvent } from "@ponderosa/agents";
@@ -336,7 +335,9 @@ export function startProviderRunExecution(
               runId: currentRun.runId,
               ...(currentRun.v3SchedulerRunId ? { coordinationRunId: currentRun.v3SchedulerRunId } : {}),
               mode: "choice",
-              question: truncateUnicodeCodePoints(request.message, 1_000),
+              question: request.mode === "url"
+                ? `${agent.title} needs a secure ${providerName} connection before it can continue.`
+                : `${agent.title} needs information for ${providerName} before it can continue.`,
               context: request.mode === "url"
                 ? `Open the secure ${providerName} connection page, then return here to confirm.`
                 : `${providerName} needs this information to continue. Submitted values are sent directly to the provider and are not saved in Ponderosa.`,
@@ -357,6 +358,13 @@ export function startProviderRunExecution(
                 serverName: request.serverName,
               },
             });
+            // A provider may reuse an elicitation ID after its durable Decision
+            // has already resolved. Never attach a fresh live request to that
+            // unreachable historical prompt.
+            if (decision.status !== "pending") {
+              runtimeElicitations.cancel(decision.id);
+              return { action: "cancel" };
+            }
             const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
             workspace.createNotification({
               projectId: decision.projectId,
@@ -370,7 +378,9 @@ export function startProviderRunExecution(
               status: "open",
               dedupeKey: `decision:${decision.id}`,
               action: { kind: "open_decision", targetId: decision.id },
-              title: `${agent.title} needs you to connect ${providerName}`,
+              title: request.mode === "url"
+                ? `${agent.title} needs you to connect ${providerName}`
+                : `${agent.title} needs information for ${providerName}`,
               body: decision.question,
               decision: {
                 id: decision.id,
@@ -385,6 +395,7 @@ export function startProviderRunExecution(
             const response = await waiting;
             if (currentRun.controller.signal.aborted && !isClosed()) {
               const cancelCursor = workspace.cursor();
+              runtimeElicitations.cancel(decision.id);
               workspace.cancelDecision(decision.id);
               const notification = workspace.listNotifications().find((item) =>
                 item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");

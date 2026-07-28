@@ -20,6 +20,7 @@ import type {
 } from "./app-contracts.js";
 import type { ContextCursorStore } from "./context-cursors.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
+import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
 
@@ -30,6 +31,7 @@ type AgentDeletionAuthorityContext =
     store: AgentStore;
     coordinationV3: CoordinationV3Store;
     workspace: WorkspaceStore;
+    runtimeElicitations: RuntimeElicitationBroker;
     activeRuns: Map<string, ActiveRun>;
     subscribers: Map<string, Set<Subscriber>>;
     scheduledSessionRollovers: Map<string, string>;
@@ -70,6 +72,7 @@ export function createAgentDeletionAuthority(
     store,
     coordinationV3,
     workspace,
+    runtimeElicitations,
     activeRuns,
     subscribers,
     scheduledSessionRollovers,
@@ -93,6 +96,7 @@ export function createAgentDeletionAuthority(
   const cancelAgentDecisions = (agentIds: Iterable<string>): void => {
     const cursor = workspace.cursor();
     for (const agentId of agentIds) for (const decision of workspace.cancelDecisionsForAgent(agentId)) {
+      runtimeElicitations.cancel(decision.id);
       coordinationV3.releaseDecisionQuestionSuspensions(decision.id);
       const notification = workspace.listNotifications().find((item) => item.dedupeKey === `decision:${decision.id}` && (item.status ?? "open") === "open");
       if (notification) workspace.setNotificationStatus(notification.id, "resolved");

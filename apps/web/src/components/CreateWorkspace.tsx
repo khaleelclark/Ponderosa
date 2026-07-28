@@ -31,7 +31,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { api } from "../api";
 import {
   effortSelectionIsCompatible,
@@ -394,20 +394,34 @@ function AgentCreateForm({
   const [presetId, setPresetId] = useState(UNSET);
   const [managerAgentId, setManagerAgentId] = useState(UNSET);
   const [initialMessage, setInitialMessage] = useState("");
+  const titleEditedRef = useRef(false);
+  const managerEditedRef = useRef(false);
   useEffect(() => {
-    setTitle(pickAgentName(agents.map(agent => agent.title)));
+    titleEditedRef.current = false;
+    managerEditedRef.current = false;
+    setTitle(pickAgentName([]));
     setEngine(project?.defaultEngine ?? engines.find(engineIsAvailable)?.id ?? engines[0]?.id ?? UNSET);
     setModel(project?.defaultModel ?? UNSET);
     setEffort(project?.defaultEffort ?? UNSET);
     setConversationId(UNSET);
     setPresetId(UNSET);
-    setManagerAgentId(
-      agents.some(agent => agent.id === initialManagerAgentId)
-        ? initialManagerAgentId!
-        : UNSET,
-    );
+    setManagerAgentId(UNSET);
     setInitialMessage("");
-  }, [projectId, project?.defaultEngine, project?.defaultModel, project?.defaultEffort, initialManagerAgentId, agentsQuery.isSuccess]);
+  }, [projectId]);
+  useEffect(() => {
+    if (!agentsQuery.isSuccess) return;
+    const loadedAgents = agentsQuery.data ?? [];
+    if (!titleEditedRef.current) {
+      setTitle(pickAgentName(loadedAgents.map(agent => agent.title)));
+    }
+    if (!managerEditedRef.current) {
+      setManagerAgentId(
+        loadedAgents.some(agent => agent.id === initialManagerAgentId)
+          ? initialManagerAgentId!
+          : UNSET,
+      );
+    }
+  }, [agentsQuery.data, agentsQuery.isSuccess, initialManagerAgentId]);
   const activeEngine = engines.find(candidate => candidate.id === engine);
   const create = useMutation({
     mutationFn: () => api.createAgent(projectId, conversationId || undefined, {
@@ -450,7 +464,10 @@ function AgentCreateForm({
           {presets.filter(preset => preset.enabled).map(preset => <MenuItem key={preset.id} value={preset.id}>{preset.name} — {preset.description}</MenuItem>)}
         </Select>
       </FormControl>
-      <TextField label="Name" value={title} onChange={event => setTitle(event.target.value)} autoFocus fullWidth />
+      <TextField label="Name" value={title} onChange={event => {
+        titleEditedRef.current = true;
+        setTitle(event.target.value);
+      }} autoFocus fullWidth />
       <FormControl fullWidth size="small">
         <InputLabel id="create-agent-engine-label">Engine</InputLabel>
         <Select labelId="create-agent-engine-label" label="Engine" value={engine} onChange={(event: SelectChangeEvent) => {
@@ -492,7 +509,10 @@ function AgentCreateForm({
       </FormControl>
       <FormControl fullWidth size="small">
         <InputLabel id="create-agent-manager-label">Delegated under</InputLabel>
-        <Select labelId="create-agent-manager-label" label="Delegated under" value={managerAgentId} onChange={(event: SelectChangeEvent) => setManagerAgentId(event.target.value)}>
+        <Select labelId="create-agent-manager-label" label="Delegated under" value={managerAgentId} onChange={(event: SelectChangeEvent) => {
+          managerEditedRef.current = true;
+          setManagerAgentId(event.target.value);
+        }}>
           <MenuItem value={UNSET}>User / Top Level</MenuItem>
           {agents.filter(agent => !agent.archived).map(agent => <MenuItem key={agent.id} value={agent.id}>{agent.title}</MenuItem>)}
         </Select>

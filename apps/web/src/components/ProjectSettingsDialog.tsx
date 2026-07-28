@@ -37,7 +37,7 @@ export function ProjectSettingsPanel({
     setInstructions(project.instructions ?? "");
     setDeleteOpen(false);
     setSaved(false);
-  }, [project]);
+  }, [project.id]);
 
   const updateProject = useMutation({
     mutationFn: () =>
@@ -160,7 +160,7 @@ export function ProjectSettingsDialog({
     setLabel(project.label);
     setInstructions(project.instructions ?? "");
     setDeleteOpen(false);
-  }, [project]);
+  }, [project?.id]);
 
   const updateProject = useMutation({
     mutationFn: () => api.updateProject(project!.id, {

@@ -74,6 +74,7 @@ export function RuntimeElicitationActions({
 }): JSX.Element {
   const [formOpen, setFormOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const action = useQuery({
     queryKey: ["decision-action", decision.id],
     queryFn: () => api.getDecisionAction(decision.id),
@@ -85,14 +86,27 @@ export function RuntimeElicitationActions({
   const provider = titleCase(decision.runtimeAction?.serverName ?? "Provider");
   const submit = async (): Promise<void> => {
     const content: Record<string, unknown> = {};
+    const nextErrors: Record<string, string> = {};
     for (const field of fields) {
       const value = values[field.name];
-      if (field.required && (value === undefined || value === "")) return;
+      if (field.required && (value === undefined || value === "")) {
+        nextErrors[field.name] = `${field.label} is required.`;
+        continue;
+      }
       if (value === undefined || value === "") continue;
-      content[field.name] = field.type === "number" || field.type === "integer"
-        ? Number(value)
-        : value;
+      if (field.type === "number" || field.type === "integer") {
+        const number = Number(value);
+        if (!Number.isFinite(number) || (field.type === "integer" && !Number.isInteger(number))) {
+          nextErrors[field.name] = `Enter a valid ${field.type}.`;
+          continue;
+        }
+        content[field.name] = number;
+      } else {
+        content[field.name] = value;
+      }
     }
+    setFieldErrors(nextErrors);
+    if (Object.keys(nextErrors).length) return;
     await onRespond({ optionId: "submit", content });
     setFormOpen(false);
   };
@@ -135,7 +149,10 @@ export function RuntimeElicitationActions({
   return (
     <>
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        <Button size="small" variant="contained" onClick={() => setFormOpen(true)}>Provide Information</Button>
+        <Button size="small" variant="contained" onClick={() => {
+          setFieldErrors({});
+          setFormOpen(true);
+        }}>Provide Information</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>Not Now</Button>
       </Stack>
       {error ? <Alert severity="error">{error}</Alert> : null}
@@ -145,11 +162,19 @@ export function RuntimeElicitationActions({
           <Stack spacing={2}>
             <Typography variant="body2" color="text.secondary">{action.data.message}</Typography>
             {fields.length ? fields.map((field) => field.type === "boolean" ? (
-              <FormControlLabel
-                key={field.name}
-                control={<Checkbox checked={values[field.name] === true} onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.checked }))} />}
-                label={field.label}
-              />
+              <Stack key={field.name} spacing={0}>
+                <FormControlLabel
+                  control={<Checkbox checked={values[field.name] === true} onChange={(event) => {
+                    setValues((current) => ({ ...current, [field.name]: event.target.checked }));
+                    setFieldErrors((current) => {
+                      const { [field.name]: _removed, ...rest } = current;
+                      return rest;
+                    });
+                  }} />}
+                  label={`${field.label}${field.required ? " *" : ""}`}
+                />
+                {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
+              </Stack>
             ) : (
               <TextField
                 key={field.name}
@@ -157,9 +182,16 @@ export function RuntimeElicitationActions({
                 required={field.required}
                 type={field.type === "number" || field.type === "integer" ? "number" : "text"}
                 value={String(values[field.name] ?? "")}
-                helperText={field.description}
+                error={Boolean(fieldErrors[field.name])}
+                helperText={fieldErrors[field.name] ?? field.description}
                 select={Boolean(field.options?.length)}
-                onChange={(event) => setValues((current) => ({ ...current, [field.name]: event.target.value }))}
+                onChange={(event) => {
+                  setValues((current) => ({ ...current, [field.name]: event.target.value }));
+                  setFieldErrors((current) => {
+                    const { [field.name]: _removed, ...rest } = current;
+                    return rest;
+                  });
+                }}
               >
                 {field.options?.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
               </TextField>

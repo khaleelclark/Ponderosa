@@ -142,6 +142,8 @@ export function ActivityStreamPane({
         entries={entry.entries}
         focusId={focusId}
         projectRoot={projectRoot}
+        onOpenFile={onOpenFile}
+        onOpenFileInNewTab={onOpenFileInNewTab}
       />;
       if (entry.kind === "run_header") return <RunHeaderRow key={entry.id} entry={entry} />;
       if (entry.kind === "thinking") return <ThinkingRow key={entry.id} entry={entry} focusId={focusId} />;

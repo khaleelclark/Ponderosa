@@ -49,8 +49,8 @@ function ActivityTimestamp({ value }: { value: string }): JSX.Element {
     component="time"
     dateTime={value}
     variant="caption"
-    color="text.disabled"
-    sx={{ display: "block", fontSize: 10.5, lineHeight: 1.3, whiteSpace: "nowrap" }}
+    color="text.secondary"
+    sx={{ display: "block", fontSize: 11, lineHeight: 1.3, whiteSpace: "nowrap" }}
   >
     {activityTimestamp(value)}
   </Typography>;
@@ -235,15 +235,43 @@ function GroupedActivityRow({
   entry,
   focusId,
   projectRoot,
+  onOpenFile,
+  onOpenFileInNewTab,
 }: {
   entry: GroupedActionEntry;
   focusId?: string;
   projectRoot?: string;
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
 }): JSX.Element {
   const [expanded, setExpanded] = useState(entry.id === focusId);
+  const [filePreviewOpen, setFilePreviewOpen] = useState(false);
+  const [fileMenu, setFileMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
   useEffect(() => {
     if (entry.id === focusId) setExpanded(true);
   }, [entry.id, focusId]);
+  const fileEntry = entry.kind === "file" ? entry : undefined;
+  const file: ResponseFileActivityDto | undefined = fileEntry ? {
+    path: fileEntry.path,
+    kind: fileEntry.changeKind,
+    status: "completed",
+    sourceSeq: fileEntry.seq,
+    artifactId: fileEntry.artifactId,
+    artifactKind: "diff",
+    previewable: true,
+    ...(fileEntry.additions !== undefined ? { additions: fileEntry.additions } : {}),
+    ...(fileEntry.deletions !== undefined ? { deletions: fileEntry.deletions } : {}),
+  } : undefined;
+  const fileQuery = useQuery({
+    queryKey: fileEntry
+      ? queryKeys.projectArtifacts.agentContent(fileEntry.agentId, fileEntry.artifactId)
+      : ["activity-file-preview", entry.id],
+    queryFn: () => {
+      if (!fileEntry) throw new Error("File activity is unavailable");
+      return api.getArtifact(fileEntry.agentId, fileEntry.artifactId);
+    },
+    enabled: Boolean(fileEntry && filePreviewOpen),
+  });
   let toolInput = "";
   if (entry.kind === "tool") {
     try {
@@ -284,6 +312,10 @@ function GroupedActivityRow({
   return <Box
     id={telemetryElementId("activity", entry.id)}
     tabIndex={focusId === entry.id ? -1 : undefined}
+    onContextMenu={file && onOpenFileInNewTab ? (event) => {
+      event.preventDefault();
+      setFileMenu({ anchor: event.currentTarget, resource: file });
+    } : undefined}
     sx={{ pr: 0.5, borderBottom: 1, borderColor: "divider", "&:last-child": { borderBottom: 0 } }}
   >
     <Stack direction="row" spacing={0.75} sx={{ py: 0.35, alignItems: "center", minWidth: 0 }}>
@@ -336,6 +368,29 @@ function GroupedActivityRow({
         <Box component="span" color="success.main">+{entry.additions ?? 0}</Box>{" "}
         <Box component="span" color="error.main">−{entry.deletions ?? 0}</Box>
       </Typography> : null}
+      {file ? <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.25 }}>
+        <Button size="small" color="inherit" onClick={() => setFilePreviewOpen(value => !value)}>
+          {filePreviewOpen ? "Hide Preview" : "Preview"}
+        </Button>
+        {onOpenFile ? <Button size="small" color="inherit" startIcon={<DescriptionOutlinedIcon />} onClick={() => onOpenFile(file)}>
+          Open File
+        </Button> : null}
+      </Stack> : null}
+      {file && filePreviewOpen ? <Box sx={{ mt: 0.5 }}>
+        <FilePreview
+          title={file.path}
+          path={file.path}
+          artifactKind="diff"
+          contentType="diff"
+          content={fileQuery.data?.content}
+          loading={fileQuery.isLoading}
+          error={fileQuery.isError}
+          truncated={fileQuery.data?.truncated}
+          totalBytes={fileQuery.data?.totalBytes}
+          hideHeader
+          maxHeight={{ xs: "38vh", md: "46vh" }}
+        />
+      </Box> : null}
       {entry.kind === "notice" && entry.detail ? <Typography color="text.secondary" sx={{ fontSize: 11.5, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
         {entry.detail}
       </Typography> : null}
@@ -344,6 +399,7 @@ function GroupedActivityRow({
       </Typography> : null}
       {result ? <ActivityOutput result={result} label="Output" collapsedLines={2} /> : null}
     </Box> : null}
+    <ResourceContextMenu state={fileMenu} onClose={() => setFileMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Box>;
 }
 
@@ -351,10 +407,14 @@ export function ActionGroupRow({
   entries,
   focusId,
   projectRoot,
+  onOpenFile,
+  onOpenFileInNewTab,
 }: {
   entries: GroupedActionEntry[];
   focusId?: string;
   projectRoot?: string;
+  onOpenFile?(file: ResponseFileActivityDto): void;
+  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
 }): JSX.Element {
   const containsFocus = entries.some((entry) => entry.id === focusId);
   const [expanded, setExpanded] = useState(containsFocus);
@@ -391,6 +451,8 @@ export function ActionGroupRow({
           entry={entry}
           focusId={focusId}
           projectRoot={projectRoot}
+          onOpenFile={onOpenFile}
+          onOpenFileInNewTab={onOpenFileInNewTab}
         />)}
     </Box> : null}
   </Box>;
@@ -467,83 +529,6 @@ export function ToolRow({
       </Box>
       {entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
     </Box> : null}
-  </Row>;
-}
-
-export function FileRow({
-  entry,
-  focusId,
-  onOpenFile,
-  onOpenFileInNewTab,
-}: {
-  entry: Extract<ActivityStreamEntry, { kind: "file" }>;
-  focusId?: string;
-  onOpenFile?(file: ResponseFileActivityDto): void;
-  onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
-}): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const [menu, setMenu] = useState<ResourceContextMenuState<ResponseFileActivityDto>>();
-  const file: ResponseFileActivityDto = {
-    path: entry.path,
-    kind: entry.changeKind,
-    status: "completed",
-    sourceSeq: entry.seq,
-    artifactId: entry.artifactId,
-    artifactKind: "diff",
-    previewable: true,
-    ...(entry.additions !== undefined ? { additions: entry.additions } : {}),
-    ...(entry.deletions !== undefined ? { deletions: entry.deletions } : {}),
-  };
-  const query = useQuery({
-    queryKey: queryKeys.projectArtifacts.agentContent(entry.agentId, entry.artifactId),
-    queryFn: () => api.getArtifact(entry.agentId, entry.artifactId),
-    enabled: open,
-  });
-  const verb = entry.changeKind === "create" ? "Created" : entry.changeKind === "delete" ? "Deleted" : "Edited";
-  return <Row entry={entry} focusId={focusId}>
-    <Stack
-      direction="row"
-      spacing={1}
-      onContextMenu={(event) => {
-        if (!onOpenFileInNewTab) return;
-        event.preventDefault();
-        setMenu({ anchor: event.currentTarget, resource: file });
-      }}
-      sx={{ alignItems: "center", minWidth: 0 }}
-    >
-      <Typography variant="subtitle2" color={ACTIVITY_TITLE_COLOR} sx={{ display: "flex", alignItems: "center", gap: 0.75, fontSize: ACTIVITY_TITLE_FONT_SIZE, fontWeight: 700, flexShrink: 0 }}>
-        <DescriptionOutlinedIcon fontSize="small" />
-        {verb}
-      </Typography>
-      <Typography variant="body2" sx={{ fontFamily: "monospace", minWidth: 0, overflowWrap: "anywhere" }}>{entry.path}</Typography>
-      {entry.additions !== undefined || entry.deletions !== undefined ? <Typography variant="caption" sx={{ flexShrink: 0 }}>
-        <Box component="span" color="success.main">+{entry.additions ?? 0}</Box>{" "}
-        <Box component="span" color="error.main">−{entry.deletions ?? 0}</Box>
-      </Typography> : null}
-      <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>
-        {open ? "Hide preview" : "Preview"}
-      </Button>
-    </Stack>
-    {open ? <Box sx={{ mt: 1 }}>
-      <FilePreview
-        title={entry.path}
-        path={entry.path}
-        artifactKind="diff"
-        contentType="diff"
-        content={query.data?.content}
-        loading={query.isLoading}
-        error={query.isError}
-        truncated={query.data?.truncated}
-        totalBytes={query.data?.totalBytes}
-        hideHeader
-        maxHeight={{ xs: "38vh", md: "46vh" }}
-      />
-      {onOpenFile ? <Button size="small" color="inherit" onClick={() => onOpenFile(file)} sx={{ mt: 0.5 }}>
-        Open focused diff
-      </Button> : null}
-    </Box> : null}
-    {entry.result ? <ActivityOutput result={entry.result} label="File tool output" collapsedLines={2} /> : null}
-    <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenFileInNewTab} />
   </Row>;
 }
 

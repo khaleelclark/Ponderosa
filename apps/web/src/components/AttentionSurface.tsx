@@ -199,6 +199,7 @@ export function AttentionSurface({
                   size="small"
                   color="inherit"
                   endIcon={<ExpandMoreIcon sx={{ transform: expanded ? "rotate(180deg)" : "none", transition: "transform 150ms" }} />}
+                  aria-expanded={expanded}
                   onClick={() => setExpandedIssueId(expanded ? undefined : item.id)}
                 >
                   What Happened?
