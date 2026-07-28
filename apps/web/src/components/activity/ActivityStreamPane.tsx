@@ -48,6 +48,7 @@ function groupConsecutiveActions(entries: ActivityStreamEntry[]): ActivityDispla
       entry.kind === "browser" ||
       (entry.kind === "notice" && entry.result)
     ) {
+      if (actions.length > 0 && actions[0]!.kind !== entry.kind) flush();
       actions.push(entry);
       continue;
     }
