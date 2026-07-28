@@ -79,7 +79,10 @@ export interface ConversationDeliveryRouteDependencies {
     attachments?: ImageAttachmentDto[],
   ) => void;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
-  publishCoordinationV3Changed: (agentId: string) => void;
+  publishCoordinationV3Changed: (
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ) => void;
   notifyScheduler: () => void;
   afterCommunicationArtifactCommit?: (context: {
     kind: "communication";
@@ -325,7 +328,11 @@ export function registerConversationDeliveryRoutes(
       }
     }
     if (message) appendWorkspace({ type: "conversation_changed", projectId: master.projectId, conversationId: master.id, action: "message" });
-    for (const agentId of recipientAgentIds) publishCoordinationV3Changed(agentId);
+    for (const agentId of recipientAgentIds) {
+      publishCoordinationV3Changed(agentId, {
+        conversationIds: [master.id],
+      });
+    }
     if (recipientAgentIds.length) notifyScheduler();
     return message ?? reply.code(404).send({ error: "conversation not found" });
   });
@@ -472,7 +479,11 @@ export function registerConversationDeliveryRoutes(
             projectCommunicationToAgentAudit(recipient.agentId, communication, prepared.publishedText, attachmentsByAgent[index]),
           );
         }
-        for (const recipient of recipients) publishCoordinationV3Changed(recipient.agentId);
+        for (const recipient of recipients) {
+          publishCoordinationV3Changed(recipient.agentId, {
+            conversationIds: [master.id],
+          });
+        }
         notifyScheduler();
         return {
           messageId: message.id,

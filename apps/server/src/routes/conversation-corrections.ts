@@ -14,7 +14,10 @@ export interface ConversationCorrectionRouteDependencies {
   coordinationV3: CoordinationV3Store;
   recordCommunication: (event: CommunicationEvent) => CommunicationEvent;
   appendWorkspace: (event: Parameters<WorkspaceStore["append"]>[0]) => unknown;
-  publishCoordinationV3Changed: (agentId: string) => void;
+  publishCoordinationV3Changed: (
+    agentId: string,
+    options?: { conversationIds?: string[] },
+  ) => void;
   notifyScheduler: () => void;
 }
 
@@ -150,7 +153,9 @@ export function registerConversationCorrectionRoutes(
       );
     }
     if (!message) return reply.code(503).send({ error: "correction projection could not be recorded; retry is safe" });
-    publishCoordinationV3Changed(target.id);
+    publishCoordinationV3Changed(target.id, {
+      conversationIds: [conversation.id],
+    });
     notifyScheduler();
     return {
       originalMessageId: request.params.messageId,
