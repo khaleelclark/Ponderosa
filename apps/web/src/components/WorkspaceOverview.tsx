@@ -1,5 +1,4 @@
 import AddIcon from "@mui/icons-material/Add";
-import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
@@ -115,6 +114,12 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           meta={running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
           onOpen={() => onNavigate(openProjectRoute(snapshot))}
           onContextMenu={(anchor) => setTabMenu({ anchor, resource: openProjectRoute(snapshot) })}
+          draggable
+          onDragStart={() => setDraggedProjectId(snapshot.project.id)}
+          onDragEnd={() => {
+            setDraggedProjectId(undefined);
+            setDropTarget(undefined);
+          }}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -127,22 +132,6 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
           }}
           highlighted={dropTarget?.projectId === snapshot.project.id}
-          controls={<>
-          <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
-            <IconButton
-              size="small"
-              draggable
-              aria-label={`Drag ${snapshot.project.label} to reorder`}
-              onDragStart={(event) => {
-                setDraggedProjectId(snapshot.project.id);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", snapshot.project.id);
-              }}
-              onDragEnd={() => { setDraggedProjectId(undefined); setDropTarget(undefined); }}
-              sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
-            ><DragIndicatorIcon fontSize="small" /></IconButton>
-          </Tooltip>
-          </>}
           starAction={
           <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
