@@ -7,6 +7,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import {
   Box,
   Chip,
@@ -385,8 +386,16 @@ function ConversationHeader({
           setActiveView(next);
         },
         items: [
-          { value: "main", label: "Chat" },
-          { value: "collaboration", label: "Team Chat" },
+          {
+            value: "main",
+            label: "Chat",
+            icon: <ChatBubbleOutlineIcon fontSize="small" />,
+          },
+          {
+            value: "collaboration",
+            label: "Team Chat",
+            icon: <GroupsOutlinedIcon fontSize="small" />,
+          },
           {
             value: "agents",
             label: "Agents",
