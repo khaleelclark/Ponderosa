@@ -11,6 +11,7 @@ import {
   OPERATOR_AVATAR_MEDIA_TYPES,
 } from "./operator-profile-images.js";
 import { secretEqual } from "./security.js";
+import { isAgentToolRoute } from "./agent-tool-route-classification.js";
 
 export function registerBodyParsers(
   app: FastifyInstance,
@@ -77,7 +78,7 @@ export function registerRequestSecurityHooks(
       return reply.code(401).send({ error: "launcher authorization required" });
     }
     if (opts.launcherSecurity && (browserBootstrapPath || launcherExchange)) return;
-    const agentToolRequest = request.url === "/api/agent-messages" || request.url === "/api/agent-coordinate" || request.url === "/api/agent-results" || request.url === "/api/agent-docs" || request.url === "/api/agent-request-updates" || request.url === "/api/agent-spawn" || request.url === "/api/agent-browser" || request.url === "/api/agent-decisions" || request.url === "/api/agent-management" || request.url.startsWith("/api/agent-documents/") || request.url.startsWith("/api/agent-trigger-occurrences/") || request.url === "/api/agent-directory" || request.url.startsWith("/api/agent-directory/") || request.url === "/api/agent-context" || request.url.startsWith("/api/agent-context?") || request.url === "/api/agent-session/rollover";
+    const agentToolRequest = isAgentToolRoute(request.url);
     const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
     if (capability) {
       if (deletingAgentIds.has(capability.agentId)) {
@@ -128,7 +129,7 @@ export function registerRequestSecurityHooks(
     reply.header("Referrer-Policy", "no-referrer");
     if (!reply.hasHeader("X-Frame-Options")) reply.header("X-Frame-Options", "DENY");
     if (!reply.hasHeader("Content-Security-Policy")) {
-      reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cdn.jsdelivr.net; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+      reply.header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
     }
     if (request.url.startsWith("/api/link-previews/")) {
       // Local dev apps are untrusted content. A unique sandbox origin prevents
