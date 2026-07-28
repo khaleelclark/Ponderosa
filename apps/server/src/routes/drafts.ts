@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import type {
+  AssetDto,
   DraftAttachmentDto,
   PutConversationDraftRequest,
 } from "@ponderosa/core";
@@ -12,7 +13,19 @@ import {
   AssetError,
   contentDisposition,
   prepareAssetUpload,
+  type PreparedAssetUpload,
 } from "../assets.js";
+
+interface StoredDraftAttachment
+  extends Omit<DraftAttachmentDto, "downloadUrl" | "mediaType" | "ownerId"> {
+  ownerId: string;
+  mediaType: AssetDto["mediaType"];
+  /** Missing only on drafts admitted before prepared upload persistence. */
+  sha256?: string;
+  width?: number;
+  height?: number;
+  previewSha256?: string;
+}
 
 export class DraftService {
   private readonly root: string;
@@ -58,6 +71,90 @@ export class DraftService {
     return {
       body: path.join(directory, `${id}.bin`),
       metadata: path.join(directory, `${id}.json`),
+      preview: path.join(directory, `${id}.preview.png`),
+    };
+  }
+
+  private async readStored(
+    draftId: string,
+    ownerId: string,
+    id: string,
+  ): Promise<StoredDraftAttachment | undefined> {
+    if (!this.attachmentId.test(id)) return undefined;
+    const files = this.files(draftId, ownerId, id);
+    try {
+      const parsed = JSON.parse(
+        await fs.readFile(files.metadata, "utf8"),
+      ) as StoredDraftAttachment;
+      const stat = await fs.lstat(files.body);
+      const image = String(parsed.mediaType).startsWith("image/");
+      const hasPreparedManifest = typeof parsed.sha256 === "string";
+      const preparedManifestIsValid =
+        !hasPreparedManifest
+        || (
+          /^[a-f0-9]{64}$/u.test(parsed.sha256!)
+          && (
+            image
+              ? Number.isSafeInteger(parsed.width)
+                && (parsed.width ?? 0) > 0
+                && Number.isSafeInteger(parsed.height)
+                && (parsed.height ?? 0) > 0
+                && typeof parsed.previewSha256 === "string"
+                && /^[a-f0-9]{64}$/u.test(parsed.previewSha256)
+              : parsed.width === undefined
+                && parsed.height === undefined
+                && parsed.previewSha256 === undefined
+          )
+        );
+      if (
+        !stat.isFile() ||
+        stat.isSymbolicLink() ||
+        parsed.id !== id ||
+        parsed.conversationId !== draftId ||
+        parsed.ownerId !== ownerId ||
+        parsed.size !== stat.size ||
+        parsed.size < 1 ||
+        parsed.size > ASSET_LIMITS.maxFileBytes ||
+        typeof parsed.name !== "string" ||
+        !parsed.name ||
+        !ASSET_LIMITS.acceptedMediaTypes.includes(parsed.mediaType) ||
+        !Number.isFinite(Date.parse(parsed.createdAt)) ||
+        !preparedManifestIsValid
+      ) {
+        return undefined;
+      }
+      if (hasPreparedManifest && image) {
+        const previewStat = await fs.lstat(files.preview);
+        if (
+          !previewStat.isFile()
+          || previewStat.isSymbolicLink()
+          || previewStat.size < 1
+          || previewStat.size > ASSET_LIMITS.maxFileBytes
+        ) {
+          return undefined;
+        }
+      }
+      return parsed;
+    } catch {
+      return undefined;
+    }
+  }
+
+  publicAttachment(
+    draftId: string,
+    ownerId: string,
+    stored: StoredDraftAttachment,
+  ): DraftAttachmentDto {
+    const {
+      sha256: _sha256,
+      width: _width,
+      height: _height,
+      previewSha256: _previewSha256,
+      ...attachment
+    } = stored;
+    return {
+      ...attachment,
+      downloadUrl: `/api/conversations/${encodeURIComponent(draftId)}/draft-attachments/${encodeURIComponent(stored.id)}?ownerId=${encodeURIComponent(ownerId)}`,
     };
   }
 
@@ -66,29 +163,49 @@ export class DraftService {
     ownerId: string,
     id: string,
   ): Promise<DraftAttachmentDto | undefined> {
-    if (!this.attachmentId.test(id)) return undefined;
+    const stored = await this.readStored(draftId, ownerId, id);
+    return stored
+      ? this.publicAttachment(draftId, ownerId, stored)
+      : undefined;
+  }
+
+  async prepared(
+    draftId: string,
+    ownerId: string,
+    id: string,
+  ): Promise<{
+    attachment: DraftAttachmentDto;
+    body: Buffer;
+    prepared: PreparedAssetUpload;
+  } | undefined> {
+    const stored = await this.readStored(draftId, ownerId, id);
+    if (!stored) return undefined;
     const files = this.files(draftId, ownerId, id);
-    try {
-      const parsed = JSON.parse(
-        await fs.readFile(files.metadata, "utf8"),
-      ) as Omit<DraftAttachmentDto, "downloadUrl">;
-      const stat = await fs.stat(files.body);
-      if (
-        !stat.isFile() ||
-        parsed.id !== id ||
-        parsed.conversationId !== draftId ||
-        parsed.ownerId !== ownerId ||
-        parsed.size !== stat.size
-      ) {
-        return undefined;
-      }
-      return {
-        ...parsed,
-        downloadUrl: `/api/conversations/${encodeURIComponent(draftId)}/draft-attachments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}`,
-      };
-    } catch {
-      return undefined;
-    }
+    const body = await fs.readFile(files.body);
+    const prepared = stored.sha256
+      ? {
+          name: stored.name,
+          mediaType: stored.mediaType,
+          sha256: stored.sha256,
+          ...(stored.width !== undefined ? { width: stored.width } : {}),
+          ...(stored.height !== undefined ? { height: stored.height } : {}),
+          ...(stored.previewSha256
+            ? {
+                preview: await fs.readFile(files.preview),
+                previewSha256: stored.previewSha256,
+              }
+            : {}),
+        }
+      : await prepareAssetUpload({
+          body,
+          name: stored.name,
+          declaredType: stored.mediaType,
+        });
+    return {
+      attachment: this.publicAttachment(draftId, ownerId, stored),
+      body,
+      prepared,
+    };
   }
 
   async hydrate(draftId: string, ownerId: string) {
@@ -249,12 +366,20 @@ export function registerDraftRoutes(
         }
         throw error;
       }
-      const { name, mediaType } = prepared;
+      const {
+        name,
+        mediaType,
+        sha256,
+        width,
+        height,
+        preview,
+        previewSha256,
+      } = prepared;
       const id = randomUUID();
       const directory = service.attachmentDir(request.params.id, ownerId);
       const files = service.files(request.params.id, ownerId, id);
       const createdAt = new Date().toISOString();
-      const metadata: Omit<DraftAttachmentDto, "downloadUrl"> = {
+      const metadata: StoredDraftAttachment = {
         id,
         conversationId: request.params.id,
         ownerId,
@@ -262,15 +387,27 @@ export function registerDraftRoutes(
         mediaType,
         size: request.body.length,
         createdAt,
+        sha256,
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {}),
+        ...(previewSha256 ? { previewSha256 } : {}),
       };
       await fs.mkdir(directory, { recursive: true, mode: 0o700 });
       const temp = `${files.body}.${randomUUID()}.tmp`;
+      const previewTemp = `${files.preview}.${randomUUID()}.tmp`;
       try {
         await fs.writeFile(temp, request.body, {
           mode: 0o600,
           flag: "wx",
         });
+        if (preview) {
+          await fs.writeFile(previewTemp, preview, {
+            mode: 0o600,
+            flag: "wx",
+          });
+        }
         await fs.rename(temp, files.body);
+        if (preview) await fs.rename(previewTemp, files.preview);
         await fs.writeFile(files.metadata, JSON.stringify(metadata), {
           mode: 0o600,
           flag: "wx",
@@ -278,15 +415,16 @@ export function registerDraftRoutes(
       } catch (error) {
         await Promise.allSettled([
           fs.rm(temp, { force: true }),
+          fs.rm(previewTemp, { force: true }),
           fs.rm(files.body, { force: true }),
+          fs.rm(files.preview, { force: true }),
           fs.rm(files.metadata, { force: true }),
         ]);
         throw error;
       }
-      return reply.code(201).send({
-        ...metadata,
-        downloadUrl: `/api/conversations/${encodeURIComponent(request.params.id)}/draft-attachments/${encodeURIComponent(id)}?ownerId=${encodeURIComponent(ownerId)}`,
-      });
+      return reply
+        .code(201)
+        .send(service.publicAttachment(request.params.id, ownerId, metadata));
     },
   );
 
@@ -356,6 +494,7 @@ export function registerDraftRoutes(
       );
       await Promise.all([
         fs.rm(files.body, { force: true }),
+        fs.rm(files.preview, { force: true }),
         fs.rm(files.metadata, { force: true }),
       ]);
       return reply.code(204).send();

@@ -44,6 +44,8 @@ export type {
 
 sharp.cache({ memory: 32, files: 0, items: 20 });
 
+// Preserve ordinary high-resolution screenshots and phone photos. The encoded
+// body remains capped at 8 MiB, and draft promotion reuses this one decode.
 const MAX_PIXELS = 64_000_000;
 const STAGED_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -111,9 +113,11 @@ function contentTypeMatches(declared: string | undefined, detected: AssetDto["me
 export interface PreparedAssetUpload {
   name: string;
   mediaType: AssetDto["mediaType"];
+  sha256: string;
   width?: number;
   height?: number;
   preview?: Buffer;
+  previewSha256?: string;
 }
 
 /**
@@ -150,8 +154,12 @@ export async function prepareAssetUpload(input: {
       "image container is truncated or contains trailing data",
     );
   }
-  if (!mediaType.startsWith("image/")) return { name, mediaType };
+  const sha256 = createHash("sha256").update(input.body).digest("hex");
+  if (!mediaType.startsWith("image/")) return { name, mediaType, sha256 };
 
+  let width: number;
+  let height: number;
+  let preview: Buffer;
   try {
     const image = sharp(input.body, {
       animated: false,
@@ -168,7 +176,9 @@ export async function prepareAssetUpload(input: {
     ) {
       throw new Error("unsafe image dimensions");
     }
-    const preview = await image
+    width = metadata.width;
+    height = metadata.height;
+    preview = await image
       .rotate()
       .resize({
         width: 2048,
@@ -179,22 +189,68 @@ export async function prepareAssetUpload(input: {
       .timeout({ seconds: 10 })
       .png({ compressionLevel: 9, adaptiveFiltering: true })
       .toBuffer();
-    if (preview.length > ASSET_LIMITS.maxFileBytes) {
-      throw new Error("preview exceeds size limit");
-    }
-    return {
-      name,
-      mediaType,
-      width: metadata.width,
-      height: metadata.height,
-      preview,
-    };
   } catch {
     throw new AssetError(
       415,
       `image could not be safely decoded as one bounded frame of at most ${MAX_PIXELS.toLocaleString("en-US")} pixels`,
     );
   }
+  if (preview.length > ASSET_LIMITS.maxFileBytes) {
+    throw new AssetError(413, "generated image preview exceeds 8 MiB limit");
+  }
+  return {
+    name,
+    mediaType,
+    sha256,
+    width,
+    height,
+    preview,
+    previewSha256: createHash("sha256").update(preview).digest("hex"),
+  };
+}
+
+function validatePreparedAssetUpload(
+  body: Buffer,
+  prepared: PreparedAssetUpload,
+): PreparedAssetUpload {
+  const bodyHash = createHash("sha256").update(body).digest("hex");
+  const image = prepared.mediaType.startsWith("image/");
+  const validImage =
+    image
+    && Number.isSafeInteger(prepared.width)
+    && (prepared.width ?? 0) > 0
+    && Number.isSafeInteger(prepared.height)
+    && (prepared.height ?? 0) > 0
+    && (prepared.width ?? 0) * (prepared.height ?? 0) <= MAX_PIXELS
+    && Buffer.isBuffer(prepared.preview)
+    && prepared.preview.length > 0
+    && prepared.preview.length <= ASSET_LIMITS.maxFileBytes
+    && detectType(prepared.preview) === "image/png"
+    && hasStrictImageContainer(prepared.preview, "image/png")
+    && createHash("sha256").update(prepared.preview).digest("hex")
+      === prepared.previewSha256;
+  const validNonImage =
+    !image
+    && prepared.width === undefined
+    && prepared.height === undefined
+    && prepared.preview === undefined
+    && prepared.previewSha256 === undefined;
+  if (
+    body.length < 1
+    || body.length > ASSET_LIMITS.maxFileBytes
+    || prepared.name !== normalizeName(prepared.name)
+    || bodyHash !== prepared.sha256
+    || detectType(body) !== prepared.mediaType
+    || !extensionMatches(prepared.name, prepared.mediaType)
+    || !hasStrictImageContainer(body, prepared.mediaType)
+    || (!validImage && !validNonImage)
+  ) {
+    throw new AssetError(
+      409,
+      "prepared asset no longer matches its validated bytes",
+    );
+  }
+  return prepared;
 }
 
 async function writeAtomic(file: string, body: Buffer | string): Promise<void> {
@@ -616,9 +672,22 @@ export class AssetStore {
     return { associated, released, unavailable };
   }
 
-  async stage(input: { projectId: string; agentId: string; body: Buffer; name: unknown; declaredType?: string }): Promise<AssetDto> {
+  async stage(input: {
+    projectId: string;
+    agentId: string;
+    body: Buffer;
+    name?: unknown;
+    declaredType?: string;
+    prepared?: PreparedAssetUpload;
+  }): Promise<AssetDto> {
     const { projectId, agentId, body } = input;
-    const prepared = await prepareAssetUpload(input);
+    const prepared = input.prepared
+      ? validatePreparedAssetUpload(body, input.prepared)
+      : await prepareAssetUpload({
+          body,
+          name: input.name,
+          declaredType: input.declaredType,
+        });
     const { name, mediaType, width, height, preview } = prepared;
     const now = Date.now();
     const openedDirectory = await this.safeDirectory(projectId, agentId, true);
