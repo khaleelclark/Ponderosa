@@ -120,6 +120,7 @@ export function TriggersPane({
   fixedConversationId,
   initialCreateOpen = false,
   createOnly = false,
+  onCreateTrigger,
   onTriggerCreated,
   onCreateFlowComplete,
   onCancelCreate,
@@ -131,6 +132,7 @@ export function TriggersPane({
   fixedConversationId?: string;
   initialCreateOpen?: boolean;
   createOnly?: boolean;
+  onCreateTrigger?(): void;
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
   onCancelCreate?(): void;
@@ -405,7 +407,21 @@ export function TriggersPane({
           <Typography variant="h6">Triggers</Typography>
           <Typography variant="body2" color="text.secondary">Each Trigger belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} disabled={agent.conversationIds.length === 0} onClick={() => { resetEditor(); setCreateOpen(true); }}>New Trigger</Button>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          disabled={agent.conversationIds.length === 0}
+          onClick={() => {
+            if (onCreateTrigger) {
+              onCreateTrigger();
+              return;
+            }
+            resetEditor();
+            setCreateOpen(true);
+          }}
+        >
+          New Trigger
+        </Button>
       </Stack>
       {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating a Trigger.</Alert> : null}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}

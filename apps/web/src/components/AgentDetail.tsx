@@ -92,7 +92,6 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
-  createTrigger,
   triggerSettingsId,
   onViewChange,
   onOpenTechnicalDetails,
@@ -116,6 +115,7 @@ export function AgentDetail({
   onOpenReviewInNewTab,
   onOpenBrowser,
   onNewSubagent,
+  onCreateTrigger,
   onDeleted,
 }: AgentDetailProps): JSX.Element {
   const queryClient = useQueryClient();
@@ -941,7 +941,6 @@ export function AgentDetail({
         projectRoot={project?.hostPath}
         timeline={stream.timeline}
         delegatedAgentCount={relationships.delegatedAgentCount}
-        createTrigger={createTrigger}
         triggerSettingsId={triggerSettingsId}
         onCloseTriggerSettings={() => onViewChange?.("triggers")}
         agentWorkFocus={agentWorkFocus}
@@ -954,6 +953,7 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
         onNewSubagent={onNewSubagent}
+        onCreateTrigger={onCreateTrigger}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
         onOpenArtifactInNewTab={onOpenArtifactInNewTab}
@@ -1071,11 +1071,11 @@ export function AgentDetail({
           updateMemberships,
         }}
         organization={{
-          organizationOpen,
-          setOrganizationOpen,
+          open: organizationOpen,
+          onClose: () => setOrganizationOpen(false),
           organizationParentId,
           setOrganizationParentId,
-          detail,
+          agent: detail.agent,
           agents,
           updateOrganization,
         }}

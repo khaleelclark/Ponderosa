@@ -2,7 +2,6 @@ import AddIcon from "@mui/icons-material/Add";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
@@ -46,6 +45,7 @@ import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
+import { AgentOrganizationDialog } from "./AgentDetail.parts";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import {
   ResourceContextMenu,
@@ -209,6 +209,10 @@ export function AgentsTab({
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
   const [pendingRename, setPendingRename] = useState<AgentDto | undefined>();
+  const [pendingOrganization, setPendingOrganization] = useState<
+    AgentDto | undefined
+  >();
+  const [organizationParentId, setOrganizationParentId] = useState("");
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -231,10 +235,22 @@ export function AgentsTab({
     () => new Set(),
   );
 
-  const promoteAgent = useMutation({
-    mutationFn: (agentId: string) =>
-      api.updateAgentOrganization(agentId, { managerAgentId: null }),
+  const updateOrganization = useMutation({
+    mutationFn: () => {
+      if (!pendingOrganization)
+        throw new Error("Choose an Agent before changing its reporting line.");
+      return api.updateAgentOrganization(pendingOrganization.id, {
+        managerAgentId: organizationParentId || null,
+      });
+    },
     onSuccess: updated => {
+      setPendingOrganization(undefined);
+      queryClient.setQueriesData<AgentDto[]>(
+        { queryKey: queryKeys.agents.all },
+        current =>
+          current?.map(agent => (agent.id === updated.id ? updated : agent)),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
@@ -949,7 +965,7 @@ export function AgentsTab({
       {pendingDelete ? (
         <AgentDeletionDialog
           open={Boolean(pendingDelete)}
-          projectId={projectByAgentId?.get(pendingDelete.id)?.id ?? projectId!}
+          projectId={pendingDelete.projectId}
           rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
           onClose={() => setPendingDelete(undefined)}
           onDeleted={() => setPendingDelete(undefined)}
@@ -974,6 +990,21 @@ export function AgentsTab({
             renameAgent.mutate({ agent: pendingRename, title: title.trim() });
         }}
       />
+      {pendingOrganization ? (
+        <AgentOrganizationDialog
+          open
+          onClose={() => {
+            if (updateOrganization.isPending) return;
+            updateOrganization.reset();
+            setPendingOrganization(undefined);
+          }}
+          organizationParentId={organizationParentId}
+          setOrganizationParentId={setOrganizationParentId}
+          agent={pendingOrganization}
+          agents={agents}
+          updateOrganization={updateOrganization}
+        />
+      ) : null}
       <ResourceContextMenu
         state={agentMenu}
         onClose={() => setAgentMenu(undefined)}
@@ -1004,18 +1035,18 @@ export function AgentsTab({
                   icon: <PersonAddAlt1Icon fontSize="small" />,
                   onSelect: onNewAgent,
                 },
-                ...(agentsById.get(agentMenu.resource)?.managerAgentId
-                  ? [
-                      {
-                        id: "promote",
-                        label: "Move to Top Level",
-                        icon: <ArrowUpwardIcon fontSize="small" />,
-                        disabled: promoteAgent.isPending,
-                        onSelect: (agentId: string) =>
-                          promoteAgent.mutate(agentId),
-                      },
-                    ]
-                  : []),
+                {
+                  id: "reporting-line",
+                  label: "Change Reporting Line",
+                  icon: <AccountTreeOutlinedIcon fontSize="small" />,
+                  onSelect: (agentId: string) => {
+                    const agent = agentsById.get(agentId);
+                    if (!agent) return;
+                    setOrganizationParentId(agent.managerAgentId ?? "");
+                    updateOrganization.reset();
+                    setPendingOrganization(agent);
+                  },
+                },
                 {
                   id: "delete",
                   label: "Delete",

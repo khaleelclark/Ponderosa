@@ -85,6 +85,7 @@ export function useAgentDetailAdministration({
           : undefined,
       }),
     onSuccess: updated => {
+      onMembershipClosed();
       queryClient.setQueriesData<AgentDetailDto>(
         { queryKey: queryKeys.agents.detailPrefix(agentId) },
         current => (current ? { ...current, agent: updated } : current),
@@ -93,7 +94,6 @@ export function useAgentDetailAdministration({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.detailAll,
       });
-      onMembershipClosed();
     },
   });
 
@@ -103,6 +103,7 @@ export function useAgentDetailAdministration({
         managerAgentId: organizationParentId || null,
       }),
     onSuccess: updated => {
+      onOrganizationClosed();
       queryClient.setQueriesData<AgentDetailDto>(
         { queryKey: queryKeys.agents.detailPrefix(agentId) },
         current => (current ? { ...current, agent: updated } : current),
@@ -110,7 +111,7 @@ export function useAgentDetailAdministration({
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
-      onOrganizationClosed();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
     },
   });
 

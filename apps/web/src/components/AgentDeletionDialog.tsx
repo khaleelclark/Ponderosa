@@ -35,7 +35,7 @@ export function AgentDeletionDialog({
   const preview = useQuery({
     queryKey: queryKeys.agentDeletionPreview.detail(projectId, rootsKey),
     queryFn: () => api.previewAgentDeletion(projectId, { rootAgentIds: roots }),
-    enabled: open && roots.length > 0,
+    enabled: open && Boolean(projectId) && roots.length > 0,
     retry: false,
   });
   const deletion = useMutation({
@@ -46,14 +46,14 @@ export function AgentDeletionDialog({
         previewHash: preview.data.previewHash,
       });
     },
-    onSuccess: async (result) => {
+    onSuccess: (result) => {
+      onDeleted(result.deletedAgentIds);
       result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) }));
-      await Promise.all([
+      void Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.all }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
       ]);
-      onDeleted(result.deletedAgentIds);
     },
     onError: async () => {
       // A 409 means the confirmed cascade changed. Always obtain a fresh
@@ -94,7 +94,7 @@ export function AgentDeletionDialog({
       onCancel={close}
       onConfirm={() => deletion.mutate()}
     >
-      {preview.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}><CircularProgress size={20} /><Typography variant="body2">Checking the current organization…</Typography></Stack> : null}
+      {preview.isLoading ? <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}><CircularProgress size={20} /><Typography variant="body2">Checking this Agent and its delegated Agents…</Typography></Stack> : null}
       {preview.isError ? <Alert severity="error">{String(preview.error)}</Alert> : null}
       {preview.data ? <>
         <Alert severity="error" sx={{ mb: 2 }}>

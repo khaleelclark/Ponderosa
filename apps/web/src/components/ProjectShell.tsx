@@ -330,6 +330,12 @@ export function ProjectShell({
         onOpenReviewInNewTab={(path) => openInNewTab?.({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}) })}
         onOpenBrowser={(runId) => navigate({ kind: "browser", projectId, agentId: route.agentId, runId })}
         onNewSubagent={openNewSubagent}
+        onCreateTrigger={() => navigate({
+          kind: "create",
+          resource: "trigger",
+          projectId,
+          agentId: route.agentId,
+        })}
         onDeleted={() => {
           onResourceDeleted?.({ kind: "agent", projectId, agentId: route.agentId });
         }}

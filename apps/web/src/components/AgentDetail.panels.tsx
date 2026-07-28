@@ -46,7 +46,6 @@ interface AgentDetailPanelsProps {
   projectRoot?: string;
   timeline: ComponentProps<typeof ArtifactsPane>["timeline"];
   delegatedAgentCount: number;
-  createTrigger?: boolean;
   triggerSettingsId?: string;
   agentWorkFocus?: string;
   settingsPane: JSX.Element;
@@ -60,6 +59,7 @@ interface AgentDetailPanelsProps {
   onOpenFile(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
+  onCreateTrigger(): void;
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;
@@ -89,7 +89,6 @@ export function AgentDetailPanels({
   projectRoot,
   timeline,
   delegatedAgentCount,
-  createTrigger,
   triggerSettingsId,
   agentWorkFocus,
   settingsPane,
@@ -101,6 +100,7 @@ export function AgentDetailPanels({
   onOpenFile,
   onOpenFileInNewTab,
   onNewSubagent,
+  onCreateTrigger,
   onOpenTechnical,
   onOpenArtifact,
   onOpenArtifactInNewTab,
@@ -170,7 +170,7 @@ export function AgentDetailPanels({
     triggers: (
       <TriggersPane
         agent={detail.agent}
-        initialCreateOpen={createTrigger}
+        onCreateTrigger={onCreateTrigger}
         settingsTriggerId={triggerSettingsId}
         onCloseTriggerSettings={onCloseTriggerSettings}
         onOpenAgentWork={occurrenceId =>

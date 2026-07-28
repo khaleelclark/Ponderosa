@@ -47,5 +47,6 @@ export interface AgentDetailProps {
   onOpenReviewInNewTab(path?: string): void;
   onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
+  onCreateTrigger(): void;
   onDeleted(): void;
 }
