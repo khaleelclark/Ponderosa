@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { copyText } from "../clipboard";
 import { queryKeys } from "../queryKeys";
+import { RequestLifecycleCard } from "./RequestLifecycleCard";
 
 export interface AgentWorkFocus {
   id: string;
@@ -151,6 +152,12 @@ export function AgentWorkInspector({
     }))?.id, [focus?.id, items, query.data?.traces]);
   const focusedItemId = useMemo(() => query.data?.items.find((item) => agentWorkItemMatchesFocus(item, focus?.id))?.id, [focus?.id, query.data?.items]);
   const focusedItem = focusedItemId ? items.get(focusedItemId) : undefined;
+  const agentTitles = useMemo(
+    () => new Map((query.data?.agents ?? []).map((agent) => [agent.id, agent.title])),
+    [query.data?.agents],
+  );
+  const agentTitle = (id: string | undefined): string =>
+    id ? agentTitles.get(id) ?? "Deleted Agent" : "You";
 
   useEffect(() => {
     if (!open) return;
@@ -247,6 +254,39 @@ export function AgentWorkInspector({
                 <Stack spacing={0} sx={{ borderLeft: 2, borderColor: "divider", ml: 1 }}>
                   {traceItems.map((item) => {
                     const focused = agentWorkItemMatchesFocus(item, focus?.id);
+                    if (item.kind === "request" && item.recipientAgentId) {
+                      return <Box
+                        key={item.id}
+                        id={`agent-work-${item.id}`}
+                        tabIndex={focused ? -1 : undefined}
+                        data-agent-work-item={item.id}
+                        sx={{
+                          position: "relative",
+                          minWidth: 0,
+                          ml: 1.5,
+                          mb: 1.25,
+                          outline: focused ? 2 : 0,
+                          outlineColor: "primary.main",
+                          borderRadius: 1.5,
+                        }}
+                      >
+                        <Box sx={{ position: "absolute", width: 10, height: 10, borderRadius: "50%", bgcolor: "text.secondary", left: -21, top: 18 }} />
+                        <RequestLifecycleCard
+                          projectId={projectId}
+                          conversationId={conversationId}
+                          requestId={item.recordId}
+                          state={item.state}
+                          requesterAgentId={item.requesterAgentId}
+                          recipientAgentId={item.recipientAgentId}
+                          requestText={item.summary}
+                          hasUpdates={item.state !== "open"}
+                          hasResult={["completed", "blocked", "failed", "outcome_unknown"].includes(item.state)}
+                          updatedAt={item.updatedAt}
+                          agentTitle={agentTitle}
+                          defaultExpanded={focused}
+                        />
+                      </Box>;
+                    }
                     return <Box key={item.id} id={`agent-work-${item.id}`} tabIndex={focused ? -1 : undefined} data-agent-work-item={item.id} sx={{ position: "relative", minWidth: 0, ml: 1.5, mb: 1.25, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}>
                       <Box sx={{ position: "absolute", width: 10, height: 10, borderRadius: "50%", bgcolor: "text.secondary", left: -21, top: 18 }} />
                       <Box sx={{ display: "grid", gridTemplateColumns: "auto minmax(0, 1fr) auto", gap: 0.75, alignItems: "start" }}>

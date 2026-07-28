@@ -45,6 +45,7 @@ import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
+import { RequestLifecycleCard } from "./RequestLifecycleCard";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
 import type { MainTimelineEntry } from "./ConversationView.helpers";
 
@@ -441,6 +442,7 @@ function CollaborationTimeline({
   collaborationMessages,
   onOpenAgentWork,
   projectId,
+  conversationId,
   healthByAgentId,
   operatorProfile,
   agentTitle,
@@ -456,6 +458,7 @@ function CollaborationTimeline({
   collaborationMessages: ConversationMessageDto[];
   onOpenAgentWork(focusId?: string): void;
   projectId: string;
+  conversationId: string;
   healthByAgentId: Map<string, AgentHealthDto>;
   operatorProfile?: OperatorProfileDto;
   agentTitle(agentId: string | undefined): string;
@@ -468,12 +471,50 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
+  const requestCommunicationIds = new Set(
+    operationalEventGroups.flatMap((group) =>
+      group.events.flatMap((event) =>
+        event.kind === "request" && event.request?.communicationEventId
+          ? [event.request.communicationEventId]
+          : [])),
+  );
+  const messagesByCommunicationId = new Map(
+    collaborationMessages.flatMap((message) =>
+      message.communicationEventId
+        ? [[message.communicationEventId, message] as const]
+        : []),
+  );
+  const standaloneMessages = collaborationMessages.filter((message) =>
+    !message.communicationEventId
+    || !requestCommunicationIds.has(message.communicationEventId));
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       {operationalEventGroups.length ? (
         <Stack spacing={0.5} aria-label="Team operational activity">
           {operationalEventGroups.map(group => {
             const event = group.representative;
+            if (event.kind === "request" && event.request) {
+              const requestMessage = event.request.communicationEventId
+                ? messagesByCommunicationId.get(event.request.communicationEventId)
+                : undefined;
+              return (
+                <RequestLifecycleCard
+                  key={event.id}
+                  projectId={projectId}
+                  conversationId={conversationId}
+                  requestId={event.request.recordId}
+                  state={event.state}
+                  requesterAgentId={event.request.requesterAgentId}
+                  recipientAgentId={event.request.recipientAgentId}
+                  requestText={requestMessage?.text ?? event.request.preview}
+                  hasUpdates={event.request.hasUpdates}
+                  hasResult={event.request.hasResult}
+                  updatedAt={event.updatedAt}
+                  agentTitle={agentTitle}
+                  onOpenWork={onOpenAgentWork}
+                />
+              );
+            }
             const content = (
               <>
                 <Chip
@@ -580,13 +621,13 @@ function CollaborationTimeline({
           })}
         </Stack>
       ) : null}
-      {collaborationMessages.length + operationalEvents.length ===
+      {standaloneMessages.length + operationalEvents.length ===
       0 ? (
         <Typography variant="body2" color="text.secondary">
           No agent-to-agent messages yet.
         </Typography>
       ) : null}
-      {collaborationMessages.map(message => (
+      {standaloneMessages.map(message => (
         <ConversationMessage
           key={message.id}
           message={message}

@@ -397,7 +397,7 @@ export function ConversationView({
   });
   const agentTitle = useCallback(
     (agentId: string | undefined): string =>
-      agents.find(agent => agent.id === agentId)?.title ?? "Agent",
+      agents.find(agent => agent.id === agentId)?.title ?? "Deleted Agent",
     [agents],
   );
   const {
@@ -837,6 +837,7 @@ export function ConversationView({
                 collaborationMessages={collaborationMessages}
                 onOpenAgentWork={onOpenAgentWork}
                 projectId={conversation.projectId}
+                conversationId={conversationId}
                 healthByAgentId={healthByAgentId}
                 operatorProfile={preferencesQuery.data?.profile}
                 agentTitle={agentTitle}

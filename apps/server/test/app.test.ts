@@ -18,7 +18,11 @@ import type {
   SeedOptions,
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
-import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import {
+  AgentStore,
+  CoordinationV3Store,
+  WorkspaceStore,
+} from "@ponderosa/agents";
 import { createServer, type EngineRegistration } from "../src/app.js";
 
 class BehavioralAdapter implements Adapter {
@@ -606,6 +610,101 @@ describe("server public API behavior", () => {
     ]);
     expect(detail.body).not.toContain("toolCall");
     expect(detail.body).not.toContain("fileActivity");
+  });
+
+  it("serves scoped Request update details lazily without embedding result bodies in Team Chat", async () => {
+    const project = store.createProject({
+      label: "Request audit",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const conversationId = project.lastConversationId!;
+    const otherConversation = store.createConversation(project.id, {
+      title: "Other chat",
+    });
+    const manager = store.createAgent(project.id, {
+      title: "Manager",
+      engine: "codex",
+      conversationId,
+    });
+    const candidate = store.createAgent(project.id, {
+      title: "Candidate",
+      engine: "codex",
+      conversationId,
+    });
+    const coordination = new CoordinationV3Store(store.sqlite);
+    coordination.coordinate({
+      projectId: project.id,
+      conversationId,
+      requesterAgentId: manager.id,
+      actorScope: `agent:${manager.id}`,
+      idempotencyKey: "request-audit",
+      requests: [{
+        requestId: "request-audit",
+        recipientAgentId: candidate.id,
+        lifetime: { kind: "indefinite" },
+        payload: { text: "Review the production architecture." },
+      }],
+    }, "2026-07-27T10:00:00.000Z");
+    const largeResult = `Architecture result ${"x".repeat(9_000)}`;
+    coordination.updateRequest({
+      requestId: "request-audit",
+      updateId: "request-audit-completed",
+      kind: "completed",
+      actor: { kind: "agent", id: candidate.id },
+      payload: { text: largeResult },
+      now: "2026-07-27T10:01:00.000Z",
+    });
+    const app = server();
+
+    const collaboration = await app.inject({
+      method: "GET",
+      url: `/api/conversations/${conversationId}/collaboration`,
+    });
+    expect(collaboration.statusCode).toBe(200);
+    expect(collaboration.body).not.toContain(largeResult);
+    const requestOperation = collaboration
+      .json<{ operations: Array<Record<string, unknown>> }>()
+      .operations.find((operation) => operation.id === "request:request-audit");
+    expect(requestOperation).toMatchObject({
+      id: "request:request-audit",
+      state: "completed",
+      request: {
+        recordId: "request-audit",
+        requesterAgentId: manager.id,
+        recipientAgentId: candidate.id,
+        preview: "Review the production architecture.",
+        hasUpdates: true,
+        latestUpdateKind: "completed",
+        hasResult: true,
+      },
+    });
+
+    const details = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/request/request-audit?conversationId=${conversationId}`,
+    });
+    expect(details.statusCode).toBe(200);
+    expect(details.json()).toMatchObject({
+      requestLifecycle: {
+        request: {
+          id: "request-audit",
+          requesterAgentId: manager.id,
+          recipientAgentId: candidate.id,
+        },
+        updates: [{
+          id: "request-audit-completed",
+          kind: "completed",
+          text: largeResult,
+        }],
+      },
+    });
+
+    const crossChat = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/agent-work/items/request/request-audit?conversationId=${otherConversation.id}`,
+    });
+    expect(crossChat.statusCode).toBe(404);
   });
 
   it("validates Agent preset CRUD through the public routes", async () => {

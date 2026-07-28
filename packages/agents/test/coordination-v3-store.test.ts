@@ -315,6 +315,133 @@ function createUncertainHumanSteer(eventId: string, now: string) {
 }
 
 describe("CoordinationV3Store transactions", () => {
+  it("loads scoped Request updates chronologically with reply and artifact metadata", () => {
+    const otherConversationId = randomUUID();
+    opened.client.prepare(`
+      INSERT INTO conversations (id, project_id, title, created_at, updated_at, archived)
+      VALUES (?, ?, 'Other chat', '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z', 0)
+    `).run(otherConversationId, projectId);
+    store.coordinate({
+      projectId,
+      conversationId,
+      requesterAgentId: requesterId,
+      actorScope: `agent:${requesterId}`,
+      idempotencyKey: "lifecycle-detail",
+      requests: [{
+        requestId: "lifecycle-detail",
+        recipientAgentId: recipientA,
+        lifetime: indefinite,
+        payload: { text: "Review the production architecture." },
+      }],
+    }, "2026-07-15T00:00:00.000Z");
+    store.attachRequestCommunication(
+      "lifecycle-detail",
+      "communication-lifecycle-detail",
+      projectId,
+    );
+    store.updateRequest({
+      requestId: "lifecycle-detail",
+      updateId: "progress-1",
+      kind: "progress",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Checking durability." },
+      now: "2026-07-15T00:00:01.000Z",
+    });
+    store.updateRequest({
+      requestId: "lifecycle-detail",
+      updateId: "question-1",
+      kind: "question",
+      actor: { kind: "agent", id: recipientA },
+      payload: { text: "Should recovery favor availability?" },
+      now: "2026-07-15T00:00:02.000Z",
+    });
+    store.updateRequest({
+      requestId: "lifecycle-detail",
+      updateId: "answer-1",
+      kind: "answer",
+      actor: { kind: "agent", id: requesterId },
+      inReplyToUpdateId: "question-1",
+      payload: { text: "Favor durable correctness." },
+      now: "2026-07-15T00:00:03.000Z",
+    });
+    const artifact = runtimeArtifactInput(42, {
+      title: "Architecture result",
+      byteLength: 12_000,
+    });
+    const completion = {
+      requestId: "lifecycle-detail",
+      updateId: "completed-1",
+      kind: "completed" as const,
+      actor: { kind: "agent" as const, id: recipientA },
+      payload: {
+        text: `Full result: ponderosa://artifact/${artifact.id}`,
+        artifactId: artifact.id,
+        resultRef: `ponderosa://artifact/${artifact.id}`,
+      },
+      artifacts: [artifact],
+      now: "2026-07-15T00:00:04.000Z",
+    };
+    expect(store.updateRequest(completion)).toMatchObject({ replayed: false });
+    expect(store.updateRequest(completion)).toMatchObject({ replayed: true });
+
+    const beforeRead = runtimeMutationState();
+    const lifecycle = store.requestLifecycleDetails({
+      projectId,
+      conversationId,
+      recordId: "lifecycle-detail",
+    });
+    expect(runtimeMutationState()).toEqual(beforeRead);
+    expect(lifecycle).toMatchObject({
+      request: {
+        id: "lifecycle-detail",
+        requesterAgentId: requesterId,
+        recipientAgentId: recipientA,
+        state: "completed",
+        text: "Review the production architecture.",
+        communicationEventId: "communication-lifecycle-detail",
+      },
+    });
+    expect(lifecycle?.updates.map((update) => update.id)).toEqual([
+      "progress-1",
+      "question-1",
+      "answer-1",
+      "completed-1",
+    ]);
+    expect(lifecycle?.updates[2]).toMatchObject({
+      kind: "answer",
+      inReplyToUpdateId: "question-1",
+      text: "Favor durable correctness.",
+    });
+    expect(lifecycle?.updates[3]).toMatchObject({
+      kind: "completed",
+      refs: [`ponderosa://artifact/${artifact.id}`],
+      artifacts: [{
+        id: artifact.id,
+        title: "Architecture result",
+        byteLength: 12_000,
+      }],
+    });
+    expect(store.requestLifecycleDetails({
+      projectId,
+      conversationId: otherConversationId,
+      recordId: "lifecycle-detail",
+    })).toBeUndefined();
+
+    const operation = store.teamOperationalRecords({
+      projectId,
+      conversationId,
+      limit: 10,
+    }).find((record) => record.id === "request:lifecycle-detail");
+    expect(operation).toMatchObject({
+      communicationEventId: "communication-lifecycle-detail",
+      requestPreview: "Review the production architecture.",
+      hasUpdates: true,
+      latestUpdateKind: "completed",
+      latestUpdateAt: "2026-07-15T00:00:04.000Z",
+      hasResult: true,
+    });
+  });
+
   it("projects structurally linked Agent work without inferring from message text", () => {
     const now = new Date().toISOString();
     store.coordinate({

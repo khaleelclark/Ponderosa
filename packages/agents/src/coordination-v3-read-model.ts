@@ -1,7 +1,75 @@
 import type Database from "better-sqlite3";
-import type { CoordinationJoinWakePolicy } from "@ponderosa/core";
+import type {
+  CoordinationJoinWakePolicy,
+  CoordinationRequestLifecycleDto,
+  CoordinationRequestState,
+  CoordinationRequestUpdateKind,
+} from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import type { CoordinationWaitCycleV3 } from "./coordination-v3-types.js";
+
+const REQUEST_PREVIEW_CHARACTERS = 280;
+const ARTIFACT_REF = /ponderosa:\/\/artifact\/[A-Za-z0-9._:-]+/gu;
+
+function parseStoredJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function payloadText(payload: unknown): string | undefined {
+  if (typeof payload === "string") return payload.trim() || undefined;
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  for (const key of ["text", "question", "reason", "assignment", "task", "description"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  const decision = record.decision;
+  if (decision && typeof decision === "object" && !Array.isArray(decision)) {
+    const response = (decision as Record<string, unknown>).response;
+    if (response && typeof response === "object" && !Array.isArray(response)) {
+      const text = (response as Record<string, unknown>).text;
+      if (typeof text === "string" && text.trim()) return text.trim();
+    }
+  }
+  return undefined;
+}
+
+function payloadRefs(payload: unknown): string[] {
+  const refs = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (refs.size >= 20 || depth > 5) return;
+    if (typeof value === "string") {
+      for (const match of value.matchAll(ARTIFACT_REF)) {
+        refs.add(match[0]);
+        if (refs.size >= 20) break;
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 50).forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    Object.values(value as Record<string, unknown>)
+      .slice(0, 50)
+      .forEach((item) => visit(item, depth + 1));
+  };
+  visit(payload, 0);
+  return [...refs];
+}
+
+function boundedRequestPreview(payloadJson: string | null): string | undefined {
+  if (!payloadJson) return undefined;
+  const text = payloadText(parseStoredJson(payloadJson));
+  if (!text) return undefined;
+  return text.length > REQUEST_PREVIEW_CHARACTERS
+    ? `${text.slice(0, REQUEST_PREVIEW_CHARACTERS).trimEnd()}…`
+    : text;
+}
 
 export class CoordinationV3ReadModel {
   constructor(private readonly sqlite: Database.Database) {}
@@ -125,6 +193,14 @@ export class CoordinationV3ReadModel {
       subtype?: string;
       completed?: number;
       total?: number;
+      requesterAgentId?: string;
+      recipientAgentId?: string;
+      communicationEventId?: string;
+      requestPreview?: string;
+      hasUpdates?: boolean;
+      latestUpdateKind?: CoordinationRequestUpdateKind;
+      latestUpdateAt?: string;
+      hasResult?: boolean;
       createdAt: string;
       updatedAt: string;
     }> {
@@ -139,6 +215,41 @@ export class CoordinationV3ReadModel {
             COALESCE(request.requester_agent_id, request.recipient_agent_id) AS primary_agent_id,
             CASE WHEN request.requester_agent_id IS NOT NULL THEN request.recipient_agent_id END AS secondary_agent_id,
             NULL AS subtype, NULL AS completed, NULL AS total,
+            request.requester_agent_id, request.recipient_agent_id,
+            request.communication_event_id, request.payload_json AS request_payload_json,
+            EXISTS (
+              SELECT 1 FROM coordination_request_updates request_update
+              WHERE request_update.request_id = request.id
+            ) AS has_updates,
+            (
+              SELECT request_update.kind
+              FROM coordination_request_updates request_update
+              WHERE request_update.request_id = request.id
+              ORDER BY request_update.created_at DESC, request_update.id DESC
+              LIMIT 1
+            ) AS latest_update_kind,
+            (
+              SELECT request_update.created_at
+              FROM coordination_request_updates request_update
+              WHERE request_update.request_id = request.id
+              ORDER BY request_update.created_at DESC, request_update.id DESC
+              LIMIT 1
+            ) AS latest_update_at,
+            EXISTS (
+              SELECT 1 FROM coordination_request_updates request_update
+              WHERE request_update.request_id = request.id
+                AND (
+                  request_update.kind IN (
+                    'answer', 'completed', 'blocked', 'failed',
+                    'recipient_unavailable', 'outcome_unknown'
+                  )
+                  OR EXISTS (
+                    SELECT 1 FROM runtime_artifacts artifact
+                    WHERE artifact.owner_kind = 'request_update'
+                      AND artifact.owner_id = request_update.id
+                  )
+                )
+            ) AS has_result,
             request.created_at, request.updated_at
           FROM coordination_requests request
           WHERE request.project_id = @projectId AND request.conversation_id = @conversationId
@@ -148,6 +259,7 @@ export class CoordinationV3ReadModel {
         ), join_records AS (
           SELECT 'join:' || join_record.id, 'join', join_record.state, join_record.owner_agent_id, NULL, NULL,
             SUM(CASE WHEN request.state = 'completed' THEN 1 ELSE 0 END), COUNT(member.request_id),
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
             join_record.created_at, join_record.updated_at
           FROM coordination_joins join_record
           LEFT JOIN coordination_join_members member ON member.join_id = join_record.id
@@ -159,7 +271,9 @@ export class CoordinationV3ReadModel {
           ORDER BY join_record.created_at DESC, 'join:' || join_record.id DESC LIMIT @limit
         ), activation_records AS (
           SELECT 'activation:' || activation.id, 'activation', activation.state, activation.agent_id, NULL,
-            activation.kind, NULL, NULL, activation.created_at, activation.updated_at
+            activation.kind, NULL, NULL,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            activation.created_at, activation.updated_at
           FROM agent_activations activation
           WHERE activation.project_id = @projectId AND activation.scope_key = @scopeKey
             AND (@beforeCreatedAt IS NULL OR activation.created_at < @beforeCreatedAt
@@ -168,6 +282,7 @@ export class CoordinationV3ReadModel {
         ), run_records AS (
           SELECT 'run:' || COALESCE(provider.execution_id, scheduler.id), 'run', scheduler.status,
             scheduler.agent_id, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
             scheduler.created_at, scheduler.updated_at
           FROM scheduler_runs scheduler
           LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
@@ -181,7 +296,8 @@ export class CoordinationV3ReadModel {
             COALESCE(definition.name,
               CASE WHEN json_valid(occurrence.trigger_snapshot_json)
                 THEN json_extract(occurrence.trigger_snapshot_json, '$.name') END),
-            NULL, NULL, occurrence.created_at, occurrence.updated_at
+            NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+            occurrence.created_at, occurrence.updated_at
           FROM trigger_occurrences occurrence
           LEFT JOIN trigger_definitions definition ON definition.id = occurrence.trigger_id
           WHERE occurrence.project_id = @projectId AND occurrence.scope_key = @scopeKey
@@ -207,16 +323,32 @@ export class CoordinationV3ReadModel {
       }) as Array<{
         id: string; kind: "run" | "activation" | "request" | "join" | "trigger"; state: string;
         primary_agent_id: string; secondary_agent_id: string | null; subtype: string | null;
-        completed: number | null; total: number | null; created_at: string; updated_at: string;
+        completed: number | null; total: number | null;
+        requester_agent_id: string | null; recipient_agent_id: string | null;
+        communication_event_id: string | null; request_payload_json: string | null;
+        has_updates: number | null; latest_update_kind: CoordinationRequestUpdateKind | null;
+        latest_update_at: string | null; has_result: number | null;
+        created_at: string; updated_at: string;
       }>;
-      return rows.map((row) => ({
-        id: row.id, kind: row.kind, state: row.state, primaryAgentId: row.primary_agent_id,
-        ...(row.secondary_agent_id ? { secondaryAgentId: row.secondary_agent_id } : {}),
-        ...(row.subtype ? { subtype: row.subtype } : {}),
-        ...(row.completed !== null ? { completed: row.completed } : {}),
-        ...(row.total !== null ? { total: row.total } : {}),
-        createdAt: row.created_at, updatedAt: row.updated_at,
-      }));
+      return rows.map((row) => {
+        const requestPreview = boundedRequestPreview(row.request_payload_json);
+        return {
+          id: row.id, kind: row.kind, state: row.state, primaryAgentId: row.primary_agent_id,
+          ...(row.secondary_agent_id ? { secondaryAgentId: row.secondary_agent_id } : {}),
+          ...(row.subtype ? { subtype: row.subtype } : {}),
+          ...(row.completed !== null ? { completed: row.completed } : {}),
+          ...(row.total !== null ? { total: row.total } : {}),
+          ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
+          ...(row.recipient_agent_id ? { recipientAgentId: row.recipient_agent_id } : {}),
+          ...(row.communication_event_id ? { communicationEventId: row.communication_event_id } : {}),
+          ...(requestPreview ? { requestPreview } : {}),
+          ...(row.has_updates !== null ? { hasUpdates: row.has_updates === 1 } : {}),
+          ...(row.latest_update_kind ? { latestUpdateKind: row.latest_update_kind } : {}),
+          ...(row.latest_update_at ? { latestUpdateAt: row.latest_update_at } : {}),
+          ...(row.has_result !== null ? { hasResult: row.has_result === 1 } : {}),
+          createdAt: row.created_at, updatedAt: row.updated_at,
+        };
+      });
     }
 
   /** Read-only projection of the authoritative coordination graph. Relationships
@@ -477,9 +609,10 @@ export class CoordinationV3ReadModel {
         add({
           id, recordId: row.id, referenceIds: [row.id, ...(row.communication_event_id ? [row.communication_event_id] : [])],
           kind: "request", state: row.state, title: "Assigned work",
-          summary: row.state === "completed" ? "The assigned work was reported finished."
+          summary: boundedRequestPreview(row.payload_json) ??
+            (row.state === "completed" ? "The assigned work was reported finished."
             : ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state)
-              ? "The assigned work is still open." : `The assigned work ended ${row.state.replaceAll("_", " ")}.`,
+              ? "The assigned work is still open." : `The assigned work ended ${row.state.replaceAll("_", " ")}.`),
           agentIds: [...new Set([row.requester_agent_id, row.recipient_agent_id].filter((value): value is string => Boolean(value)))],
           ...(row.requester_agent_id ? { requesterAgentId: row.requester_agent_id } : {}),
           recipientAgentId: row.recipient_agent_id,
@@ -697,6 +830,131 @@ export class CoordinationV3ReadModel {
       }
       const projected = [...items.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
       return { items: projected, truncated };
+    }
+
+  /** Loads one scoped Request and its canonical update history in chronological
+   * order. The request-id index keeps this lazy read independent of total
+   * coordination history size. */
+    requestLifecycleDetails(input: {
+      projectId: string;
+      conversationId?: string;
+      recordId: string;
+    }): CoordinationRequestLifecycleDto | undefined {
+      const request = this.sqlite.prepare(`
+        SELECT id, requester_agent_id, recipient_agent_id, state, version,
+          payload_json, communication_event_id, created_at, updated_at
+        FROM coordination_requests
+        WHERE id = ? AND project_id = ? AND (? IS NULL OR conversation_id = ?)
+      `).get(
+        input.recordId,
+        input.projectId,
+        input.conversationId ?? null,
+        input.conversationId ?? null,
+      ) as {
+        id: string;
+        requester_agent_id: string | null;
+        recipient_agent_id: string;
+        state: CoordinationRequestState;
+        version: number;
+        payload_json: string;
+        communication_event_id: string | null;
+        created_at: string;
+        updated_at: string;
+      } | undefined;
+      if (!request) return undefined;
+
+      const updateRows = this.sqlite.prepare(`
+        SELECT id, kind, actor_kind, actor_id, in_reply_to_update_id,
+          payload_json, resulting_state, resulting_version, created_at
+        FROM coordination_request_updates
+        WHERE request_id = ?
+        ORDER BY created_at, id
+      `).all(request.id) as Array<{
+        id: string;
+        kind: CoordinationRequestUpdateKind;
+        actor_kind: "agent" | "user" | "system" | "supervisor";
+        actor_id: string | null;
+        in_reply_to_update_id: string | null;
+        payload_json: string;
+        resulting_state: CoordinationRequestState;
+        resulting_version: number;
+        created_at: string;
+      }>;
+      const artifactsByUpdate = new Map<
+        string,
+        CoordinationRequestLifecycleDto["updates"][number]["artifacts"]
+      >();
+      if (updateRows.length > 0) {
+        const placeholders = updateRows.map(() => "?").join(", ");
+        const artifactRows = this.sqlite.prepare(`
+          SELECT id, owner_id, title, media_type, byte_length
+          FROM runtime_artifacts
+          WHERE owner_kind = 'request_update' AND owner_id IN (${placeholders})
+          ORDER BY created_at, id
+        `).all(...updateRows.map((update) => update.id)) as Array<{
+          id: string;
+          owner_id: string;
+          title: string;
+          media_type: string;
+          byte_length: number;
+        }>;
+        for (const artifact of artifactRows) {
+          const artifacts = artifactsByUpdate.get(artifact.owner_id) ?? [];
+          artifacts.push({
+            id: artifact.id,
+            title: artifact.title,
+            mediaType: artifact.media_type,
+            byteLength: artifact.byte_length,
+          });
+          artifactsByUpdate.set(artifact.owner_id, artifacts);
+        }
+      }
+
+      const requestPayload = parseStoredJson(request.payload_json);
+      const requestText = payloadText(requestPayload);
+      return {
+        request: {
+          id: request.id,
+          ...(request.requester_agent_id
+            ? { requesterAgentId: request.requester_agent_id }
+            : {}),
+          recipientAgentId: request.recipient_agent_id,
+          state: request.state,
+          version: request.version,
+          ...(requestText ? { text: requestText } : {}),
+          refs: payloadRefs(requestPayload),
+          ...(request.communication_event_id
+            ? { communicationEventId: request.communication_event_id }
+            : {}),
+          createdAt: request.created_at,
+          updatedAt: request.updated_at,
+        },
+        updates: updateRows.map((row) => {
+          const payload = parseStoredJson(row.payload_json);
+          const text = payloadText(payload);
+          const artifacts = artifactsByUpdate.get(row.id) ?? [];
+          return {
+            id: row.id,
+            kind: row.kind,
+            actorKind: row.actor_kind,
+            ...(row.actor_id ? { actorId: row.actor_id } : {}),
+            ...(row.in_reply_to_update_id
+              ? { inReplyToUpdateId: row.in_reply_to_update_id }
+              : {}),
+            ...(text ? { text } : {}),
+            refs: [
+              ...new Set([
+                ...payloadRefs(payload),
+                ...artifacts.map((artifact) => `ponderosa://artifact/${artifact.id}`),
+              ]),
+            ],
+            artifacts,
+            resultingState: row.resulting_state,
+            resultingVersion: row.resulting_version,
+            createdAt: row.created_at,
+          };
+        }),
+      };
     }
 
   /** Loads the technical fields for one canonical inspector record without
