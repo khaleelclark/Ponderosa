@@ -175,7 +175,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
             Create
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            Open the form for exactly what you want to add.
+            Create a new Project, Chat, Agent, or Trigger to get started. You can also open existing Projects from the sidebar.
           </Typography>
         </Box>
         <Stack spacing={1}>
