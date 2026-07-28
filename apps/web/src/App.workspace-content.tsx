@@ -121,12 +121,10 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onPreferences={onPreferences}
-          onCreateProject={() => onNavigate({ kind: "new", createKind: "project" })}
-          onCreateChat={() => onNavigate({ kind: "new", createKind: "chat" })}
-          onCreateAgent={() => onNavigate({ kind: "new", createKind: "agent" })}
-          onCreateTrigger={() =>
-            onNavigate({ kind: "new", createKind: "trigger" })
-          }
+          onCreateProject={onCreateProject}
+          onCreateChat={() => onBeginHomeCreate("chat")}
+          onCreateAgent={() => onBeginHomeCreate("agent")}
+          onCreateTrigger={() => onBeginHomeCreate("trigger")}
           onOpenInbox={onOpenInbox}
         />
       ) : route.kind === "allChat" ? (
