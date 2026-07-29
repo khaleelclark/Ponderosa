@@ -40,6 +40,22 @@ async function availablePort() {
   });
 }
 
+async function fetchEventually(url, init = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await fetch(url, {
+        ...init,
+        headers: { connection: "close", ...(init.headers ?? {}) },
+      });
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+  throw lastError;
+}
+
 const installRoot = path.resolve(option("install-root", ""));
 const dataDir = path.resolve(option("data-dir", ""));
 const reportPath = path.resolve(option("report", path.join(dataDir, "launcher-lifecycle-report.json")));
@@ -186,7 +202,9 @@ try {
   assert(existsSync(dataSentinel), "Restart deleted Ponderosa data.");
   const restartedState = JSON.parse(readFileSync(statePath, "utf8"));
   assert(restartedState.pid !== firstPid && processAlive(restartedState.pid), "Restart did not establish a new live server.");
-  const restartedHealth = await fetch(`${baseUrl}/api/health`, { signal: AbortSignal.timeout(5_000) });
+  const restartedHealth = await fetchEventually(`${baseUrl}/api/health`, {
+    signal: AbortSignal.timeout(5_000),
+  });
   assert(restartedHealth.ok, "Restarted installed server health endpoint failed.");
   checks.push({ id: "restart-preserves-data", status: "pass", detail: "restart established a new server and preserved data" });
 
