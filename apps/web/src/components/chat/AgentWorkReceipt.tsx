@@ -63,6 +63,12 @@ function receiptStatus(run: AgentRunDto): {
   return undefined;
 }
 
+function isRenderedMessageDelivery(entry: ActivityStreamEntry): boolean {
+  return entry.kind === "tool" &&
+    entry.name === "ponderosa_message" &&
+    entry.result?.isError !== true;
+}
+
 export function AgentWorkReceipt({
   agentName,
   run,
@@ -93,7 +99,9 @@ export function AgentWorkReceipt({
     if (containsFocus || active) setExpanded(true);
   }, [active, containsFocus]);
   const visibleEntries = useMemo(
-    () => entries.filter(entry => entry.kind !== "run_header"),
+    () => entries.filter(
+      entry => entry.kind !== "run_header" && !isRenderedMessageDelivery(entry),
+    ),
     [entries],
   );
   const displayEntries = useMemo(
