@@ -140,9 +140,9 @@ const ROUTE_REGISTRY = {
   usage: {
     toPath: route =>
       `/usage${route.projectId ? `?project=${encodeURIComponent(route.projectId)}` : ""}`,
-    workspaceTabKey: route => `usage:${route.projectId ?? "overall"}`,
-    tabLabel: () => "Provider Activity",
-    tabIcon: "dataUsage",
+    workspaceTabKey: () => "settings",
+    tabLabel: () => "Settings",
+    tabIcon: "settings",
     scope: "global",
     initialSidebarSection: "settings",
     synchronizedSidebarSection: "settings",

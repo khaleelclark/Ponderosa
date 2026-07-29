@@ -90,7 +90,7 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         typeof candidate.filterProjectId === "string";
     case "settings":
       return candidate.section === undefined ||
-        ["general", "providers", "notifications"].includes(
+        ["general", "providers", "notifications", "activity"].includes(
           String(candidate.section),
         );
     case "usage":

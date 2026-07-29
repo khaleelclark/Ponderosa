@@ -30,6 +30,7 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import type { ColorMode } from "../theme";
+import { ProviderActivitySettingsSection } from "./WorkspaceResourceViews";
 import {
   inspectWebPush,
   syncWebPush,
@@ -701,6 +702,7 @@ export function WorkspaceSettingsView({
   onToggleColorMode,
   onPreferences,
   section = "general",
+  activityProjectId,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
@@ -708,7 +710,8 @@ export function WorkspaceSettingsView({
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  section?: "general" | "providers" | "notifications";
+  section?: "general" | "providers" | "notifications" | "activity";
+  activityProjectId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const validationProject = projects[0];
@@ -856,6 +859,12 @@ export function WorkspaceSettingsView({
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+          />
+        ) : null}
+        {section === "activity" ? (
+          <ProviderActivitySettingsSection
+            projects={projects}
+            projectId={activityProjectId}
           />
         ) : null}
       </Box>
