@@ -335,11 +335,16 @@ export function publishManagedArtifactContentAsync(
   }
   const body = new Uint8Array(source.length);
   body.set(source);
+  const activeKey = publicationKey(dataDir, projectId, artifactId);
+  if (activePublications.has(activeKey)) {
+    throw new Error("managed artifact publication is already active");
+  }
+  activePublications.add(activeKey);
   return new Promise((resolve, reject) => {
-    signal?.throwIfAborted();
-    const worker = new Worker(
-      publicationWorkerUrl(),
-      {
+    let worker: Worker;
+    try {
+      signal?.throwIfAborted();
+      worker = new Worker(publicationWorkerUrl(), {
         workerData: {
           dataDir,
           projectId,
@@ -347,10 +352,15 @@ export function publishManagedArtifactContentAsync(
           body,
         },
         transferList: [body.buffer],
-      },
-    );
+      });
+    } catch (error) {
+      activePublications.delete(activeKey);
+      reject(error);
+      return;
+    }
     let settled = false;
     const cleanup = (): void => {
+      activePublications.delete(activeKey);
       signal?.removeEventListener("abort", abort);
       worker.removeAllListeners();
     };
@@ -394,6 +404,64 @@ export function publishManagedArtifactContentAsync(
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
   });
+}
+
+/** Publish an immutable group in bounded worker concurrency. A failure aborts
+ * and observes every outstanding worker before returning; installed leaves
+ * remain uncatalogued for identity-bound orphan repair. */
+export async function publishManagedArtifactContentsAsync(
+  dataDir: string,
+  projectId: string,
+  inputs: readonly ManagedArtifactBatchInput[],
+  concurrency = 4,
+  signal?: AbortSignal,
+): Promise<Array<Omit<ManagedArtifactFile, "body">>> {
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 16) {
+    throw new Error("managed artifact worker concurrency must be between 1 and 16");
+  }
+  const ids = new Set<string>();
+  for (const { artifactId } of inputs) {
+    if (ids.has(artifactId)) {
+      throw new Error("managed artifact batch identities must be unique");
+    }
+    ids.add(artifactId);
+  }
+  if (inputs.length === 0) return [];
+  const controller = new AbortController();
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, controller.signal])
+    : controller.signal;
+  const results =
+    new Array<Omit<ManagedArtifactFile, "body">>(inputs.length);
+  let nextIndex = 0;
+  let firstError: unknown;
+  const publishNext = async (): Promise<void> => {
+    while (!firstError) {
+      const index = nextIndex++;
+      if (index >= inputs.length) return;
+      const item = inputs[index]!;
+      try {
+        results[index] = await publishManagedArtifactContentAsync(
+          dataDir,
+          projectId,
+          item.artifactId,
+          item.input,
+          combinedSignal,
+        );
+      } catch (error) {
+        firstError ??= error;
+        controller.abort(error);
+      }
+    }
+  };
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, inputs.length) },
+      () => publishNext(),
+    ),
+  );
+  if (firstError) throw firstError;
+  return results;
 }
 
 /**
@@ -495,9 +563,10 @@ export function publishManagedArtifactContent(
  * independently written and fsynced. Linux stages every body before installing
  * destination names; the native authority installs each immutable leaf as one
  * transaction. No caller can advance catalog metadata until the group returns,
- * and a failed in-process publication best-effort removes new leaves. Any leaf
- * that cannot be removed remains uncatalogued and is recovered by durable orphan
- * repair; rollback is intentionally not presented as an atomic filesystem group.
+ * and a failed in-process publication leaves every native leaf uncatalogued for
+ * identity-bound orphan repair. The test-only legacy Linux branch may
+ * best-effort remove retained-directory leaves. Neither branch presents
+ * rollback as an atomic filesystem group.
  *
  * The bounded writers overlap independent data fsync latency without weakening
  * the guarantee provided by publishManagedArtifactContent.

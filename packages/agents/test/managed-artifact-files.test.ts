@@ -17,6 +17,7 @@ import {
   publishManagedArtifactContent,
   publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
+  publishManagedArtifactContentsAsync,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
@@ -66,6 +67,21 @@ describe("Project-owned managed artifact files", () => {
     expect(timerFired).toBe(true);
     expect(readFileSync(published.path)).toEqual(body);
     expect(published).toMatchObject({ size: body.length, sha256 });
+  });
+
+  it("publishes a bounded batch through workers", async () => {
+    const published = await publishManagedArtifactContentsAsync(
+      dataDir,
+      projectId,
+      [
+        { artifactId: "worker-first", input: Buffer.from("first") },
+        { artifactId: "worker-second", input: Buffer.from("second") },
+      ],
+      2,
+    );
+    expect(published.map(({ size }) => size)).toEqual([5, 6]);
+    expect(readFileSync(published[0]!.path, "utf8")).toBe("first");
+    expect(readFileSync(published[1]!.path, "utf8")).toBe("second");
   });
 
   itWithNativeAuthority("preserves a replacement after single-publication verification fails", () => {

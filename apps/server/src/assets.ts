@@ -465,6 +465,20 @@ export class AssetStore {
     return this.readAuthoritativeRuntimeArtifact(registered);
   }
 
+  /** Validate runtime-artifact ledger identity without reading its blob. */
+  authoritativeRuntimeArtifactMetadata(
+    projectId: string,
+    expected: RuntimeArtifactInputV3,
+  ): boolean {
+    const registered = this.authority.runtimeArtifact(projectId, expected.id);
+    if (!registered || registered.projectId !== projectId) return false;
+    const { createdAt: _createdAt, ...registeredIdentity } = registered;
+    return runtimeArtifactIdentityMatches(
+      registeredIdentity,
+      { projectId, ...expected },
+    );
+  }
+
   /** Read one registered managed artifact through its immutable ledger entry.
    * The returned Buffer is read from the already-opened no-follow descriptor,
    * so callers never reopen a pathname after verification. */
@@ -534,6 +548,23 @@ export class AssetStore {
   registerGeneratedArtifact(artifact: RegisteredGeneratedArtifact): RegisteredGeneratedArtifact {
     const readable = this.readGeneratedArtifact(artifact);
     if (!readable) throw new AssetError(409, "generated artifact content is unavailable or changed");
+    return this.authority.registerGeneratedArtifact(artifact);
+  }
+
+  /** Register bytes that were just installed and verified by the managed
+   * publication authority without synchronously rereading the bounded blob. */
+  registerPublishedGeneratedArtifact(
+    artifact: RegisteredGeneratedArtifact,
+    publication: { size: number; sha256: string },
+  ): RegisteredGeneratedArtifact {
+    if (!generatedArtifactMetadataIsValid(artifact) ||
+        publication.size !== artifact.size ||
+        publication.sha256 !== artifact.sha256) {
+      throw new AssetError(
+        409,
+        "generated artifact publication proof does not match its catalog identity",
+      );
+    }
     return this.authority.registerGeneratedArtifact(artifact);
   }
 

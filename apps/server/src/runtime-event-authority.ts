@@ -173,7 +173,10 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
             sourcePath: canonicalEvent.path, summary: source.name, createdAt: captured.ts,
             mediaType, size: body.length, sha256: contentHash, visibility: "project" as const, pinned: false,
           } as const;
-          assets.registerGeneratedArtifact(catalogArtifact);
+          assets.registerPublishedGeneratedArtifact(
+            catalogArtifact,
+            publishedArtifact,
+          );
           store.recordProjectArtifact(catalogArtifact);
           publish(agent.id, captured);
         } catch (error) {

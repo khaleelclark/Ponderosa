@@ -57,6 +57,7 @@ export {
   publishManagedArtifactContent,
   publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
+  publishManagedArtifactContentsAsync,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
