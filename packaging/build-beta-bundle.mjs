@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +30,18 @@ function exactCommit() {
     cwd: repositoryRoot,
     encoding: "utf8",
   }).trim();
+}
+
+function assertCleanSource() {
+  const status = execFileSync("git", ["status", "--porcelain=v1"], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  }).trim();
+  if (status) {
+    throw new Error(
+      "Native beta bundles require a clean exact-source worktree. Commit or remove source changes before packaging.",
+    );
+  }
 }
 
 function sha256(pathname) {
@@ -87,9 +100,11 @@ const preparedNode = path.join(
   `${targetPlatform}-${targetArch}`,
   targetPlatform === "win32" ? "node.exe" : "node",
 );
-const nodeBinary = path.resolve(option(
-  "node",
-  process.env.PONDEROSA_NODE_BINARY ?? (existsSync(preparedNode) ? preparedNode : process.execPath),
+const configuredNode = option("node", process.env.PONDEROSA_NODE_BINARY);
+const nodeBinary = path.resolve(configuredNode ?? preparedNode);
+const nodeSourcePath = path.resolve(option(
+  "node-source",
+  path.join(path.dirname(nodeBinary), "SOURCE.json"),
 ));
 const outputParent = path.resolve(option(
   "output",
@@ -107,11 +122,20 @@ for (const required of [
   path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
   schemaSource,
   nodeBinary,
+  nodeSourcePath,
 ]) {
   if (!existsSync(required)) throw new Error(`Required build input is missing: ${required}`);
 }
 
+assertCleanSource();
 const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
+const nodeSource = JSON.parse(readFileSync(nodeSourcePath, "utf8"));
+if (nodeSource.version !== nodeIdentity.version ||
+    nodeSource.target !== `${targetPlatform}-${targetArch}` ||
+    typeof nodeSource.url !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(nodeSource.archiveSha256 ?? "")) {
+  throw new Error("Bundled Node SOURCE.json does not match the executable and requested native target.");
+}
 if (nodeIdentity.platform !== targetPlatform || nodeIdentity.arch !== targetArch) {
   throw new Error(
     `Bundled Node is ${nodeIdentity.platform}/${nodeIdentity.arch}, but the requested target is ` +
@@ -132,6 +156,7 @@ execFileSync("pnpm", [
   stdio: "inherit",
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
+
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
 execFileSync("pnpm", [
   "--filter", "@ponderosa/launcher",
@@ -141,6 +166,26 @@ execFileSync("pnpm", [
   stdio: "inherit",
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
+
+function nativeHostIdentity(packageTarget) {
+  const require = createRequire(path.join(packageTarget, "package.json"));
+  const entry = require.resolve("@ponderosa/native-host");
+  const addon = path.resolve(path.dirname(entry), "..", "build", "Release", "ponderosa_native.node");
+  if (!existsSync(addon)) {
+    throw new Error(`Deployed native host addon is missing: ${addon}`);
+  }
+  return {
+    bytes: statSync(addon).size,
+    sha256: sha256(addon),
+  };
+}
+
+const serverNativeHost = nativeHostIdentity(serverTarget);
+const launcherNativeHost = nativeHostIdentity(launcherTarget);
+if (serverNativeHost.bytes !== launcherNativeHost.bytes ||
+    serverNativeHost.sha256 !== launcherNativeHost.sha256) {
+  throw new Error("Server and launcher deployed different native host addon bytes.");
+}
 cpSync(
   path.join(repositoryRoot, "apps", "web", "dist"),
   path.join(bundleRoot, "app", "web", "dist"),
@@ -178,10 +223,15 @@ const manifest = {
   nodeVersion: nodeIdentity.version,
   nodeExecutableBytes: nodeIdentity.bytes,
   nodeExecutableSha256: nodeIdentity.sha256,
+  nodeSource: {
+    url: nodeSource.url,
+    archiveSha256: nodeSource.archiveSha256,
+  },
   nativeAbi: {
     modules: nodeIdentity.modules,
     napi: nodeIdentity.napi,
   },
+  nativeHost: serverNativeHost,
   buildTime: new Date().toISOString(),
   channel,
 };

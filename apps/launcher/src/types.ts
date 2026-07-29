@@ -15,9 +15,17 @@ export interface BuildManifest {
   nodeVersion: string;
   nodeExecutableBytes: number;
   nodeExecutableSha256: string;
+  nodeSource: {
+    url: string;
+    archiveSha256: string;
+  };
   nativeAbi: {
     modules: string;
     napi: string;
+  };
+  nativeHost: {
+    bytes: number;
+    sha256: string;
   };
   buildTime: string;
   channel: ReleaseChannel;

@@ -47,6 +47,9 @@ assert(/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(process.version), "Bundled runtime is 
 assert(statSync(process.execPath).size >= 5 * 1024 * 1024, "Bundled Node executable is a thin system launcher.");
 assert(manifest.nodeExecutableBytes === statSync(process.execPath).size, "Bundled Node size does not match its manifest.");
 assert(manifest.nodeExecutableSha256 === sha256(process.execPath), "Bundled Node hash does not match its manifest.");
+assert(typeof manifest.nodeSource?.url === "string", "Bundled Node source URL is missing.");
+assert(/^[a-f0-9]{64}$/u.test(manifest.nodeSource?.archiveSha256 ?? ""),
+  "Bundled Node archive checksum is missing.");
 assert(manifest.nativeAbi?.modules === process.versions.modules, "Manifest Node modules ABI does not match runtime.");
 assert(manifest.nativeAbi?.napi === process.versions.napi, "Manifest Node-API ABI does not match runtime.");
 pass("identity", `${manifest.version} ${manifest.commit} ${manifest.channel} ${process.platform}/${process.arch}`);
@@ -61,6 +64,24 @@ const serverPackage = path.join(installRoot, "app", "server", "package.json");
 const require = createRequire(serverPackage);
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
+const nativeHostEntry = require.resolve("@ponderosa/native-host");
+const nativeHostAddon = path.resolve(
+  path.dirname(nativeHostEntry),
+  "..",
+  "build",
+  "Release",
+  "ponderosa_native.node",
+);
+assert(existsSync(nativeHostAddon), "Native host addon is missing from the deployed server.");
+assert(manifest.nativeHost?.bytes === statSync(nativeHostAddon).size,
+  "Native host addon size does not match its manifest.");
+assert(manifest.nativeHost?.sha256 === sha256(nativeHostAddon),
+  "Native host addon hash does not match its manifest.");
+const nativeHost = require("@ponderosa/native-host");
+if (process.platform === "win32") {
+  assert(nativeHost.windowsJobObjectsSupported(), "Deployed Windows Job Object addon did not load.");
+}
+pass("native-host", `loaded deployed addon sha256=${manifest.nativeHost.sha256}`);
 const disposable = path.join(os.tmpdir(), `ponderosa-qualification-${process.pid}-${Date.now()}`);
 mkdirSync(disposable, { recursive: false, mode: 0o700 });
 
@@ -121,7 +142,9 @@ const report = {
     nodeVersion: manifest.nodeVersion,
     nodeExecutableBytes: manifest.nodeExecutableBytes,
     nodeExecutableSha256: manifest.nodeExecutableSha256,
+    nodeSource: manifest.nodeSource,
     nativeAbi: manifest.nativeAbi,
+    nativeHost: manifest.nativeHost,
     databaseSchemaVersion: manifest.databaseSchemaVersion,
     databaseSchemaSha256: manifest.databaseSchemaSha256,
   },
