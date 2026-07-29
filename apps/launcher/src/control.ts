@@ -171,7 +171,7 @@ async function waitForProvisionalStatus(
 
 async function defaultSpawnServer(
   paths: LauncherPaths,
-  _state: LauncherState,
+  state: LauncherState,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
   const stdout = openSync(paths.stdoutLogPath, "a", 0o600);
@@ -189,6 +189,12 @@ async function defaultSpawnServer(
         windowsHide: true,
         stdio: ["ignore", stdout, stderr, "ipc"],
       });
+      if (!supervisor.pid) throw new Error("Windows server supervisor started without a process ID.");
+      state.supervisorPid = supervisor.pid;
+      // Persist the exact Job owner before it can authorize the server gate.
+      // Recovery and restart must wait for this process, not only the server
+      // root, because the supervisor exits only after the Job drains.
+      writeJsonAtomic(paths.statePath, state);
       const pid = await new Promise<number>((resolve, reject) => {
         let settled = false;
         const finish = (error: Error | undefined, value?: number): void => {
@@ -253,6 +259,11 @@ function assertInstall(paths: LauncherPaths, manifest: BuildManifest): void {
 }
 
 function removeDeadState(paths: LauncherPaths, state: LauncherState): void {
+  if (state.supervisorPid && processAlive(state.supervisorPid)) {
+    throw new Error(
+      "Ponderosa's Windows process-tree supervisor is still draining. Retry after it exits; replacement is blocked.",
+    );
+  }
   if (processAlive(state.pid)) {
     throw new Error(
       "Ponderosa's recorded process still exists but did not prove ownership. Run diagnostics before forcing recovery.",
@@ -425,9 +436,11 @@ export async function stopPonderosa(input: {
       signal: AbortSignal.timeout(5_000),
     });
     if (!response.ok) throw new Error(`Ponderosa could not begin shutdown: ${await responseDetail(response)}`);
+    const stillOwned = () =>
+      processAlive(state.pid) || Boolean(state.supervisorPid && processAlive(state.supervisorPid));
     const deadline = Date.now() + STOP_TIMEOUT_MS;
-    while (Date.now() < deadline && processAlive(state.pid)) await delay(200);
-    if (processAlive(state.pid)) {
+    while (Date.now() < deadline && stillOwned()) await delay(200);
+    if (stillOwned()) {
       throw new Error("Ponderosa is still finishing provider or browser cleanup. Check diagnostics before retrying.");
     }
     rmSync(input.paths.statePath, { force: true });

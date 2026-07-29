@@ -24,9 +24,11 @@ process.once("message", (message: unknown) => {
     return;
   }
   started = true;
+  const environment = { ...process.env };
+  delete environment.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
   const child = spawn(message.bin, message.args, {
     cwd: message.cwd,
-    env: process.env,
+    env: environment,
     stdio: ["pipe", "inherit", "inherit"],
     windowsHide: true,
   });

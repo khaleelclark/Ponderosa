@@ -1,4 +1,5 @@
 import { AgentStore, CoordinationV3Store, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
+import { windowsJobObjectsSupported } from "@ponderosa/native-host";
 import type {
   TokenUsageRangeDto,
   TokenUsageSummaryDto,
@@ -111,9 +112,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const store = opts.store ?? new AgentStore(opts.dataDir);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
     (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
-  const artifactFilesystemError = () => artifactFilesystem.ok
-    ? undefined
-    : `artifact-dependent work is unavailable: ${artifactFilesystem.detail}`;
+  const processContainment = (opts.processContainmentCapabilityProbe ?? (() =>
+    process.platform === "win32"
+      ? windowsJobObjectsSupported()
+        ? { ok: true, detail: "Windows Job Object authority is available" }
+        : { ok: false, detail: "Windows Job Object authority is unavailable" }
+      : { ok: true, detail: "POSIX process-group authority is available" }))();
+  const artifactFilesystemError = () => !artifactFilesystem.ok
+    ? `artifact-dependent work is unavailable: ${artifactFilesystem.detail}`
+    : !processContainment.ok
+      ? `durable work is unavailable: ${processContainment.detail}`
+      : undefined;
   const assets = new AssetStore(opts.dataDir);
   const coordinationV3 = new CoordinationV3Store(store.sqlite, {
     attachmentAuthority: {
@@ -736,6 +745,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     workspace,
     artifactFilesystem,
+    processContainment,
     coordinationV3WorkerId,
     activeRuns,
     runtimeAuthorities,
@@ -849,6 +859,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
+    processContainment,
     artifactFilesystemError,
     communicationReconciliation,
     coordinationV3Scheduler,

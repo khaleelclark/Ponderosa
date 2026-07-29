@@ -4,6 +4,7 @@ import type { SpawnFn } from "./process.js";
 import { processGroupAlive, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 
 type RpcId = number;
@@ -82,7 +83,7 @@ export class JsonRpcProcess {
 
   constructor(private readonly opts: JsonRpcProcessOptions) {
     const spawnFn = opts.spawnFn ?? nodeSpawn;
-    const environment = { ...process.env, ...opts.environment };
+    const environment = runtimeEnvironment(opts.environment);
     const contained = process.platform === "win32" && spawnFn === nodeSpawn
       ? spawnWindowsContainedProcess({
         bin: opts.bin,

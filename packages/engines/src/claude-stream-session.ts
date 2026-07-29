@@ -15,6 +15,7 @@ import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from 
 import type { SpawnFn } from "./process.js";
 import { terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
@@ -73,7 +74,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
     ];
     const spawnFn = opts.spawnFn ?? nodeSpawn;
-    const environment = { ...process.env, ...opts.environment };
+    const environment = runtimeEnvironment(opts.environment);
     const contained = process.platform === "win32" && spawnFn === nodeSpawn
       ? spawnWindowsContainedProcess({
         bin: opts.bin,

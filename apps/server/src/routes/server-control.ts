@@ -40,6 +40,7 @@ interface ServerControlRoutesContext {
   purgeLauncherSecurityState(): void;
   networkSecurity: ReadinessDto["networkSecurity"];
   artifactFilesystem: ReadinessCheckDto;
+  processContainment: ReadinessCheckDto;
   artifactFilesystemError(): string | undefined;
   communicationReconciliation: Map<string, {
     state: "pending";
@@ -91,6 +92,7 @@ export function registerServerControlRoutes(
     purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
+    processContainment,
     artifactFilesystemError,
     communicationReconciliation,
     coordinationV3Scheduler,
@@ -229,7 +231,7 @@ app.post("/api/deployment/drain", async (_request, reply) => {
     return reply.code(409).send({ error: error instanceof Error ? error.message : "deployment drain failed" });
   }
   return {
-    acceptingDurableIntake: artifactFilesystem.ok,
+    acceptingDurableIntake: artifactFilesystem.ok && processContainment.ok,
     leasingRuns: false,
     ...deploymentDrainSnapshot(),
   };
@@ -237,7 +239,7 @@ app.post("/api/deployment/drain", async (_request, reply) => {
 
 app.post("/api/deployment/resume", async (_request, reply) => {
   if (isClosed()) return reply.code(409).send({ error: "daemon is shutting down" });
-  if (!artifactFilesystem.ok) {
+  if (!artifactFilesystem.ok || !processContainment.ok) {
     return reply.code(409).send({ error: artifactFilesystemError() });
   }
   await refreshTriggerSources();
@@ -355,7 +357,8 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
   };
   // Projection drift is project-scoped diagnostic state. It must not make
   // unrelated clean projects or the entire daemon reject new work.
-  const acceptingDurableIntake = !isClosed() && dataDirectory.ok && projections.ok && artifactFilesystem.ok;
+  const acceptingDurableIntake = !isClosed() && dataDirectory.ok && projections.ok &&
+    artifactFilesystem.ok && processContainment.ok;
   const leasingRuns = coordinationV3Scheduler.isLeasingRuns();
   const canAcceptWork = acceptingDurableIntake && leasingRuns && runtimes.ok;
   const body: ReadinessDto = {
@@ -372,6 +375,7 @@ app.get("/api/ready", async (_request, reply): Promise<ReadinessDto> => {
       dataDirectory,
       projections,
       artifactFilesystem,
+      processContainment,
       runtimes,
       communicationMigration,
     },

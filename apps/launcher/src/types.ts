@@ -38,6 +38,8 @@ export interface LauncherConfiguration {
 export interface LauncherState {
   schemaVersion: 1;
   controlToken: string;
+  /** Windows supervisor that owns the server Job Object until it drains. */
+  supervisorPid?: number;
   pid: number;
   port: number;
   host: "127.0.0.1";

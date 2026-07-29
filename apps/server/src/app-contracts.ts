@@ -220,6 +220,8 @@ export interface CreateServerOptions {
   managedArtifactReadFaults?: ManagedArtifactAsyncReadFaults;
   /** Deterministic startup capability seam; production probes the exact platform authority. */
   artifactFilesystemCapabilityProbe?: () => ReadinessDto["checks"]["artifactFilesystem"];
+  /** Deterministic process-containment seam; production probes the native authority. */
+  processContainmentCapabilityProbe?: () => ReadinessDto["checks"]["processContainment"];
   /** Web Push configuration/test seams. Production reads host-only VAPID env. */
   webPush?: {
     publicKey?: string;
