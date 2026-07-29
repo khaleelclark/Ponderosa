@@ -108,7 +108,6 @@ export function Composer({
   onMentionedHandlesChange,
   onCommandTargetHandleChange,
   continueWith,
-  status,
 }: ComposerProps): JSX.Element {
   const [text, setText] = useState(() =>
     draftStorageKey ? (readChatState(draftStorageKey) ?? "") : "",
@@ -779,7 +778,6 @@ export function Composer({
         projectDestinations={projectDestinations}
         selectImplicitContinue={setImplicitContinueSelected}
         setDestination={setDestination}
-        status={status}
         targetRequiredDestinations={targetRequiredDestinations}
       />
       <ComposerAttachmentList

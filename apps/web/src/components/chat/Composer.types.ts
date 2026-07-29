@@ -1,5 +1,4 @@
 import type { ChatComposerContract } from "./composerContracts";
-import type { ReactNode } from "react";
 
 export interface ComposerProps extends ChatComposerContract {
   /** Keep the composer available while other Agents in this shared chat are working. */
@@ -33,6 +32,4 @@ export interface ComposerProps extends ChatComposerContract {
     title: string;
     responding?: boolean;
   };
-  /** Live delivery state shown inside the composer's stable destination row. */
-  status?: ReactNode;
 }

@@ -919,6 +919,24 @@ export function ConversationView({
         }}
         sx={{ bgcolor: "transparent" }}
       >
+        {activeView === "main" ? (
+          <Box
+            sx={{
+              height: 28,
+              px: { xs: 1, sm: 1.5 },
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              pointerEvents: "none",
+            }}
+          >
+            <MasterRespondingIndicator
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+          </Box>
+        ) : null}
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
@@ -973,12 +991,6 @@ export function ConversationView({
               title: lastRespondingAgent.title,
               responding: lastRespondingAgentIsRunning,
             } : undefined}
-            status={
-              <MasterRespondingIndicator
-                agents={agents}
-                healthByAgentId={healthByAgentId}
-              />
-            }
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             disabled={busy}

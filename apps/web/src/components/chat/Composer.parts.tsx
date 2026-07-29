@@ -2,7 +2,6 @@ import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import {
-  Box,
   Button,
   Chip,
   IconButton,
@@ -27,7 +26,6 @@ interface ComposerDestinationBarProps {
   projectDestinations: Array<{ handle: string }>;
   selectImplicitContinue(selected: boolean): void;
   setDestination(handle: string): void;
-  status: ComposerProps["status"];
   targetRequiredDestinations: Array<{ handle: string }>;
 }
 
@@ -43,7 +41,6 @@ export function ComposerDestinationBar({
   projectDestinations,
   selectImplicitContinue,
   setDestination,
-  status,
   targetRequiredDestinations,
 }: ComposerDestinationBarProps): JSX.Element | null {
   return destinationMode === "project-chat" ? (
@@ -122,27 +119,6 @@ export function ComposerDestinationBar({
             Continue with {continueWith.title}
           </Button>
         )
-      ) : null}
-      {status ? (
-        <Box
-          sx={{
-            ml: "auto",
-            minWidth: 0,
-            maxWidth: { xs: "55%", sm: "70%" },
-            flex: "0 1 auto",
-            overflow: "hidden",
-            "& .MuiStack-root": {
-              maxWidth: "100%",
-            },
-            "& .MuiTypography-root": {
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            },
-          }}
-        >
-          {status}
-        </Box>
       ) : null}
     </Stack>
   ) : destinationMode === "target-required" ? (
