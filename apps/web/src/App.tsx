@@ -401,6 +401,13 @@ export default function App({
     setWorkspaceTabs(current => navigateWorkspaceTab(current, targetKey, next));
     navigate(next);
   };
+  const replaceActiveWorkspace = (next: Route) => {
+    recordWorkspaceRouteUse(next);
+    setWorkspaceTabs(current =>
+      navigateWorkspaceTab(current, activeWorkspaceTabKey, next),
+    );
+    navigate(next);
+  };
   const activateWorkspaceView = (key: string) => {
     const tab = workspaceTabs.find(candidate => candidate.key === key);
     if (!tab) return;
@@ -447,8 +454,16 @@ export default function App({
         : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     };
-    if (route.kind === "create") navigateWorkspace(destination);
+    if (route.kind === "create") replaceActiveWorkspace(destination);
     else openWorkspaceRoute(destination);
+  };
+  const replaceWorkspaceWithCreationForm = (
+    kind: "project" | "chat" | "agent" | "trigger",
+  ) => {
+    replaceActiveWorkspace({
+      kind: "create",
+      resource: kind,
+    });
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -677,7 +692,7 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreate={kind => openCreationForm(kind)}
+              onCreate={replaceWorkspaceWithCreationForm}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -780,7 +795,7 @@ export default function App({
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onOpenInNewTab={openWorkspaceRoute}
-          onCreate={openCreationForm}
+          onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}
