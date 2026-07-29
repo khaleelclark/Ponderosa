@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   publishManagedArtifactContent,
   publishManagedArtifactContentAsync,
+  publishManagedArtifactContents,
   openManagedArtifactContent,
   readManagedArtifactContent,
   repairManagedArtifactContent,
@@ -25,6 +26,11 @@ import { managedArtifactContentPath } from "../src/paths.js";
 const itWithLinuxFaultHooks =
   process.platform === "linux" &&
   process.env.PONDEROSA_TEST_LEGACY_LINUX_MANAGED_AUTHORITY === "1"
+    ? it
+    : it.skip;
+const itWithNativeAuthority =
+  process.platform !== "linux" ||
+  process.env.PONDEROSA_TEST_LEGACY_LINUX_MANAGED_AUTHORITY !== "1"
     ? it
     : it.skip;
 
@@ -60,6 +66,73 @@ describe("Project-owned managed artifact files", () => {
     expect(timerFired).toBe(true);
     expect(readFileSync(published.path)).toEqual(body);
     expect(published).toMatchObject({ size: body.length, sha256 });
+  });
+
+  itWithNativeAuthority("preserves a replacement after single-publication verification fails", () => {
+    const retained = managedArtifactContentPath(
+      dataDir,
+      projectId,
+      `${artifactId}-retained`,
+    );
+    const replacement = Buffer.from("replacement bytes");
+    expect(() => publishManagedArtifactContent(
+      dataDir,
+      projectId,
+      artifactId,
+      body,
+      {
+        afterRename: (file) => {
+          renameSync(file, retained);
+          writeFileSync(file, replacement);
+        },
+      },
+    )).toThrow(/changed during atomic publication/);
+    expect(readFileSync(managedArtifactContentPath(
+      dataDir,
+      projectId,
+      artifactId,
+    ))).toEqual(replacement);
+    expect(readFileSync(retained)).toEqual(body);
+  });
+
+  itWithNativeAuthority("does not delete a swapped earlier leaf when a later batch item fails", async () => {
+    const firstId = "batch-first";
+    const secondId = "batch-second";
+    const firstBody = Buffer.from("first original");
+    const replacement = Buffer.from("first replacement");
+    const retained = managedArtifactContentPath(
+      dataDir,
+      projectId,
+      "batch-first-retained",
+    );
+    publishManagedArtifactContent(
+      dataDir,
+      projectId,
+      secondId,
+      Buffer.from("existing second"),
+    );
+    await expect(publishManagedArtifactContents(
+      dataDir,
+      projectId,
+      [
+        { artifactId: firstId, input: firstBody },
+        { artifactId: secondId, input: Buffer.from("conflicting second") },
+      ],
+      1,
+      {
+        afterItem: (id, file) => {
+          if (id !== firstId) return;
+          renameSync(file, retained);
+          writeFileSync(file, replacement);
+        },
+      },
+    )).rejects.toThrow(/collision|unsafe/);
+    expect(readFileSync(managedArtifactContentPath(
+      dataDir,
+      projectId,
+      firstId,
+    ))).toEqual(replacement);
+    expect(readFileSync(retained)).toEqual(firstBody);
   });
 
   it("rejects nested or traversal artifact identities", () => {

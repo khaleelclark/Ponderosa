@@ -63,6 +63,10 @@ export interface ManagedArtifactBatchInput {
   input: Buffer | string;
 }
 
+export interface ManagedArtifactBatchFaults {
+  afterItem?: (artifactId: string, path: string) => void;
+}
+
 interface OpenedManagedDirectory {
   descriptors: number[];
   identities: Array<{ dev: number; ino: number }>;
@@ -274,15 +278,8 @@ function publishManagedArtifactContentNative(
     sha256,
   );
   if (!published) {
-    try {
-      removeSecureFile({
-        root: dataDir,
-        relativeDirectory: nativeManagedDirectory(projectId),
-        leaf: artifactId,
-      });
-    } catch {
-      // Preserve the verification failure; repair can retry an unreachable leaf.
-    }
+    // The installed identity is no longer trusted. Never delete the current
+    // name without that exact identity: leave the uncatalogued leaf for repair.
     throw new Error("managed artifact changed during atomic publication");
   }
   return {
@@ -375,10 +372,15 @@ export function publishManagedArtifactContentAsync(
       if (settled) return;
       settled = true;
       cleanup();
-      void worker.terminate();
-      reject(signal?.reason instanceof Error
+      const reason = signal?.reason instanceof Error
         ? signal.reason
-        : new Error("managed artifact publication aborted"));
+        : new Error("managed artifact publication aborted");
+      void worker.terminate().then(
+        () => reject(reason),
+        (error: unknown) => reject(
+          error instanceof Error ? error : reason,
+        ),
+      );
     };
     worker.once("message", finish);
     worker.once("error", (error) => finish({ error: error.message }));
@@ -505,6 +507,7 @@ export async function publishManagedArtifactContents(
   projectId: string,
   inputs: readonly ManagedArtifactBatchInput[],
   concurrency = 12,
+  faults?: ManagedArtifactBatchFaults,
 ): Promise<Array<Omit<ManagedArtifactFile, "body">>> {
   if (!safeProjectId(projectId)) {
     throw new Error("managed artifact Project id must be a single safe leaf");
@@ -545,7 +548,6 @@ export async function publishManagedArtifactContents(
       throw new Error("managed artifact publication is already active");
     }
     for (const key of nativeActiveKeys) activePublications.add(key);
-    const created: string[] = [];
     try {
       return planned.map((item) => {
         const published = publishManagedArtifactContentNative(
@@ -555,23 +557,13 @@ export async function publishManagedArtifactContents(
           item.body,
           item.sha256,
         );
-        if (published.created) created.push(item.artifactId);
+        faults?.afterItem?.(item.artifactId, published.result.path);
         return published.result;
       });
-    } catch (error) {
-      for (const artifactId of created) {
-        try {
-          removeSecureFile({
-            root: dataDir,
-            relativeDirectory: nativeManagedDirectory(projectId),
-            leaf: artifactId,
-          });
-        } catch {
-          // Preserve the publication failure; repair can retry an unreachable leaf.
-        }
-      }
-      throw error;
     } finally {
+      // On failure, every newly installed leaf remains uncatalogued. Do not
+      // delete by current name without the identity created by this batch;
+      // durable orphan repair will enumerate and bind the exact identity.
       for (const key of nativeActiveKeys) activePublications.delete(key);
     }
   }

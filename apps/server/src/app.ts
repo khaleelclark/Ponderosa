@@ -321,6 +321,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     store,
     activeRuns,
     publish: (agentId, stored) => publish(agentId, stored),
+    logWarn: (meta, message) => app.log.warn(meta, message),
     persistRuntimeEvent: (agentId, run, event) => persistRuntimeEvent(agentId, run, event as LogEvent),
   });
   const managedWorkspacesRoot = path.resolve(opts.dataDir, "workspaces");

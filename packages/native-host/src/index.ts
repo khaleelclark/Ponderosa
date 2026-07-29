@@ -212,10 +212,15 @@ export function readSecureFileAsync(
       if (settled) return;
       settled = true;
       cleanup();
-      void worker.terminate();
-      reject(signal?.reason instanceof Error
+      const reason = signal?.reason instanceof Error
         ? signal.reason
-        : new Error("secure file read aborted"));
+        : new Error("secure file read aborted");
+      void worker.terminate().then(
+        () => reject(reason),
+        (error: unknown) => reject(
+          error instanceof Error ? error : reason,
+        ),
+      );
     };
     worker.once("message", finish);
     worker.once("error", (error) => finish({ error: error.message }));

@@ -1045,14 +1045,11 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
       if (SafeLeaf(name) &&
           !(entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
         HANDLE retained = INVALID_HANDLE_VALUE;
-        const bool directory =
-            entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY;
         const NTSTATUS retained_status = OpenWindowsRelative(
             handles.values.back(), Wide(name),
             FILE_READ_ATTRIBUTES | SYNCHRONIZE,
             kFileOpen,
-            (directory ? kFileDirectoryFile : kFileNonDirectoryFile) |
-                kFileSynchronousIoNonAlert,
+            kFileSynchronousIoNonAlert,
             &retained);
         WindowsIdentity retained_identity{};
         if (!NtSuccess(retained_status) ||
@@ -1064,6 +1061,8 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
           offset += entry->NextEntryOffset;
           continue;
         }
+        const bool directory =
+            retained_identity.attributes & FILE_ATTRIBUTE_DIRECTORY;
         napi_value item;
         napi_create_object(env, &item);
         napi_value name_value;
@@ -1075,15 +1074,17 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
             env, directory ? "directory" : "file",
             NAPI_AUTO_LENGTH, &kind_value);
         napi_set_named_property(env, item, "kind", kind_value);
-        if (!directory && entry->EndOfFile.QuadPart >= 0) {
+        if (!directory && retained_identity.size <=
+            static_cast<uint64_t>(INT64_MAX)) {
           napi_value size_value;
           napi_create_int64(
-              env, entry->EndOfFile.QuadPart, &size_value);
+              env, static_cast<int64_t>(retained_identity.size),
+              &size_value);
           napi_set_named_property(env, item, "size", size_value);
         }
         constexpr double kWindowsToUnixEpoch100ns = 116444736000000000.0;
         const double modified_ms =
-            (static_cast<double>(entry->LastWriteTime.QuadPart) -
+            (static_cast<double>(retained_identity.last_write) -
              kWindowsToUnixEpoch100ns) / 10000.0;
         napi_value modified_value;
         napi_create_double(env, modified_ms, &modified_value);
