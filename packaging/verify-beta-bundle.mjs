@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -33,6 +34,7 @@ if (manifest.target.platform === "win32") required.push(path.join(bundle, "ponde
 for (const pathname of required) {
   if (!existsSync(pathname)) throw new Error(`Bundle is incomplete: ${pathname}`);
 }
+auditPortableSymlinkTree(bundle, { label: "verified native beta bundle" });
 
 if (manifest.target.platform !== process.platform || manifest.target.arch !== process.arch) {
   throw new Error(

@@ -4,6 +4,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
   renameSync,
@@ -16,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -121,6 +123,7 @@ for (const required of [
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "web", "dist", "index.html"),
   path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
+  path.join(repositoryRoot, "packaging", "qualification", "symlink-portability.mjs"),
   schemaSource,
   nodeBinary,
   nodeSourcePath,
@@ -176,6 +179,31 @@ execFileSync("pnpm", [
   stdio: "inherit",
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
+
+function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
+  const selfLink = path.join(
+    packageTarget,
+    "node_modules",
+    ".pnpm",
+    "node_modules",
+    "@ponderosa",
+    packageName,
+  );
+  let stats;
+  try {
+    stats = lstatSync(selfLink);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  if (!stats.isSymbolicLink()) {
+    throw new Error(`Deployed workspace self-link is not a symlink: ${selfLink}`);
+  }
+  rmSync(selfLink);
+}
+
+removeDeployedWorkspaceSelfLink(serverTarget, "server");
+removeDeployedWorkspaceSelfLink(launcherTarget, "launcher");
 
 function nativeHostAddon(packageTarget) {
   const require = createRequire(path.join(packageTarget, "package.json"));
@@ -308,4 +336,5 @@ writeFileSync(path.join(bundleRoot, "INSTALLATION.txt"), [
   "",
 ].join("\n"));
 
+auditPortableSymlinkTree(bundleRoot, { label: "native beta bundle" });
 process.stdout.write(`${bundleRoot}\n`);

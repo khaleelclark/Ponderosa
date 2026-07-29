@@ -17,6 +17,7 @@ import {
   macosDeploymentTargetAtMost,
   macosDeploymentTargets,
 } from "./macos-deployment-target.mjs";
+import { auditPortableSymlinkTree } from "./symlink-portability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -60,6 +61,13 @@ assert(manifest.nativeAbi?.modules === process.versions.modules, "Manifest Node 
 assert(manifest.nativeAbi?.napi === process.versions.napi, "Manifest Node-API ABI does not match runtime.");
 pass("identity", `${manifest.version} ${manifest.commit} ${manifest.channel} ${process.platform}/${process.arch}`);
 pass("node", `${process.version} modules=${process.versions.modules} napi=${process.versions.napi}`);
+const installedSymlinks = auditPortableSymlinkTree(installRoot, {
+  label: "installed application root",
+});
+pass(
+  "symlink-portability",
+  `${installedSymlinks.symlinkCount} relative in-root symlinks passed before dependency loading`,
+);
 
 const schemaPath = path.join(installRoot, "schema", manifest.databaseSchemaVersion);
 assert(existsSync(schemaPath), "Launch-baseline schema is missing.");

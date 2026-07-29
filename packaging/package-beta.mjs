@@ -13,6 +13,10 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import {
+  auditPortableSymlinkTree,
+  copyPortableTree,
+} from "./qualification/symlink-portability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -62,6 +66,7 @@ const format = option("format", process.platform === "darwin" ? "dmg" : process.
 const manifest = JSON.parse(readFileSync(path.join(bundle, "build-manifest.json"), "utf8"));
 const artifactBase = `Ponderosa-${manifest.version}-${manifest.target.platform}-${manifest.target.arch}`;
 mkdirSync(output, { recursive: true });
+auditPortableSymlinkTree(bundle, { label: "pre-package native bundle" });
 
 if (format === "dmg") {
   if (process.platform !== "darwin") throw new Error("DMG packages must be built on macOS.");
@@ -70,7 +75,9 @@ if (format === "dmg") {
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
   mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
-  cpSync(bundle, path.join(app, "Contents", "Resources", "Ponderosa"), { recursive: true });
+  copyPortableTree(bundle, path.join(app, "Contents", "Resources", "Ponderosa"), {
+    label: "staged macOS application bundle",
+  });
   const iconset = path.join(stage, "Ponderosa.iconset");
   const iconSource = path.join(bundle, "app", "web", "dist", "icons", "app-icon.png");
   mkdirSync(iconset);
@@ -151,7 +158,9 @@ exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "
   rmSync(appDir, { recursive: true, force: true });
   mkdirSync(path.join(appDir, "usr", "lib"), { recursive: true });
   mkdirSync(path.join(appDir, "usr", "share", "icons", "hicolor", "256x256", "apps"), { recursive: true });
-  cpSync(bundle, path.join(appDir, "usr", "lib", "ponderosa-beta"), { recursive: true });
+  copyPortableTree(bundle, path.join(appDir, "usr", "lib", "ponderosa-beta"), {
+    label: "staged AppImage application bundle",
+  });
   cpSync(
     path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
     path.join(appDir, "ponderosa-beta.png"),
@@ -187,7 +196,9 @@ Terminal=false
   mkdirSync(path.join(root, "opt"), { recursive: true });
   mkdirSync(path.join(root, "usr", "bin"), { recursive: true });
   mkdirSync(path.join(root, "usr", "share", "applications"), { recursive: true });
-  cpSync(bundle, path.join(root, "opt", "ponderosa-beta"), { recursive: true });
+  copyPortableTree(bundle, path.join(root, "opt", "ponderosa-beta"), {
+    label: "staged Debian application bundle",
+  });
   writeExecutable(path.join(root, "usr", "bin", "ponderosa-beta"), `#!/bin/sh
 exec /opt/ponderosa-beta/runtime/node /opt/ponderosa-beta/app/launcher/dist/cli.js open --install-root /opt/ponderosa-beta "$@"
 `);

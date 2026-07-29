@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -13,6 +12,10 @@ import {
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import {
+  auditPortableSymlinkTree,
+  copyPortableTree,
+} from "./symlink-portability.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -83,7 +86,11 @@ try {
     const sourceApp = path.join(mounted, "Ponderosa Beta.app");
     const installedApp = path.join(disposable, "Applications", "Ponderosa Beta.app");
     mkdirSync(path.dirname(installedApp), { recursive: true });
-    cpSync(sourceApp, installedApp, { recursive: true });
+    copyPortableTree(sourceApp, installedApp, {
+      label: "copied macOS installed application",
+    });
+    run("hdiutil", ["detach", mounted]);
+    mounted = undefined;
     installedRoot = path.join(installedApp, "Contents", "Resources", "Ponderosa");
     uninstall = () => rmSync(installedApp, { recursive: true, force: true });
     installed = true;
@@ -103,6 +110,9 @@ try {
     throw new Error(`Unsupported installer qualification host: ${process.platform}/${process.arch}`);
   }
 
+  const installedSymlinks = auditPortableSymlinkTree(installedRoot, {
+    label: "installed application root",
+  });
   const nodeName = process.platform === "win32" ? "node.exe" : "node";
   const nativeReport = path.join(disposable, "native-bundle-report.json");
   run(path.join(installedRoot, "runtime", nodeName), [
@@ -131,6 +141,11 @@ try {
     checks: [
       ...nativeQualification.checks,
       ...lifecycleQualification.checks,
+      {
+        id: "installed-symlink-portability",
+        status: "pass",
+        detail: `${installedSymlinks.symlinkCount} relative in-root symlinks passed after installation`,
+      },
       {
         id: "install-without-checkout",
         status: "pass",
