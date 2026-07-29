@@ -20,6 +20,7 @@ import type {
 } from "./app-contracts.js";
 import type { ContextCursorStore } from "./context-cursors.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
+import { cleanupAgentRuntimeAttachments } from "./runtime-attachments.js";
 import type { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
 
 type OperationalNotifications = ReturnType<typeof createOperationalNotifications>;
@@ -230,6 +231,11 @@ export function createAgentDeletionAuthority(
         await fs.rm(draftAttachmentSurfaceDir(`agent:${agentId}`), { recursive: true, force: true });
       } catch (error) {
         errors.push(`${agentId}: ${error instanceof Error ? error.message : "draft cleanup failed"}`);
+      }
+      try {
+        cleanupAgentRuntimeAttachments(opts.dataDir, agentId);
+      } catch (error) {
+        errors.push(`${agentId}: ${error instanceof Error ? error.message : "runtime attachment cleanup failed"}`);
       }
     }
     try { contextCursors.deleteAgents(new Set(receipt.deletedAgentIds)); }

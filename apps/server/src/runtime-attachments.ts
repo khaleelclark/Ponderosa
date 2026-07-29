@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import path from "node:path";
 
 const safeScopeId = (value: string): string =>
-  encodeURIComponent(value).replaceAll("%", "_");
+  createHash("sha256").update(value).digest("hex");
 
 export const runtimeAttachmentsRoot = (dataDir: string): string =>
   path.join(dataDir, "runtime-attachments");

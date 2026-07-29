@@ -391,6 +391,9 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
     recordWorkspaceRouteUse(next);
     const reusable = reusableWorkspaceTab(
       workspaceTabs,

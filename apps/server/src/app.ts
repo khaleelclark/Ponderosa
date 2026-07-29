@@ -344,7 +344,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reason: Parameters<typeof store.clearResumeSession>[1],
   ): boolean => {
     contextRolloverPending.delete(agentId);
-    cleanupAgentRuntimeAttachments(opts.dataDir, agentId);
+    if (!activeRuns.has(agentId)) {
+      cleanupAgentRuntimeAttachments(opts.dataDir, agentId);
+    }
     return store.clearResumeSession(agentId, reason);
   };
   // Capability used only by this server's queue dispatcher. It prevents a client
