@@ -842,10 +842,37 @@ export function ProjectArtifactsView({
         fullWidth
         maxWidth="lg"
       >
-        <DialogTitle>
-          {previewArtifact
-            ? artifactDisplayLabel(previewArtifact)
-            : "File Preview"}
+        <DialogTitle component="div">
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{ alignItems: "center" }}
+          >
+            <Typography component="span" variant="h6">
+              {previewArtifact
+                ? artifactDisplayLabel(previewArtifact)
+                : "File Preview"}
+            </Typography>
+            {previewArtifact ? (
+              <>
+                <Chip
+                  size="small"
+                  label={`Created by ${agents.find(agent => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={
+                    previewArtifact.visibility === "published"
+                      ? "Published"
+                      : "Project Scope"
+                  }
+                />
+              </>
+            ) : null}
+          </Stack>
         </DialogTitle>
         <DialogContent
           sx={{
@@ -855,29 +882,6 @@ export function ProjectArtifactsView({
             overflow: "auto",
           }}
         >
-          {previewArtifact ? (
-            <Stack
-              direction="row"
-              spacing={0.75}
-              useFlexGap
-              flexWrap="wrap"
-              sx={{ mb: 1.25, alignItems: "center" }}
-            >
-              <Chip
-                size="small"
-                label={`Created by ${agents.find(agent => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`}
-              />
-              <Chip
-                size="small"
-                variant="outlined"
-                label={
-                  previewArtifact.visibility === "published"
-                    ? "Published"
-                    : "Project Scope"
-                }
-              />
-            </Stack>
-          ) : null}
           {previewArtifact ? (
             <ProjectArtifactPreview
               key={previewArtifact.id}
