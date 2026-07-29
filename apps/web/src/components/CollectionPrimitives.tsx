@@ -51,9 +51,9 @@ export function CollectionHeader({
 }: Pick<CollectionWorkspaceProps, "title" | "detail" | "icon" | "scope" | "primaryAction">): JSX.Element {
   return <Stack
     component="header"
-    direction={{ xs: "column", sm: "row" }}
+    direction="row"
     spacing={1.5}
-    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}
+    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "flex-start", borderBottom: 1, borderColor: "divider" }}
   >
     <Box sx={{ flex: 1, minWidth: 0 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
@@ -66,9 +66,9 @@ export function CollectionHeader({
       <Box
         sx={{
           flexShrink: 0,
-          width: { xs: "100%", sm: "auto" },
+          width: "auto",
           "& .MuiButton-root": {
-            width: { xs: "100%", sm: "auto" },
+            width: "auto",
             whiteSpace: "nowrap",
           },
         }}
@@ -187,7 +187,29 @@ export function CollectionToolbar({
         maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
       }}
     />
-    {children}
+    {children ? (
+      <Box
+        sx={{
+          display: { xs: "flex", md: "contents" },
+          width: { xs: "100%", md: "auto" },
+          minWidth: 0,
+          gap: 1,
+          alignItems: "center",
+          flexWrap: "wrap",
+          "& > .MuiFormControl-root": {
+            width: { xs: "auto", md: undefined },
+            minWidth: { xs: 140, md: undefined },
+            flex: { xs: "1 1 140px", md: undefined },
+          },
+          "& > [data-collection-toolbar-actions]": {
+            flex: { xs: "1 1 100%", md: undefined },
+            justifyContent: { xs: "flex-start", md: undefined },
+          },
+        }}
+      >
+        {children}
+      </Box>
+    ) : null}
     {reorderHint ? (
       <Typography
         variant="caption"

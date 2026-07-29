@@ -1,6 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import MenuIcon from "@mui/icons-material/Menu";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
@@ -12,7 +11,6 @@ import {
   AppBar,
   Badge,
   Box,
-  Button,
   Divider,
   IconButton,
   ListItemIcon,
@@ -37,13 +35,10 @@ import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceRouteIcon } from "./components/WorkspaceTabs";
-import type { WorkspaceTabState } from "./workspaceTabs";
 
 interface MobileWorkspaceHeaderProps {
   title: string;
   route: Route;
-  workspaceTabs: Array<WorkspaceTabState & { label: string }>;
-  activeWorkspaceTabKey: string;
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -53,8 +48,6 @@ interface MobileWorkspaceHeaderProps {
   unreadNotifications: number;
   profile?: OperatorProfileDto;
   onOpenNavigation(): void;
-  onActivateWorkspace(key: string): void;
-  onCloseWorkspace(key: string): void;
   onOpenEngineStatus(): void;
   onOpenNotifications(): void;
   onCreateProject(): void;
@@ -65,25 +58,18 @@ interface MobileWorkspaceHeaderProps {
 export function MobileWorkspaceHeader({
   title,
   route,
-  workspaceTabs,
-  activeWorkspaceTabKey,
   preferredQuotaProvider,
   engineAvailability,
   unreadNotifications,
   profile,
   onOpenNavigation,
-  onActivateWorkspace,
-  onCloseWorkspace,
   onOpenEngineStatus,
   onOpenNotifications,
   onCreateProject,
   onOpenProfile,
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
-  const [recentAnchor, setRecentAnchor] = useState<HTMLElement>();
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
-  const openRecent = (event: MouseEvent<HTMLElement>) =>
-    setRecentAnchor(event.currentTarget);
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
     setOverflowAnchor(event.currentTarget);
 
@@ -158,75 +144,6 @@ export function MobileWorkspaceHeader({
           </IconButton>
         </Tooltip>
       </Toolbar>
-      <Box sx={{ px: 1.5, pb: 1 }}>
-        <Button
-          fullWidth
-          color="inherit"
-          variant="outlined"
-          aria-haspopup="menu"
-          aria-expanded={Boolean(recentAnchor)}
-          onClick={openRecent}
-          endIcon={<KeyboardArrowDownIcon />}
-          sx={{
-            minHeight: 40,
-            justifyContent: "space-between",
-            borderColor: "divider",
-            bgcolor: "background.paper",
-            px: 1.5,
-          }}
-        >
-          <Typography component="span" variant="body2" fontWeight={750} noWrap>
-            Recent work · {title}
-          </Typography>
-        </Button>
-      </Box>
-      <Menu
-        anchorEl={recentAnchor}
-        open={Boolean(recentAnchor)}
-        onClose={() => setRecentAnchor(undefined)}
-        slotProps={{
-          paper: {
-            sx: {
-              width: "min(calc(100vw - 24px), 420px)",
-              maxHeight: "min(70dvh, 560px)",
-            },
-          },
-        }}
-      >
-        {workspaceTabs.map(tab => (
-          <MenuItem
-            key={tab.key}
-            selected={tab.key === activeWorkspaceTabKey}
-            onClick={() => {
-              setRecentAnchor(undefined);
-              onActivateWorkspace(tab.key);
-            }}
-            sx={{ minHeight: 48, gap: 1 }}
-          >
-            <ListItemIcon>
-              <WorkspaceRouteIcon route={tab.route} />
-            </ListItemIcon>
-            <ListItemText
-              primary={tab.label}
-              primaryTypographyProps={{ noWrap: true, fontWeight: 700 }}
-            />
-            {workspaceTabs.length > 1 ? (
-              <IconButton
-                size="small"
-                aria-label={`Close ${tab.label}`}
-                onClick={event => {
-                  event.stopPropagation();
-                  onCloseWorkspace(tab.key);
-                  if (workspaceTabs.length <= 2)
-                    setRecentAnchor(undefined);
-                }}
-              >
-                <CloseIcon fontSize="small" />
-              </IconButton>
-            ) : null}
-          </MenuItem>
-        ))}
-      </Menu>
       <Menu
         anchorEl={overflowAnchor}
         open={Boolean(overflowAnchor)}

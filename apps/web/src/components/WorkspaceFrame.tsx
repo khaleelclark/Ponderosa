@@ -136,10 +136,10 @@ export function TabbedWorkspaceFrame<T extends string>({
   return <Box className="mobile-chat-chrome mobile-chat-header" sx={{ minWidth: 0, bgcolor: "background.default" }}>
     <Box sx={{ px: { xs: 1.5, sm: 2, md: 2.5 }, py: { xs: 1, sm: 1.25 } }}>
       <Stack
-        direction={{ xs: "column", sm: "row" }}
+        direction="row"
         spacing={1}
         useFlexGap
-        sx={{ alignItems: { xs: "stretch", sm: "center" }, minWidth: 0 }}
+        sx={{ alignItems: "flex-start", minWidth: 0 }}
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <IconTitle icon={icon} title={title} component="h1" />
@@ -150,10 +150,11 @@ export function TabbedWorkspaceFrame<T extends string>({
           direction="row"
           spacing={1}
           useFlexGap
-          flexWrap="wrap"
           sx={{
             alignItems: "center",
-            justifyContent: { xs: "flex-start", sm: "flex-end" },
+            justifyContent: "flex-end",
+            flexWrap: "nowrap",
+            flexShrink: 0,
           }}
         >{status}{actions}</Stack> : null}
       </Stack>

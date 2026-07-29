@@ -716,8 +716,6 @@ export default function App({
         <MobileWorkspaceHeader
           title={mobileWorkspaceTitle}
           route={route}
-          workspaceTabs={mobileWorkspaceTabs}
-          activeWorkspaceTabKey={activeWorkspaceTabKey}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           unreadNotifications={(notificationsQuery.data ?? []).filter(
@@ -725,8 +723,6 @@ export default function App({
           ).length}
           profile={preferences.profile}
           onOpenNavigation={() => setMobileNavOpen(true)}
-          onActivateWorkspace={activateWorkspaceView}
-          onCloseWorkspace={closeWorkspaceView}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onCreateProject={() => openCreationForm("project")}

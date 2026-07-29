@@ -465,6 +465,7 @@ export function AgentsTab({
     });
   const selectionControls = selectionMode ? (
     <Stack
+      data-collection-toolbar-actions
       direction="row"
       spacing={0.75}
       useFlexGap
@@ -490,6 +491,7 @@ export function AgentsTab({
   ) : null;
   const headerActions = (
     <Stack
+      data-collection-toolbar-actions
       direction="row"
       spacing={1}
       useFlexGap
