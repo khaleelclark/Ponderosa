@@ -98,12 +98,16 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
 
   const projectBrowserDto = (projectId: string, session: import("@ponderosa/core").BrowserSessionDto): ProjectBrowserSessionDto => {
     const grant = projectBrowserGrants.get(projectId);
+    const ready = session.status === "ready";
     return {
       id: session.id,
       projectId,
       status: session.status,
-      controlOwner: session.controlOwner,
-      ...(grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
+      // A closed or failed process has no controller. Normalize the persisted
+      // session projection instead of asking every client to reinterpret stale
+      // control metadata after a reload.
+      controlOwner: ready ? session.controlOwner : "operator",
+      ...(ready && grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
       controlEpoch: session.controlEpoch,
       ...(session.url ? { url: session.url } : {}),
       ...(session.title ? { title: session.title } : {}),

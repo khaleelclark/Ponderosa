@@ -19,6 +19,7 @@ import {
   type RuntimeProcessHandle,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import type { LogEvent } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
@@ -87,6 +88,7 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
+  runtimeAttachmentDirectory: string | undefined;
   seedHistory: ChatMessage[];
   sourceChannel: "main" | "individual";
   v3FencingToken: number | undefined;
@@ -194,6 +196,7 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
+    runtimeAttachmentDirectory,
     seedHistory,
     sourceChannel,
     v3FencingToken,
@@ -980,7 +983,13 @@ export function startProviderRunExecution(
   }).catch(() => undefined);
   const cleanup = execution.finally(async () => {
     const oneShot = oneShotRuntime(agent.id, runId);
-    if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
+    try {
+      if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
+    } finally {
+      if (runtimeAttachmentDirectory) {
+        await rm(runtimeAttachmentDirectory, { recursive: true, force: true });
+      }
+    }
   });
   void cleanup.catch((error) => app.log.error({ err: error, agentId: agent.id, runId }, "provider Run cleanup remains pending"));
 

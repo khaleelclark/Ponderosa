@@ -235,6 +235,8 @@ export function ComposerTextInput({
             );
             if (files.length > 0) {
               event.preventDefault();
+              event.stopPropagation();
+              event.nativeEvent.stopImmediatePropagation();
               onFiles(files);
               return;
             }
