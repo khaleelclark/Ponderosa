@@ -48,6 +48,8 @@ export interface LauncherState {
   controlToken: string;
   /** Windows supervisor that owns the server Job Object until it drains. */
   supervisorPid?: number;
+  /** Correlates the persisted supervisor status with this launcher instance. */
+  supervisorGeneration?: string;
   pid: number;
   port: number;
   host: "127.0.0.1";

@@ -86,6 +86,10 @@ export function readLauncherState(pathname: string): LauncherState | undefined {
         typeof parsed.controlToken !== "string" || parsed.controlToken.length < 32 ||
         (parsed.supervisorPid !== undefined &&
           (!Number.isSafeInteger(parsed.supervisorPid) || parsed.supervisorPid <= 0)) ||
+        (parsed.supervisorGeneration !== undefined &&
+          (typeof parsed.supervisorGeneration !== "string" ||
+            !/^[0-9a-f-]{36}$/iu.test(parsed.supervisorGeneration))) ||
+        ((parsed.supervisorPid === undefined) !== (parsed.supervisorGeneration === undefined)) ||
         !Number.isSafeInteger(parsed.pid) || parsed.pid < 0 ||
         !Number.isSafeInteger(parsed.port) || parsed.port < 1 || parsed.port > 65_535 ||
         parsed.host !== "127.0.0.1" ||

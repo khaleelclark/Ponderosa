@@ -111,7 +111,15 @@ jobs:
         run: |
           artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
           test -n "$artifact"
-          node packaging/qualification/qualify-installer.mjs --artifact "$artifact"
+          report="dist/qualification/native-installed-artifact.json"
+          node packaging/qualification/qualify-installer.mjs --artifact "$artifact" --report "$report"
+          node --input-type=module --eval "
+            import { readFileSync } from 'node:fs';
+            const result = JSON.parse(readFileSync(process.argv[1], 'utf8'));
+            if (result.releaseQualified !== true) {
+              throw new Error('Installed artifact is not release qualified: ' + result.releaseBlockers.join('; '));
+            }
+          " "$report"
 
       - name: Record safe failure context
         if: failure()

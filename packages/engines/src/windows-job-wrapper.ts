@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { containedWindowsInvocation } from "./windows-command.js";
 
 interface StartMessage {
   type: "start";
@@ -26,9 +27,10 @@ process.once("message", (message: unknown) => {
   started = true;
   const environment = { ...process.env };
   delete environment.PONDEROSA_LAUNCHER_CONTROL_TOKEN;
-  const child = spawn(message.bin, message.args, {
+  const invocation = containedWindowsInvocation(message.bin, message.args, environment);
+  const child = spawn(invocation.bin, invocation.args, {
     cwd: message.cwd,
-    env: environment,
+    env: invocation.env,
     stdio: ["pipe", "inherit", "inherit"],
     windowsHide: true,
   });

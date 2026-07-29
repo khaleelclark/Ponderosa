@@ -43,6 +43,29 @@ function processAlive(pid: number): boolean {
   }
 }
 
+function supervisorStatusPath(paths: LauncherPaths, generation: string): string {
+  return path.join(paths.runtimeDir, `server-supervisor-${generation}.json`);
+}
+
+function supervisorDrained(paths: LauncherPaths, state: LauncherState): boolean {
+  if (!state.supervisorGeneration) return true;
+  try {
+    const status = JSON.parse(readFileSync(
+      supervisorStatusPath(paths, state.supervisorGeneration),
+      "utf8",
+    )) as { generation?: unknown; status?: unknown };
+    return status.generation === state.supervisorGeneration && status.status === "drained";
+  } catch {
+    return false;
+  }
+}
+
+function removeSupervisorStatus(paths: LauncherPaths, state: LauncherState): void {
+  if (state.supervisorGeneration) {
+    rmSync(supervisorStatusPath(paths, state.supervisorGeneration), { force: true });
+  }
+}
+
 function readOperationLock(pathname: string): { pid?: number; token?: string } {
   try {
     return JSON.parse(readFileSync(pathname, "utf8")) as { pid?: number; token?: string };
@@ -178,10 +201,15 @@ async function defaultSpawnServer(
   const stderr = openSync(paths.stderrLogPath, "a", 0o600);
   try {
     if (process.platform === "win32") {
+      const generation = randomUUID();
+      const statusPath = supervisorStatusPath(paths, generation);
+      rmSync(statusPath, { force: true });
       const supervisor = spawn(paths.nodeExecutable, [
         fileURLToPath(new URL("./windows-server-supervisor.js", import.meta.url)),
         paths.serverEntry,
         paths.installRoot,
+        statusPath,
+        generation,
       ], {
         cwd: paths.installRoot,
         env,
@@ -191,6 +219,7 @@ async function defaultSpawnServer(
       });
       if (!supervisor.pid) throw new Error("Windows server supervisor started without a process ID.");
       state.supervisorPid = supervisor.pid;
+      state.supervisorGeneration = generation;
       // Persist the exact Job owner before it can authorize the server gate.
       // Recovery and restart must wait for this process, not only the server
       // root, because the supervisor exits only after the Job drains.
@@ -269,6 +298,12 @@ function removeDeadState(paths: LauncherPaths, state: LauncherState): void {
       "Ponderosa's recorded process still exists but did not prove ownership. Run diagnostics before forcing recovery.",
     );
   }
+  if (!supervisorDrained(paths, state)) {
+    throw new Error(
+      "Ponderosa's Windows process-tree supervisor did not prove that its Job drained. Replacement remains blocked.",
+    );
+  }
+  removeSupervisorStatus(paths, state);
   rmSync(paths.statePath, { force: true });
   const daemonLock = path.join(paths.applicationDataDir, ".ponderosa-daemon.lock");
   try {
@@ -395,6 +430,7 @@ export async function startPonderosa(input: {
     try {
       pid = await spawnServer(input.paths, provisional, environment);
     } catch (error) {
+      removeSupervisorStatus(input.paths, provisional);
       rmSync(input.paths.statePath, { force: true });
       throw error;
     }
@@ -403,7 +439,18 @@ export async function startPonderosa(input: {
     try {
       await waitForStart(state, fetchFn);
     } catch (error) {
-      if (!processAlive(pid)) rmSync(input.paths.statePath, { force: true });
+      if (!processAlive(pid)) {
+        if (!state.supervisorGeneration) {
+          rmSync(input.paths.statePath, { force: true });
+        } else if (!state.supervisorPid || !processAlive(state.supervisorPid)) {
+          if (supervisorDrained(input.paths, state)) {
+            removeSupervisorStatus(input.paths, state);
+            rmSync(input.paths.statePath, { force: true });
+          }
+          // A missing/non-drained completion record deliberately retains state
+          // and blocks replacement after a failed Windows launch.
+        }
+      }
       throw error;
     }
     if (input.openBrowser !== false) {
@@ -443,6 +490,12 @@ export async function stopPonderosa(input: {
     if (stillOwned()) {
       throw new Error("Ponderosa is still finishing provider or browser cleanup. Check diagnostics before retrying.");
     }
+    if (!supervisorDrained(input.paths, state)) {
+      throw new Error(
+        "Ponderosa's Windows process-tree supervisor exited without proving that its Job drained. Replacement remains blocked.",
+      );
+    }
+    removeSupervisorStatus(input.paths, state);
     rmSync(input.paths.statePath, { force: true });
     return "stopped";
   } finally {

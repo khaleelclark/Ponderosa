@@ -17,7 +17,10 @@ function statePath(supervisorPid?: number): string {
   writeFileSync(pathname, JSON.stringify({
     schemaVersion: 1,
     controlToken: "x".repeat(32),
-    ...(supervisorPid === undefined ? {} : { supervisorPid }),
+    ...(supervisorPid === undefined ? {} : {
+      supervisorPid,
+      supervisorGeneration: "00000000-0000-4000-8000-000000000000",
+    }),
     pid: 123,
     port: 8787,
     host: "127.0.0.1",
