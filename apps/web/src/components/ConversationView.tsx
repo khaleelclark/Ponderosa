@@ -902,22 +902,6 @@ export function ConversationView({
             }
           />
         ) : null}
-        {activeView === "main" && !agentWorkOpen ? (
-          <Box
-            sx={{
-              position: "absolute",
-              insetInline: 0,
-              bottom: 2,
-              zIndex: 2,
-              pointerEvents: "none",
-            }}
-          >
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-          </Box>
-        ) : null}
       </Box>
 
       <Box
@@ -989,6 +973,12 @@ export function ConversationView({
               title: lastRespondingAgent.title,
               responding: lastRespondingAgentIsRunning,
             } : undefined}
+            status={
+              <MasterRespondingIndicator
+                agents={agents}
+                healthByAgentId={healthByAgentId}
+              />
+            }
             insertTextRequest={mentionInsertRequest}
             controls={runtimeControls}
             disabled={busy}
