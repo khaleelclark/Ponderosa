@@ -1,6 +1,6 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
-import { Box, Button, Chip, Stack, Typography } from "@mui/material";
+import { Box, Button, Chip, Stack } from "@mui/material";
 import type {
   AgentRunDto,
   ResponseFileActivityDto,
@@ -108,6 +108,7 @@ export function AgentWorkReceipt({
     () => groupConsecutiveActions(visibleEntries),
     [visibleEntries],
   );
+  const hasVisibleActivity = displayEntries.length > 0;
   const activityCount = visibleEntries.filter(
     entry => entry.kind !== "thinking" && entry.kind !== "response",
   ).length;
@@ -137,46 +138,86 @@ export function AgentWorkReceipt({
         }}
       >
         <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
-          <Button
-            color="inherit"
-            startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-            onClick={() => setExpanded(current => !current)}
-            aria-expanded={expanded}
-            sx={{
-              minWidth: 0,
-              minHeight: 30,
-              px: 0.5,
-              justifyContent: "flex-start",
-              color: "text.secondary",
-              textTransform: "none",
-            }}
-          >
-            <Box
-              component="span"
+          {hasVisibleActivity ? (
+            <Button
+              color="inherit"
+              startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+              onClick={() => setExpanded(current => !current)}
+              aria-expanded={expanded}
               sx={{
                 minWidth: 0,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-                fontSize: 12.5,
-                fontWeight: 700,
+                minHeight: 30,
+                px: 0.5,
+                justifyContent: "flex-start",
+                color: "text.secondary",
+                textTransform: "none",
               }}
             >
-              {receiptTitle(agentName, run)}
-            </Box>
-            <Box
+              <Box
+                component="span"
+                sx={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                }}
+              >
+                {receiptTitle(agentName, run)}
+              </Box>
+              <Box
+                component="span"
+                sx={{
+                  ml: 0.75,
+                  flexShrink: 0,
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                  color: "text.secondary",
+                }}
+              >
+                · {activitySummary}
+              </Box>
+            </Button>
+          ) : (
+            <Stack
               component="span"
+              direction="row"
+              spacing={0.75}
               sx={{
-                ml: 0.75,
-                flexShrink: 0,
-                fontSize: 11.5,
-                fontWeight: 500,
+                minWidth: 0,
+                minHeight: 30,
+                px: 0.5,
+                alignItems: "center",
                 color: "text.secondary",
               }}
             >
-              · {activitySummary}
-            </Box>
-          </Button>
+              <Box
+                component="span"
+                sx={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                }}
+              >
+                {receiptTitle(agentName, run)}
+              </Box>
+              <Box
+                component="span"
+                sx={{
+                  flexShrink: 0,
+                  fontSize: 11.5,
+                  fontWeight: 500,
+                  color: "text.secondary",
+                }}
+              >
+                · {activitySummary}
+              </Box>
+            </Stack>
+          )}
           {status ? (
             <Chip
               size="small"
@@ -186,72 +227,63 @@ export function AgentWorkReceipt({
             />
           ) : null}
         </Stack>
-        {expanded ? (
+        {expanded && hasVisibleActivity ? (
           <Box
             sx={{
               mt: 0.25,
               mb: 0.5,
             }}
           >
-            {displayEntries.length ? (
-              displayEntries.map(entry => {
-                if (entry.kind === "action_group") {
-                  return (
-                    <ActionGroupRow
-                      key={entry.id}
-                      entries={entry.entries}
-                      focusId={focusId}
-                      projectRoot={projectRoot}
-                      onOpenFile={onOpenFile}
-                      onOpenFileInNewTab={onOpenFileInNewTab}
-                    />
-                  );
-                }
-                if (entry.kind === "thinking") {
-                  return (
-                    <ThinkingRow
-                      key={entry.id}
-                      entry={entry}
-                      focusId={focusId}
-                    />
-                  );
-                }
-                if (entry.kind === "response") {
-                  return (
-                    <ResponseRow
-                      key={entry.id}
-                      entry={entry}
-                      focusId={focusId}
-                      onOpenFile={onOpenFile}
-                      onOpenFileInNewTab={onOpenFileInNewTab}
-                      projectId={projectId}
-                    />
-                  );
-                }
-                if (
-                  entry.kind === "test" ||
-                  entry.kind === "error" ||
-                  entry.kind === "browser" ||
-                  entry.kind === "notice"
-                ) {
-                  return (
-                    <CompactActivityRow
-                      key={entry.id}
-                      entry={entry}
-                      focusId={focusId}
-                    />
-                  );
-                }
-                return null;
-              })
-            ) : (
-              <Typography
-                color="text.secondary"
-                sx={{ px: 0.75, py: 1, fontSize: 12 }}
-              >
-                No detailed activity was recorded for this Run.
-              </Typography>
-            )}
+            {displayEntries.map(entry => {
+              if (entry.kind === "action_group") {
+                return (
+                  <ActionGroupRow
+                    key={entry.id}
+                    entries={entry.entries}
+                    focusId={focusId}
+                    projectRoot={projectRoot}
+                    onOpenFile={onOpenFile}
+                    onOpenFileInNewTab={onOpenFileInNewTab}
+                  />
+                );
+              }
+              if (entry.kind === "thinking") {
+                return (
+                  <ThinkingRow
+                    key={entry.id}
+                    entry={entry}
+                    focusId={focusId}
+                  />
+                );
+              }
+              if (entry.kind === "response") {
+                return (
+                  <ResponseRow
+                    key={entry.id}
+                    entry={entry}
+                    focusId={focusId}
+                    onOpenFile={onOpenFile}
+                    onOpenFileInNewTab={onOpenFileInNewTab}
+                    projectId={projectId}
+                  />
+                );
+              }
+              if (
+                entry.kind === "test" ||
+                entry.kind === "error" ||
+                entry.kind === "browser" ||
+                entry.kind === "notice"
+              ) {
+                return (
+                  <CompactActivityRow
+                    key={entry.id}
+                    entry={entry}
+                    focusId={focusId}
+                  />
+                );
+              }
+              return null;
+            })}
           </Box>
         ) : null}
       </Box>
