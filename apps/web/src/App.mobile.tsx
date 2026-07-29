@@ -1,4 +1,3 @@
-import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
@@ -47,7 +46,6 @@ interface MobileWorkspaceHeaderProps {
   onOpenNavigation(): void;
   onOpenEngineStatus(): void;
   onOpenNotifications(): void;
-  onCreateProject(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
 }
@@ -60,7 +58,6 @@ export function MobileWorkspaceHeader({
   onOpenNavigation,
   onOpenEngineStatus,
   onOpenNotifications,
-  onCreateProject,
   onOpenProfile,
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
@@ -143,15 +140,6 @@ export function MobileWorkspaceHeader({
         }}
       >
         <Box id="ponderosa-mobile-workspace-action-slot" />
-        <MenuItem
-          onClick={() => {
-            setOverflowAnchor(undefined);
-            onCreateProject();
-          }}
-        >
-          <ListItemIcon><AddIcon /></ListItemIcon>
-          <ListItemText>New Project</ListItemText>
-        </MenuItem>
         <MenuItem
           onClick={() => {
             setOverflowAnchor(undefined);

@@ -691,7 +691,6 @@ export default function App({
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onCreateProject={() => openCreationForm("project")}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
         />
