@@ -732,20 +732,6 @@ export function ProjectArtifactsView({
                                 </Typography>
                               </Stack>
                             </ListItemButton>
-                            {artifact.kind === "diff" ? (
-                              <Button
-                                aria-label={`Preview ${label}`}
-                                onClick={() => setPreviewArtifact(artifact)}
-                                size="small"
-                                sx={{
-                                  display: { xs: "none", lg: "inline-flex" },
-                                  mr: 0.5,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                View Diff
-                              </Button>
-                            ) : null}
                             {artifact.previewUrl ? (
                               <Button
                                 aria-label={`Preview ${label}`}
