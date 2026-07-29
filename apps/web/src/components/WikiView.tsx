@@ -3,7 +3,7 @@ import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import {
   Alert, Box, Chip, CircularProgress, Divider, Link, List,
-  ListItemButton, ListItemText, MenuItem, Paper, Stack, TextField, Typography,
+  ListItemButton, ListItemText, MenuItem, Stack, TextField, Typography,
 } from "@mui/material";
 import type { WikiArticleSummaryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
@@ -35,10 +35,10 @@ export function WikiView({ articleId, navigate }: { articleId?: string; navigate
   };
 
   return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-    <Paper component="header" square elevation={0} sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: 1, borderColor: "divider" }}>
+    <Box component="header" sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: 1, borderColor: "divider" }}>
       <IconTitle icon={<MenuBookOutlinedIcon />} title="Ponderosa Wiki" component="h1" />
       <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>Version-controlled product guide</Typography>
-    </Paper>
+    </Box>
 
     <Box sx={{ minHeight: 0, width: "100%", display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", xl: "minmax(0, 1fr) 280px" }, overflow: "hidden" }}>
       <Box component="article" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, sm: 4, lg: 6 }, py: { xs: 2.5, md: 4 }, scrollBehavior: "smooth" }}>
