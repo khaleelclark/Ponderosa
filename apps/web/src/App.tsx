@@ -31,7 +31,10 @@ import {
   useProjects,
   useWorkspacePreferences,
 } from "./hooks/queries";
-import { useProjectAgents } from "./hooks/useProjectCollections";
+import {
+  useProjectAgents,
+  useProjectConversations,
+} from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -41,7 +44,11 @@ import {
   useRoute,
   type Route,
 } from "./routing";
-import { isProjectRoute, workspaceTabKey } from "./routeRegistry";
+import {
+  isProjectRoute,
+  routeTabLabel,
+  workspaceTabKey,
+} from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
   closeReadPushNotifications,
@@ -151,10 +158,6 @@ export default function App({
   });
   const engines = enginesQuery.data ?? [];
   const engineAvailability = engineAvailabilityPresentation(engines);
-  const appIconSource =
-    colorMode === "light"
-      ? "/icons/app-icon-inverted.png"
-      : "/icons/app-icon.png";
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -180,6 +183,7 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
+  const projectConversationQueries = useProjectConversations(projects);
   const projectAgentQueries = useProjectAgents(projects);
   const preferredQuotaProvider = route.kind === "agent"
     ? projectAgentQueries[
@@ -320,6 +324,37 @@ export default function App({
     ? preferences.defaultUsageProvider
     : usageProviders[0]?.id;
   const displayedQuotaProvider = preferredQuotaProvider ?? defaultQuotaProvider;
+  const mobileWorkspaceTabs = workspaceTabs.map(tab => {
+    const projectId =
+      "projectId" in tab.route && typeof tab.route.projectId === "string"
+        ? tab.route.projectId
+        : undefined;
+    const projectIndex = projectId
+      ? projects.findIndex(project => project.id === projectId)
+      : -1;
+    const project = projectIndex >= 0 ? projects[projectIndex] : undefined;
+    const conversations =
+      projectIndex >= 0
+        ? (projectConversationQueries[projectIndex]?.data ?? [])
+        : [];
+    const agents =
+      projectIndex >= 0 ? (projectAgentQueries[projectIndex]?.data ?? []) : [];
+    return {
+      ...tab,
+      label:
+        tab.title ??
+        routeTabLabel(tab.route, {
+          conversationTitle: conversationId =>
+            conversations.find(item => item.id === conversationId)?.title,
+          agentTitle: agentId =>
+            agents.find(item => item.id === agentId)?.title,
+          projectLabel: project?.label,
+        }),
+    };
+  });
+  const mobileWorkspaceTitle =
+    mobileWorkspaceTabs.find(tab => tab.key === activeWorkspaceTabKey)?.label ??
+    "Ponderosa";
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -679,7 +714,10 @@ export default function App({
           Skip to content
         </Box>
         <MobileWorkspaceHeader
-          appIconSource={appIconSource}
+          title={mobileWorkspaceTitle}
+          route={route}
+          workspaceTabs={mobileWorkspaceTabs}
+          activeWorkspaceTabKey={activeWorkspaceTabKey}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           unreadNotifications={(notificationsQuery.data ?? []).filter(
@@ -687,6 +725,8 @@ export default function App({
           ).length}
           profile={preferences.profile}
           onOpenNavigation={() => setMobileNavOpen(true)}
+          onActivateWorkspace={activateWorkspaceView}
+          onCloseWorkspace={closeWorkspaceView}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
           onCreateProject={() => openCreationForm("project")}

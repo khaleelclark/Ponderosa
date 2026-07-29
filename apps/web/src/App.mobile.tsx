@@ -1,19 +1,30 @@
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import MenuIcon from "@mui/icons-material/Menu";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
+import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
   AppBar,
   Badge,
   Box,
-  Chip,
+  Button,
+  Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   SwipeableDrawer,
   Toolbar,
   Tooltip,
   Typography,
 } from "@mui/material";
+import { useState, type MouseEvent } from "react";
 import type {
   ConversationDto,
   OperatorProfileDto,
@@ -25,9 +36,14 @@ import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { WorkspaceRouteIcon } from "./components/WorkspaceTabs";
+import type { WorkspaceTabState } from "./workspaceTabs";
 
 interface MobileWorkspaceHeaderProps {
-  appIconSource: string;
+  title: string;
+  route: Route;
+  workspaceTabs: Array<WorkspaceTabState & { label: string }>;
+  activeWorkspaceTabKey: string;
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -37,6 +53,8 @@ interface MobileWorkspaceHeaderProps {
   unreadNotifications: number;
   profile?: OperatorProfileDto;
   onOpenNavigation(): void;
+  onActivateWorkspace(key: string): void;
+  onCloseWorkspace(key: string): void;
   onOpenEngineStatus(): void;
   onOpenNotifications(): void;
   onCreateProject(): void;
@@ -45,18 +63,30 @@ interface MobileWorkspaceHeaderProps {
 }
 
 export function MobileWorkspaceHeader({
-  appIconSource,
+  title,
+  route,
+  workspaceTabs,
+  activeWorkspaceTabKey,
   preferredQuotaProvider,
   engineAvailability,
   unreadNotifications,
   profile,
   onOpenNavigation,
+  onActivateWorkspace,
+  onCloseWorkspace,
   onOpenEngineStatus,
   onOpenNotifications,
   onCreateProject,
   onOpenProfile,
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
+  const [recentAnchor, setRecentAnchor] = useState<HTMLElement>();
+  const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
+  const openRecent = (event: MouseEvent<HTMLElement>) =>
+    setRecentAnchor(event.currentTarget);
+  const openOverflow = (event: MouseEvent<HTMLElement>) =>
+    setOverflowAnchor(event.currentTarget);
+
   return (
     <AppBar
       position="static"
@@ -83,50 +113,33 @@ export function MobileWorkspaceHeader({
           <MenuIcon />
         </IconButton>
         <Box
-          component="img"
-          src={appIconSource}
-          alt=""
+          aria-hidden
           sx={{
-            display: "block",
-            width: { xs: 26, sm: 28 },
-            height: { xs: 26, sm: 28 },
-            mr: { xs: 0.75, sm: 1 },
-            borderRadius: 1,
-            objectFit: "contain",
+            display: "grid",
+            placeItems: "center",
+            mr: 0.75,
+            color: "text.secondary",
             flexShrink: 0,
           }}
-        />
-        <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
+        >
+          <WorkspaceRouteIcon route={route} />
+        </Box>
+        <Box aria-label={title} sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="h6"
             component="h1"
             sx={{ fontWeight: 800, minWidth: 0 }}
             noWrap
           >
-            Ponderosa
+            {title}
           </Typography>
         </Box>
-        <ProviderQuotaIndicator preferredProvider={preferredQuotaProvider} mobile />
-        <Tooltip
-          title={`${engineAvailability.label}. Click for provider details.`}
-          arrow
-          enterTouchDelay={0}
-        >
-          <Chip
-            size="small"
-            label={engineAvailability.label}
-            color={engineAvailability.severity}
-            variant="outlined"
-            tabIndex={0}
-            aria-label={`${engineAvailability.label}. ${engineAvailability.detail}`}
-            onClick={onOpenEngineStatus}
-            sx={{
-              maxWidth: { sm: 132, md: "none" },
-              display: { xs: "none", sm: "inline-flex" },
-              cursor: "pointer",
-            }}
+        <Box sx={{ display: { xs: "none", sm: "block" } }}>
+          <ProviderQuotaIndicator
+            preferredProvider={preferredQuotaProvider}
+            mobile
           />
-        </Tooltip>
+        </Box>
         <Tooltip title="Notifications">
           <IconButton aria-label="Open notifications" onClick={onOpenNotifications}>
             <Badge color="primary" badgeContent={unreadNotifications}>
@@ -134,34 +147,147 @@ export function MobileWorkspaceHeader({
             </Badge>
           </IconButton>
         </Tooltip>
-        <Tooltip title="New Project">
+        <Tooltip title="More">
           <IconButton
-            aria-label="New project"
-            onClick={onCreateProject}
-            sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}
+            aria-label="Open workspace actions"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(overflowAnchor)}
+            onClick={openOverflow}
           >
-            <AddIcon />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Operator Profile">
-          <IconButton
-            aria-label="Open operator profile"
-            onClick={onOpenProfile}
-            sx={{ ml: 0.5, p: 0, width: 44, height: 44 }}
-          >
-            <OperatorAvatar profile={profile} size={32} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Settings">
-          <IconButton
-            aria-label="Open settings"
-            onClick={onOpenSettings}
-            sx={{ ml: 0.5 }}
-          >
-            <SettingsIcon />
+            <MoreVertIcon />
           </IconButton>
         </Tooltip>
       </Toolbar>
+      <Box sx={{ px: 1.5, pb: 1 }}>
+        <Button
+          fullWidth
+          color="inherit"
+          variant="outlined"
+          aria-haspopup="menu"
+          aria-expanded={Boolean(recentAnchor)}
+          onClick={openRecent}
+          endIcon={<KeyboardArrowDownIcon />}
+          sx={{
+            minHeight: 40,
+            justifyContent: "space-between",
+            borderColor: "divider",
+            bgcolor: "background.paper",
+            px: 1.5,
+          }}
+        >
+          <Typography component="span" variant="body2" fontWeight={750} noWrap>
+            Recent work · {title}
+          </Typography>
+        </Button>
+      </Box>
+      <Menu
+        anchorEl={recentAnchor}
+        open={Boolean(recentAnchor)}
+        onClose={() => setRecentAnchor(undefined)}
+        slotProps={{
+          paper: {
+            sx: {
+              width: "min(calc(100vw - 24px), 420px)",
+              maxHeight: "min(70dvh, 560px)",
+            },
+          },
+        }}
+      >
+        {workspaceTabs.map(tab => (
+          <MenuItem
+            key={tab.key}
+            selected={tab.key === activeWorkspaceTabKey}
+            onClick={() => {
+              setRecentAnchor(undefined);
+              onActivateWorkspace(tab.key);
+            }}
+            sx={{ minHeight: 48, gap: 1 }}
+          >
+            <ListItemIcon>
+              <WorkspaceRouteIcon route={tab.route} />
+            </ListItemIcon>
+            <ListItemText
+              primary={tab.label}
+              primaryTypographyProps={{ noWrap: true, fontWeight: 700 }}
+            />
+            {workspaceTabs.length > 1 ? (
+              <IconButton
+                size="small"
+                aria-label={`Close ${tab.label}`}
+                onClick={event => {
+                  event.stopPropagation();
+                  onCloseWorkspace(tab.key);
+                  if (workspaceTabs.length <= 2)
+                    setRecentAnchor(undefined);
+                }}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            ) : null}
+          </MenuItem>
+        ))}
+      </Menu>
+      <Menu
+        anchorEl={overflowAnchor}
+        open={Boolean(overflowAnchor)}
+        onClose={() => setOverflowAnchor(undefined)}
+      >
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onCreateProject();
+          }}
+        >
+          <ListItemIcon><AddIcon /></ListItemIcon>
+          <ListItemText>New Project</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenEngineStatus();
+          }}
+        >
+          <ListItemIcon><SpeedOutlinedIcon /></ListItemIcon>
+          <ListItemText
+            primary="Provider Status"
+            secondary={engineAvailability.label}
+          />
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenNavigation();
+          }}
+        >
+          <ListItemIcon><SearchIcon /></ListItemIcon>
+          <ListItemText>Browse Workspaces</ListItemText>
+        </MenuItem>
+        <Divider />
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenProfile();
+          }}
+        >
+          <ListItemIcon>
+            {profile ? (
+              <OperatorAvatar profile={profile} size={24} />
+            ) : (
+              <PersonOutlineIcon />
+            )}
+          </ListItemIcon>
+          <ListItemText>Operator Profile</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenSettings();
+          }}
+        >
+          <ListItemIcon><SettingsIcon /></ListItemIcon>
+          <ListItemText>Settings</ListItemText>
+        </MenuItem>
+      </Menu>
     </AppBar>
   );
 }

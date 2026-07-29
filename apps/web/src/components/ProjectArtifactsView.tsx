@@ -35,6 +35,8 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type {
@@ -147,6 +149,8 @@ export function ProjectArtifactsView({
   onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const theme = useTheme();
+  const phonePreview = useMediaQuery(theme.breakpoints.down("sm"));
   const [filter, setFilter] = useState("");
   const [tab, setTab] = useState<ProjectDetailView>(initialView ?? "overview");
   const [fileCategories, setFileCategories] = useState<
@@ -840,9 +844,17 @@ export function ProjectArtifactsView({
       <Dialog
         open={Boolean(previewArtifact)}
         onClose={() => setPreviewArtifact(undefined)}
+        fullScreen={phonePreview}
         fullWidth
         maxWidth="lg"
         aria-labelledby="artifact-preview-title"
+        slotProps={{
+          paper: {
+            sx: {
+              maxHeight: { xs: "100dvh", sm: "calc(100% - 64px)" },
+            },
+          },
+        }}
       >
         <DialogTitle component="div">
           <Stack
@@ -908,6 +920,7 @@ export function ProjectArtifactsView({
             flexWrap: "wrap",
             gap: 0.5,
             px: { xs: 1, sm: 2 },
+            pb: { xs: "max(8px, env(safe-area-inset-bottom))", sm: 1 },
             "& .MuiButton-root": { minHeight: { xs: 44, sm: 36 } },
           }}
         >

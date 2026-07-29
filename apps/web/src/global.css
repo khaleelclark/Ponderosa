@@ -109,6 +109,35 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+@media (max-width: 899.95px) {
+  #main-content,
+  #main-content > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  #main-content img,
+  #main-content video,
+  #main-content canvas,
+  #main-content svg {
+    max-width: 100%;
+  }
+
+  .chat-scroll-region pre,
+  .chat-scroll-region table,
+  [data-preview-capability] pre,
+  [data-preview-capability] table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+  }
+
+  .chat-scroll-region {
+    overflow-x: hidden;
+  }
+}
+
 @media (max-width: 599.95px) {
   html {
     /* A slightly denser type scale for phone layouts; interactive targets keep
@@ -132,6 +161,7 @@ html {
   .mobile-chat-composer {
     display: block !important;
     max-height: 100dvh;
+    padding-bottom: env(safe-area-inset-bottom);
     overflow: hidden;
     opacity: 1;
     transform: translateY(0);
