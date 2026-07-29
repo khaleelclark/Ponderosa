@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import type { ReadinessCheckDto } from "@ponderosa/core";
+import { readSecureFile, secureFileAuthoritySupported } from "@ponderosa/native-host";
 
 export type WorkspaceArtifactReadPurpose = "generated_capture" | "legacy_pdf";
 
@@ -155,6 +156,30 @@ export function readWorkspaceArtifactFile(input: {
   requireNonEmpty?: boolean;
   faults?: WorkspaceArtifactReadFaults;
 }): SafeProjectFile | undefined {
+  if (process.platform === "darwin") {
+    try {
+      const rootReal = realpathSync(input.rootPath);
+      const relativePath = relativeProjectPath(input.rootPath, rootReal, input.requestedPath);
+      if (!relativePath) return undefined;
+      const context = { purpose: input.purpose, rootPath: rootReal, relativePath } as const;
+      input.faults?.afterPathValidation?.(context);
+      const body = readSecureFile({
+        root: input.rootPath,
+        relativePath,
+        maxBytes: input.maxBytes,
+        requireNonEmpty: input.requireNonEmpty,
+      });
+      if (!body) return undefined;
+      input.faults?.afterFileOpen?.(context);
+      return {
+        body,
+        name: path.basename(relativePath),
+        relativePath: relativePath.replaceAll(path.sep, "/"),
+      };
+    } catch {
+      return undefined;
+    }
+  }
   let root: OpenedProjectRoot | undefined;
   let opened: OpenedProjectPath | undefined;
   try {
@@ -188,8 +213,25 @@ export function readWorkspaceArtifactFile(input: {
 /** Production preflight for the Linux procfs descriptor bridge used by all
  * managed and workspace-derived artifact operations. */
 export function descriptorRelativeFilesystemCapability(dataDir: string): ReadinessCheckDto {
+  if (process.platform === "darwin") {
+    return secureFileAuthoritySupported()
+      ? {
+        ok: false,
+        detail: "macOS openat no-follow Project reads are available, but retained-handle managed artifact publication is not yet implemented",
+      }
+      : {
+        ok: false,
+        detail: "macOS retained-descriptor secure filesystem helper is unavailable",
+      };
+  }
+  if (process.platform === "win32") {
+    return {
+      ok: false,
+      detail: "Windows retained-handle reparse-safe filesystem authority is not yet implemented",
+    };
+  }
   if (process.platform !== "linux") {
-    return { ok: false, detail: "artifact filesystem requires Linux with visible /proc/self/fd" };
+    return { ok: false, detail: `secure artifact filesystem is unsupported on ${process.platform}` };
   }
   let descriptor: number | undefined;
   let relativeDescriptor: number | undefined;

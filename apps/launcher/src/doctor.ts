@@ -14,7 +14,11 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { WindowsProcessJob, windowsJobObjectsSupported } from "@ponderosa/native-host";
+import {
+  secureFileAuthoritySupported,
+  WindowsProcessJob,
+  windowsJobObjectsSupported,
+} from "@ponderosa/native-host";
 import { currentPonderosaStatus } from "./control.js";
 import { discoverProviders } from "./providers.js";
 import { readLauncherConfiguration } from "./paths.js";
@@ -238,6 +242,23 @@ export async function runDoctor(input: {
     sqlite ? "pass" : "fail",
     sqlite ? "A disposable database was written, read, and closed." : "The bundled SQLite runtime could not persist data.",
     sqlite ? undefined : "Reinstall the Ponderosa package built for this operating system and architecture.",
+  ));
+  const secureReads = secureFileAuthoritySupported();
+  const completeFilesystemAuthority = process.platform === "linux";
+  checks.push(check(
+    "secure-filesystem",
+    "Secure Project filesystem authority",
+    completeFilesystemAuthority ? "pass" : "fail",
+    process.platform === "linux"
+      ? "Linux descriptor-relative no-follow authority is available."
+      : process.platform === "darwin" && secureReads
+        ? "macOS openat no-follow Project reads are available; managed publication authority is incomplete."
+        : process.platform === "win32"
+          ? "Windows retained-handle reparse-safe authority is unavailable."
+          : `Secure filesystem authority is unavailable on ${process.platform}.`,
+    completeFilesystemAuthority
+      ? undefined
+      : "Install a build with the complete retained-handle filesystem implementation before durable Agent work.",
   ));
   const configuration = readLauncherConfiguration(input.paths.configPath);
   for (const provider of await discoverProviders(input.platform, configuration)) {

@@ -9,6 +9,8 @@ interface NativeJobBinding {
   terminateWindowsJob(job: unknown): void;
   windowsJobActiveProcesses(job: unknown): number;
   closeWindowsJob(job: unknown): void;
+  secureFileAuthoritySupported(): boolean;
+  readSecureFile(root: string, relativePath: string, maxBytes: number, requireNonEmpty: boolean): Buffer | null;
 }
 
 let loaded: NativeJobBinding | undefined;
@@ -66,4 +68,53 @@ export class WindowsProcessJob {
     this.#closed = true;
     binding().closeWindowsJob(this.#authority);
   }
+}
+
+function assertSafeRelativePath(relativePath: string): void {
+  if (!relativePath || relativePath.length > 4_096 ||
+      relativePath.startsWith("/") || relativePath.startsWith("\\") ||
+      /^[A-Za-z]:/u.test(relativePath) || relativePath.startsWith("//") ||
+      relativePath.startsWith("\\\\")) {
+    throw new Error("secure file authority requires a bounded relative path");
+  }
+  const components = relativePath.split(/[\\/]/u);
+  if (components.some((component) => !component || component === "." || component === "..")) {
+    throw new Error("secure file authority rejects empty, current, and parent path components");
+  }
+}
+
+export function secureFileAuthoritySupported(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== "linux" && platform !== "darwin") return false;
+  try {
+    return binding().secureFileAuthoritySupported();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read bytes only through descriptors retained from the registered root.
+ * Absolute paths, parent traversal, symlinks, mount crossings, hard links,
+ * ancestor replacement, and unstable final identities fail closed.
+ */
+export function readSecureFile(input: {
+  root: string;
+  relativePath: string;
+  maxBytes: number;
+  requireNonEmpty?: boolean;
+}): Buffer | undefined {
+  if (!secureFileAuthoritySupported()) return undefined;
+  assertSafeRelativePath(input.relativePath);
+  if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
+      input.maxBytes > 64 * 1024 * 1024) {
+    throw new Error("secure file authority maxBytes must be between 0 and 64 MiB");
+  }
+  return binding().readSecureFile(
+    input.root,
+    input.relativePath,
+    input.maxBytes,
+    input.requireNonEmpty === true,
+  ) ?? undefined;
 }
