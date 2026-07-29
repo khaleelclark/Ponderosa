@@ -1,5 +1,9 @@
 # Private-beta packaging
 
+Installation, data locations, authentication, diagnostics, uninstall behavior,
+OS warnings, and qualification gates are documented in
+[`docs/private-beta-installation.md`](../docs/private-beta-installation.md).
+
 Ponderosa keeps one application implementation across operating systems:
 
 ```text

@@ -111,6 +111,14 @@ try {
     "--report", nativeReport,
   ]);
   const nativeQualification = JSON.parse(readFileSync(nativeReport, "utf8"));
+  const lifecycleReportPath = path.join(disposable, "launcher-lifecycle-report.json");
+  run(path.join(installedRoot, "runtime", nodeName), [
+    path.join(installedRoot, "qualification", "qualify-launcher-lifecycle.mjs"),
+    "--install-root", installedRoot,
+    "--data-dir", path.join(disposable, "Ponderosa Data"),
+    "--report", lifecycleReportPath,
+  ]);
+  const lifecycleQualification = JSON.parse(readFileSync(lifecycleReportPath, "utf8"));
   uninstall();
   removed = true;
   if (!existsSync(projectSentinel)) throw new Error("Installer removal deleted the selected Project source folder.");
@@ -122,6 +130,7 @@ try {
     artifact: path.basename(artifact),
     checks: [
       ...nativeQualification.checks,
+      ...lifecycleQualification.checks,
       {
         id: "install-without-checkout",
         status: "pass",
@@ -133,6 +142,8 @@ try {
         detail: "uninstall preserved a disposable Ponderosa data sentinel and selected Project source folder",
       },
     ],
+    releaseQualified: lifecycleQualification.releaseQualified,
+    releaseBlockers: lifecycleQualification.releaseBlockers,
   };
   mkdirSync(path.dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });

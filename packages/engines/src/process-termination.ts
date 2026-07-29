@@ -14,10 +14,6 @@ export interface NativeProcessTreeAuthority {
   close(): void;
 }
 
-export function assertPersistentRuntimeHostingSupported(platform = process.platform): void {
-  if (platform === "win32") return;
-}
-
 /**
  * Terminate an engine's entire detached process group and resolve only after
  * the operating system reports that no process remains in it. Timers stay
