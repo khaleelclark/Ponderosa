@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   listSecureDirectory,
   readSecureFile,
+  readSecureFileAsync,
   removeSecureFile,
   secureFileAuthoritySupported,
   writeSecureFileAtomic,
@@ -25,7 +26,7 @@ test("Windows Job Object capability fails closed by platform", () => {
   if (process.platform !== "win32") assert.equal(windowsJobObjectsSupported(), false);
 });
 
-test("secure file authority retains root-relative no-follow access", () => {
+test("secure file authority retains root-relative no-follow access", async () => {
   assert.equal(secureFileAuthoritySupported(), true);
   const parent = mkdtempSync(path.join(os.tmpdir(), "ponderosa-secure-file-"));
   const root = path.join(parent, "root");
@@ -72,6 +73,27 @@ test("secure file authority retains root-relative no-follow access", () => {
     assert.throws(() => readSecureFile({ root, relativePath: "../outside/secret.txt", maxBytes: 16 }));
     assert.throws(() => readSecureFile({ root, relativePath: path.join(root, "nested", "safe.txt"), maxBytes: 16 }));
     assert.equal(readSecureFile({ root, relativePath: "nested/safe.txt", maxBytes: 3 }), undefined);
+    assert.equal((await readSecureFileAsync({
+      root,
+      relativePath: "nested/safe.txt",
+      maxBytes: 16,
+      expectedSize: 4,
+      expectedSha256:
+        "8b3369944dd2a3fab39e32d1aeb1f763946a458ae3e6368a46432adc8f3a0860",
+    }))?.toString(), "safe");
+    assert.equal(await readSecureFileAsync({
+      root,
+      relativePath: "nested/safe.txt",
+      maxBytes: 16,
+      expectedSize: 5,
+    }), undefined);
+    if (process.platform === "win32") {
+      assert.throws(() => readSecureFile({
+        root,
+        relativePath: "nested/safe.txt:stream",
+        maxBytes: 16,
+      }));
+    }
     assert.deepEqual(
       listSecureDirectory({ root, relativePath: "nested" })
         ?.map(({ name, kind, size }) => ({ name, kind, size })),

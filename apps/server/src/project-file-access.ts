@@ -12,6 +12,7 @@ import type { ReadinessCheckDto } from "@ponderosa/core";
 import {
   listSecureDirectory,
   readSecureFile,
+  readSecureFileAsync,
   removeSecureFile,
   secureFileAuthoritySupported,
   writeSecureFileAtomic,
@@ -229,6 +230,49 @@ export function readWorkspaceArtifactFile(input: {
   } finally {
     if (opened) closeDescriptors(opened.descriptors);
     else if (root) closeSync(root.descriptor);
+  }
+}
+
+export async function readWorkspaceArtifactFileAsync(input: {
+  rootPath: string;
+  requestedPath: string;
+  purpose: WorkspaceArtifactReadPurpose;
+  maxBytes: number;
+  requireNonEmpty?: boolean;
+  signal?: AbortSignal;
+  faults?: WorkspaceArtifactReadFaults;
+}): Promise<SafeProjectFile | undefined> {
+  if (!secureFileAuthoritySupported()) return undefined;
+  try {
+    const rootReal = realpathSync(input.rootPath);
+    const relativePath = relativeProjectPath(
+      input.rootPath,
+      rootReal,
+      input.requestedPath,
+    );
+    if (!relativePath) return undefined;
+    const context = {
+      purpose: input.purpose,
+      rootPath: rootReal,
+      relativePath,
+    } as const;
+    input.faults?.afterPathValidation?.(context);
+    const body = await readSecureFileAsync({
+      root: input.rootPath,
+      relativePath,
+      maxBytes: input.maxBytes,
+      requireNonEmpty: input.requireNonEmpty,
+    }, input.signal);
+    if (!body) return undefined;
+    input.faults?.afterFileOpen?.(context);
+    return {
+      body,
+      name: path.basename(relativePath),
+      relativePath: relativePath.replaceAll(path.sep, "/"),
+    };
+  } catch (error) {
+    if (input.signal?.aborted) throw error;
+    return undefined;
   }
 }
 

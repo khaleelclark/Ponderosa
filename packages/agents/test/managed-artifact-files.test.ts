@@ -21,7 +21,11 @@ import {
 } from "../src/managed-artifact-files.js";
 import { managedArtifactContentPath } from "../src/paths.js";
 
-const itWithManagedArtifacts = process.platform === "linux" ? it : it.skip;
+const itWithLinuxFaultHooks =
+  process.platform === "linux" &&
+  process.env.PONDEROSA_TEST_NATIVE_MANAGED_AUTHORITY !== "1"
+    ? it
+    : it.skip;
 
 describe("Project-owned managed artifact files", () => {
   let dataDir: string;
@@ -33,7 +37,7 @@ describe("Project-owned managed artifact files", () => {
   beforeEach(() => { dataDir = mkdtempSync(path.join(tmpdir(), "managed-artifact-")); });
   afterEach(() => { rmSync(dataDir, { recursive: true, force: true }); });
 
-  itWithManagedArtifacts("fsync-publishes idempotent bytes and rejects an identity collision", () => {
+  it("fsync-publishes idempotent bytes and rejects an identity collision", () => {
     const first = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     expect(first).toMatchObject({ size: body.length, sha256 });
     expect(readFileSync(first.path)).toEqual(body);
@@ -61,7 +65,7 @@ describe("Project-owned managed artifact files", () => {
     expect(readFileSync(outside)).toEqual(body);
   });
 
-  itWithManagedArtifacts("keeps a read bound to its opened inode across a leaf swap", () => {
+  itWithLinuxFaultHooks("keeps a read bound to its opened inode across a leaf swap", () => {
     const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const saved = `${published.path}.opened`;
     const outside = path.join(dataDir, "replacement-outside");
@@ -76,7 +80,7 @@ describe("Project-owned managed artifact files", () => {
     expect(readFileSync(outside, "utf8")).toBe("replacement");
   });
 
-  itWithManagedArtifacts.each(["afterTemporaryOpen", "beforeRename", "afterRename"] as const)(
+  itWithLinuxFaultHooks.each(["afterTemporaryOpen", "beforeRename", "afterRename"] as const)(
     "fails closed when an ancestor is swapped at %s",
     (fault) => {
       const contentDirectory = path.dirname(managedArtifactContentPath(dataDir, projectId, artifactId));
@@ -96,7 +100,7 @@ describe("Project-owned managed artifact files", () => {
     },
   );
 
-  itWithManagedArtifacts("fails closed when an ancestor is swapped after the read opens", () => {
+  itWithLinuxFaultHooks("fails closed when an ancestor is swapped after the read opens", () => {
     const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const contentDirectory = path.dirname(published.path);
     const retained = `${contentDirectory}.retained`;
@@ -111,7 +115,7 @@ describe("Project-owned managed artifact files", () => {
     expect(read).toBeUndefined();
   });
 
-  itWithManagedArtifacts("reserves an in-flight publication from orphan repair", () => {
+  it("reserves an in-flight publication from orphan repair", () => {
     const repairedDuringPublication: string[][] = [];
     const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body, {
       afterTemporaryOpen: () => repairedDuringPublication.push(
@@ -122,7 +126,7 @@ describe("Project-owned managed artifact files", () => {
     expect(readFileSync(published.path)).toEqual(body);
   });
 
-  itWithManagedArtifacts("hashes asynchronously, retains only bounded preview bytes, and streams the verified descriptor", async () => {
+  it("hashes asynchronously, retains only bounded preview bytes, and streams the verified descriptor", async () => {
     const large = Buffer.alloc(8 * 1024 * 1024, 0x61);
     const hash = createHash("sha256").update(large).digest("hex");
     publishManagedArtifactContent(dataDir, projectId, artifactId, large);
@@ -146,7 +150,7 @@ describe("Project-owned managed artifact files", () => {
     expect(streamedHash.digest("hex")).toBe(hash);
   });
 
-  itWithManagedArtifacts("streams the verified snapshot after a same-size source mutation", async () => {
+  it("streams the verified snapshot after a same-size source mutation", async () => {
     const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const mutated = Buffer.alloc(body.length, 0x78);
     const opened = await openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
@@ -162,7 +166,7 @@ describe("Project-owned managed artifact files", () => {
     expect(Buffer.concat(streamed)).toEqual(body);
   });
 
-  itWithManagedArtifacts("protects an opening snapshot from repair and removes it after failure", async () => {
+  it("protects an opening snapshot from repair and removes it after failure", async () => {
     publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const repaired: string[][] = [];
     const opened = await openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {
@@ -179,7 +183,7 @@ describe("Project-owned managed artifact files", () => {
       .toEqual([artifactId]);
   });
 
-  itWithManagedArtifacts("removes an abandoned snapshot during startup-style orphan repair", () => {
+  it("removes an abandoned snapshot during startup-style orphan repair", () => {
     const published = publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const abandoned = path.join(path.dirname(published.path), `.${artifactId}.abandoned.snapshot`);
     writeFileSync(abandoned, body);
@@ -188,7 +192,7 @@ describe("Project-owned managed artifact files", () => {
     expect(readdirSync(path.dirname(published.path))).toEqual([artifactId]);
   });
 
-  itWithManagedArtifacts("cancels an async managed-artifact verification while retaining descriptor safety", async () => {
+  it("cancels an async managed-artifact verification while retaining descriptor safety", async () => {
     publishManagedArtifactContent(dataDir, projectId, artifactId, body);
     const controller = new AbortController();
     await expect(openManagedArtifactContent(dataDir, projectId, artifactId, body.length, sha256, {

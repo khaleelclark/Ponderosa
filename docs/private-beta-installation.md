@@ -133,3 +133,10 @@ after verifying no recovery or rollback is needed.
 - GitHub-hosted Windows runners build on Windows Server, not Windows 11. A
   native Windows 11 machine remains the final OS gate.
 - Unsigned artifacts are private test artifacts and carry the warnings above.
+
+Installed qualification deliberately keeps `releaseQualified=false` unless
+`PONDEROSA_NATIVE_ADVERSARIAL_FS_REPORT` names a JSON report for the exact
+commit, platform, and architecture. That report must record passing root and
+ancestor replacement, mount or volume, link or reparse, collision and
+durability, batch rollback, production-route, and bounded-cancellation checks.
+An environment flag without those recorded results cannot qualify a release.

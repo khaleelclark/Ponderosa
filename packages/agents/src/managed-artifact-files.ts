@@ -21,6 +21,7 @@ import path from "node:path";
 import {
   listSecureDirectory,
   readSecureFile,
+  readSecureFileAsync,
   removeSecureFile,
   writeSecureFileAtomic,
 } from "@ponderosa/native-host";
@@ -208,6 +209,12 @@ function nativeManagedFile(projectId: string, artifactId: string): string {
   return path.posix.join(nativeManagedDirectory(projectId), artifactId);
 }
 
+function useNativeManagedAuthority(): boolean {
+  return process.platform !== "linux" ||
+    (process.env.NODE_ENV === "test" &&
+      process.env.PONDEROSA_TEST_NATIVE_MANAGED_AUTHORITY === "1");
+}
+
 function publishManagedArtifactContentNative(
   dataDir: string,
   projectId: string,
@@ -217,20 +224,6 @@ function publishManagedArtifactContentNative(
   faults?: ManagedArtifactPublicationFaults,
 ): { created: boolean; result: Omit<ManagedArtifactFile, "body"> } {
   const destination = managedArtifactContentPath(dataDir, projectId, artifactId);
-  const existing = readManagedArtifactContent(
-    dataDir,
-    projectId,
-    artifactId,
-    body.length,
-    sha256,
-  );
-  if (existing) {
-    return {
-      created: false,
-      result: { path: destination, size: body.length, sha256 },
-    };
-  }
-
   const temporaryLeaf = `.${artifactId}.${randomUUID()}.tmp`;
   faults?.afterTemporaryOpen?.(
     managedArtifactContentPath(dataDir, projectId, temporaryLeaf),
@@ -245,6 +238,7 @@ function publishManagedArtifactContentNative(
       body,
     });
   } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const concurrent = readManagedArtifactContent(
       dataDir,
       projectId,
@@ -252,7 +246,12 @@ function publishManagedArtifactContentNative(
       body.length,
       sha256,
     );
-    if (!concurrent) throw error;
+    if (!concurrent) {
+      throw new Error(
+        "managed artifact identity collision or unsafe existing leaf",
+        { cause: error },
+      );
+    }
     return {
       created: false,
       result: { path: destination, size: body.length, sha256 },
@@ -309,7 +308,7 @@ export function publishManagedArtifactContent(
   if (activePublications.has(activeKey)) throw new Error("managed artifact publication is already active");
   activePublications.add(activeKey);
   const destination = managedArtifactContentPath(dataDir, projectId, artifactId);
-  if (process.platform !== "linux") {
+  if (useNativeManagedAuthority()) {
     try {
       return publishManagedArtifactContentNative(
         dataDir,
@@ -426,7 +425,7 @@ export async function publishManagedArtifactContents(
   });
   if (planned.length === 0) return [];
 
-  if (process.platform !== "linux") {
+  if (useNativeManagedAuthority()) {
     const nativeActiveKeys = planned.map((item) =>
       publicationKey(dataDir, projectId, item.artifactId)
     );
@@ -613,7 +612,7 @@ export function repairManagedArtifactContent(
   graceBoundaryMs: number,
 ): string[] {
   if (!safeProjectId(projectId)) return [];
-  if (process.platform !== "linux") {
+  if (useNativeManagedAuthority()) {
     const entries = listSecureDirectory({
       root: dataDir,
       relativePath: nativeManagedDirectory(projectId),
@@ -688,7 +687,7 @@ export function readManagedArtifactContent(
   if (!safeArtifactId(artifactId) || !safeProjectId(projectId)) return undefined;
   if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
       !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
-  if (process.platform !== "linux") {
+  if (useNativeManagedAuthority()) {
     try {
       const file = managedArtifactContentPath(dataDir, projectId, artifactId);
       faults?.afterOpen?.(file);
@@ -783,18 +782,19 @@ export async function openManagedArtifactContent(
   if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
       !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
   const signal = options?.signal;
-  if (process.platform !== "linux") {
+  if (useNativeManagedAuthority()) {
     signal?.throwIfAborted();
     const file = managedArtifactContentPath(dataDir, projectId, artifactId);
     await options?.faults?.afterOpen?.(file);
-    const managed = readManagedArtifactContent(
-      dataDir,
-      projectId,
-      artifactId,
+    const body = await readSecureFileAsync({
+      root: dataDir,
+      relativePath: nativeManagedFile(projectId, artifactId),
+      maxBytes: expectedSize,
+      requireNonEmpty: true,
       expectedSize,
       expectedSha256,
-    );
-    if (!managed) return undefined;
+    }, signal);
+    if (!body) return undefined;
     signal?.throwIfAborted();
     await options?.faults?.afterSnapshotOpen?.(file);
     await options?.faults?.afterVerification?.(file);
@@ -811,15 +811,27 @@ export async function openManagedArtifactContent(
         throw new Error("managed artifact range must be bounded");
       }
       readSignal?.throwIfAborted();
-      const body = Buffer.from(
-        managed.body.subarray(0, Math.min(expectedSize, maxBytes)),
+      const range = Buffer.from(
+        body.subarray(0, Math.min(expectedSize, maxBytes)),
       );
       readSignal?.throwIfAborted();
-      return body;
+      return range;
     };
     const createReadStream = (readSignal?: AbortSignal): Readable => {
       if (closed) throw new Error("managed artifact handle is closed");
-      const stream = Readable.from([Buffer.from(managed.body)]);
+      const stream = Readable.from(
+        (async function* streamVerifiedManagedArtifact() {
+          for (let offset = 0; offset < body.length;
+            offset += MANAGED_ARTIFACT_READ_CHUNK_BYTES) {
+            readSignal?.throwIfAborted();
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            yield body.subarray(
+              offset,
+              Math.min(body.length, offset + MANAGED_ARTIFACT_READ_CHUNK_BYTES),
+            );
+          }
+        })(),
+      );
       const abort = (): void => {
         stream.destroy(readSignal?.reason instanceof Error
           ? readSignal.reason

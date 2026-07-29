@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
   windowsJobObjectsSupported(): boolean;
@@ -94,7 +95,10 @@ function assertSafeRelativePath(relativePath: string): void {
     throw new Error("secure file authority requires a bounded relative path");
   }
   const components = relativePath.split(/[\\/]/u);
-  if (components.some((component) => !component || component === "." || component === "..")) {
+  if (components.some((component) =>
+    !component || component === "." || component === ".." ||
+    (process.platform === "win32" && component.includes(":"))
+  )) {
     throw new Error("secure file authority rejects empty, current, and parent path components");
   }
 }
@@ -106,7 +110,8 @@ function assertSafeRelativeDirectory(relativePath: string): void {
 
 function assertSafeLeaf(leaf: string, label: string): void {
   if (!leaf || leaf.length > 255 || leaf === "." || leaf === ".." ||
-      /[\\/\u0000]/u.test(leaf)) {
+      /[\\/\u0000]/u.test(leaf) ||
+      (process.platform === "win32" && leaf.includes(":"))) {
     throw new Error(`${label} must be one bounded path leaf`);
   }
 }
@@ -145,6 +150,74 @@ export function readSecureFile(input: {
     input.maxBytes,
     input.requireNonEmpty === true,
   ) ?? undefined;
+}
+
+export function readSecureFileAsync(
+  input: {
+    root: string;
+    relativePath: string;
+    maxBytes: number;
+    requireNonEmpty?: boolean;
+    expectedSize?: number;
+    expectedSha256?: string;
+  },
+  signal?: AbortSignal,
+): Promise<Buffer | undefined> {
+  if (!secureFileAuthoritySupported()) return Promise.resolve(undefined);
+  assertSafeRelativePath(input.relativePath);
+  if (!Number.isSafeInteger(input.maxBytes) || input.maxBytes < 0 ||
+      input.maxBytes > 64 * 1024 * 1024) {
+    throw new Error("secure file authority maxBytes must be between 0 and 64 MiB");
+  }
+  if (input.expectedSize !== undefined &&
+      (!Number.isSafeInteger(input.expectedSize) ||
+       input.expectedSize < 0 ||
+       input.expectedSize > input.maxBytes)) {
+    throw new Error("secure file authority expectedSize is invalid");
+  }
+  if (input.expectedSha256 !== undefined &&
+      !/^[a-f0-9]{64}$/u.test(input.expectedSha256)) {
+    throw new Error("secure file authority expectedSha256 is invalid");
+  }
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      new URL("./secure-file-worker.js", import.meta.url),
+      { workerData: input },
+    );
+    let settled = false;
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", abort);
+      worker.removeAllListeners();
+    };
+    const finish = (
+      outcome: { body?: Uint8Array; error?: string },
+    ): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate();
+      if (outcome.error) reject(new Error(outcome.error));
+      else resolve(outcome.body ? Buffer.from(outcome.body) : undefined);
+    };
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate();
+      reject(signal?.reason instanceof Error
+        ? signal.reason
+        : new Error("secure file read aborted"));
+    };
+    worker.once("message", finish);
+    worker.once("error", (error) => finish({ error: error.message }));
+    worker.once("exit", (code) => {
+      if (!settled) {
+        finish({ error: `secure file worker exited without a result (code ${code})` });
+      }
+    });
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 /** Enumerate only regular files and directories below a retained secure root. */

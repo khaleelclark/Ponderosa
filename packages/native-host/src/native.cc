@@ -29,6 +29,18 @@ void Throw(napi_env env, const std::string& message) {
   napi_throw_error(env, nullptr, message.c_str());
 }
 
+void ThrowCode(
+    napi_env env, const std::string& code, const std::string& message) {
+  napi_value text;
+  napi_create_string_utf8(env, message.c_str(), message.size(), &text);
+  napi_value error;
+  napi_create_error(env, nullptr, text, &error);
+  napi_value code_value;
+  napi_create_string_utf8(env, code.c_str(), code.size(), &code_value);
+  napi_set_named_property(env, error, "code", code_value);
+  napi_throw(env, error);
+}
+
 bool ReadUtf8(napi_env env, napi_value value, std::string* output) {
   size_t length = 0;
   if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok) return false;
@@ -48,6 +60,9 @@ bool ParseRelativePath(
   if (input.empty()) return true;
   std::string current;
   for (const char value : input) {
+#ifdef _WIN32
+    if (value == ':') return false;
+#endif
     if (value == '/' || value == '\\') {
       if (current.empty() || current == "." || current == "..") return false;
       components->push_back(current);
@@ -77,6 +92,9 @@ bool SafeLeaf(const std::string& input) {
   if (input.empty() || input.size() > 255 || input == "." || input == "..") return false;
   for (const unsigned char value : input) {
     if (value == '/' || value == '\\' || value == '\0') return false;
+#ifdef _WIN32
+    if (value == ':') return false;
+#endif
   }
   return true;
 }
@@ -407,9 +425,38 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
   }
   if (linkat(
           directory, temporary.c_str(), directory, leaf.c_str(), 0) != 0) {
+    const int publication_errno = errno;
     const std::string error = PosixError("linkat publication");
     cleanup();
-    Throw(env, error);
+    if (publication_errno == EEXIST) {
+      const int existing = openat(
+          directory, leaf.c_str(),
+          O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+      struct stat existing_identity{};
+      struct stat current_existing_identity{};
+      const bool durable_existing =
+          existing >= 0 &&
+          fstat(existing, &existing_identity) == 0 &&
+          S_ISREG(existing_identity.st_mode) &&
+          existing_identity.st_dev == identities.front().st_dev &&
+          existing_identity.st_nlink == 1 &&
+          fsync(existing) == 0 &&
+          fsync(directory) == 0 &&
+          fstatat(
+              directory, leaf.c_str(), &current_existing_identity,
+              AT_SYMLINK_NOFOLLOW) == 0 &&
+          SameIdentity(existing_identity, current_existing_identity) &&
+          SecureDirectoryStillCurrent(
+              root, components, descriptors, identities);
+      if (existing >= 0) close(existing);
+      if (durable_existing) {
+        ThrowCode(env, "EEXIST", error);
+      } else {
+        Throw(env, "existing secure publication failed durability validation");
+      }
+    } else {
+      Throw(env, error);
+    }
     return nullptr;
   }
   if (unlinkat(directory, temporary.c_str(), 0) != 0) {
@@ -419,13 +466,28 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
     return nullptr;
   }
   temporary_exists = false;
-  if (fsync(directory) != 0 ||
+  const int installed = openat(
+      directory, leaf.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat installed_identity{};
+  struct stat current_installed_identity{};
+  if (installed < 0 ||
+      fstat(installed, &installed_identity) != 0 ||
+      !SameIdentity(identity, installed_identity) ||
+      installed_identity.st_nlink != 1 ||
+      fsync(installed) != 0 ||
+      fsync(directory) != 0 ||
+      fstatat(
+          directory, leaf.c_str(), &current_installed_identity,
+          AT_SYMLINK_NOFOLLOW) != 0 ||
+      !SameIdentity(installed_identity, current_installed_identity) ||
       !SecureDirectoryStillCurrent(
           root, components, descriptors, identities)) {
+    if (installed >= 0) close(installed);
     close(output);
     Throw(env, "secure publication directory failed durability validation");
     return nullptr;
   }
+  close(installed);
   close(output);
   return Boolean(env, true);
 }
@@ -1019,16 +1081,93 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
   if (!SetFileInformationByHandle(
           output, FileRenameInfo, rename,
           static_cast<DWORD>(rename_buffer.size()))) {
-    return fail(WindowsError("SetFileInformationByHandle rename"));
+    const DWORD rename_error = GetLastError();
+    const std::string rename_detail =
+        WindowsError("SetFileInformationByHandle rename");
+    if (rename_error == ERROR_ALREADY_EXISTS ||
+        rename_error == ERROR_FILE_EXISTS) {
+      DeleteWindowsFileHandle(output);
+      CloseHandle(output);
+      HANDLE existing = INVALID_HANDLE_VALUE;
+      const NTSTATUS existing_status = OpenWindowsRelative(
+          handles.values.back(), Wide(leaf),
+          GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+          kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+          &existing);
+      WindowsIdentity existing_identity{};
+      bool durable_existing =
+          NtSuccess(existing_status) &&
+          GetWindowsIdentity(existing, &existing_identity) &&
+          !(existing_identity.attributes &
+            (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) &&
+          existing_identity.volume == identities.front().volume &&
+          existing_identity.links == 1 &&
+          FlushFileBuffers(existing) &&
+          SecureDirectoryStillCurrent(
+              root, components, handles, identities);
+      if (durable_existing) {
+        HANDLE latest = INVALID_HANDLE_VALUE;
+        const NTSTATUS latest_status = OpenWindowsRelative(
+            handles.values.back(), Wide(leaf),
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+            &latest);
+        WindowsIdentity latest_identity{};
+        durable_existing =
+            NtSuccess(latest_status) &&
+            GetWindowsIdentity(latest, &latest_identity) &&
+            SameIdentity(existing_identity, latest_identity);
+        if (latest != INVALID_HANDLE_VALUE) CloseHandle(latest);
+      }
+      if (existing != INVALID_HANDLE_VALUE) CloseHandle(existing);
+      if (durable_existing) {
+        ThrowCode(env, "EEXIST", rename_detail);
+      } else {
+        Throw(env, "existing secure publication failed durability validation");
+      }
+      return nullptr;
+    }
+    return fail(rename_detail);
   }
   installed = true;
+  HANDLE current = INVALID_HANDLE_VALUE;
+  const NTSTATUS current_status = OpenWindowsRelative(
+      handles.values.back(), Wide(leaf),
+      GENERIC_READ | GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+      &current);
+  WindowsIdentity current_identity{};
   if (!FlushFileBuffers(output) ||
+      !NtSuccess(current_status) ||
+      !GetWindowsIdentity(current, &current_identity) ||
+      !SameIdentity(identity, current_identity) ||
+      current_identity.links != 1 ||
+      !FlushFileBuffers(current) ||
       !SecureDirectoryStillCurrent(
           root, components, handles, identities)) {
+    if (current != INVALID_HANDLE_VALUE) CloseHandle(current);
     CloseHandle(output);
     Throw(env, "secure publication failed final durability validation");
     return nullptr;
   }
+  HANDLE latest = INVALID_HANDLE_VALUE;
+  const NTSTATUS latest_status = OpenWindowsRelative(
+      handles.values.back(), Wide(leaf),
+      FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+      &latest);
+  WindowsIdentity latest_identity{};
+  if (!NtSuccess(latest_status) ||
+      !GetWindowsIdentity(latest, &latest_identity) ||
+      !SameIdentity(current_identity, latest_identity)) {
+    if (latest != INVALID_HANDLE_VALUE) CloseHandle(latest);
+    CloseHandle(current);
+    CloseHandle(output);
+    Throw(env, "secure publication destination changed after installation");
+    return nullptr;
+  }
+  CloseHandle(latest);
+  CloseHandle(current);
   CloseHandle(output);
   return Boolean(env, true);
 }

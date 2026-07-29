@@ -18,7 +18,7 @@ import {
   MAX_FILE_BYTES,
 } from "../project-files.js";
 import {
-  readWorkspaceArtifactFile,
+  readWorkspaceArtifactFileAsync,
   type WorkspaceArtifactReadFaults,
 } from "../project-file-access.js";
 import {
@@ -181,11 +181,12 @@ export function registerArtifactRoutes(
       if (!project || !agent || agent.projectId !== project.id) return undefined;
       const generatedPath = store.getGeneratedPdfPath(agent.id, artifactId);
       if (!generatedPath) return undefined;
-      const source = readWorkspaceArtifactFile({
+      const source = await readWorkspaceArtifactFileAsync({
         rootPath: project.hostPath,
         requestedPath: generatedPath,
         purpose: "legacy_pdf",
         maxBytes: 32 * 1024 * 1024,
+        signal,
         faults: workspaceArtifactReadFaults,
       });
       return source

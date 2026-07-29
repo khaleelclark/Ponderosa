@@ -1,11 +1,14 @@
 import { isUtf8 } from "node:buffer";
-import { constants as fsConstants, promises as fs } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { AgentStore } from "@ponderosa/agents";
 import type { WorkspaceFileViewDto } from "@ponderosa/core";
-import { listSecureDirectory, readSecureFile } from "@ponderosa/native-host";
+import {
+  listSecureDirectory,
+  readSecureFileAsync,
+} from "@ponderosa/native-host";
 import type { FastifyInstance } from "fastify";
 import { contentDisposition } from "../assets.js";
 import {
@@ -25,6 +28,20 @@ const PROJECT_FILE_PROJECT_CAPACITY = 4;
 const PROJECT_FILE_RATE_WINDOW_MS = 60_000;
 const PROJECT_FILE_RATE_CAPACITY = 60;
 const PROJECT_FILE_RATE_BUCKET_LIMIT = 512;
+const PROJECT_FILE_STREAM_CHUNK_BYTES = 256 * 1024;
+
+function streamBuffer(body: Buffer): Readable {
+  return Readable.from((async function* streamBoundedBuffer() {
+    for (let offset = 0; offset < body.length;
+      offset += PROJECT_FILE_STREAM_CHUNK_BYTES) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      yield body.subarray(
+        offset,
+        Math.min(body.length, offset + PROJECT_FILE_STREAM_CHUNK_BYTES),
+      );
+    }
+  })());
+}
 
 interface ProjectFileReadFaults {
   afterResolve?(resolvedPath: string): Promise<void> | void;
@@ -141,7 +158,7 @@ export class ProjectFileAuthority {
     if (!input?.trim()) return undefined;
     try {
       const requested = input.startsWith("file://")
-        ? decodeURIComponent(new URL(input).pathname)
+        ? fileURLToPath(input)
         : input;
       return contentTypeForStatic(requested.toLowerCase());
     } catch {
@@ -224,117 +241,30 @@ export class ProjectFileAuthority {
   > {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
-    if (process.platform !== "linux") {
-      try {
-        const target = await this.nativeRelativePath(project.hostPath, input);
-        if (!target) return undefined;
-        await this.faults?.afterResolve?.(target.resolved);
-        const body = readSecureFile({
-          root: project.hostPath,
-          relativePath: target.relative,
-          maxBytes: options.maxBytes,
-        });
-        if (!body) return undefined;
-        const mediaType = options.previewMediaType ??
-          contentTypeForStatic(target.relative.toLowerCase());
-        if (options.previewMediaType &&
-            !this.validPreviewMagic(options.previewMediaType, body.subarray(0, 16))) {
-          return undefined;
-        }
-        return {
-          body: Readable.from([body]),
-          name: path.basename(target.relative),
-          mediaType,
-          size: body.length,
-        };
-      } catch {
-        return undefined;
-      }
-    }
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
-      const root = await fs.realpath(project.hostPath);
-      const requested = input.startsWith("file://")
-        ? decodeURIComponent(new URL(input).pathname)
-        : input;
-      const candidate = path.isAbsolute(requested)
-        ? requested
-        : path.resolve(root, safeRelativePath(requested));
-      const resolved = await fs.realpath(candidate);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+      const target = await this.nativeRelativePath(project.hostPath, input);
+      if (!target) return undefined;
+      await this.faults?.afterResolve?.(target.resolved);
+      const body = await readSecureFileAsync({
+        root: project.hostPath,
+        relativePath: target.relative,
+        maxBytes: options.maxBytes,
+      });
+      if (!body) return undefined;
+      const mediaType = options.previewMediaType ??
+        contentTypeForStatic(target.relative.toLowerCase());
+      if (options.previewMediaType &&
+          !this.validPreviewMagic(options.previewMediaType, body.subarray(0, 16))) {
         return undefined;
       }
-      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
-      if (!relative || !isProjectFileReferenceAllowed(relative)) {
-        return undefined;
-      }
-      await this.faults?.afterResolve?.(resolved);
-      handle = await fs.open(
-        resolved,
-        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
-      );
-      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
-      if (
-        openedPath !== root &&
-        !openedPath.startsWith(`${root}${path.sep}`)
-      ) {
-        return undefined;
-      }
-      const info = await handle.stat();
-      if (!info.isFile() || info.size > options.maxBytes) return undefined;
-      const mediaType =
-        options.previewMediaType ?? contentTypeForStatic(resolved.toLowerCase());
-      if (options.previewMediaType) {
-        const header = Buffer.alloc(16);
-        const { bytesRead } = await handle.read(
-          header,
-          0,
-          header.length,
-          0,
-        );
-        if (
-          !this.validPreviewMagic(
-            options.previewMediaType,
-            header.subarray(0, bytesRead),
-          )
-        ) {
-          return undefined;
-        }
-      }
-      const openHandle = handle;
-      handle = undefined;
-      const body = Readable.from(
-        (async function* streamBoundedProjectFile() {
-          let position = 0;
-          try {
-            while (position < info.size) {
-              const requestedBytes = Math.min(64 * 1024, info.size - position);
-              const buffer = Buffer.allocUnsafe(requestedBytes);
-              const { bytesRead } = await openHandle.read(
-                buffer,
-                0,
-                requestedBytes,
-                position,
-              );
-              if (bytesRead === 0) break;
-              position += bytesRead;
-              yield buffer.subarray(0, bytesRead);
-            }
-          } finally {
-            await openHandle.close().catch(() => undefined);
-          }
-        })(),
-      );
       return {
-        body,
-        name: path.basename(resolved),
+        body: streamBuffer(body),
+        name: path.basename(target.relative),
         mediaType,
-        size: info.size,
+        size: body.length,
       };
     } catch {
       return undefined;
-    } finally {
-      await handle?.close().catch(() => undefined);
     }
   }
 
@@ -344,151 +274,63 @@ export class ProjectFileAuthority {
   ): Promise<WorkspaceFileViewDto | undefined> {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
-    if (process.platform !== "linux") {
-      try {
-        const target = await this.nativeRelativePath(project.hostPath, input);
-        if (!target) return undefined;
-        const segments = target.relative.split("/");
-        const leaf = segments.pop()!;
-        const parent = segments.join("/");
-        const entry = listSecureDirectory({
-          root: project.hostPath,
-          relativePath: parent,
-        })?.find((candidate) =>
-          candidate.name === leaf && candidate.kind === "file");
-        if (!entry || entry.size === undefined) return undefined;
-        const mediaType = this.workspaceFileContentType(target.relative);
-        const previewCandidate =
-          this.previewMediaTypes.has(mediaType) &&
-          entry.size <= PROJECT_PREVIEW_MAX_BYTES;
-        const textMedia =
-          mediaType.startsWith("text/") ||
-          ["application/json", "application/javascript", "application/xml"].includes(mediaType);
-        const readLimit = previewCandidate
-          ? PROJECT_PREVIEW_MAX_BYTES
-          : textMedia && entry.size <= MAX_FILE_BYTES
-            ? MAX_FILE_BYTES
-            : 0;
-        const body = readLimit > 0
-          ? readSecureFile({
-            root: project.hostPath,
-            relativePath: target.relative,
-            maxBytes: readLimit,
-          })
-          : undefined;
-        const previewable = previewCandidate && Boolean(body) &&
-          this.validPreviewMagic(mediaType, body!.subarray(0, 16));
-        let text: string | undefined;
-        if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
-        const encodedPath = encodeURIComponent(target.relative);
-        return {
-          projectId,
-          path: target.relative,
-          name: leaf,
-          mediaType,
-          size: entry.size,
-          previewable,
-          ...(text !== undefined ? { text } : {}),
-          truncated:
-            (textMedia && text === undefined) ||
-            entry.size > PROJECT_DOWNLOAD_MAX_BYTES,
-          ...(previewable ? {
-            previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}`,
-          } : {}),
-          ...(entry.size <= PROJECT_DOWNLOAD_MAX_BYTES ? {
-            downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}`,
-          } : {}),
-        };
-      } catch {
-        return undefined;
-      }
-    }
-    let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
-      const root = await fs.realpath(project.hostPath);
-      const requested = input.startsWith("file://")
-        ? decodeURIComponent(new URL(input).pathname)
-        : input;
-      const candidate = path.isAbsolute(requested)
-        ? requested
-        : path.resolve(root, safeRelativePath(requested));
-      const resolved = await fs.realpath(candidate);
-      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-        return undefined;
-      }
-      const relative = path.relative(root, resolved).replaceAll(path.sep, "/");
-      if (!relative || !isProjectFileReferenceAllowed(relative)) {
-        return undefined;
-      }
-      handle = await fs.open(
-        resolved,
-        fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
-      );
-      const openedPath = await fs.realpath(`/proc/self/fd/${handle.fd}`);
-      if (
-        openedPath !== root &&
-        !openedPath.startsWith(`${root}${path.sep}`)
-      ) {
-        return undefined;
-      }
-      const info = await handle.stat();
-      if (!info.isFile()) return undefined;
-      const mediaType = this.workspaceFileContentType(resolved);
-      let previewable =
+      const target = await this.nativeRelativePath(project.hostPath, input);
+      if (!target) return undefined;
+      const segments = target.relative.split("/");
+      const leaf = segments.pop()!;
+      const parent = segments.join("/");
+      const entry = listSecureDirectory({
+        root: project.hostPath,
+        relativePath: parent,
+      })?.find((candidate) =>
+        candidate.name === leaf && candidate.kind === "file");
+      if (!entry || entry.size === undefined) return undefined;
+      const mediaType = this.workspaceFileContentType(target.relative);
+      const previewCandidate =
         this.previewMediaTypes.has(mediaType) &&
-        info.size <= PROJECT_PREVIEW_MAX_BYTES;
-      if (previewable) {
-        const header = Buffer.alloc(16);
-        const { bytesRead } = await handle.read(
-          header,
-          0,
-          header.length,
-          0,
-        );
-        previewable = this.validPreviewMagic(
-          mediaType,
-          header.subarray(0, bytesRead),
-        );
-      }
+        entry.size <= PROJECT_PREVIEW_MAX_BYTES;
       const textMedia =
         mediaType.startsWith("text/") ||
-        [
-          "application/json",
-          "application/javascript",
-          "application/xml",
-        ].includes(mediaType);
+        ["application/json", "application/javascript", "application/xml"].includes(mediaType);
+      const readLimit = previewCandidate
+        ? PROJECT_PREVIEW_MAX_BYTES
+        : textMedia && entry.size <= MAX_FILE_BYTES
+          ? MAX_FILE_BYTES
+          : 0;
+      const body = readLimit > 0
+        ? await readSecureFileAsync({
+          root: project.hostPath,
+          relativePath: target.relative,
+          maxBytes: readLimit,
+          expectedSize: entry.size,
+        })
+        : undefined;
+      const previewable = previewCandidate && Boolean(body) &&
+        this.validPreviewMagic(mediaType, body!.subarray(0, 16));
       let text: string | undefined;
-      if (textMedia && info.size <= MAX_FILE_BYTES) {
-        const body = await handle.readFile();
-        if (isUtf8(body)) text = body.toString("utf8");
-      }
-      const encodedPath = encodeURIComponent(relative);
+      if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
+      const encodedPath = encodeURIComponent(target.relative);
       return {
         projectId,
-        path: relative,
-        name: path.basename(resolved),
+        path: target.relative,
+        name: leaf,
         mediaType,
-        size: info.size,
+        size: entry.size,
         previewable,
         ...(text !== undefined ? { text } : {}),
         truncated:
           (textMedia && text === undefined) ||
-          info.size > PROJECT_DOWNLOAD_MAX_BYTES,
-        ...(previewable
-          ? {
-              previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}`,
-            }
-          : {}),
-        ...(info.size <= PROJECT_DOWNLOAD_MAX_BYTES
-          ? {
-              downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}`,
-            }
-          : {}),
+          entry.size > PROJECT_DOWNLOAD_MAX_BYTES,
+        ...(previewable ? {
+          previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}`,
+        } : {}),
+        ...(entry.size <= PROJECT_DOWNLOAD_MAX_BYTES ? {
+          downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}`,
+        } : {}),
       };
     } catch {
       return undefined;
-    } finally {
-      await handle?.close().catch(() => undefined);
     }
   }
 }

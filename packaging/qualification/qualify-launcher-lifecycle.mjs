@@ -30,6 +30,15 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+async function assertRejects(operation, message) {
+  try {
+    await operation();
+  } catch {
+    return;
+  }
+  throw new Error(message);
+}
+
 async function availablePort() {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -62,6 +71,10 @@ const installRoot = path.resolve(option("install-root", ""));
 const dataDir = path.resolve(option("data-dir", ""));
 const reportPath = path.resolve(option("report", path.join(dataDir, "launcher-lifecycle-report.json")));
 if (!installRoot || !dataDir) throw new Error("Launcher qualification requires install-root and data-dir.");
+const buildManifest = JSON.parse(readFileSync(
+  path.join(installRoot, "build-manifest.json"),
+  "utf8",
+));
 const nodeName = process.platform === "win32" ? "node.exe" : "node";
 const nodeExecutable = path.join(installRoot, "runtime", nodeName);
 const launcher = path.join(installRoot, "app", "launcher", "dist", "cli.js");
@@ -303,6 +316,67 @@ try {
       maxBytes: 16,
     }) === undefined, "Installed production Project reader followed a symlink directory.");
 
+    const projectFiles = await import(pathToFileURL(
+      path.join(installRoot, "app", "server", "dist", "project-files.js"),
+    ).href);
+    const scoped = await projectFiles.readScopedPath(
+      authorityRoot,
+      "nested/safe.txt",
+    );
+    assert(scoped.kind === "file" && scoped.content === "safe",
+      "Installed /api/files reader failed a safe retained-root read.");
+    await assertRejects(
+      () => projectFiles.readScopedPath(
+        authorityRoot,
+        "directory-link/secret.txt",
+      ),
+      "Installed /api/files reader followed a symlink directory.",
+    );
+
+    const projectRoutes = await import(pathToFileURL(
+      path.join(installRoot, "app", "server", "dist", "routes", "project-files.js"),
+    ).href);
+    const projectStore = {
+      getProject: (id) => id === "qualification"
+        ? { id, hostPath: authorityRoot }
+        : undefined,
+    };
+    const routeAuthority = new projectRoutes.ProjectFileAuthority(projectStore);
+    const browserFile = await routeAuthority.fileForBrowser(
+      "qualification",
+      "nested/safe.txt",
+      { maxBytes: 16 },
+    );
+    assert(browserFile, "Installed ProjectFileAuthority rejected a safe read.");
+    const browserChunks = [];
+    for await (const chunk of browserFile.body) browserChunks.push(Buffer.from(chunk));
+    assert(Buffer.concat(browserChunks).toString() === "safe",
+      "Installed ProjectFileAuthority returned changed bytes.");
+    assert(await routeAuthority.fileForBrowser(
+      "qualification",
+      "directory-link/secret.txt",
+      { maxBytes: 16 },
+    ) === undefined,
+    "Installed ProjectFileAuthority followed a symlink directory.");
+
+    const gitStatus = await import(pathToFileURL(
+      path.join(installRoot, "app", "server", "dist", "git-status.js"),
+    ).href);
+    const workspaceReview = await gitStatus.workspaceFile(
+      "qualification",
+      authorityRoot,
+      "nested/safe.txt",
+    );
+    assert(workspaceReview.content === "safe",
+      "Installed workspace review failed a safe retained-root read.");
+    const linkedReview = await gitStatus.workspaceFile(
+      "qualification",
+      authorityRoot,
+      "directory-link/secret.txt",
+    );
+    assert(linkedReview.exists === false && linkedReview.content === undefined,
+      "Installed workspace review followed a symlink directory.");
+
     const agentsEntry = serverRequire.resolve("@ponderosa/agents");
     const agents = await import(pathToFileURL(agentsEntry).href);
     const managedRoot = path.join(dataDir, "secure-managed-authority");
@@ -351,10 +425,55 @@ try {
       ? "native helper plus installed Project reader and managed publish/read/repair paths passed retained-authority checks"
       : "platform retained-handle secure file authority is unavailable",
   });
+  const requiredAdversarialChecks = [
+    "root-replacement",
+    "ancestor-replacement",
+    "cross-device-or-volume",
+    "leaf-link-or-reparse",
+    "collision-and-durability",
+    "batch-rollback",
+    "production-routes",
+    "bounded-cancellation",
+  ];
+  const adversarialReportPath =
+    process.env.PONDEROSA_NATIVE_ADVERSARIAL_FS_REPORT;
+  let adversarialFilesystemEvidence = false;
+  if (adversarialReportPath) {
+    try {
+      const evidence = JSON.parse(readFileSync(adversarialReportPath, "utf8"));
+      const passed = new Set(
+        Array.isArray(evidence.checks)
+          ? evidence.checks
+            .filter((item) => item?.status === "pass")
+            .map((item) => item.id)
+          : [],
+      );
+      adversarialFilesystemEvidence =
+        evidence.schemaVersion === 1 &&
+        evidence.commit === buildManifest.commit &&
+        evidence.platform === process.platform &&
+        evidence.arch === process.arch &&
+        requiredAdversarialChecks.every((id) => passed.has(id));
+    } catch {
+      adversarialFilesystemEvidence = false;
+    }
+  }
+  checks.push({
+    id: "adversarial-filesystem-evidence",
+    status: adversarialFilesystemEvidence ? "pass" : "fail",
+    detail: adversarialFilesystemEvidence
+      ? "exact-commit target report contains every required adversarial filesystem result"
+      : "an exact-commit target adversarial filesystem report is absent or incomplete",
+  });
 
   const releaseBlockers = [];
   if (filesystemCheck?.status !== "pass") releaseBlockers.push(filesystemCheck?.detail ?? "complete filesystem authority failed");
   if (!secureReadPassed) releaseBlockers.push("secure file adversarial qualification failed");
+  if (!adversarialFilesystemEvidence) {
+    releaseBlockers.push(
+      "PONDEROSA_NATIVE_ADVERSARIAL_FS_REPORT must name an exact-commit target report containing every required passing check",
+    );
+  }
   const hostOs = hostOsIdentity();
   if (process.platform === "linux" && (hostOs.id !== "ubuntu" || hostOs.version !== "24.04")) {
     releaseBlockers.push(`Ubuntu 24.04 is required; host is ${hostOs.id ?? "unknown"} ${hostOs.version ?? hostOs.kernel}`);

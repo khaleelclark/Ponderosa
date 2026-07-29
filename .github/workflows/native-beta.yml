@@ -82,6 +82,10 @@ jobs:
         run: |
           pnpm --filter @ponderosa/native-host test
           pnpm --filter @ponderosa/agents exec vitest run test/managed-artifact-files.test.ts
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            PONDEROSA_TEST_NATIVE_MANAGED_AUTHORITY=1 \
+              pnpm --filter @ponderosa/agents exec vitest run test/managed-artifact-files.test.ts
+          fi
           pnpm --filter @ponderosa/engines test
           pnpm --filter @ponderosa/launcher test
           pnpm --filter @ponderosa/server test
