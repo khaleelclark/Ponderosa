@@ -7,6 +7,7 @@ import {
   Checkbox,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   InputLabel,
   ListItemText,
   ListSubheader,
@@ -411,7 +412,7 @@ function ClaudeModelOptionsSettings({
   };
   return (
     <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
-      <Typography fontWeight={700}>Pinned Claude model versions</Typography>
+      <Typography fontWeight={700}>Pinned Claude Model Versions</Typography>
       {catalogLoading ? (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           Refreshing Claude models…
@@ -549,7 +550,7 @@ function ProviderSettingsSection({
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
           <Typography variant="h6" fontWeight={800}>
-            Provider quota
+            Provider Quota
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Choose which provider appears in the quota button by default.
@@ -579,6 +580,9 @@ function ProviderSettingsSection({
       {engines.map(engine => {
         const resolved = resolveRuntimeSelection(engine, preferences);
         const modelState = runtimeControlState(engine, resolved);
+        const selectedModel = modelState.models.find(
+          option => option.id === resolved.model,
+        );
         const efforts = effortOptionsForModel(engine, resolved.model);
         return (
           <Paper key={engine.id} variant="outlined" sx={{ p: 2.5 }}>
@@ -617,6 +621,7 @@ function ProviderSettingsSection({
                   labelId={`settings-model-${engine.id}`}
                   label="Default Model"
                   value={resolved.model}
+                  renderValue={() => selectedModel?.label ?? resolved.model}
                   onChange={event => {
                     const model = event.target.value;
                     const effort =
@@ -639,6 +644,9 @@ function ProviderSettingsSection({
                     </MenuItem>,
                   ])}
                 </Select>
+                {selectedModel?.detail ? (
+                  <FormHelperText>{selectedModel.detail}</FormHelperText>
+                ) : null}
               </FormControl>
               <FormControl fullWidth>
                 <InputLabel id={`settings-effort-${engine.id}`}>
