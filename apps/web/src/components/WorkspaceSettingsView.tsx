@@ -550,10 +550,10 @@ function ProviderSettingsSection({
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
           <Typography variant="h6" fontWeight={800}>
-            Provider Quota
+            Provider Usage
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose which provider appears in the quota button by default.
+            Choose which provider appears in the usage button by default.
             Agent pages can temporarily show that Agent&apos;s active provider.
           </Typography>
           <FormControl fullWidth>
