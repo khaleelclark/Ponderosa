@@ -77,6 +77,13 @@ jobs:
         shell: bash
         run: pnpm typecheck
 
+      - name: Native safety unit suites
+        shell: bash
+        run: |
+          pnpm --filter @ponderosa/engines test
+          pnpm --filter @ponderosa/launcher test
+          pnpm --filter @ponderosa/server test
+
       - name: Production build
         shell: bash
         run: pnpm build

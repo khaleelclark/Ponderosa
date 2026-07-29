@@ -252,7 +252,7 @@ export async function runDoctor(input: {
     process.platform === "linux"
       ? "Linux descriptor-relative no-follow authority is available."
       : process.platform === "darwin" && secureReads
-        ? "macOS openat no-follow Project reads are available; managed publication authority is incomplete."
+        ? "The macOS native helper is available, but production retained-root Project and managed authority is disabled."
         : process.platform === "win32"
           ? "Windows retained-handle reparse-safe authority is unavailable."
           : `Secure filesystem authority is unavailable on ${process.platform}.`,
@@ -265,16 +265,16 @@ export async function runDoctor(input: {
     checks.push(check(
       `provider-${provider.id}`,
       provider.id === "codex" ? "Codex" : "Claude Code",
-      provider.installed && provider.authenticated === true ? "pass" : "warning",
+      provider.installed ? "pass" : "warning",
       [
         provider.detail,
         provider.authenticationDetail,
         provider.version,
         provider.executable,
       ].filter(Boolean).join(" · "),
-      provider.installed && provider.authenticated === true
+      provider.installed
         ? undefined
-        : `Sign in to ${provider.id === "codex" ? "Codex" : "Claude Code"}, or select its executable in Settings.`,
+        : `Install ${provider.id === "codex" ? "Codex" : "Claude Code"}, or select its executable in Settings.`,
     ));
   }
   const gitVersion = await commandVersion("git");

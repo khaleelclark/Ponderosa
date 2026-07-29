@@ -54,10 +54,11 @@ codex login
 claude auth login
 ```
 
-Doctor reports executable discovery and login status. A missing provider login
-is distinct from a host-safety failure: provider unavailability prevents real
-Runs, while missing filesystem or process authority prevents all durable
-intake.
+Doctor reports executable discovery without launching provider commands.
+After Ponderosa starts, the server's contained engine status verifies provider
+login and subscription availability. A missing provider login is distinct from
+a host-safety failure: provider unavailability prevents real Runs, while
+missing filesystem or process authority prevents all durable intake.
 
 ## Unsigned private builds
 
