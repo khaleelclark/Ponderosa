@@ -496,6 +496,7 @@ export function AgentsTab({
       flexWrap="wrap"
       sx={{ alignItems: "center" }}
     >
+      {selectionMode ? selectionControls : null}
       {collection && !selectionMode ? (
         <>
           {selectionAllowed && agents.length > 0 ? (
@@ -576,16 +577,13 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
-          searchMaxWidth={selectionMode ? 360 : 300}
+          searchMaxWidth={300}
           singleLine
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
         >
-          {selectionControls}
-          {!selectionMode ? (
-            <>
-              {toolbarControls}
+          {toolbarControls}
               <Stack
                 direction="row"
                 role="group"
@@ -686,8 +684,6 @@ export function AgentsTab({
                 </FormControl>
               )}
               {embeddedCollection ? headerActions : null}
-            </>
-          ) : null}
         </CollectionToolbar>
       }
     >
