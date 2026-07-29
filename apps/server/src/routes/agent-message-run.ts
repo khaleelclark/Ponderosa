@@ -58,10 +58,8 @@ import {
 } from "../runtime-selection.js";
 import type { DraftService } from "./drafts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
-import {
-  cleanupRuntimeAttachments,
-  prepareAgentRun,
-} from "./agent-run-preparation.js";
+import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
+import { prepareAgentRun } from "./agent-run-preparation.js";
 import { startProviderRunExecution } from "./provider-run-executor.js";
 
 type ArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -687,13 +685,16 @@ export function registerAgentMessageRunRoute(
         freshProviderInputManifest,
         manifestArtifactIds,
         runtimeAttachmentDirectory,
+        runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
 
       await opts.messageLifecycleFaults?.beforeRunClaim?.({ agentId: agent.id, runId });
       // No await may be introduced between this recheck and the claim. Deletion
       // marks the agent unavailable before its own first await.
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
-        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
         return reply.code(404).send({ error: "agent not found" });
       }
       let durableClaim: { generation: number };
@@ -718,7 +719,9 @@ export function registerAgentMessageRunRoute(
         });
         durableClaim = { generation: v3FencingToken! };
       } catch {
-        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
         return reply.code(409).send({ error: "agent run ownership changed; retry safely", retryable: true });
       }
       const failUnstartedClaim = (cancelled = false): void => {
@@ -735,7 +738,9 @@ export function registerAgentMessageRunRoute(
       });
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         failUnstartedClaim(true);
-        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
         return reply.code(404).send({ error: "agent not found" });
       }
 
@@ -743,12 +748,16 @@ export function registerAgentMessageRunRoute(
         await assets.associate(agent.projectId, agent.id, attachmentIds);
       } catch (error) {
         failUnstartedClaim();
-        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
         throw error;
       }
       if (deletingAgentIds.has(agent.id) || !store.getAgent(agent.id)) {
         failUnstartedClaim(true);
-        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        if (runtimeAttachmentCleanupAfterRun) {
+          await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        }
         return reply.code(404).send({ error: "agent not found" });
       }
       const startedAt = new Date().toISOString();
@@ -840,6 +849,7 @@ export function registerAgentMessageRunRoute(
         runtimeEngineId,
         runtimeSessionContractHash,
         runtimeAttachmentDirectory,
+        runtimeAttachmentCleanupAfterRun,
         seedHistory,
         sourceChannel,
         v3FencingToken,

@@ -497,17 +497,17 @@ export function AgentsTab({
       sx={{ alignItems: "center" }}
     >
       {selectionMode ? selectionControls : null}
+      {!selectionMode && selectionAllowed && agents.length > 0 ? (
+        <Button
+          variant="outlined"
+          color="inherit"
+          onClick={() => setSelectionMode(true)}
+        >
+          Select Agents
+        </Button>
+      ) : null}
       {collection && !selectionMode ? (
         <>
-          {selectionAllowed && agents.length > 0 ? (
-            <Button
-              variant="outlined"
-              color="inherit"
-              onClick={() => setSelectionMode(true)}
-            >
-              Select Agents
-            </Button>
-          ) : null}
           <Button
             variant="contained"
             startIcon={<AddIcon />}
@@ -578,7 +578,6 @@ export function AgentsTab({
           onSearch={setSearch}
           searchLabel="Search Agents"
           searchMaxWidth={300}
-          singleLine
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }

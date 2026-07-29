@@ -133,6 +133,8 @@ export function ArtifactsPane({
                 const selected = artifact.id === selectedArtifactId;
                 return <ListItemButton
                   key={artifact.id}
+                  aria-label={`Open ${artifactDisplayLabel(artifact)} (${artifact.path})`}
+                  title={artifact.path}
                   id={telemetryElementId("artifacts", artifact.id)}
                   tabIndex={initialArtifactId === artifact.id ? -1 : undefined}
                   selected={selected}

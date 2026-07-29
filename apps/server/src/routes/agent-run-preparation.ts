@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, rm } from "node:fs/promises";
+import { copyFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import {
   type AgentDto,
@@ -48,6 +48,10 @@ import {
   communicationV3Prompt,
 } from "../runtime-selection.js";
 import { documentationReferences } from "../documentation-reference/index.js";
+import {
+  runtimeAttachmentDirectoryForRun,
+  runtimeAttachmentDirectoryForSession,
+} from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
 interface PrepareAgentRunInput {
@@ -99,11 +103,6 @@ const runtimeAttachmentName = (item: AssetDto): string => {
   const name = path.extname(base) ? base : `${base}${extensionForMediaType(item.mediaType)}`;
   return `${item.id}-${name}`;
 };
-
-export async function cleanupRuntimeAttachments(directory?: string): Promise<void> {
-  if (!directory) return;
-  await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-}
 
 export async function prepareAgentRun(
   runContext: AgentMessageRunContext,
@@ -166,6 +165,7 @@ export async function prepareAgentRun(
     retrievalUrl: `ponderosa://artifact/${artifact.id}`,
   });
   const runId = v3SchedulerRunId ?? randomUUID();
+  const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
   let runtimeAttachmentDirectory: string | undefined;
   const runtimeAttachmentCopies = new Map<
     string,
@@ -179,7 +179,9 @@ export async function prepareAgentRun(
     const operation = (async () => {
       const source = path.join(attachmentsDir(opts.dataDir, agent.projectId, agent.id), `${item.id}.bin`);
       if (!existsSync(source)) return { localPath: source, available: false };
-      runtimeAttachmentDirectory ??= path.join(opts.dataDir, "runtime-attachments", runId);
+      runtimeAttachmentDirectory ??= runtimeAttachmentsFollowSession
+        ? runtimeAttachmentDirectoryForSession(opts.dataDir, agent.id)
+        : runtimeAttachmentDirectoryForRun(opts.dataDir, runId);
       await mkdir(runtimeAttachmentDirectory, { recursive: true, mode: 0o700 });
       const localPath = path.join(runtimeAttachmentDirectory, runtimeAttachmentName(item));
       await copyFile(source, localPath);
@@ -797,5 +799,6 @@ export async function prepareAgentRun(
     freshProviderInputManifest,
     manifestArtifactIds,
     runtimeAttachmentDirectory,
+    runtimeAttachmentCleanupAfterRun: !runtimeAttachmentsFollowSession,
   };
 }

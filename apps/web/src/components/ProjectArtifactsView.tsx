@@ -658,7 +658,8 @@ export function ProjectArtifactsView({
                             }}
                           >
                             <ListItemButton
-                              aria-label={`Open ${label} from ${owner}`}
+                              aria-label={`Open ${label} (${artifact.sourcePath ?? artifact.path}) from ${owner}`}
+                              title={artifact.sourcePath ?? artifact.path}
                               disabled={!canOpen}
                               onContextMenu={event => {
                                 if (!agent) return;
@@ -841,6 +842,7 @@ export function ProjectArtifactsView({
         onClose={() => setPreviewArtifact(undefined)}
         fullWidth
         maxWidth="lg"
+        aria-labelledby="artifact-preview-title"
       >
         <DialogTitle component="div">
           <Stack
@@ -850,7 +852,12 @@ export function ProjectArtifactsView({
             flexWrap="wrap"
             sx={{ alignItems: "center" }}
           >
-            <Typography component="span" variant="h6">
+            <Typography
+              component="h2"
+              variant="h6"
+              id="artifact-preview-title"
+              sx={{ m: 0 }}
+            >
               {previewArtifact
                 ? artifactDisplayLabel(previewArtifact)
                 : "File Preview"}

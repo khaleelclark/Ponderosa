@@ -403,6 +403,9 @@ export default function App({
     navigate(next);
   };
   const replaceActiveWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
     recordWorkspaceRouteUse(next);
     setWorkspaceTabs(current =>
       navigateWorkspaceTab(current, activeWorkspaceTabKey, next),

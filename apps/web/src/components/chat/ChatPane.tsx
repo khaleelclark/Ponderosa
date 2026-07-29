@@ -1,5 +1,6 @@
 import TagIcon from "@mui/icons-material/Tag";
 import { ButtonBase, IconButton, Tooltip } from "@mui/material";
+import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
   AgentRunDto,
@@ -233,7 +234,7 @@ function ChatPaneComponent({
           entry.kind !== "run_header" &&
           !(
             entry.kind === "tool" &&
-            entry.name === "ponderosa_message" &&
+            entry.name === PONDEROSA_MESSAGE_TOOL.name &&
             entry.result?.isError !== true
           ),
       );

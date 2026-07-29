@@ -1,6 +1,7 @@
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import { Box, Button, Chip, Stack } from "@mui/material";
+import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentRunDto,
   ResponseFileActivityDto,
@@ -65,7 +66,7 @@ function receiptStatus(run: AgentRunDto): {
 
 function isRenderedMessageDelivery(entry: ActivityStreamEntry): boolean {
   return entry.kind === "tool" &&
-    entry.name === "ponderosa_message" &&
+    entry.name === PONDEROSA_MESSAGE_TOOL.name &&
     entry.result?.isError !== true;
 }
 

@@ -45,11 +45,6 @@ interface ProviderCommandRoutesContext {
   reusableRuntime(agentId: string): PersistentRuntime | undefined;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   closeRunBrowser(agentId: string, run: ActiveRun, reason: string): Promise<void>;
-  transitionRun(
-    agentId: string,
-    run: ActiveRun,
-    state: "running" | "stalled" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted",
-  ): boolean;
   clearAgentResumeSession(agentId: string, reason: "explicit_compaction"): boolean;
   teardownPersistentRuntime(
     agentId: string,
@@ -92,7 +87,6 @@ export function registerProviderCommandRoutes(
     reusableRuntime,
     persistentRuntimeForTermination,
     closeRunBrowser,
-    transitionRun,
     clearAgentResumeSession,
     teardownPersistentRuntime,
     publishMessageDeliveryChanged,
@@ -130,7 +124,7 @@ app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/
     // The scheduler cancellation is already canonical at this point. Reflect
     // that loss of live execution authority immediately so health projections
     // do not keep advertising a responding Run while process teardown drains.
-    transitionRun(request.params.id, ownedTarget, "cancelling");
+    ownedTarget.ownershipState = "cancelling";
     // A rollover requested by this exact Run is part of the cancelled work,
     // not an independent queued user instruction. Do not let it immediately
     // manufacture a successor after the operator stops the Run.

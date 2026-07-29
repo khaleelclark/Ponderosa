@@ -153,7 +153,6 @@ export interface CollectionToolbarProps {
   onSearch(value: string): void;
   searchLabel: string;
   searchMaxWidth?: number;
-  singleLine?: boolean;
   reorderHint?: boolean;
   children?: ReactNode;
 }
@@ -163,7 +162,6 @@ export function CollectionToolbar({
   onSearch,
   searchLabel,
   searchMaxWidth,
-  singleLine = false,
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
@@ -173,7 +171,7 @@ export function CollectionToolbar({
     direction={{ xs: "column", md: "row" }}
     spacing={1.25}
     useFlexGap
-    flexWrap={singleLine ? { xs: "wrap", lg: "nowrap" } : "wrap"}
+    flexWrap="wrap"
     sx={{ px: { xs: 2, md: 3 }, py: 1.5, alignItems: { md: "center" } }}
   >
     <TextField

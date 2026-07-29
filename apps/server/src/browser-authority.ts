@@ -103,9 +103,9 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       id: session.id,
       projectId,
       status: session.status,
-      // A closed or failed process has no controller. Normalize the persisted
-      // session projection instead of asking every client to reinterpret stale
-      // control metadata after a reload.
+      // A process that is not ready has no usable controller. Normalize the
+      // persisted session projection instead of asking every client to
+      // reinterpret stale control metadata after a reload.
       controlOwner: ready ? session.controlOwner : "operator",
       ...(ready && grant ? { controllerAgentId: grant.agentId, controllerRunId: grant.runId } : {}),
       controlEpoch: session.controlEpoch,
