@@ -173,6 +173,7 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const creationOriginByWorkspace = useRef(new Map<string, Route>());
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
@@ -442,9 +443,13 @@ export default function App({
       agentId?: string;
     },
   ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
     const destination: Route = {
       kind: "create",
       resource: kind,
+      surface: "workspace",
       ...(context?.projectId ? { projectId: context.projectId } : {}),
       ...(context?.conversationId
         ? { conversationId: context.conversationId }
@@ -454,12 +459,14 @@ export default function App({
         : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     };
-    if (route.kind === "create") replaceActiveWorkspace(destination);
-    else openWorkspaceRoute(destination);
+    replaceActiveWorkspace(destination);
   };
   const replaceWorkspaceWithCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
   ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
     replaceActiveWorkspace({
       kind: "create",
       resource: kind,
@@ -514,6 +521,14 @@ export default function App({
     }
   };
   const cancelCreationWorkspace = () => {
+    const origin = creationOriginByWorkspace.current.get(
+      activeWorkspaceTabKey,
+    );
+    if (origin) {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+      replaceActiveWorkspace(origin);
+      return;
+    }
     if (workspaceTabs.length > 1) {
       closeWorkspaceView(activeWorkspaceTabKey);
       return;

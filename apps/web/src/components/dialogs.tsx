@@ -28,10 +28,6 @@ import { EngineModelEffortFields } from "./ProjectRuntimeFields";
 
 const UNSET = "";
 
-export interface CreateConversationInput {
-  title: string;
-}
-
 export function PresetManagerDialog({ open, engines, presets, onClose, onSave, onDelete }: {
   open: boolean;
   engines: EngineDto[];
@@ -188,54 +184,6 @@ export function PresetManagerDialog({ open, engines, presets, onClose, onSave, o
       Agents already created from this Preset keep their saved guidance.
     </ResourceDeletionDialog>
   </>;
-}
-
-export function CreateConversationDialog({
-  open,
-  pending,
-  error,
-  onClose,
-  onCreate,
-}: {
-  open: boolean;
-  pending: boolean;
-  error?: string;
-  onClose(): void;
-  onCreate(input: CreateConversationInput): void;
-}): JSX.Element {
-  const [title, setTitle] = useState("");
-
-  useEffect(() => {
-    if (open) setTitle("");
-  }, [open]);
-
-  return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>New Project Chat</DialogTitle>
-      <DialogContent>
-        <Stack spacing={2} sx={{ pt: 1 }}>
-          <TextField
-            label="Title"
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            autoFocus
-            fullWidth
-          />
-          {error ? <Alert severity="error">{error}</Alert> : null}
-        </Stack>
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={onClose}>Cancel</Button>
-        <Button
-          variant="contained"
-          disabled={!title.trim() || pending}
-          onClick={() => onCreate({ title: title.trim() })}
-        >
-          Create
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
 }
 
 export interface CreateAgentInput {

@@ -224,7 +224,7 @@ export function WorkspaceRouteOutlet({
             onBrowserRequestHandled={onBrowserRequestHandled}
             openInNewTab={onOpenInNewTab}
             onResourceDeleted={onResourceDeleted}
-            onCreateAgent={context => onCreate("agent", context)}
+            onCreate={(kind, context) => onCreate(kind, context)}
           />
         ) : (
           <Box />

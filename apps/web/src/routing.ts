@@ -58,6 +58,7 @@ export type Route =
       conversationId?: string;
       managerAgentId?: string;
       agentId?: string;
+      surface?: "workspace";
     }
   | { kind: "projects" }
   | { kind: "allChat" }
@@ -114,6 +115,9 @@ export function parseRoute(pathname: string, search = ""): Route {
         : {}),
       ...(query.get("agent")?.trim()
         ? { agentId: query.get("agent")!.trim() }
+        : {}),
+      ...(query.get("surface") === "workspace"
+        ? { surface: "workspace" as const }
         : {}),
     };
   }
