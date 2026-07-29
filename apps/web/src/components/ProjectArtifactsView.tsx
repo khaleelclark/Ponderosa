@@ -4,7 +4,6 @@ import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -29,7 +28,6 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
-  Menu,
   Select,
   Stack,
   TextField,
@@ -71,6 +69,7 @@ import {
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import {
   PROJECT_FILE_CATEGORIES,
   matchesProjectFileCategories,
@@ -163,8 +162,6 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [projectMenuAnchor, setProjectMenuAnchor] =
-    useState<HTMLElement | null>(null);
   const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
   const [artifactMenu, setArtifactMenu] =
     useState<
@@ -319,45 +316,25 @@ export function ProjectArtifactsView({
           </Tooltip>
         }
         actions={
-          <>
-            <Tooltip title={`Actions for ${project.label}`}>
-              <IconButton
-                aria-label={`Actions for ${project.label}`}
-                onClick={event => setProjectMenuAnchor(event.currentTarget)}
-              >
-                <MoreVertIcon />
-              </IconButton>
-            </Tooltip>
-            <Menu
-              anchorEl={projectMenuAnchor}
-              open={Boolean(projectMenuAnchor)}
-              onClose={() => setProjectMenuAnchor(null)}
-            >
-              <MenuItem
-                onClick={() => {
-                  setProjectMenuAnchor(null);
-                  changeTab("settings");
-                }}
-              >
-                <ListItemIcon>
-                  <SettingsOutlinedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Project Settings</ListItemText>
-              </MenuItem>
-              <MenuItem
-                sx={{ color: "error.main" }}
-                onClick={() => {
-                  setProjectMenuAnchor(null);
-                  setProjectDeleteOpen(true);
-                }}
-              >
-                <ListItemIcon sx={{ color: "inherit" }}>
-                  <DeleteOutlineIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Delete Project</ListItemText>
-              </MenuItem>
-            </Menu>
-          </>
+          <ChatOverflowMenu
+            label={`Actions for ${project.label}`}
+            transcriptMarkdown=""
+            transcriptFileName=""
+            showExports={false}
+            actions={[
+              {
+                label: "Project Settings",
+                icon: <SettingsOutlinedIcon fontSize="small" />,
+                onSelect: () => changeTab("settings"),
+              },
+              {
+                label: "Delete Project",
+                icon: <DeleteOutlineIcon fontSize="small" />,
+                destructive: true,
+                onSelect: () => setProjectDeleteOpen(true),
+              },
+            ]}
+          />
         }
         tabs={{
           value: tab,

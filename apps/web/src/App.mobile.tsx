@@ -22,7 +22,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useState, type MouseEvent } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
 import type {
   ConversationDto,
   OperatorProfileDto,
@@ -34,11 +34,8 @@ import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { WorkspaceRouteIcon } from "./components/WorkspaceTabs";
 
 interface MobileWorkspaceHeaderProps {
-  title: string;
-  route: Route;
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -56,8 +53,6 @@ interface MobileWorkspaceHeaderProps {
 }
 
 export function MobileWorkspaceHeader({
-  title,
-  route,
   preferredQuotaProvider,
   engineAvailability,
   unreadNotifications,
@@ -72,6 +67,12 @@ export function MobileWorkspaceHeader({
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
     setOverflowAnchor(event.currentTarget);
+  useEffect(() => {
+    const close = () => setOverflowAnchor(undefined);
+    window.addEventListener("ponderosa-mobile-workspace-action", close);
+    return () =>
+      window.removeEventListener("ponderosa-mobile-workspace-action", close);
+  }, []);
 
   return (
     <AppBar
@@ -98,26 +99,14 @@ export function MobileWorkspaceHeader({
         >
           <MenuIcon />
         </IconButton>
-        <Box
-          aria-hidden
-          sx={{
-            display: "grid",
-            placeItems: "center",
-            mr: 0.75,
-            color: "text.secondary",
-            flexShrink: 0,
-          }}
-        >
-          <WorkspaceRouteIcon route={route} />
-        </Box>
-        <Box aria-label={title} sx={{ flex: 1, minWidth: 0 }}>
+        <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="h6"
             component="h1"
             sx={{ fontWeight: 800, minWidth: 0 }}
             noWrap
           >
-            {title}
+            Ponderosa
           </Typography>
         </Box>
         <Box sx={{ display: { xs: "none", sm: "block" } }}>
@@ -148,7 +137,12 @@ export function MobileWorkspaceHeader({
         anchorEl={overflowAnchor}
         open={Boolean(overflowAnchor)}
         onClose={() => setOverflowAnchor(undefined)}
+        keepMounted
+        slotProps={{
+          paper: { sx: { minWidth: 260, maxWidth: "calc(100vw - 24px)" } },
+        }}
       >
+        <Box id="ponderosa-mobile-workspace-action-slot" />
         <MenuItem
           onClick={() => {
             setOverflowAnchor(undefined);

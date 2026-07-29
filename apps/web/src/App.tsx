@@ -46,7 +46,6 @@ import {
 } from "./routing";
 import {
   isProjectRoute,
-  routeTabLabel,
   workspaceTabKey,
 } from "./routeRegistry";
 import type { ColorMode } from "./theme";
@@ -324,37 +323,6 @@ export default function App({
     ? preferences.defaultUsageProvider
     : usageProviders[0]?.id;
   const displayedQuotaProvider = preferredQuotaProvider ?? defaultQuotaProvider;
-  const mobileWorkspaceTabs = workspaceTabs.map(tab => {
-    const projectId =
-      "projectId" in tab.route && typeof tab.route.projectId === "string"
-        ? tab.route.projectId
-        : undefined;
-    const projectIndex = projectId
-      ? projects.findIndex(project => project.id === projectId)
-      : -1;
-    const project = projectIndex >= 0 ? projects[projectIndex] : undefined;
-    const conversations =
-      projectIndex >= 0
-        ? (projectConversationQueries[projectIndex]?.data ?? [])
-        : [];
-    const agents =
-      projectIndex >= 0 ? (projectAgentQueries[projectIndex]?.data ?? []) : [];
-    return {
-      ...tab,
-      label:
-        tab.title ??
-        routeTabLabel(tab.route, {
-          conversationTitle: conversationId =>
-            conversations.find(item => item.id === conversationId)?.title,
-          agentTitle: agentId =>
-            agents.find(item => item.id === agentId)?.title,
-          projectLabel: project?.label,
-        }),
-    };
-  });
-  const mobileWorkspaceTitle =
-    mobileWorkspaceTabs.find(tab => tab.key === activeWorkspaceTabKey)?.label ??
-    "Ponderosa";
   const savePreferences = (patch: Partial<typeof preferences>) => {
     queryClient.setQueryData(queryKeys.workspacePreferences.all, { ...preferences, ...patch });
     void api.updateWorkspacePreferences(patch).then((value) => {
@@ -714,8 +682,6 @@ export default function App({
           Skip to content
         </Box>
         <MobileWorkspaceHeader
-          title={mobileWorkspaceTitle}
-          route={route}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           unreadNotifications={(notificationsQuery.data ?? []).filter(
