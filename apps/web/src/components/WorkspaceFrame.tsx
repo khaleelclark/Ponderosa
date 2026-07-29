@@ -1,11 +1,5 @@
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import {
   Box,
-  Button,
-  ListItemIcon,
-  ListItemText,
-  Menu,
-  MenuItem,
   Stack,
   Tab,
   Tabs,
@@ -13,7 +7,6 @@ import {
 import {
   useEffect,
   useState,
-  type MouseEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -43,7 +36,6 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
   label: string;
 }): JSX.Element {
   const [visualValue, setVisualValue] = useState<T | false>(value);
-  const [phoneAnchor, setPhoneAnchor] = useState<HTMLElement>();
   useEffect(() => setVisualValue(value), [value]);
   const select = (next: T) => {
     // Keep the selection responsive without demoting the content switch.
@@ -52,61 +44,14 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
     setVisualValue(next);
     onChange(next);
   };
-  const activeItem = items.find(item => item.value === visualValue) ?? items[0];
-  const openPhoneMenu = (event: MouseEvent<HTMLElement>) =>
-    setPhoneAnchor(event.currentTarget);
   return <Box sx={{ borderBottom: 1, borderColor: "divider", minWidth: 0 }}>
-    <Box sx={{ display: { xs: "block", sm: "none" }, px: 1.5, pb: 1 }}>
-      <Button
-        fullWidth
-        color="inherit"
-        variant="outlined"
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={Boolean(phoneAnchor)}
-        onClick={openPhoneMenu}
-        startIcon={activeItem?.icon}
-        endIcon={<KeyboardArrowDownIcon />}
-        sx={{
-          minHeight: 44,
-          justifyContent: "flex-start",
-          borderColor: "divider",
-          "& .MuiButton-endIcon": { ml: "auto" },
-        }}
-      >
-        {activeItem?.label ?? "Choose View"}
-      </Button>
-      <Menu
-        anchorEl={phoneAnchor}
-        open={Boolean(phoneAnchor)}
-        onClose={() => setPhoneAnchor(undefined)}
-        slotProps={{
-          paper: { sx: { width: "min(calc(100vw - 24px), 420px)" } },
-        }}
-      >
-        {items.map(item => <MenuItem
-          key={item.value}
-          selected={item.value === visualValue}
-          onClick={() => {
-            setPhoneAnchor(undefined);
-            select(item.value);
-          }}
-          sx={{ minHeight: 48 }}
-        >
-          {item.icon ? <ListItemIcon>{item.icon}</ListItemIcon> : null}
-          <ListItemText primary={item.label} />
-        </MenuItem>)}
-      </Menu>
-    </Box>
     <Tabs
       aria-label={label}
       value={visualValue}
       onChange={(_, next: T) => select(next)}
       variant="scrollable"
       scrollButtons="auto"
-      allowScrollButtonsMobile
       sx={{
-        display: { xs: "none", sm: "flex" },
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
@@ -114,7 +59,18 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
         minHeight: 48,
       }}
     >
-      {items.map((item) => <Tab key={item.value} value={item.value} icon={item.icon} iconPosition="start" label={item.label} sx={{ minHeight: 48, minWidth: 112, px: 2 }} />)}
+      {items.map((item) => <Tab
+        key={item.value}
+        value={item.value}
+        icon={item.icon}
+        iconPosition="start"
+        label={item.label}
+        sx={{
+          minHeight: 48,
+          minWidth: { xs: 88, sm: 112 },
+          px: { xs: 1.25, sm: 2 },
+        }}
+      />)}
     </Tabs>
   </Box>;
 }
