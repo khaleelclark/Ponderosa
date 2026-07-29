@@ -51,7 +51,7 @@ export function CollectionHeader({
 }: Pick<CollectionWorkspaceProps, "title" | "detail" | "icon" | "scope" | "primaryAction">): JSX.Element {
   return <Stack
     component="header"
-    direction="row"
+    direction={{ xs: "column", sm: "row" }}
     spacing={1.5}
     sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "flex-start", borderBottom: 1, borderColor: "divider" }}
   >
@@ -66,7 +66,9 @@ export function CollectionHeader({
       <Box
         sx={{
           flexShrink: 0,
-          width: "auto",
+          width: { xs: "100%", sm: "auto" },
+          display: "flex",
+          justifyContent: "flex-start",
           "& .MuiButton-root": {
             width: "auto",
             whiteSpace: "nowrap",
@@ -182,7 +184,11 @@ export function CollectionToolbar({
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
       sx={{
-        flex: searchMaxWidth ? "1 1 320px" : 1,
+        flex: {
+          xs: "0 0 auto",
+          md: searchMaxWidth ? "1 1 320px" : 1,
+        },
+        width: { xs: "100%", md: "auto" },
         minWidth: { md: 240 },
         maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
       }}
