@@ -259,6 +259,7 @@ try {
     mkdirSync(outside);
     writeFileSync(path.join(authorityRoot, "nested", "safe.txt"), "safe");
     writeFileSync(path.join(outside, "secret.txt"), "secret");
+    writeFileSync(path.join(outside, "public.txt"), "public");
     symlinkSync(path.join(outside, "secret.txt"), path.join(authorityRoot, "leaf-link"));
     symlinkSync(outside, path.join(authorityRoot, "directory-link"));
     assert(nativeHost.readSecureFile({
@@ -372,7 +373,7 @@ try {
     const linkedReview = await gitStatus.workspaceFile(
       "qualification",
       authorityRoot,
-      "directory-link/secret.txt",
+      "directory-link/public.txt",
     );
     assert(linkedReview.exists === false && linkedReview.content === undefined,
       "Installed workspace review followed a symlink directory.");
