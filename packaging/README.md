@@ -83,13 +83,14 @@ systems, but qualification remains intentionally fail-closed:
 - macOS: the DMG recipe must be built on Apple Silicon and pass Gatekeeper,
   browser-bootstrap, process-group, provider, and restart checks before
   distribution.
-- Windows: the EXE recipe must be built on Windows 11. Doctor deliberately
-  rejects Agent work until a narrow native Job Object supervisor provides
-  observed process-tree containment; a root-process-only package is not a
-  qualified Windows beta.
+- Windows: the native Job Object supervisor is implemented, but the EXE must
+  still be built and exercised on Windows 11. Durable work remains blocked
+  until retained-handle/reparse-safe file authority and nested provider/helper
+  qualification pass on the exact artifact.
 
 Do not weaken Doctor to turn an unqualified artifact green. Add the missing
-native containment at the platform boundary, then qualify the exact artifact.
+native filesystem authority at the platform boundary, then qualify the exact
+artifact and its complete process trees.
 
 ## Installed security boundary
 

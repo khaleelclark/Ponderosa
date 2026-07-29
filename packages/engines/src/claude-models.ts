@@ -8,9 +8,12 @@ import type {
   ProviderErrorCode,
   RuntimeProcessHandle,
 } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { runtimeProcessHandle } from "./process-termination.js";
+import type { NativeProcessTreeAuthority } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 interface ClaudeModelCatalogProbeOptions {
   bin: string;
@@ -51,11 +54,10 @@ const VALIDATION_TIMEOUT_MS = 45_000;
 function environmentFor(
   configured: Readonly<Record<string, string | undefined>> | undefined,
 ): NodeJS.ProcessEnv {
-  return {
-    ...process.env,
+  return runtimeEnvironment({
     ...configured,
     CLAUDE_CODE_ENTRYPOINT: "sdk-ts",
-  };
+  });
 }
 
 function capitalize(value: string): string {
@@ -200,8 +202,9 @@ function registerProcess(
   label: string,
   killGraceMs: number,
   context: EngineModelDiscoveryOptions,
+  authority?: NativeProcessTreeAuthority,
 ): RuntimeProcessHandle {
-  const handle = runtimeProcessHandle(child, { label, termGraceMs: killGraceMs });
+  const handle = runtimeProcessHandle(child, { label, termGraceMs: killGraceMs }, authority);
   context.onRuntimeSpawned(handle);
   return handle;
 }
@@ -248,7 +251,9 @@ export class ClaudeModelCatalogProbe {
     modelId: string,
     context: EngineModelDiscoveryOptions,
   ): Promise<EngineModelValidationResult> {
-    const child = this.spawnFn(this.options.bin, [
+    const spawned = spawnContainedCli({
+      bin: this.options.bin,
+      args: [
       "-p",
       ".",
       "--output-format", "stream-json",
@@ -258,13 +263,20 @@ export class ClaudeModelCatalogProbe {
       "--no-session-persistence",
       "--max-turns", "1",
       "--model", modelId,
-    ], {
+      ],
       cwd,
       env: environmentFor(this.options.environment),
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      stdin: "ignore",
+      spawnFn: this.spawnFn,
     });
-    const handle = registerProcess(child, "Claude model validation", this.options.killGraceMs, context);
+    const child = spawned.child;
+    const handle = registerProcess(
+      child,
+      "Claude model validation",
+      this.options.killGraceMs,
+      context,
+      spawned.authority,
+    );
     return closeAfter(async () => {
       const stdout = child.stdout;
       if (!stdout) return validationError(modelId, "provider_error", "Claude validation stdout is unavailable");
@@ -334,20 +346,29 @@ export class ClaudeModelCatalogProbe {
     cwd: string,
     context: EngineModelDiscoveryOptions,
   ): Promise<EngineModelOption[]> {
-    const child = this.spawnFn(this.options.bin, [
+    const spawned = spawnContainedCli({
+      bin: this.options.bin,
+      args: [
       "-p",
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
       "--no-session-persistence",
       "--tools", "",
-    ], {
+      ],
       cwd,
       env: environmentFor(this.options.environment),
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      stdin: "pipe",
+      spawnFn: this.spawnFn,
     });
-    const handle = registerProcess(child, "Claude model catalog probe", this.options.killGraceMs, context);
+    const child = spawned.child;
+    const handle = registerProcess(
+      child,
+      "Claude model catalog probe",
+      this.options.killGraceMs,
+      context,
+      spawned.authority,
+    );
     return closeAfter(async () => {
       const stdout = child.stdout;
       if (!stdout || !child.stdin) throw new Error("Claude model catalog transport is unavailable");
@@ -392,13 +413,22 @@ export class ClaudeModelCatalogProbe {
     cwd: string,
     context: EngineModelDiscoveryOptions,
   ): Promise<string> {
-    const child = this.spawnFn(this.options.bin, ["--version"], {
+    const spawned = spawnContainedCli({
+      bin: this.options.bin,
+      args: ["--version"],
       cwd,
       env: environmentFor(this.options.environment),
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      stdin: "ignore",
+      spawnFn: this.spawnFn,
     });
-    const handle = registerProcess(child, "Claude version check", this.options.killGraceMs, context);
+    const child = spawned.child;
+    const handle = registerProcess(
+      child,
+      "Claude version check",
+      this.options.killGraceMs,
+      context,
+      spawned.authority,
+    );
     return closeAfter(() => new Promise<string>((resolve, reject) => {
       let output = "";
       let stderr = "";

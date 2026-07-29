@@ -10,13 +10,13 @@ import type {
   RuntimeSteerResult,
   RuntimeTurnInput,
 } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
-import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
@@ -75,22 +75,16 @@ export class ClaudeStreamSession implements RuntimeSession {
     ];
     const spawnFn = opts.spawnFn ?? nodeSpawn;
     const environment = runtimeEnvironment(opts.environment);
-    const contained = process.platform === "win32" && spawnFn === nodeSpawn
-      ? spawnWindowsContainedProcess({
-        bin: opts.bin,
-        args,
-        cwd: opts.cwd,
-        env: environment,
-        stdin: "pipe",
-      })
-      : undefined;
-    this.child = contained?.child ?? spawnFn(opts.bin, args, {
+    const contained = spawnContainedCli({
+      bin: opts.bin,
+      args,
       cwd: opts.cwd,
       env: environment,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      stdin: "pipe",
+      spawnFn,
     });
-    this.nativeAuthority = contained?.authority;
+    this.child = contained.child;
+    this.nativeAuthority = contained.authority;
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     let postExitDrainTimer: NodeJS.Timeout | undefined;

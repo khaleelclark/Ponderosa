@@ -5,10 +5,12 @@ import type {
   ProviderUsageWindow,
   RuntimeProcessHandle,
 } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { JsonRpcProcess } from "./json-rpc-process.js";
 import { parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
 import { runtimeProcessHandle } from "./process-termination.js";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -141,7 +143,9 @@ export async function readClaudeProviderUsage(input: {
 }): Promise<ProviderUsage> {
   const { options } = input;
   if (options.signal.aborted) throw new Error("Claude usage read aborted");
-  const child = (input.spawnFn ?? nodeSpawn)(input.bin, [
+  const spawned = spawnContainedCli({
+    bin: input.bin,
+    args: [
     "--print",
     "--output-format", "stream-json",
     "--verbose",
@@ -149,16 +153,17 @@ export async function readClaudeProviderUsage(input: {
     "--tools", "",
     "--no-session-persistence",
     "/usage",
-  ], {
+    ],
     cwd: options.cwd,
-    env: process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+    env: runtimeEnvironment(),
+    stdin: "ignore",
+    spawnFn: input.spawnFn ?? nodeSpawn,
   });
+  const child = spawned.child;
   const handle = runtimeProcessHandle(child, {
     label: "Claude provider usage",
     termGraceMs: input.killGraceMs,
-  });
+  }, spawned.authority);
   options.onRuntimeSpawned(handle);
   const completed = childCompletion(child);
   let stderrTail = "";

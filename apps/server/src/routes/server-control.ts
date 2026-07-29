@@ -152,7 +152,7 @@ app.get("/api/launcher/status", async () => ({
   version: opts.buildVersion?.trim() || "0.0.0",
   commit: opts.buildRevision?.trim() || "development",
   channel: opts.releaseChannel?.trim() || "development",
-  acceptingDurableIntake: !isClosed(),
+  acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
   leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
 }));
 

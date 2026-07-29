@@ -60,28 +60,49 @@ assert(existsSync(schemaPath), "Launch-baseline schema is missing.");
 assert(sha256(schemaPath) === manifest.databaseSchemaSha256, "Launch-baseline schema hash mismatch.");
 pass("schema-identity", `${manifest.databaseSchemaVersion} sha256=${manifest.databaseSchemaSha256}`);
 
-const serverPackage = path.join(installRoot, "app", "server", "package.json");
-const require = createRequire(serverPackage);
+function deployedNativeHost(application) {
+  const applicationRequire = createRequire(path.join(installRoot, "app", application, "package.json"));
+  const entry = applicationRequire.resolve("@ponderosa/native-host");
+  const addon = path.resolve(path.dirname(entry), "..", "build", "Release", "ponderosa_native.node");
+  assert(existsSync(addon), `Native host addon is missing from the deployed ${application}.`);
+  assert(manifest.nativeHost?.bytes === statSync(addon).size,
+    `Deployed ${application} native host addon size does not match its manifest.`);
+  assert(manifest.nativeHost?.sha256 === sha256(addon),
+    `Deployed ${application} native host addon hash does not match its manifest.`);
+  return { applicationRequire, addon };
+}
+
+const serverNativeHost = deployedNativeHost("server");
+const launcherNativeHost = deployedNativeHost("launcher");
+assert(sha256(serverNativeHost.addon) === sha256(launcherNativeHost.addon),
+  "Installed server and launcher native host addons differ.");
+const require = serverNativeHost.applicationRequire;
 const Database = require("better-sqlite3");
 const sharp = require("sharp");
-const nativeHostEntry = require.resolve("@ponderosa/native-host");
-const nativeHostAddon = path.resolve(
-  path.dirname(nativeHostEntry),
-  "..",
-  "build",
-  "Release",
-  "ponderosa_native.node",
-);
-assert(existsSync(nativeHostAddon), "Native host addon is missing from the deployed server.");
-assert(manifest.nativeHost?.bytes === statSync(nativeHostAddon).size,
-  "Native host addon size does not match its manifest.");
-assert(manifest.nativeHost?.sha256 === sha256(nativeHostAddon),
-  "Native host addon hash does not match its manifest.");
-const nativeHost = require("@ponderosa/native-host");
+const nativeHost = launcherNativeHost.applicationRequire("@ponderosa/native-host");
 if (process.platform === "win32") {
   assert(nativeHost.windowsJobObjectsSupported(), "Deployed Windows Job Object addon did not load.");
 }
-pass("native-host", `loaded deployed addon sha256=${manifest.nativeHost.sha256}`);
+pass("native-host", `loaded matching server/launcher addons sha256=${manifest.nativeHost.sha256}`);
+
+if (process.platform === "darwin") {
+  for (const [label, binary] of [
+    ["Node", process.execPath],
+    ["server native host", serverNativeHost.addon],
+    ["launcher native host", launcherNativeHost.addon],
+  ]) {
+    const inspection = spawnSync("otool", ["-l", binary], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert(inspection.status === 0, `${label} Mach-O deployment target could not be inspected.`);
+    const minimums = [...inspection.stdout.matchAll(/\b(?:minos|version)\s+(\d+\.\d+(?:\.\d+)?)/gu)]
+      .map((match) => Number.parseFloat(match[1]));
+    assert(minimums.length > 0 && Math.min(...minimums) <= 14,
+      `${label} is not compatible with macOS 14.`);
+  }
+  pass("macos-deployment-target", "Node and both native addons declare compatibility with macOS 14");
+}
 const disposable = path.join(os.tmpdir(), `ponderosa-qualification-${process.pid}-${Date.now()}`);
 mkdirSync(disposable, { recursive: false, mode: 0o700 });
 

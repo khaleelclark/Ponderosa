@@ -6,10 +6,10 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessHandle } from "./process-termination.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
-import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 
 /** A minimal spawn signature so tests can inject a fake CLI. */
 export type SpawnFn = typeof nodeSpawn;
@@ -96,23 +96,15 @@ export async function* streamProcess(
   }
 
   const providerEnvironment = runtimeEnvironment(environment);
-  const contained = process.platform === "win32" && spawnFn === nodeSpawn
-    ? spawnWindowsContainedProcess({
-      bin,
-      args,
-      cwd,
-      env: providerEnvironment,
-      stdin: stdin === undefined ? "ignore" : "pipe",
-    })
-    : undefined;
-  const child: ChildProcess = contained?.child ?? spawnFn(bin, args, {
+  const contained = spawnContainedCli({
+    bin,
+    args,
     cwd,
     env: providerEnvironment,
-    stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
-    // Give each POSIX run its own process group. Windows uses a Job Object
-    // whose gate is assigned before it can launch the provider.
-    detached: process.platform !== "win32",
+    stdin: stdin === undefined ? "ignore" : "pipe",
+    spawnFn,
   });
+  const child: ChildProcess = contained.child;
 
   // Large prompts cannot safely be argv entries: POSIX limits the combined
   // argument and environment size and Node surfaces that launch failure as
@@ -133,7 +125,7 @@ export async function* streamProcess(
   const handle = runtimeProcessHandle(child, {
     label: `${label} run`,
     termGraceMs: killGraceMs,
-  }, contained?.authority);
+  }, contained.authority);
   const terminate = (): Promise<void> => handle.close();
   onRuntimeSpawned?.(handle);
   const onAbort = (): void => {

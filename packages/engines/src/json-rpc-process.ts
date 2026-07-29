@@ -1,11 +1,11 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import type { ProviderRootExitDetail, RuntimeProcessHandle } from "@ponderosa/core";
+import { spawnContainedCli } from "./contained-spawn.js";
 import type { SpawnFn } from "./process.js";
 import { processGroupAlive, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer } from "./jsonl.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
-import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 
 type RpcId = number;
 type RpcMessage = {
@@ -84,22 +84,16 @@ export class JsonRpcProcess {
   constructor(private readonly opts: JsonRpcProcessOptions) {
     const spawnFn = opts.spawnFn ?? nodeSpawn;
     const environment = runtimeEnvironment(opts.environment);
-    const contained = process.platform === "win32" && spawnFn === nodeSpawn
-      ? spawnWindowsContainedProcess({
-        bin: opts.bin,
-        args: opts.args,
-        cwd: opts.cwd,
-        env: environment,
-        stdin: "pipe",
-      })
-      : undefined;
-    this.child = contained?.child ?? spawnFn(opts.bin, opts.args, {
+    const contained = spawnContainedCli({
+      bin: opts.bin,
+      args: opts.args,
       cwd: opts.cwd,
       env: environment,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
+      stdin: "pipe",
+      spawnFn,
     });
-    this.nativeAuthority = contained?.authority;
+    this.child = contained.child;
+    this.nativeAuthority = contained.authority;
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     const reportRootExit = (detail?: ProviderRootExitDetail) => {

@@ -130,9 +130,17 @@ for (const required of [
 assertCleanSource();
 const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
 const nodeSource = JSON.parse(readFileSync(nodeSourcePath, "utf8"));
+const nodeDistributionPlatform = targetPlatform === "win32" ? "win" : targetPlatform;
+const nodeArchiveExtension = targetPlatform === "win32"
+  ? "zip"
+  : targetPlatform === "darwin"
+    ? "tar.gz"
+    : "tar.xz";
+const officialNodeUrl = `https://nodejs.org/dist/${nodeIdentity.version}/` +
+  `node-${nodeIdentity.version}-${nodeDistributionPlatform}-${targetArch}.${nodeArchiveExtension}`;
 if (nodeSource.version !== nodeIdentity.version ||
     nodeSource.target !== `${targetPlatform}-${targetArch}` ||
-    typeof nodeSource.url !== "string" ||
+    nodeSource.url !== officialNodeUrl ||
     !/^[a-f0-9]{64}$/u.test(nodeSource.archiveSha256 ?? "")) {
   throw new Error("Bundled Node SOURCE.json does not match the executable and requested native target.");
 }

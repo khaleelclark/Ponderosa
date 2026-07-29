@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { EngineAuthStatus, EngineAvailabilityStatus } from "@ponderosa/core";
+import { runtimeEnvironment } from "./runtime-environment.js";
 
 const execFileAsync = promisify(execFile);
 type AuthCommandRunner = (
@@ -35,7 +36,7 @@ export async function codexAuthStatus(
   const bin = env.PONDEROSA_CODEX_BIN ?? "codex";
   try {
     const { stdout, stderr } = await execFileAsync(bin, ["login", "status"], {
-      env: { ...process.env, ...env },
+      env: runtimeEnvironment(env),
       timeout: 5000,
     });
     const output = `${stdout}\n${stderr}`.trim();
@@ -105,7 +106,7 @@ export async function claudeAvailabilityStatus(
       "--no-session-persistence",
       "Reply exactly PONDEROSA_RUNTIME_READY and do nothing else.",
     ], {
-      env: { ...process.env, ...env },
+      env: runtimeEnvironment(env),
       timeout: 60_000,
       maxBuffer: 2 * 1024 * 1024,
     });

@@ -38,6 +38,7 @@ jobs:
       PONDEROSA_BUILD_VERSION: 0.0.0-beta.${{ github.run_number }}
       PONDEROSA_RELEASE_CHANNEL: beta
       PONDEROSA_NODE_VERSION: 22.22.1
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
 
     steps:
       - uses: actions/checkout@v4
