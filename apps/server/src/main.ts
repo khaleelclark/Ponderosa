@@ -1,5 +1,4 @@
 import path from "node:path";
-import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "@ponderosa/core/config";
 import { defaultEngineRegistrations } from "@ponderosa/engines";
@@ -19,7 +18,9 @@ function internalAgentBaseUrl(host: string, port: number): string {
     : host === "::"
       ? "::1"
       : host;
-  const urlHost = isIP(reachableHost) === 6 ? `[${reachableHost}]` : reachableHost;
+  const urlHost = reachableHost.includes(":") && !reachableHost.startsWith("[")
+    ? `[${reachableHost}]`
+    : reachableHost;
   return `http://${urlHost}:${port}`;
 }
 

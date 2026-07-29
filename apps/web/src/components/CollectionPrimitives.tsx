@@ -195,23 +195,25 @@ export function CollectionToolbar({
     />
     {children ? (
       <Box
-        sx={{
+        sx={theme => ({
           display: { xs: "flex", md: "contents" },
           width: { xs: "100%", md: "auto" },
           minWidth: 0,
           gap: 1,
           alignItems: "center",
           flexWrap: "wrap",
-          "& > .MuiFormControl-root": {
-            width: { xs: "auto", md: undefined },
-            minWidth: { xs: 140, md: undefined },
-            flex: { xs: "1 1 140px", md: undefined },
+          [theme.breakpoints.down("md")]: {
+            "& > .MuiFormControl-root": {
+              width: "auto",
+              minWidth: 140,
+              flex: "1 1 140px",
+            },
+            "& > [data-collection-toolbar-actions]": {
+              flex: "1 1 100%",
+              justifyContent: "flex-start",
+            },
           },
-          "& > [data-collection-toolbar-actions]": {
-            flex: { xs: "1 1 100%", md: undefined },
-            justifyContent: { xs: "flex-start", md: undefined },
-          },
-        }}
+        })}
       >
         {children}
       </Box>

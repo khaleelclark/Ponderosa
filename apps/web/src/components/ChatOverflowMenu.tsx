@@ -4,7 +4,6 @@ import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
-  Box,
   Divider,
   IconButton,
   ListItemIcon,
@@ -15,13 +14,12 @@ import {
   Popover,
   Snackbar,
   Tooltip,
-  Typography,
 } from "@mui/material";
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
+import { useLayoutEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import { downloadMarkdownTranscript } from "../chatTranscript";
+import { useMobileWorkspaceActionsRegistry } from "./MobileWorkspaceActionsContext";
 
 export interface ChatOverflowAction {
   label: string;
@@ -58,27 +56,77 @@ export function ChatOverflowMenu({
   const [detailsAnchor, setDetailsAnchor] = useState<HTMLElement | null>(null);
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const [notice, setNotice] = useState<string>();
-  const [mobileActionSlot, setMobileActionSlot] = useState<HTMLElement | null>(
-    null,
-  );
-  useEffect(() => {
-    setMobileActionSlot(
-      document.getElementById("ponderosa-mobile-workspace-action-slot"),
-    );
-  }, []);
+  const mobileWorkspaceActionsRegistry = useMobileWorkspaceActionsRegistry();
+  const mobileWorkspaceActionsOwner = useRef(Symbol("mobile-workspace-actions"));
   const close = () => setAnchor(null);
   const run = (action: () => void) => {
     close();
     action();
   };
-  const closeMobileMenu = () =>
-    window.dispatchEvent(
-      new CustomEvent("ponderosa-mobile-workspace-action"),
-    );
-  const runMobile = (action: () => void) => {
-    closeMobileMenu();
-    action();
+  const mobileWorkspaceActions = useRef({
+    label: "Current Workspace",
+    details: details ? {
+      label: detailsLabel,
+      icon: <TuneOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) => setDetailsAnchor(mobileAnchor),
+    } : undefined,
+    actions: actions.map(action => ({
+      ...action,
+      onSelect: () => action.onSelect(),
+    })),
+    copy: showExports ? {
+      label: CHAT_EXPORT_ACTION_LABELS[0],
+      icon: <ContentCopyOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) =>
+        setExportMenu({ kind: "copy", anchor: mobileAnchor }),
+    } : undefined,
+    download: showExports ? {
+      label: CHAT_EXPORT_ACTION_LABELS[1],
+      icon: <DownloadOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) =>
+        setExportMenu({ kind: "download", anchor: mobileAnchor }),
+    } : undefined,
+  });
+  mobileWorkspaceActions.current = {
+    label: "Current Workspace",
+    details: details ? {
+      label: detailsLabel,
+      icon: <TuneOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) => setDetailsAnchor(mobileAnchor),
+    } : undefined,
+    actions: actions.map(action => ({
+      ...action,
+      onSelect: () => action.onSelect(),
+    })),
+    copy: showExports ? {
+      label: CHAT_EXPORT_ACTION_LABELS[0],
+      icon: <ContentCopyOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) =>
+        setExportMenu({ kind: "copy", anchor: mobileAnchor }),
+    } : undefined,
+    download: showExports ? {
+      label: CHAT_EXPORT_ACTION_LABELS[1],
+      icon: <DownloadOutlinedIcon fontSize="small" />,
+      onSelect: (mobileAnchor: HTMLElement) =>
+        setExportMenu({ kind: "download", anchor: mobileAnchor }),
+    } : undefined,
   };
+  useLayoutEffect(() => {
+    if (!mobileWorkspaceActionsRegistry) return;
+    const registration = {
+      owner: mobileWorkspaceActionsOwner.current,
+      getActions: () => mobileWorkspaceActions.current,
+    };
+    mobileWorkspaceActionsRegistry.current = registration;
+    return () => {
+      if (
+        mobileWorkspaceActionsRegistry.current?.owner ===
+        mobileWorkspaceActionsOwner.current
+      ) {
+        mobileWorkspaceActionsRegistry.current = undefined;
+      }
+    };
+  }, [mobileWorkspaceActionsRegistry]);
 
   return <>
     <Tooltip title={label}>
@@ -134,83 +182,6 @@ export function ChatOverflowMenu({
         <ChevronRightIcon fontSize="small" />
       </MenuItem> : null}
     </Menu>
-    {mobileActionSlot
-      ? createPortal(
-          <>
-            <Box sx={{ px: 2, pt: 1.25, pb: 0.5 }}>
-              <Typography
-                variant="overline"
-                color="text.secondary"
-                sx={{ lineHeight: 1.5 }}
-              >
-                Current Workspace
-              </Typography>
-            </Box>
-            {details ? (
-              <MenuItem
-                onClick={event => {
-                  setDetailsAnchor(event.currentTarget);
-                  closeMobileMenu();
-                }}
-              >
-                <ListItemIcon>
-                  <TuneOutlinedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>{detailsLabel}</ListItemText>
-              </MenuItem>
-            ) : null}
-            {actions.map(action => (
-              <MenuItem
-                key={`mobile-${action.label}`}
-                disabled={action.disabled}
-                onClick={() => runMobile(action.onSelect)}
-                sx={action.destructive ? { color: "error.main" } : undefined}
-              >
-                {action.icon ? (
-                  <ListItemIcon
-                    sx={action.destructive ? { color: "inherit" } : undefined}
-                  >
-                    {action.icon}
-                  </ListItemIcon>
-                ) : null}
-                <ListItemText>{action.label}</ListItemText>
-              </MenuItem>
-            ))}
-            {showExports ? <MenuItem
-              onClick={event => {
-                setExportMenu({
-                  kind: "copy",
-                  anchor: event.currentTarget,
-                });
-                closeMobileMenu();
-              }}
-            >
-              <ListItemIcon>
-                <ContentCopyOutlinedIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText>{CHAT_EXPORT_ACTION_LABELS[0]}</ListItemText>
-              <ChevronRightIcon fontSize="small" />
-            </MenuItem> : null}
-            {showExports ? <MenuItem
-              onClick={event => {
-                setExportMenu({
-                  kind: "download",
-                  anchor: event.currentTarget,
-                });
-                closeMobileMenu();
-              }}
-            >
-              <ListItemIcon>
-                <DownloadOutlinedIcon fontSize="small" />
-              </ListItemIcon>
-              <ListItemText>{CHAT_EXPORT_ACTION_LABELS[1]}</ListItemText>
-              <ChevronRightIcon fontSize="small" />
-            </MenuItem> : null}
-            <Divider />
-          </>,
-          mobileActionSlot,
-        )
-      : null}
     <Popover
       open={Boolean(exportMenu)}
       anchorEl={exportMenu?.anchor}

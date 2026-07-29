@@ -140,8 +140,8 @@ html {
 
 @media (max-width: 599.95px) {
   html {
-    /* A slightly denser type scale for phone layouts; interactive targets keep
-       their explicit 44px sizing and no browser zoom is involved. */
+    /* A slightly denser type scale for phone layouts; controls retain their
+       deliberate per-surface sizing and no browser zoom is involved. */
     font-size: 15px;
   }
 

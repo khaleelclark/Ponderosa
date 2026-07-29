@@ -1,4 +1,5 @@
 import CloseIcon from "@mui/icons-material/Close";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
@@ -21,7 +22,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { useEffect, useState, type MouseEvent } from "react";
+import { useState, type MouseEvent } from "react";
 import type {
   ConversationDto,
   OperatorProfileDto,
@@ -33,6 +34,7 @@ import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { useMobileWorkspaceActionsRegistry } from "./components/MobileWorkspaceActionsContext";
 
 interface MobileWorkspaceHeaderProps {
   preferredQuotaProvider?: string;
@@ -62,14 +64,18 @@ export function MobileWorkspaceHeader({
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
+  const mobileWorkspaceActionsRegistry = useMobileWorkspaceActionsRegistry();
+  const mobileWorkspaceActions =
+    mobileWorkspaceActionsRegistry?.current?.getActions();
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
     setOverflowAnchor(event.currentTarget);
-  useEffect(() => {
-    const close = () => setOverflowAnchor(undefined);
-    window.addEventListener("ponderosa-mobile-workspace-action", close);
-    return () =>
-      window.removeEventListener("ponderosa-mobile-workspace-action", close);
-  }, []);
+  const runWorkspaceAction = (
+    event: MouseEvent<HTMLElement>,
+    action: (anchor: HTMLElement) => void,
+  ) => {
+    setOverflowAnchor(undefined);
+    action(event.currentTarget);
+  };
 
   return (
     <AppBar
@@ -139,7 +145,85 @@ export function MobileWorkspaceHeader({
           paper: { sx: { minWidth: 260, maxWidth: "calc(100vw - 24px)" } },
         }}
       >
-        <Box id="ponderosa-mobile-workspace-action-slot" />
+        {mobileWorkspaceActions ? (
+          <Box sx={{ px: 2, pt: 1.25, pb: 0.5 }}>
+            <Typography
+              variant="overline"
+              color="text.secondary"
+              sx={{ lineHeight: 1.5 }}
+            >
+              {mobileWorkspaceActions.label}
+            </Typography>
+          </Box>
+        ) : null}
+        {mobileWorkspaceActions?.details ? (
+          <MenuItem
+            disabled={mobileWorkspaceActions.details.disabled}
+            onClick={event =>
+              runWorkspaceAction(
+                event,
+                mobileWorkspaceActions.details!.onSelect,
+              )
+            }
+            sx={
+              mobileWorkspaceActions.details.destructive
+                ? { color: "error.main" }
+                : undefined
+            }
+          >
+            {mobileWorkspaceActions.details.icon ? (
+              <ListItemIcon>
+                {mobileWorkspaceActions.details.icon}
+              </ListItemIcon>
+            ) : null}
+            <ListItemText>{mobileWorkspaceActions.details.label}</ListItemText>
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions?.actions.map(action => (
+          <MenuItem
+            key={action.label}
+            disabled={action.disabled}
+            onClick={event =>
+              runWorkspaceAction(event, action.onSelect)
+            }
+            sx={action.destructive ? { color: "error.main" } : undefined}
+          >
+            {action.icon ? (
+              <ListItemIcon
+                sx={action.destructive ? { color: "inherit" } : undefined}
+              >
+                {action.icon}
+              </ListItemIcon>
+            ) : null}
+            <ListItemText>{action.label}</ListItemText>
+          </MenuItem>
+        ))}
+        {mobileWorkspaceActions?.copy ? (
+          <MenuItem
+            onClick={event =>
+              runWorkspaceAction(event, mobileWorkspaceActions.copy!.onSelect)
+            }
+          >
+            <ListItemIcon>{mobileWorkspaceActions.copy.icon}</ListItemIcon>
+            <ListItemText>{mobileWorkspaceActions.copy.label}</ListItemText>
+            <ChevronRightIcon fontSize="small" />
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions?.download ? (
+          <MenuItem
+            onClick={event =>
+              runWorkspaceAction(
+                event,
+                mobileWorkspaceActions.download!.onSelect,
+              )
+            }
+          >
+            <ListItemIcon>{mobileWorkspaceActions.download.icon}</ListItemIcon>
+            <ListItemText>{mobileWorkspaceActions.download.label}</ListItemText>
+            <ChevronRightIcon fontSize="small" />
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions ? <Divider /> : null}
         <MenuItem
           onClick={() => {
             setOverflowAnchor(undefined);

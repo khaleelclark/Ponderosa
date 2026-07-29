@@ -33,7 +33,6 @@ import {
 } from "./hooks/queries";
 import {
   useProjectAgents,
-  useProjectConversations,
 } from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
@@ -91,6 +90,7 @@ import {
   markWorkspaceResourceUsed,
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
+import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -182,7 +182,6 @@ export default function App({
     enabled: engineStatusOpen,
     staleTime: 30_000,
   });
-  const projectConversationQueries = useProjectConversations(projects);
   const projectAgentQueries = useProjectAgents(projects);
   const preferredQuotaProvider = route.kind === "agent"
     ? projectAgentQueries[
@@ -646,6 +645,7 @@ export default function App({
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
     >
+      <MobileWorkspaceActionsProvider>
       <Box
         data-testid="ponderosa-app"
         sx={{
@@ -914,6 +914,7 @@ export default function App({
           onSave={profile => savePreferences({ profile })}
         />
       </Box>
+      </MobileWorkspaceActionsProvider>
     </ProjectBrowserContext.Provider>
   );
 }
