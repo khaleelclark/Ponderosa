@@ -19,6 +19,7 @@ import type {
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { secureFileAuthoritySupported } from "@ponderosa/native-host";
 import { createServer, type EngineRegistration } from "../src/app.js";
 
 class BehavioralAdapter implements Adapter {
@@ -103,7 +104,7 @@ describe("server public API behavior", () => {
     });
 
     const ready = await app.inject({ method: "GET", url: "/api/ready" });
-    const descriptorFilesystemAvailable = process.platform === "linux";
+    const descriptorFilesystemAvailable = secureFileAuthoritySupported();
     expect(ready.statusCode).toBe(descriptorFilesystemAvailable ? 200 : 503);
     expect(ready.json()).toMatchObject({
       status: descriptorFilesystemAvailable ? "ready" : "not_ready",
@@ -709,25 +710,31 @@ describe("server public API behavior", () => {
     })).statusCode).toBe(503);
   });
 
-  it.skipIf(process.platform === "linux")(
-    "fails artifact-dependent Agent creation closed when descriptor-relative access is unavailable",
-    async () => {
-      const project = store.createProject({
-        label: "Unsupported artifact filesystem",
-        hostPath: repoDir,
-        defaultEngine: "codex",
-      });
-      const app = server();
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/projects/${project.id}/agents`,
-        payload: { title: "Blocked", engine: "codex" },
-      });
-      expect(response.statusCode).toBe(503);
-      expect(response.json()).toEqual({
-        error: expect.stringContaining("artifact filesystem requires Linux"),
-      });
-      expect(store.listAgents(project.id)).toHaveLength(0);
-    },
-  );
+  it("fails artifact-dependent Agent creation closed when secure file authority is unavailable", async () => {
+    const project = store.createProject({
+      label: "Unsupported artifact filesystem",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      logger: false,
+      artifactFilesystemCapabilityProbe: () => ({
+        ok: false,
+        detail: "test secure artifact filesystem authority is unavailable",
+      }),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/projects/${project.id}/agents`,
+      payload: { title: "Blocked", engine: "codex" },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toEqual({
+      error: expect.stringContaining("test secure artifact filesystem authority is unavailable"),
+    });
+    expect(store.listAgents(project.id)).toHaveLength(0);
+  });
 });
