@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -176,24 +177,43 @@ execFileSync("pnpm", [
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
 
-function nativeHostIdentity(packageTarget) {
+function nativeHostAddon(packageTarget) {
   const require = createRequire(path.join(packageTarget, "package.json"));
   const entry = require.resolve("@ponderosa/native-host");
   const addon = path.resolve(path.dirname(entry), "..", "build", "Release", "ponderosa_native.node");
   if (!existsSync(addon)) {
     throw new Error(`Deployed native host addon is missing: ${addon}`);
   }
+  return addon;
+}
+
+function nativeHostIdentity(addon) {
   return {
     bytes: statSync(addon).size,
     sha256: sha256(addon),
   };
 }
 
-const serverNativeHost = nativeHostIdentity(serverTarget);
-const launcherNativeHost = nativeHostIdentity(launcherTarget);
+const serverNativeHostAddon = nativeHostAddon(serverTarget);
+const launcherNativeHostAddon = nativeHostAddon(launcherTarget);
+// Native linkers may embed build-specific identities (notably Mach-O
+// LC_UUID), so two correct builds from the same source need not be
+// byte-for-byte identical. Ship the freshly deployed server build as the one
+// canonical native image in both applications; installed qualification still
+// loads and hashes each deployed copy through the bundled runtime.
+const canonicalTemporaryAddon = `${launcherNativeHostAddon}.canonical-${process.pid}`;
+try {
+  cpSync(serverNativeHostAddon, canonicalTemporaryAddon);
+  rmSync(launcherNativeHostAddon);
+  renameSync(canonicalTemporaryAddon, launcherNativeHostAddon);
+} finally {
+  rmSync(canonicalTemporaryAddon, { force: true });
+}
+const serverNativeHost = nativeHostIdentity(serverNativeHostAddon);
+const launcherNativeHost = nativeHostIdentity(launcherNativeHostAddon);
 if (serverNativeHost.bytes !== launcherNativeHost.bytes ||
     serverNativeHost.sha256 !== launcherNativeHost.sha256) {
-  throw new Error("Server and launcher deployed different native host addon bytes.");
+  throw new Error("Server and launcher could not be normalized to one native host addon identity.");
 }
 cpSync(
   path.join(repositoryRoot, "apps", "web", "dist"),
