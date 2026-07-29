@@ -497,16 +497,27 @@ export function AgentsTab({
       sx={{ alignItems: "center" }}
     >
       {collection && !selectionMode ? (
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => onNewAgent(organizationRootAgentId)}
-        >
-          New Agent
-        </Button>
+        <>
+          {selectionAllowed && agents.length > 0 ? (
+            <Button
+              variant="outlined"
+              color="inherit"
+              onClick={() => setSelectionMode(true)}
+            >
+              Select Agents
+            </Button>
+          ) : null}
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => onNewAgent(organizationRootAgentId)}
+          >
+            New Agent
+          </Button>
+        </>
       ) : null}
       {!selectionMode ? (
-        <Tooltip title="Agent actions: stop, select, import, or create">
+        <Tooltip title="More Agent actions">
           <IconButton
             aria-label="Agent actions"
             onClick={event => setActionsAnchor(event.currentTarget)}
@@ -529,15 +540,6 @@ export function AgentsTab({
             }}
           >
             Stop All
-          </MenuItem>
-          <MenuItem
-            disabled={agents.length === 0 || !selectionAllowed}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              setSelectionMode(true);
-            }}
-          >
-            Select Agents
           </MenuItem>
           {showImportAction ? (
             <MenuItem
@@ -574,113 +576,118 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
-          searchMaxWidth={selectionMode ? 520 : undefined}
+          searchMaxWidth={selectionMode ? 360 : 300}
+          singleLine
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
         >
           {selectionControls}
-          {toolbarControls}
-          <Stack
-            direction="row"
-            role="group"
-            aria-label="Agent organization view"
-            sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
-          >
-            <Tooltip title="Hierarchy">
-              <IconButton
-                size="small"
-                color={organizationView === "hierarchy" ? "primary" : "default"}
-                aria-pressed={organizationView === "hierarchy"}
-                aria-label="Show Agent hierarchy"
-                onClick={() => setOrganizationView("hierarchy")}
+          {!selectionMode ? (
+            <>
+              {toolbarControls}
+              <Stack
+                direction="row"
+                role="group"
+                aria-label="Agent organization view"
+                sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
               >
-                <AccountTreeOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Flat List">
-              <IconButton
-                size="small"
-                color={organizationView === "flat" ? "primary" : "default"}
-                aria-pressed={organizationView === "flat"}
-                aria-label="Show flat Agent list"
-                onClick={() => setOrganizationView("flat")}
+                <Tooltip title="Hierarchy">
+                  <IconButton
+                    size="small"
+                    color={organizationView === "hierarchy" ? "primary" : "default"}
+                    aria-pressed={organizationView === "hierarchy"}
+                    aria-label="Show Agent hierarchy"
+                    onClick={() => setOrganizationView("hierarchy")}
+                  >
+                    <AccountTreeOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Flat List">
+                  <IconButton
+                    size="small"
+                    color={organizationView === "flat" ? "primary" : "default"}
+                    aria-pressed={organizationView === "flat"}
+                    aria-label="Show flat Agent list"
+                    onClick={() => setOrganizationView("flat")}
+                  >
+                    <ViewListOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <Button
+                color="inherit"
+                variant={statusFilters.length ? "outlined" : "text"}
+                startIcon={<FilterListOutlinedIcon />}
+                onClick={event => setStatusAnchor(event.currentTarget)}
+                aria-label="Filter Agents by status"
+                sx={{ minHeight: 40, whiteSpace: "nowrap" }}
               >
-                <ViewListOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Stack>
-          <Button
-            color="inherit"
-            variant={statusFilters.length ? "outlined" : "text"}
-            startIcon={<FilterListOutlinedIcon />}
-            onClick={event => setStatusAnchor(event.currentTarget)}
-            aria-label="Filter Agents by status"
-            sx={{ minHeight: 40, whiteSpace: "nowrap" }}
-          >
-            {statusFilters.length
-              ? `Status (${statusFilters.length})`
-              : "Status"}
-          </Button>
-          {statusAnchor ? (
-            <Menu
-              anchorEl={statusAnchor}
-              open
-              onClose={() => setStatusAnchor(undefined)}
-            >
-              <MenuItem onClick={() => setStatusFilters([])}>
-                <Checkbox checked={statusFilters.length === 0} />
-                All ({scopedAgents.length})
-              </MenuItem>
-              {statusOptions
-                .filter(option => option.value !== "all")
-                .map(option => (
-                  <MenuItem
-                    key={option.value}
-                    onClick={() =>
-                      setStatusFilters(current =>
-                        current.includes(option.value as StatusFilter)
-                          ? current.filter(value => value !== option.value)
-                          : [...current, option.value as StatusFilter],
-                      )
+                {statusFilters.length
+                  ? `Status (${statusFilters.length})`
+                  : "Status"}
+              </Button>
+              {statusAnchor ? (
+                <Menu
+                  anchorEl={statusAnchor}
+                  open
+                  onClose={() => setStatusAnchor(undefined)}
+                >
+                  <MenuItem onClick={() => setStatusFilters([])}>
+                    <Checkbox checked={statusFilters.length === 0} />
+                    All ({scopedAgents.length})
+                  </MenuItem>
+                  {statusOptions
+                    .filter(option => option.value !== "all")
+                    .map(option => (
+                      <MenuItem
+                        key={option.value}
+                        onClick={() =>
+                          setStatusFilters(current =>
+                            current.includes(option.value as StatusFilter)
+                              ? current.filter(value => value !== option.value)
+                              : [...current, option.value as StatusFilter],
+                          )
+                        }
+                      >
+                        <Checkbox
+                          checked={statusFilters.includes(
+                            option.value as StatusFilter,
+                          )}
+                        />
+                        {option.label} ({option.count})
+                      </MenuItem>
+                    ))}
+                </Menu>
+              ) : null}
+              {embeddedCollection ? null : (
+                <FormControl
+                  size="small"
+                  sx={{ minWidth: 155, width: { xs: "100%", sm: "auto" } }}
+                >
+                  <InputLabel id="agents-master-filter-label">
+                    Project Chat
+                  </InputLabel>
+                  <Select
+                    labelId="agents-master-filter-label"
+                    label="Project Chat"
+                    value={masterFilter}
+                    onChange={(event: SelectChangeEvent) =>
+                      setMasterFilter(event.target.value)
                     }
                   >
-                    <Checkbox
-                      checked={statusFilters.includes(
-                        option.value as StatusFilter,
-                      )}
-                    />
-                    {option.label} ({option.count})
-                  </MenuItem>
-                ))}
-            </Menu>
+                    <MenuItem value="all">All Project Chats</MenuItem>
+                    {conversations.map(master => (
+                      <MenuItem key={master.id} value={master.id}>
+                        {master.title}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
+              {embeddedCollection ? headerActions : null}
+            </>
           ) : null}
-          {embeddedCollection ? null : (
-            <FormControl
-              size="small"
-              sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}
-            >
-              <InputLabel id="agents-master-filter-label">
-                Project Chat
-              </InputLabel>
-              <Select
-                labelId="agents-master-filter-label"
-                label="Project Chat"
-                value={masterFilter}
-                onChange={(event: SelectChangeEvent) =>
-                  setMasterFilter(event.target.value)
-                }
-              >
-                <MenuItem value="all">All Project Chats</MenuItem>
-                {conversations.map(master => (
-                  <MenuItem key={master.id} value={master.id}>
-                    {master.title}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          {embeddedCollection ? headerActions : null}
         </CollectionToolbar>
       }
     >

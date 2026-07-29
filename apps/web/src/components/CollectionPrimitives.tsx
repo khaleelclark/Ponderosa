@@ -153,6 +153,7 @@ export interface CollectionToolbarProps {
   onSearch(value: string): void;
   searchLabel: string;
   searchMaxWidth?: number;
+  singleLine?: boolean;
   reorderHint?: boolean;
   children?: ReactNode;
 }
@@ -162,6 +163,7 @@ export function CollectionToolbar({
   onSearch,
   searchLabel,
   searchMaxWidth,
+  singleLine = false,
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
@@ -171,7 +173,7 @@ export function CollectionToolbar({
     direction={{ xs: "column", md: "row" }}
     spacing={1.25}
     useFlexGap
-    flexWrap="wrap"
+    flexWrap={singleLine ? { xs: "wrap", lg: "nowrap" } : "wrap"}
     sx={{ px: { xs: 2, md: 3 }, py: 1.5, alignItems: { md: "center" } }}
   >
     <TextField
@@ -206,19 +208,24 @@ export function CollectionDirectoryControls({
   onProject,
   sort,
   onSort,
+  compact = false,
 }: {
   projects?: ProjectDto[];
   projectId?: string;
   onProject?(value: string): void;
   sort: ProjectSort;
   onSort(value: ProjectSort): void;
+  compact?: boolean;
 }): JSX.Element {
   const controlId = useId();
   return <>
     {projects && onProject ? (
       <FormControl
         size="small"
-        sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}
+        sx={{
+          minWidth: compact ? 145 : 190,
+          width: { xs: "100%", sm: "auto" },
+        }}
       >
         <InputLabel id={`${controlId}-project`}>Project</InputLabel>
         <Select
@@ -238,7 +245,10 @@ export function CollectionDirectoryControls({
     ) : null}
     <FormControl
       size="small"
-      sx={{ minWidth: 170, width: { xs: "100%", sm: "auto" } }}
+      sx={{
+        minWidth: compact ? 150 : 170,
+        width: { xs: "100%", sm: "auto" },
+      }}
     >
       <InputLabel id={`${controlId}-sort`}>Sort</InputLabel>
       <Select
