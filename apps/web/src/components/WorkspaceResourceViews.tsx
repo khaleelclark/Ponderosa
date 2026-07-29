@@ -1,15 +1,18 @@
 import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
-  Alert, Box, Button, FormControl, IconButton, InputLabel, LinearProgress,
+  Alert, Box, Button, Chip, FormControl, IconButton, InputLabel, LinearProgress,
   MenuItem, Select, Stack, Tooltip, Typography,
 } from "@mui/material";
-import type { EngineDto, ProjectDto, ProjectSort, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ConversationDto, EngineDto, ProjectDto, TriggerDefinitionDto, WorkspacePreferencesDto } from "@ponderosa/core";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import {
@@ -26,75 +29,148 @@ import type { Route } from "../routing";
 import { TokenUsageDetails } from "./TokenUsageButton";
 import { AgentsTab } from "./AgentsTab";
 import { mergeAgentStatuses } from "../agents";
-import { CollectionEmptyState, CollectionHeader, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import {
+  CollectionDirectoryControls,
+  CollectionEmptyState,
+  CollectionHeader,
+  CollectionTimestamp,
+  CollectionToolbar,
+  CollectionWorkspace,
+  ResourceRow,
+} from "./CollectionPrimitives";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
+import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 
-function ResourceToolbar({ search, onSearch, searchLabel, sort, onSort, projectId, projects, onProject }: {
-  search: string; onSearch(value: string): void; sort: ProjectSort; onSort(value: ProjectSort): void;
-  searchLabel: string;
-  projectId: string; projects: ProjectDto[]; onProject(value: string): void;
-}): JSX.Element {
-  return <CollectionToolbar search={search} onSearch={onSearch} searchLabel={searchLabel}>
-    <FormControl size="small" sx={{ minWidth: 190 }}><InputLabel id="resource-project-filter">Project</InputLabel><Select labelId="resource-project-filter" label="Project" value={projectId} onChange={(event) => onProject(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((project) => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}</Select></FormControl>
-    <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="resource-sort">Sort</InputLabel><Select labelId="resource-sort" label="Sort" value={sort} onChange={(event) => onSort(event.target.value as ProjectSort)}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
-  </CollectionToolbar>;
-}
+type ChatDirectoryResource = {
+  route: Route;
+  conversation: ConversationDto;
+};
 
-export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onConversationAction }: {
   projects: ProjectDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void; onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string): void;
+  onConversationAction(kind: "rename" | "delete", conversation: ConversationDto): void;
 }): JSX.Element {
   const queries = useProjectConversations(projects);
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
+  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<ChatDirectoryResource>>();
   useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
   const sort = workspaceResourceSort(preferences, "chat"); const starred = starredWorkspaceResources(preferences);
   const rows = projects.flatMap((project, index) => (queries[index]?.data ?? []).filter((conversation) => !conversation.archived).map((conversation) => ({ project, conversation })));
-  const filtered = rows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
+  const scopedProject = filterProjectId
+    ? projects.find(project => project.id === filterProjectId)
+    : undefined;
+  const scopedRows = filterProjectId
+    ? rows.filter(({ project }) => project.id === filterProjectId)
+    : rows;
+  const filtered = scopedRows.filter(({ project, conversation }) => (!projectId || project.id === projectId) && (!search.trim() || `${conversation.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.chatOrder, (row) => row.conversation.id, (row) => row.conversation.title, (row) => row.conversation.updatedAt);
-  const filtersActive = Boolean(projectId || search.trim());
+  const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
   return <CollectionWorkspace
     icon={<ChatBubbleOutlineIcon />}
     title="All Chats"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} Project Chats` : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`}
+    detail={
+      scopedProject
+        ? filtersActive
+          ? `${ordered.length} of ${scopedRows.length} Chats in ${scopedProject.label}`
+          : `${scopedRows.length} ${scopedRows.length === 1 ? "Chat" : "Chats"} in ${scopedProject.label}`
+        : filtersActive
+          ? `${ordered.length} of ${rows.length} Project Chats`
+          : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`
+    }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("chat", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
+      <CollectionDirectoryControls
+        projects={filterProjectId ? undefined : projects}
+        projectId={filterProjectId ? undefined : projectId}
+        onProject={filterProjectId ? undefined : setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("chat", value))}
+      />
+    </CollectionToolbar>}
     listLabel="All Chats"
   >
-    {ordered.map(({ project, conversation }) => {
+    {ordered.map(({ project, conversation }, index) => {
       const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
+      const menuResource = { route, conversation };
       const key = resourcePreferenceKey("conversation", conversation.id);
       return <ResourceRow
         key={conversation.id}
         label={conversation.title}
-        description={project.label}
+        description={filterProjectId ? undefined : project.label}
         icon={<ChatBubbleOutlineIcon />}
-        meta={<Typography variant="caption" color="text.secondary">{new Date(conversation.updatedAt).toLocaleString()}</Typography>}
+        meta={<CollectionTimestamp value={conversation.updatedAt} />}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.conversation.id === conversation.id} aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
-        onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
+        onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
         draggable
         onDragStart={() => setDragged(conversation.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, rows.map((row) => row.conversation.id), dragged, conversation.id) });
+          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, ordered.map((row) => row.conversation.id), dragged, conversation.id) });
           setDragged(undefined);
+        }}
+        onKeyboardMove={(direction) => {
+          const target = ordered[direction === "up" ? index - 1 : index + 1];
+          if (!target) return false;
+          onPreferences({
+            chatSort: "custom",
+            chatOrder: reorderStableIds(
+              preferences.chatOrder,
+              ordered.map(row => row.conversation.id),
+              conversation.id,
+              target.conversation.id,
+              direction === "up" ? "before" : "after",
+            ),
+          });
+          return {
+            position: direction === "up" ? index : index + 2,
+            total: ordered.length,
+          };
         }}
       />;
     })}
     {!queries.some((query) => query.isLoading) && ordered.length === 0 ? <CollectionEmptyState
-      title={rows.length === 0 && !filtersActive ? "No Chats yet" : "No Chats match these filters"}
-      detail={rows.length === 0 && !filtersActive ? "Create a Chat to get started." : "Try a different search or Project filter."}
+      title={scopedRows.length === 0 && !filtersActive ? "No Chats Yet" : "No Chats match these filters"}
+      detail={scopedRows.length === 0 && !filtersActive ? "Create a Chat to get started." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+      action={filtersActive ? {
+        label: "Clear Filters",
+        onClick: () => {
+          setSearch("");
+          if (!filterProjectId) setProjectId("");
+        },
+      } : undefined}
     /> : null}
-    <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+    <ResourceContextMenu
+      state={menu}
+      onClose={() => setMenu(undefined)}
+      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      actions={[
+        {
+          id: "rename",
+          label: "Rename",
+          icon: <EditOutlinedIcon fontSize="small" />,
+          onSelect: ({ conversation }) => onConversationAction("rename", conversation),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <DeleteOutlineIcon fontSize="small" />,
+          color: "error",
+          onSelect: ({ conversation }) => onConversationAction("delete", conversation),
+        },
+      ]}
+    />
   </CollectionWorkspace>;
 }
 
-export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onAgentsDeleted }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(projectId?: string, managerAgentId?: string): void;
+  onNavigate(route: Route): void; onOpenInNewTab(route: Route): void;
+  onCreate(projectId?: string, managerAgentId?: string): void;
+  onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
   const agentQueries = useProjectAgents(projects);
   const conversationQueries = useProjectConversations(projects);
@@ -112,70 +188,270 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
   const statusByAgentId = mergeAgentStatuses(agents, allHealth, new Map());
   const projectByAgentId = new Map(rows.map(({ project, agent }) => [agent.id, { id: project.id, label: project.label }]));
   const starredIds = starredWorkspaceResources(preferences);
+  const scopedProject = projectId
+    ? projects.find(project => project.id === projectId)
+    : undefined;
   return <Box sx={{ height: "100%", minHeight: 0, overflow: "hidden" }}>
     <AgentsTab collection={{
       title: "All Agents",
-      detail: `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
-      totalCount: rows.length,
+      detail: scopedProject
+        ? `${scopedRows.length} ${scopedRows.length === 1 ? "Agent" : "Agents"} in ${scopedProject.label}`
+        : `${rows.length} ${rows.length === 1 ? "Agent" : "Agents"} across Ponderosa`,
+      totalCount: scopedRows.length,
     }} toolbarControls={<>
-      <FormControl size="small" sx={{ minWidth: 220, width: { xs: "100%", sm: "auto" } }}><InputLabel id="agents-project-filter">Project</InputLabel><Select labelId="agents-project-filter" label="Project" value={projectId} onChange={(event) => setProjectId(event.target.value)}><MenuItem value="">All Projects</MenuItem>{projects.map((candidate) => <MenuItem key={candidate.id} value={candidate.id}>{candidate.label}</MenuItem>)}</Select></FormControl>
-      <FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="agents-sort">Sort</InputLabel><Select labelId="agents-sort" label="Sort" value={sort} onChange={(event) => onPreferences(workspaceResourceSortPatch("agent", event.target.value as ProjectSort))}><MenuItem value="last_used">Recent Activity</MenuItem><MenuItem value="alphabetical">Alphabetical</MenuItem><MenuItem value="custom">Custom Order</MenuItem></Select></FormControl>
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectId ? undefined : projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed={Boolean(projectId)} onReorder={sort === "custom" ? (sourceId, targetId) => onPreferences({ agentOrder: reorderStableIds(preferences.agentOrder, rows.map((row) => row.agent.id), sourceId, targetId) }) : undefined} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onNewAgent={(managerAgentId) => onCreate(managerAgentId ? projectByAgentId.get(managerAgentId)?.id : projectId || undefined, managerAgentId)} />
+      <CollectionDirectoryControls
+        projects={projects}
+        projectId={projectId}
+        onProject={setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
+      />
+    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+      managerAgentId
+        ? projectByAgentId.get(managerAgentId)?.id
+        : projectId || undefined,
+      managerAgentId,
+    )} onAgentsDeleted={onAgentsDeleted} showImportAction={false} />
   </Box>;
 }
 
-export function AllTriggersWorkspace({ projects, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+type TriggerDirectoryResource = {
+  route: Route;
+  trigger: TriggerDefinitionDto;
+};
+
+export function AllTriggersWorkspace({
+  projects,
+  filterProjectId,
+  filterConversationId,
+  filterAgentIds,
+  scopeTitle,
+  embedded = false,
+  preferences,
+  onPreferences,
+  onNavigate,
+  onOpenInNewTab,
+  onCreate,
+}: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  filterProjectId?: string;
+  filterConversationId?: string;
+  filterAgentIds?: readonly string[];
+  scopeTitle?: string;
+  embedded?: boolean;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void; onCreate(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const triggers = useQuery({ queryKey: queryKeys.triggers.all, queryFn: () => api.listAllTriggers(), staleTime: 5_000 });
   const agents = useProjectAgents(projects);
-  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<Route>>();
+  const [search, setSearch] = useState(""); const [projectId, setProjectId] = useState(filterProjectId ?? ""); const [dragged, setDragged] = useState<string>(); const [menu, setMenu] = useState<ResourceContextMenuState<TriggerDirectoryResource>>();
+  useEffect(() => setProjectId(filterProjectId ?? ""), [filterProjectId]);
+  const [triggerAction, setTriggerAction] = useState<{
+    kind: "rename" | "delete";
+    trigger: TriggerDefinitionDto;
+  }>();
+  const renameTrigger = useMutation({
+    mutationFn: ({ trigger, name }: { trigger: TriggerDefinitionDto; name: string }) =>
+      api.updateTrigger(trigger.id, { name }),
+    onSuccess: (_updated, { trigger }) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      setTriggerAction(undefined);
+    },
+  });
+  const deleteTrigger = useMutation({
+    mutationFn: (trigger: TriggerDefinitionDto) => api.deleteTrigger(trigger.id),
+    onSuccess: (_deleted, trigger) => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.triggers.agent(trigger.agentId) });
+      setTriggerAction(undefined);
+    },
+  });
   const sort = workspaceResourceSort(preferences, "trigger"); const starred = starredWorkspaceResources(preferences);
   const destinations = useMemo(() => new Map(projects.flatMap((project, index) => (agents[index]?.data ?? []).map((agent) => [agent.id, { project, agent }] as const))), [projects, agents.map((query) => query.data)]);
-  const rows = (triggers.data ?? []).flatMap((trigger) => { const destination = destinations.get(trigger.agentId); return destination ? [{ trigger, ...destination }] : []; });
-  const filtered = rows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
+  const scopedAgentIds = filterAgentIds ? new Set(filterAgentIds) : undefined;
+  const rows = (triggers.data ?? []).flatMap((trigger) => {
+    if (scopedAgentIds && !scopedAgentIds.has(trigger.agentId)) return [];
+    if (
+      filterConversationId &&
+      trigger.conversationId !== filterConversationId
+    ) {
+      return [];
+    }
+    const destination = destinations.get(trigger.agentId);
+    return destination ? [{ trigger, ...destination }] : [];
+  });
+  const scopedRows = filterProjectId
+    ? rows.filter(({ project }) => project.id === filterProjectId)
+    : rows;
+  const filtered = scopedRows.filter(({ project, agent, trigger }) => (!projectId || project.id === projectId) && (!search.trim() || `${trigger.name} ${trigger.sourceKind} ${agent.title} ${project.label}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())));
   const ordered = sortWorkspaceResources(filtered, sort, preferences.triggerOrder, (row) => row.trigger.id, (row) => row.trigger.name, (row) => row.trigger.updatedAt);
-  const filtersActive = Boolean(projectId || search.trim());
+  const filtersActive = Boolean(search.trim() || (!filterProjectId && projectId));
+  const scopedProject = filterProjectId
+    ? projects.find(project => project.id === filterProjectId)
+    : undefined;
+  const createButton = (
+    <Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>
+      New Trigger
+    </Button>
+  );
   return <CollectionWorkspace
     icon={<BoltOutlinedIcon />}
-    title="All Triggers"
-    detail={filtersActive ? `${ordered.length} of ${rows.length} configured automations` : `${rows.length} configured automation${rows.length === 1 ? "" : "s"}`}
-    primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreate}>New Trigger</Button>}
-    toolbar={<ResourceToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" sort={sort} onSort={(value) => onPreferences(workspaceResourceSortPatch("trigger", value))} projectId={projectId} projects={projects} onProject={setProjectId} />}
-    listLabel="All Triggers"
+    title={scopeTitle ?? (scopedProject ? "Project Triggers" : "All Triggers")}
+    detail={
+      scopedProject
+        ? filtersActive
+          ? `${ordered.length} of ${scopedRows.length} Triggers in ${scopedProject.label}`
+          : `${scopedRows.length} ${scopedRows.length === 1 ? "Trigger" : "Triggers"} in ${scopedProject.label}`
+        : filtersActive
+          ? `${ordered.length} of ${rows.length} Triggers`
+          : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`
+    }
+    primaryAction={createButton}
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
+      <CollectionDirectoryControls
+        projects={filterProjectId ? undefined : projects}
+        projectId={filterProjectId ? undefined : projectId}
+        onProject={filterProjectId ? undefined : setProjectId}
+        sort={sort}
+        onSort={value => onPreferences(workspaceResourceSortPatch("trigger", value))}
+      />
+      {embedded ? createButton : null}
+    </CollectionToolbar>}
+    listLabel={scopeTitle ?? "All Triggers"}
+    variant={embedded ? "embedded" : "page"}
   >
-    {ordered.map(({ project, agent, trigger }) => {
+    {ordered.map(({ project, agent, trigger }, index) => {
       const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };
+      const menuResource = { route, trigger };
       const key = resourcePreferenceKey("trigger", trigger.id);
       return <ResourceRow
         key={trigger.id}
         label={trigger.name}
-        description={`${project.label} · ${agent.title} · ${trigger.sourceKind}`}
-        icon={<BoltOutlinedIcon color={trigger.enabled ? "primary" : "disabled"} />}
-        meta={<Typography variant="caption" color={trigger.enabled ? "success.main" : "text.disabled"}>{trigger.enabled ? "Enabled" : "Disabled"}</Typography>}
+        description={`${filterProjectId ? "" : `${project.label} · `}${agent.title} · ${trigger.sourceKind.replaceAll("_", " ").replace(/\b\w/g, (character) => character.toUpperCase())}`}
+        icon={<BoltOutlinedIcon />}
+        meta={<Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
+          <Chip
+            size="small"
+            label={trigger.enabled ? "Enabled" : "Disabled"}
+            color={trigger.enabled ? "success" : "default"}
+            variant={trigger.enabled ? "filled" : "outlined"}
+          />
+          <CollectionTimestamp value={trigger.updatedAt} hideBelow="md" />
+        </Stack>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: route })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.trigger.id === trigger.id} aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => {
           markWorkspaceResourceUsed(queryClient, "trigger", trigger.id);
           onNavigate(route);
         }}
-        onContextMenu={(anchor) => setMenu({ anchor, resource: route })}
+        onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
         draggable
         onDragStart={() => setDragged(trigger.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, rows.map((row) => row.trigger.id), dragged, trigger.id) });
+          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, ordered.map((row) => row.trigger.id), dragged, trigger.id) });
           setDragged(undefined);
+        }}
+        onKeyboardMove={(direction) => {
+          const target = ordered[direction === "up" ? index - 1 : index + 1];
+          if (!target) return false;
+          onPreferences({
+            triggerSort: "custom",
+            triggerOrder: reorderStableIds(
+              preferences.triggerOrder,
+              ordered.map(row => row.trigger.id),
+              trigger.id,
+              target.trigger.id,
+              direction === "up" ? "before" : "after",
+            ),
+          });
+          return {
+            position: direction === "up" ? index : index + 2,
+            total: ordered.length,
+          };
         }}
       />;
     })}
     {!triggers.isLoading && ordered.length === 0 ? <CollectionEmptyState
-      title={rows.length === 0 && !filtersActive ? "No Triggers yet" : "No Triggers match these filters"}
-      detail={rows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : "Try a different search or Project filter."}
+      title={scopedRows.length === 0 && !filtersActive ? "No Triggers Yet" : "No Triggers match these filters"}
+      detail={scopedRows.length === 0 && !filtersActive ? "Create a Trigger to automate Agent work." : `Try a different search${filterProjectId ? "." : " or Project filter."}`}
+      action={filtersActive ? {
+        label: "Clear Filters",
+        onClick: () => {
+          setSearch("");
+          if (!filterProjectId) setProjectId("");
+        },
+      } : undefined}
     /> : null}
-    <ResourceContextMenu state={menu} onClose={() => setMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+    <ResourceContextMenu
+      state={menu}
+      onClose={() => setMenu(undefined)}
+      onOpenInNewTab={({ route }) => onOpenInNewTab(route)}
+      actions={[
+        {
+          id: "settings",
+          label: "Trigger Settings",
+          icon: <SettingsOutlinedIcon fontSize="small" />,
+          onSelect: ({ route, trigger }) => {
+            if (route.kind === "agent")
+              onNavigate({ ...route, triggerId: trigger.id });
+          },
+        },
+        {
+          id: "rename",
+          label: "Rename",
+          icon: <EditOutlinedIcon fontSize="small" />,
+          onSelect: ({ trigger }) => setTriggerAction({ kind: "rename", trigger }),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <DeleteOutlineIcon fontSize="small" />,
+          color: "error",
+          onSelect: ({ trigger }) => setTriggerAction({ kind: "delete", trigger }),
+        },
+      ]}
+    />
+    <TextInputDialog
+      open={triggerAction?.kind === "rename"}
+      title="Rename Trigger"
+      label="Trigger name"
+      initialValue={triggerAction?.trigger.name ?? ""}
+      confirmLabel="Save"
+      pendingLabel="Saving…"
+      pending={renameTrigger.isPending}
+      error={renameTrigger.isError ? String(renameTrigger.error) : undefined}
+      validate={(value) => value.trim() ? undefined : "Enter a Trigger name."}
+      onCancel={() => {
+        renameTrigger.reset();
+        setTriggerAction(undefined);
+      }}
+      onConfirm={(name) => {
+        if (triggerAction?.kind === "rename")
+          renameTrigger.mutate({ trigger: triggerAction.trigger, name: name.trim() });
+      }}
+    />
+    <ResourceDeletionDialog
+      open={triggerAction?.kind === "delete"}
+      resourceType="Trigger"
+      resourceName={triggerAction?.trigger.name}
+      pendingLabel="Deleting…"
+      pending={deleteTrigger.isPending}
+      error={deleteTrigger.isError ? String(deleteTrigger.error) : undefined}
+      onCancel={() => {
+        deleteTrigger.reset();
+        setTriggerAction(undefined);
+      }}
+      onConfirm={() => {
+        if (triggerAction?.kind === "delete") deleteTrigger.mutate(triggerAction.trigger);
+      }}
+    >
+      <Typography sx={{ pt: 1 }}>
+        Pending occurrences will be cancelled. Immutable occurrence history
+        remains available.
+      </Typography>
+    </ResourceDeletionDialog>
   </CollectionWorkspace>;
 }
 

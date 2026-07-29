@@ -1,7 +1,7 @@
 import AddIcon from "@mui/icons-material/Add";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
@@ -11,6 +11,7 @@ import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import ViewListOutlinedIcon from "@mui/icons-material/ViewListOutlined";
 import {
   Alert,
@@ -44,12 +45,15 @@ import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
+import { AgentOrganizationDialog } from "./AgentDetail.parts";
+import { TextInputDialog } from "./ConfirmationDialogs";
 import {
   ResourceContextMenu,
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
 import {
   CollectionEmptyState,
+  CollectionTimestamp,
   CollectionToolbar,
   CollectionWorkspace,
   ResourceRow,
@@ -58,7 +62,6 @@ import {
   agentBelongsToConversation,
   agentStatusColor,
   agentStatusLabel,
-  relativeTime,
   orderedAgentOrganization,
   type AgentStatus,
 } from "../agents";
@@ -157,7 +160,10 @@ export function AgentsTab({
   healthByAgentId,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onOpenAgentSettings,
+  onAgentsDeleted,
   onNewAgent,
+  showImportAction = true,
   projectByAgentId,
   starredAgentIds,
   onToggleStar,
@@ -177,13 +183,20 @@ export function AgentsTab({
   healthByAgentId: ReadonlyMap<string, AgentHealthDto>;
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onOpenAgentSettings?(agentId: string): void;
+  onAgentsDeleted?(projectId: string, agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
+  showImportAction?: boolean;
   projectByAgentId?: Map<string, { id: string; label: string }>;
   starredAgentIds?: ReadonlySet<string>;
   onToggleStar?(agentId: string): void;
   displayOrder?: readonly string[];
   selectionAllowed?: boolean;
-  onReorder?(sourceAgentId: string, targetAgentId: string): void;
+  onReorder?(
+    sourceAgentId: string,
+    targetAgentId: string,
+    position?: "before" | "after",
+  ): void;
   toolbarControls?: ReactNode;
   scopeLabel?: string;
   collection?: {
@@ -201,13 +214,20 @@ export function AgentsTab({
   const [masterFilter, setMasterFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [pendingDelete, setPendingDelete] = useState<AgentDto | undefined>();
+  const [pendingRename, setPendingRename] = useState<AgentDto | undefined>();
+  const [pendingOrganization, setPendingOrganization] = useState<
+    AgentDto | undefined
+  >();
+  const [organizationParentId, setOrganizationParentId] = useState("");
   const [bulkError, setBulkError] = useState<string>();
   const [stoppingAll, setStoppingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
+  const [deleteSelectedGroups, setDeleteSelectedGroups] = useState<
+    Array<{ projectId: string; agentIds: string[] }>
+  >([]);
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();
@@ -221,10 +241,22 @@ export function AgentsTab({
     () => new Set(),
   );
 
-  const promoteAgent = useMutation({
-    mutationFn: (agentId: string) =>
-      api.updateAgentOrganization(agentId, { managerAgentId: null }),
+  const updateOrganization = useMutation({
+    mutationFn: () => {
+      if (!pendingOrganization)
+        throw new Error("Choose an Agent before changing its reporting line.");
+      return api.updateAgentOrganization(pendingOrganization.id, {
+        managerAgentId: organizationParentId || null,
+      });
+    },
     onSuccess: updated => {
+      setPendingOrganization(undefined);
+      queryClient.setQueriesData<AgentDto[]>(
+        { queryKey: queryKeys.agents.all },
+        current =>
+          current?.map(agent => (agent.id === updated.id ? updated : agent)),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
@@ -233,11 +265,25 @@ export function AgentsTab({
       });
     },
   });
+  const renameAgent = useMutation({
+    mutationFn: ({ agent, title }: { agent: AgentDto; title: string }) =>
+      api.updateAgent(agent.id, { title }),
+    onSuccess: updated => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.project(updated.projectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detailPrefix(updated.id),
+      });
+      setPendingRename(undefined);
+    },
+  });
 
   const masterName = (id: string | undefined): string =>
     id
       ? (conversations.find(master => master.id === id)?.title ??
-        "Unknown Project chat")
+        "Unknown Project Chat")
       : "Unassigned";
 
   const organizationRows = orderedAgentOrganization(agents);
@@ -349,7 +395,30 @@ export function AgentsTab({
   const leaveSelectionMode = () => {
     setSelectionMode(false);
     setSelectedAgentIds(new Set());
-    setDeleteSelectedOpen(false);
+    setDeleteSelectedGroups([]);
+  };
+  const beginSelectedDeletion = () => {
+    const grouped = new Map<string, string[]>();
+    for (const agentId of selectedAgentIds) {
+      const owningProjectId = projectByAgentId?.get(agentId)?.id ?? projectId;
+      if (!owningProjectId) {
+        setBulkError(
+          "Ponderosa could not determine the Project for every selected Agent.",
+        );
+        return;
+      }
+      grouped.set(owningProjectId, [
+        ...(grouped.get(owningProjectId) ?? []),
+        agentId,
+      ]);
+    }
+    setBulkError(undefined);
+    setDeleteSelectedGroups(
+      [...grouped].map(([owningProjectId, agentIds]) => ({
+        projectId: owningProjectId,
+        agentIds,
+      })),
+    );
   };
   const stopAll = async () => {
     setStoppingAll(true);
@@ -427,7 +496,7 @@ export function AgentsTab({
             variant="outlined"
             size="small"
             disabled={selectedAgentIds.size === 0}
-            onClick={() => setDeleteSelectedOpen(true)}
+            onClick={beginSelectedDeletion}
           >
             Delete Selected ({selectedAgentIds.size})
           </Button>
@@ -469,16 +538,18 @@ export function AgentsTab({
           >
             Select Agents
           </MenuItem>
-          <MenuItem
-            disabled={!projectId}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              setImportOpen(true);
-            }}
-          >
-            <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-            Import Agent or Organization
-          </MenuItem>
+          {showImportAction ? (
+            <MenuItem
+              disabled={!projectId}
+              onClick={() => {
+                setActionsAnchor(undefined);
+                setImportOpen(true);
+              }}
+            >
+              <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
+              Import Agent or Organization
+            </MenuItem>
+          ) : null}
           <MenuItem
             onClick={() => {
               setActionsAnchor(undefined);
@@ -502,6 +573,9 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
+          reorderHint={
+            organizationView === "flat" && Boolean(onReorder)
+          }
         >
           {toolbarControls}
           <Stack
@@ -584,11 +658,11 @@ export function AgentsTab({
               sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}
             >
               <InputLabel id="agents-master-filter-label">
-                Project chat
+                Project Chat
               </InputLabel>
               <Select
                 labelId="agents-master-filter-label"
-                label="Project chat"
+                label="Project Chat"
                 value={masterFilter}
                 onChange={(event: SelectChangeEvent) =>
                   setMasterFilter(event.target.value)
@@ -640,8 +714,8 @@ export function AgentsTab({
             title={
               scopedAgents.length === 0
                 ? organizationRootAgentId
-                  ? "No delegated Agents yet"
-                  : "No Agents yet"
+                  ? "No Delegated Agents Yet"
+                  : "No Agents Yet"
                 : "No Agents match these filters"
             }
             detail={
@@ -665,8 +739,8 @@ export function AgentsTab({
             }
           />
         ) : (
-          <Stack spacing={0.5} role="tree" aria-label="Agent organization">
-            {filtered.map(({ agent, depth }) => {
+          <Stack spacing={0.75} role="tree" aria-label="Agent organization">
+            {filtered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
@@ -819,18 +893,10 @@ export function AgentsTab({
                         >
                           {agent.activeEngine}
                         </Typography>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          noWrap
-                          sx={{
-                            display: { xs: "none", lg: "block" },
-                            width: 92,
-                            textAlign: "right",
-                          }}
-                        >
-                          {relativeTime(agent.updatedAt)}
-                        </Typography>
+                        <CollectionTimestamp
+                          value={agent.updatedAt}
+                          hideBelow="lg"
+                        />
                       </Stack>
                     }
                     starAction={
@@ -864,8 +930,11 @@ export function AgentsTab({
                     overflowAction={
                       !selectionMode ? (
                         <IconButton
+                          data-resource-menu-trigger
                           size="small"
                           aria-label={`Actions for ${agent.title}`}
+                          aria-haspopup="menu"
+                          aria-expanded={agentMenu?.resource === agent.id}
                           onClick={event =>
                             setAgentMenu({
                               anchor: event.currentTarget,
@@ -887,7 +956,9 @@ export function AgentsTab({
                         ? undefined
                         : anchor => setAgentMenu({ anchor, resource: agent.id })
                     }
-                    draggable={Boolean(onReorder)}
+                    draggable={
+                      organizationView === "flat" && Boolean(onReorder)
+                    }
                     onDragStart={() => setDraggedAgentId(agent.id)}
                     onDragEnd={() => setDraggedAgentId(undefined)}
                     onDrop={() => {
@@ -895,6 +966,27 @@ export function AgentsTab({
                         onReorder?.(draggedAgentId, agent.id);
                       setDraggedAgentId(undefined);
                     }}
+                    onKeyboardMove={
+                      organizationView === "flat" && onReorder
+                        ? direction => {
+                            const target =
+                              filtered[
+                                direction === "up" ? index - 1 : index + 1
+                              ];
+                            if (!target) return false;
+                            onReorder(
+                              agent.id,
+                              target.agent.id,
+                              direction === "up" ? "before" : "after",
+                            );
+                            return {
+                              position:
+                                direction === "up" ? index : index + 2,
+                              total: filtered.length,
+                            };
+                          }
+                        : undefined
+                    }
                   />
                 </Stack>
               );
@@ -906,10 +998,47 @@ export function AgentsTab({
       {pendingDelete ? (
         <AgentDeletionDialog
           open={Boolean(pendingDelete)}
-          projectId={projectByAgentId?.get(pendingDelete.id)?.id ?? projectId!}
+          projectId={pendingDelete.projectId}
           rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
           onClose={() => setPendingDelete(undefined)}
-          onDeleted={() => setPendingDelete(undefined)}
+          onDeleted={(deletedAgentIds) => {
+            onAgentsDeleted?.(pendingDelete.projectId, deletedAgentIds);
+            setPendingDelete(undefined);
+          }}
+        />
+      ) : null}
+      <TextInputDialog
+        open={Boolean(pendingRename)}
+        title="Rename Agent"
+        label="Agent name"
+        initialValue={pendingRename?.title ?? ""}
+        confirmLabel="Save"
+        pendingLabel="Saving…"
+        pending={renameAgent.isPending}
+        error={renameAgent.isError ? String(renameAgent.error) : undefined}
+        validate={(value) => value.trim() ? undefined : "Enter an Agent name."}
+        onCancel={() => {
+          renameAgent.reset();
+          setPendingRename(undefined);
+        }}
+        onConfirm={(title) => {
+          if (pendingRename)
+            renameAgent.mutate({ agent: pendingRename, title: title.trim() });
+        }}
+      />
+      {pendingOrganization ? (
+        <AgentOrganizationDialog
+          open
+          onClose={() => {
+            if (updateOrganization.isPending) return;
+            updateOrganization.reset();
+            setPendingOrganization(undefined);
+          }}
+          organizationParentId={organizationParentId}
+          setOrganizationParentId={setOrganizationParentId}
+          agent={pendingOrganization}
+          agents={agents}
+          updateOrganization={updateOrganization}
         />
       ) : null}
       <ResourceContextMenu
@@ -919,27 +1048,44 @@ export function AgentsTab({
         actions={
           agentMenu
             ? [
+                ...(onOpenAgentSettings
+                  ? [
+                      {
+                        id: "settings",
+                        label: "Agent Settings",
+                        icon: <SettingsOutlinedIcon fontSize="small" />,
+                        onSelect: onOpenAgentSettings,
+                      },
+                    ]
+                  : []),
+                {
+                  id: "rename",
+                  label: "Rename",
+                  icon: <EditOutlinedIcon fontSize="small" />,
+                  onSelect: (agentId: string) =>
+                    setPendingRename(agentsById.get(agentId)),
+                },
                 {
                   id: "delegate",
                   label: "Add Delegated Agent",
                   icon: <PersonAddAlt1Icon fontSize="small" />,
                   onSelect: onNewAgent,
                 },
-                ...(agentsById.get(agentMenu.resource)?.managerAgentId
-                  ? [
-                      {
-                        id: "promote",
-                        label: "Move to Top Level",
-                        icon: <ArrowUpwardIcon fontSize="small" />,
-                        disabled: promoteAgent.isPending,
-                        onSelect: (agentId: string) =>
-                          promoteAgent.mutate(agentId),
-                      },
-                    ]
-                  : []),
+                {
+                  id: "reporting-line",
+                  label: "Change Reporting Line",
+                  icon: <AccountTreeOutlinedIcon fontSize="small" />,
+                  onSelect: (agentId: string) => {
+                    const agent = agentsById.get(agentId);
+                    if (!agent) return;
+                    setOrganizationParentId(agent.managerAgentId ?? "");
+                    updateOrganization.reset();
+                    setPendingOrganization(agent);
+                  },
+                },
                 {
                   id: "delete",
-                  label: "Delete Agent",
+                  label: "Delete",
                   icon: <DeleteOutlineIcon fontSize="small" />,
                   color: "error" as const,
                   onSelect: (agentId: string) =>
@@ -949,15 +1095,33 @@ export function AgentsTab({
             : []
         }
       />
-      {projectId ? (
+      {deleteSelectedGroups[0] ? (
         <AgentDeletionDialog
-          open={deleteSelectedOpen}
-          projectId={projectId}
-          rootAgentIds={[...selectedAgentIds]}
-          title="Delete selected agents?"
+          open
+          projectId={deleteSelectedGroups[0].projectId}
+          rootAgentIds={deleteSelectedGroups[0].agentIds}
+          title={
+            deleteSelectedGroups.length > 1
+              ? `Delete selected agents? (${deleteSelectedGroups.length} Projects remaining)`
+              : "Delete selected agents?"
+          }
           confirmationText="DELETE SELECTED"
-          onClose={() => setDeleteSelectedOpen(false)}
-          onDeleted={leaveSelectionMode}
+          onClose={() => setDeleteSelectedGroups([])}
+          onDeleted={(deletedAgentIds) => {
+            const deletedProjectId = deleteSelectedGroups[0]!.projectId;
+            onAgentsDeleted?.(deletedProjectId, deletedAgentIds);
+            if (deleteSelectedGroups.length > 1) {
+              const deletedIds = new Set(deletedAgentIds);
+              setSelectedAgentIds(current => {
+                const next = new Set(current);
+                deletedIds.forEach(id => next.delete(id));
+                return next;
+              });
+              setDeleteSelectedGroups(current => current.slice(1));
+            } else {
+              leaveSelectionMode();
+            }
+          }}
         />
       ) : null}
     </AgentRosterShell>

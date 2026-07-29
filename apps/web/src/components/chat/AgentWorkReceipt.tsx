@@ -67,24 +67,24 @@ export function AgentWorkReceipt({
   agentName,
   run,
   active = false,
-  contextText,
   entries,
   projectId,
   projectRoot,
   onOpenFile,
   onOpenFileInNewTab,
   focusId,
+  inline = false,
 }: {
   agentName: string;
   run?: AgentRunDto;
   active?: boolean;
-  contextText?: string;
   entries: ActivityStreamEntry[];
   projectId?: string;
   projectRoot?: string;
   onOpenFile?(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab?(file: ResponseFileActivityDto): void;
   focusId?: string;
+  inline?: boolean;
 }): JSX.Element {
   const containsFocus =
     run?.id === focusId || entries.some(entry => entry.id === focusId);
@@ -111,20 +111,20 @@ export function AgentWorkReceipt({
   return (
     <Box
       id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}
-      component="article"
+      component={inline ? "section" : "article"}
       aria-label={run ? `${agentName} work details` : "Unscoped work details"}
       tabIndex={run?.id === focusId ? -1 : undefined}
       sx={{
-        width: "min(1120px, 100%)",
+        width: inline ? "100%" : "min(1120px, 100%)",
         maxWidth: "100%",
-        pl: { xs: 5, sm: 6.5 },
-        pt: 0.25,
-        pb: 0.25,
+        pl: inline ? 0 : { xs: 5, sm: 6.5 },
+        pt: inline ? 0 : 0.25,
+        pb: inline ? 0 : 0.25,
       }}
     >
       <Box
         sx={{
-          maxWidth: 960,
+          maxWidth: inline ? "none" : 960,
           pt: 0,
         }}
       >
@@ -178,23 +178,6 @@ export function AgentWorkReceipt({
             />
           ) : null}
         </Stack>
-        {contextText ? (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            title={contextText}
-            sx={{
-              display: "block",
-              ml: 0.75,
-              maxWidth: "min(90%, 760px)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            For “{contextText}”
-          </Typography>
-        ) : null}
         {expanded ? (
           <Box
             sx={{

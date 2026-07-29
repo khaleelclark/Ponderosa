@@ -296,9 +296,6 @@ function ChatPaneComponent({
     >
       {timeline.map(item => {
         if (item.kind === "run") {
-          const contextMessage = item.run.communicationEventId
-            ? messageByCommunicationId.get(item.run.communicationEventId)
-            : undefined;
           return (
             <AgentWorkReceipt
               key={item.id}
@@ -311,11 +308,6 @@ function ChatPaneComponent({
               onOpenFileInNewTab={onOpenFileInNewTab}
               focusId={focusId}
               active={item.run.id === activeExecutionId}
-              contextText={
-                contextMessage
-                  ? visibleAgentMessageText(contextMessage)
-                  : undefined
-              }
             />
           );
         }
@@ -466,32 +458,27 @@ function ChatPaneComponent({
                   ) : null}
                 </>
               ),
+              footer: attachedRuns.length ? (
+                <>
+                  {attachedRuns.map(run => (
+                    <AgentWorkReceipt
+                      key={`run:${run.id}`}
+                      agentName={agentName}
+                      run={run}
+                      entries={activityByRun.get(run.id) ?? []}
+                      projectId={projectId}
+                      projectRoot={projectRoot}
+                      onOpenFile={onOpenFile}
+                      onOpenFileInNewTab={onOpenFileInNewTab}
+                      focusId={focusId}
+                      active={run.id === activeExecutionId}
+                      inline
+                    />
+                  ))}
+                </>
+              ) : undefined,
               }}
             />
-            {attachedRuns.map(run => {
-              const contextMessage = run.communicationEventId
-                ? messageByCommunicationId.get(run.communicationEventId)
-                : undefined;
-              return (
-                <AgentWorkReceipt
-                  key={`run:${run.id}`}
-                  agentName={agentName}
-                  run={run}
-                  entries={activityByRun.get(run.id) ?? []}
-                  projectId={projectId}
-                  projectRoot={projectRoot}
-                  onOpenFile={onOpenFile}
-                  onOpenFileInNewTab={onOpenFileInNewTab}
-                  focusId={focusId}
-                  active={run.id === activeExecutionId}
-                  contextText={
-                    contextMessage
-                      ? visibleAgentMessageText(contextMessage)
-                      : undefined
-                  }
-                />
-              );
-            })}
           </Fragment>
         );
       })}

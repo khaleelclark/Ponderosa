@@ -1,7 +1,9 @@
 import AddIcon from "@mui/icons-material/Add";
+import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import KeyIcon from "@mui/icons-material/Key";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import {
   Alert,
   Box,
@@ -18,6 +20,8 @@ import {
   FormControl,
   FormControlLabel,
   InputLabel,
+  IconButton,
+  Menu,
   MenuItem,
   Select,
   Stack,
@@ -30,7 +34,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { ConfirmDialog, DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { ConfirmDialog, ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 
 function localFuture(minutes = 5): string {
   return isoToDatetimeLocal(new Date(Date.now() + minutes * 60_000).toISOString());
@@ -116,18 +120,24 @@ export function TriggersPane({
   fixedConversationId,
   initialCreateOpen = false,
   createOnly = false,
+  onCreateTrigger,
   onTriggerCreated,
   onCreateFlowComplete,
   onCancelCreate,
+  settingsTriggerId,
+  onCloseTriggerSettings,
 }: {
   agent: AgentDto;
   onOpenAgentWork?(occurrenceId: string): void;
   fixedConversationId?: string;
   initialCreateOpen?: boolean;
   createOnly?: boolean;
+  onCreateTrigger?(): void;
   onTriggerCreated?(trigger: TriggerDefinitionDto): void;
   onCreateFlowComplete?(): void;
   onCancelCreate?(): void;
+  settingsTriggerId?: string;
+  onCloseTriggerSettings?(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const preferredConversationId =
@@ -143,6 +153,10 @@ export function TriggersPane({
   const [allowanceTrigger, setAllowanceTrigger] = useState<TriggerDefinitionDto>();
   const [rotateTrigger, setRotateTrigger] = useState<TriggerDefinitionDto>();
   const [deleteTrigger, setDeleteTrigger] = useState<TriggerDefinitionDto>();
+  const [triggerMenu, setTriggerMenu] = useState<{
+    anchor: HTMLElement;
+    trigger: TriggerDefinitionDto;
+  }>();
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -236,6 +250,14 @@ export function TriggersPane({
     }
     setCreateOpen(true);
   };
+  useEffect(() => {
+    if (!settingsTriggerId || editing?.id === settingsTriggerId) return;
+    const trigger = triggers.data?.find(candidate => candidate.id === settingsTriggerId);
+    if (trigger) openEditor(trigger);
+  }, [editing?.id, settingsTriggerId, triggers.data]);
+  const inlineSettings = Boolean(
+    settingsTriggerId && editing?.id === settingsTriggerId,
+  );
 
   const create = useMutation({
     mutationFn: async () => {
@@ -270,6 +292,7 @@ export function TriggersPane({
       void queryClient.invalidateQueries({ queryKey });
       setCreateOpen(false);
       setEditing(undefined);
+      onCloseTriggerSettings?.();
     },
   });
   const update = useMutation({
@@ -317,7 +340,8 @@ export function TriggersPane({
   const closeCreateEditor = (): void => {
     setCreateOpen(false);
     setEditing(undefined);
-    if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
+    if (inlineSettings) onCloseTriggerSettings?.();
+    else if (!editing) (onCancelCreate ?? onCreateFlowComplete)?.();
   };
   const closeSecret = (): void => {
     if (createOnly && secret) onTriggerCreated?.(secret.trigger);
@@ -352,7 +376,29 @@ export function TriggersPane({
   );
 
   return <Box sx={{ p: { xs: 1.5, sm: 2 }, maxWidth: createOnly ? 760 : 960, mx: "auto" }}>
-    <Stack spacing={2} sx={{ display: createOnly ? "none" : undefined }}>
+    {inlineSettings ? (
+      <Stack spacing={2}>
+        <Box>
+          <Button
+            color="inherit"
+            startIcon={<ArrowBackIcon />}
+            onClick={closeCreateEditor}
+            sx={{ mb: 1 }}
+          >
+            Back to Triggers
+          </Button>
+          <Typography variant="h5" component="h2" fontWeight={800}>
+            Trigger Settings
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Manage {editing?.name} without leaving this Agent.
+          </Typography>
+        </Box>
+        {editorFields}
+        {editorActions}
+      </Stack>
+    ) : null}
+    <Stack spacing={2} sx={{ display: createOnly || inlineSettings ? "none" : undefined }}>
       <Alert severity="warning">
         <strong>Triggers run automatically with this Agent&apos;s full access.</strong> External event payloads are untrusted data and stay separate from your instructions, but a Trigger can still change files, run commands, use connected tools, and contact collaborators. Use narrow instructions and accept only trusted sources.
       </Alert>
@@ -361,7 +407,21 @@ export function TriggersPane({
           <Typography variant="h6">Triggers</Typography>
           <Typography variant="body2" color="text.secondary">Each Trigger belongs to this Agent and one of its Project chats. Work is always queued.</Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddIcon />} disabled={agent.conversationIds.length === 0} onClick={() => { resetEditor(); setCreateOpen(true); }}>New Trigger</Button>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          disabled={agent.conversationIds.length === 0}
+          onClick={() => {
+            if (onCreateTrigger) {
+              onCreateTrigger();
+              return;
+            }
+            resetEditor();
+            setCreateOpen(true);
+          }}
+        >
+          New Trigger
+        </Button>
       </Stack>
       {agent.conversationIds.length === 0 ? <Alert severity="info">Assign this Agent to a Project chat before creating a Trigger.</Alert> : null}
       {triggers.isLoading ? <Typography color="text.secondary">Loading Triggers…</Typography> : null}
@@ -395,7 +455,15 @@ export function TriggersPane({
           <Button size="small" aria-label={`Edit ${trigger.name}`} onClick={() => openEditor(trigger)}>Edit</Button>
           {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => setAllowanceTrigger(trigger)}>Allow More Runs</Button> : null}
           {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => setRotateTrigger(trigger)}>Rotate Secret</Button> : null}
-          <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} disabled={remove.isPending} onClick={() => setDeleteTrigger(trigger)}>Delete</Button>
+          <IconButton
+            size="small"
+            aria-label={`Actions for ${trigger.name}`}
+            onClick={event =>
+              setTriggerMenu({ anchor: event.currentTarget, trigger })
+            }
+          >
+            <MoreVertIcon />
+          </IconButton>
         </CardActions>
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
@@ -413,6 +481,23 @@ export function TriggersPane({
           {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
         </CardContent>
       </Card> : null}
+      <Menu
+        anchorEl={triggerMenu?.anchor}
+        open={Boolean(triggerMenu)}
+        onClose={() => setTriggerMenu(undefined)}
+      >
+        <MenuItem
+          sx={{ color: "error.main" }}
+          disabled={remove.isPending}
+          onClick={() => {
+            setDeleteTrigger(triggerMenu?.trigger);
+            setTriggerMenu(undefined);
+          }}
+        >
+          <DeleteOutlineIcon fontSize="small" sx={{ mr: 1.5 }} />
+          Delete Trigger
+        </MenuItem>
+      </Menu>
     </Stack>
     {createOnly ? (
       <Stack spacing={2.5}>
@@ -457,10 +542,10 @@ export function TriggersPane({
     >
       <Typography sx={{ pt: 1 }}>Existing senders will stop working immediately.</Typography>
     </ConfirmDialog>
-    <DestructiveConfirmDialog
+    <ResourceDeletionDialog
       open={Boolean(deleteTrigger)}
-      title={deleteTrigger ? `Delete “${deleteTrigger.name}”?` : "Delete Trigger?"}
-      confirmLabel="Delete Trigger"
+      resourceType="Trigger"
+      resourceName={deleteTrigger?.name}
       pendingLabel="Deleting…"
       pending={remove.isPending}
       error={remove.isError ? remove.error.message : undefined}
@@ -473,9 +558,9 @@ export function TriggersPane({
       }}
     >
       <Typography sx={{ pt: 1 }}>Pending occurrences will be cancelled. Immutable occurrence history remains available.</Typography>
-    </DestructiveConfirmDialog>
+    </ResourceDeletionDialog>
 
-    <Dialog open={!createOnly && createOpen} onClose={closeCreateEditor} fullWidth maxWidth="sm">
+    <Dialog open={!createOnly && createOpen && !inlineSettings} onClose={closeCreateEditor} fullWidth maxWidth="sm">
       <DialogTitle>{editing ? "Edit Trigger" : "Create Trigger"}</DialogTitle>
       <DialogContent>
         <Box sx={{ pt: 1 }}>{editorFields}</Box>

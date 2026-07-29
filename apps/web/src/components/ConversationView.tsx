@@ -18,6 +18,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
+  WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -49,6 +50,8 @@ import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
 import { queryKeys } from "../queryKeys";
 import { AgentsTab } from "./AgentsTab";
+import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
+import type { Route } from "../routing";
 import { conversationComposerRuntime } from "./ConversationView.helpers";
 import {
   CollaborationTimeline,
@@ -88,11 +91,17 @@ export function ConversationView({
   onOpenProject,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onAgentsDeleted,
   onOpenReview,
   onOpenAgentWork,
   onOpenBrowser,
   onOpenFileActivity,
   onNewAgent,
+  preferences,
+  onPreferences,
+  onNavigateTrigger,
+  onOpenTriggerInNewTab,
+  onCreateTrigger,
   onDeleted,
 }: {
   conversationId: string;
@@ -111,15 +120,21 @@ export function ConversationView({
   onOpenProject(): void;
   onOpenAgent(
     agentId: string,
-    view?: "technical",
+    view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
   onNewAgent(master: ConversationDto, managerAgentId?: string): void;
+  preferences: WorkspacePreferencesDto;
+  onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
+  onNavigateTrigger(route: Route): void;
+  onOpenTriggerInNewTab(route: Route): void;
+  onCreateTrigger(agentId?: string): void;
   onDeleted(): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
@@ -853,6 +868,10 @@ export function ConversationView({
             healthByAgentId={healthByAgentId}
             onOpenAgent={agentId => onOpenAgent(agentId)}
             onOpenAgentInNewTab={onOpenAgentInNewTab}
+            onOpenAgentSettings={agentId =>
+              onOpenAgent(agentId, "settings")}
+            onAgentsDeleted={(_projectId, agentIds) =>
+              onAgentsDeleted(agentIds)}
             onNewAgent={managerAgentId =>
               onNewAgent(conversation, managerAgentId)
             }
@@ -861,6 +880,26 @@ export function ConversationView({
               detail: `${conversationAgents.length} ${conversationAgents.length === 1 ? "Agent" : "Agents"}`,
               variant: "embedded",
             }}
+          />
+        ) : activeView === "triggers" ? (
+          <AllTriggersWorkspace
+            projects={project ? [project] : []}
+            filterProjectId={conversation.projectId}
+            filterConversationId={conversation.id}
+            filterAgentIds={conversationAgents.map(agent => agent.id)}
+            scopeTitle={`${conversation.title} Triggers`}
+            embedded
+            preferences={preferences}
+            onPreferences={onPreferences}
+            onNavigate={onNavigateTrigger}
+            onOpenInNewTab={onOpenTriggerInNewTab}
+            onCreate={() =>
+              onCreateTrigger(
+                conversationAgents.length === 1
+                  ? conversationAgents[0]!.id
+                  : undefined,
+              )
+            }
           />
         ) : null}
         {activeView === "main" && !agentWorkOpen ? (

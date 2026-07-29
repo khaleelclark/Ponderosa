@@ -14,7 +14,7 @@ import type { ConversationDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
-import { DestructiveConfirmDialog, TextInputDialog } from "./ConfirmationDialogs";
+import { ResourceDeletionDialog, TextInputDialog } from "./ConfirmationDialogs";
 
 export type SidebarConversationAction = {
   kind: "rename" | "delete";
@@ -69,10 +69,10 @@ export function SidebarConversationDialogs({
           if (action?.kind === "rename") rename.mutate({ conversation: action.conversation, title: title.trim() });
         }}
       />
-      <DestructiveConfirmDialog
+      <ResourceDeletionDialog
         open={action?.kind === "delete"}
-        title="Delete Project chat?"
-        confirmLabel="Delete"
+        resourceType="Chat"
+        resourceName={action?.conversation.title}
         pendingLabel="Deleting…"
         pending={remove.isPending}
         error={remove.isError ? String(remove.error) : undefined}
@@ -84,8 +84,12 @@ export function SidebarConversationDialogs({
           if (action?.kind === "delete") remove.mutate(action.conversation);
         }}
       >
-        <Typography sx={{ pt: 1 }}>This permanently deletes this Project chat and refuses deletion while an assigned agent is running.</Typography>
-      </DestructiveConfirmDialog>
+        <Alert severity="warning">
+          This permanently deletes the Chat and its history. Assigned Agents
+          are preserved and become unassigned. Related Triggers and pending
+          work are cancelled. Stop any active assigned Agent before deleting.
+        </Alert>
+      </ResourceDeletionDialog>
     </>
   );
 }

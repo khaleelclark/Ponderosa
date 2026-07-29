@@ -14,7 +14,7 @@ import type {
   ConversationMessageDto,
   EngineDto,
 } from "@ponderosa/core";
-import { ConfirmDialog } from "./ConfirmationDialogs";
+import { ConfirmDialog, ResourceDeletionDialog } from "./ConfirmationDialogs";
 import { ImportAgentDialog } from "./ImportAgentDialog";
 
 interface ConversationDialogsProps {
@@ -185,42 +185,22 @@ export function ConversationDialogs({
         </DialogActions>
       </Dialog>
 
-      <Dialog
+      <ResourceDeletionDialog
         open={deleteOpen}
-        onClose={() => {
-          if (!deletePending) onDeleteClose();
-        }}
-        fullWidth
-        maxWidth="xs"
+        resourceType="Chat"
+        resourceName={conversation.title}
+        pendingLabel="Deleting…"
+        pending={deletePending}
+        error={deleteError}
+        onCancel={onDeleteClose}
+        onConfirm={onDelete}
       >
-        <DialogTitle>Delete Project chat?</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2">
-            This permanently deletes{" "}
-            <Box component="strong">{conversation.title}</Box> and its chat
-            history. Its agents are preserved in the Agents tab as unassigned
-            agents. This cannot be undone.
-          </Typography>
-          {deleteError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {deleteError}
-            </Alert>
-          ) : null}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={onDeleteClose} disabled={deletePending}>
-            Cancel
-          </Button>
-          <Button
-            color="error"
-            variant="contained"
-            disabled={deletePending}
-            onClick={onDelete}
-          >
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+        <Alert severity="warning">
+          This permanently deletes the Chat and its history. Assigned Agents
+          are preserved and become unassigned. Related Triggers and pending
+          work are cancelled. Stop any active assigned Agent before deleting.
+        </Alert>
+      </ResourceDeletionDialog>
     </>
   );
 }

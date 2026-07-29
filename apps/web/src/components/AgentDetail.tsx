@@ -92,7 +92,7 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
-  createTrigger,
+  triggerSettingsId,
   onViewChange,
   onOpenTechnicalDetails,
   engines,
@@ -107,6 +107,7 @@ export function AgentDetail({
   conversations,
   onOpenProject,
   onOpenAgent,
+  onOpenAgentSettings,
   onOpenCommunicationSource,
   onOpenMaster,
   onOpenArtifact,
@@ -115,7 +116,9 @@ export function AgentDetail({
   onOpenReviewInNewTab,
   onOpenBrowser,
   onNewSubagent,
+  onCreateTrigger,
   onDeleted,
+  onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId, 100);
@@ -940,10 +943,12 @@ export function AgentDetail({
         projectRoot={project?.hostPath}
         timeline={stream.timeline}
         delegatedAgentCount={relationships.delegatedAgentCount}
-        createTrigger={createTrigger}
+        triggerSettingsId={triggerSettingsId}
+        onCloseTriggerSettings={() => onViewChange?.("triggers")}
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
+        onOpenAgentSettings={onOpenAgentSettings}
         onOpenMessageSource={openCommunicationSourceFromMessage}
         onMentionAgent={() => mentionCurrentAgent()}
         onLoadOlderChat={() => void loadOlderCombinedTimeline()}
@@ -951,6 +956,8 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
         onNewSubagent={onNewSubagent}
+        onAgentsDeleted={onAgentsDeleted}
+        onCreateTrigger={onCreateTrigger}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
         onOpenArtifactInNewTab={onOpenArtifactInNewTab}
@@ -1045,9 +1052,9 @@ export function AgentDetail({
           projectId: detail.agent.projectId,
           rootAgentIds: [detail.agent.id],
           onClose: () => setDeleteOpen(false),
-          onDeleted: () => {
+          onDeleted: (deletedAgentIds) => {
             setDeleteOpen(false);
-            onDeleted();
+            onDeleted(deletedAgentIds);
           },
         }}
         rename={{
@@ -1068,11 +1075,11 @@ export function AgentDetail({
           updateMemberships,
         }}
         organization={{
-          organizationOpen,
-          setOrganizationOpen,
+          open: organizationOpen,
+          onClose: () => setOrganizationOpen(false),
           organizationParentId,
           setOrganizationParentId,
-          detail,
+          agent: detail.agent,
           agents,
           updateOrganization,
         }}

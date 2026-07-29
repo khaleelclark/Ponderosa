@@ -1,32 +1,39 @@
 import AddIcon from "@mui/icons-material/Add";
-import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
-import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
-import DragIndicatorIcon from "@mui/icons-material/DragIndicator";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
   Box,
   Button,
   Chip,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
-  Select,
-  Stack,
   Tooltip,
   Typography,
 } from "@mui/material";
 import type { ProjectDto, WorkspacePreferencesDto } from "@ponderosa/core";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { api } from "../api";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
+import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
 import { resourcePreferenceKey, starredWorkspaceResources, toggleWorkspaceResourceStar } from "../resourcePreferences";
 import type { WorkspaceProjectSnapshot } from "../workspaceNavigation";
+import { TextInputDialog } from "./ConfirmationDialogs";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ResourceContextMenu, type ResourceContextMenuState } from "./ResourceContextMenu";
-import { CollectionEmptyState, CollectionToolbar, CollectionWorkspace, ResourceRow } from "./CollectionPrimitives";
+import {
+  CollectionDirectoryControls,
+  CollectionEmptyState,
+  CollectionTimestamp,
+  CollectionToolbar,
+  CollectionWorkspace,
+  ResourceRow,
+} from "./CollectionPrimitives";
 
 function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot[] {
   const conversationQueries = useProjectConversations(projects);
@@ -43,6 +50,11 @@ function useWorkspaceSnapshots(projects: ProjectDto[]): WorkspaceProjectSnapshot
 function openProjectRoute(snapshot: WorkspaceProjectSnapshot): Route {
   return { kind: "project", projectId: snapshot.project.id };
 }
+
+type ProjectDirectoryResource = {
+  route: Route;
+  project: ProjectDto;
+};
 
 function reorderProjectIds(order: string[], draggedId: string, targetId: string, position: "before" | "after" = "before"): string[] {
   if (draggedId === targetId) return order;
@@ -63,51 +75,33 @@ function projectDropPreferencePatch(
   return projectOrder === order ? undefined : { projectSort: "custom", projectOrder };
 }
 
-function projectMovePreferencePatch(
-  order: string[],
-  projectId: string,
-  direction: "before" | "after",
-): Pick<WorkspacePreferencesDto, "projectSort" | "projectOrder"> | undefined {
-  const currentIndex = order.indexOf(projectId);
-  const targetIndex = direction === "before" ? currentIndex - 1 : currentIndex + 1;
-  if (currentIndex < 0 || targetIndex < 0 || targetIndex >= order.length) return undefined;
-  return projectDropPreferencePatch(
-    order,
-    projectId,
-    order[targetIndex]!,
-    direction === "before" ? "before" : "after",
-  );
-}
-
-export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onManageProject, onPreferences }: {
+export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNewTab, onCreateProject, onProjectDeleted, onPreferences }: {
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   onNavigate(route: Route): void;
   onOpenInNewTab?(route: Route): void;
   onCreateProject(): void;
-  onManageProject(project: ProjectDto): void;
+  onProjectDeleted(projectId: string): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
 }): JSX.Element {
+  const queryClient = useQueryClient();
   const snapshots = useWorkspaceSnapshots(projects);
   const [filter, setFilter] = useState("");
   const [draggedProjectId, setDraggedProjectId] = useState<string>();
   const [dropTarget, setDropTarget] = useState<{ projectId: string; position: "before" | "after" }>();
-  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
-  const [orderAnnouncement, setOrderAnnouncement] = useState("");
-  const reorderButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  const pendingReorderFocus = useRef<{ projectId: string; direction: "before" | "after" }>();
-  const projectOrderKey = projects.map((project) => project.id).join("\u0000");
-  useEffect(() => {
-    const pending = pendingReorderFocus.current;
-    if (!pending) return;
-    const requested = reorderButtonRefs.current.get(`${pending.projectId}:${pending.direction}`);
-    const fallbackDirection = pending.direction === "before" ? "after" : "before";
-    const target = requested?.disabled
-      ? reorderButtonRefs.current.get(`${pending.projectId}:${fallbackDirection}`)
-      : requested;
-    target?.focus();
-    pendingReorderFocus.current = undefined;
-  }, [projectOrderKey]);
+  const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<ProjectDirectoryResource>>();
+  const [projectAction, setProjectAction] = useState<{
+    kind: "rename" | "delete";
+    project: ProjectDto;
+  }>();
+  const renameProject = useMutation({
+    mutationFn: ({ project, label }: { project: ProjectDto; label: string }) =>
+      api.updateProject(project.id, { label }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      setProjectAction(undefined);
+    },
+  });
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
   const filteredSnapshots = useMemo(() => normalizedFilter
@@ -128,53 +122,49 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     setDraggedProjectId(undefined);
     setDropTarget(undefined);
   };
-  const moveProject = (project: ProjectDto, direction: "before" | "after") => {
-    const currentOrder = projects.map((candidate) => candidate.id);
-    const patch = projectMovePreferencePatch(currentOrder, project.id, direction);
-    if (!patch) return;
-    const position = patch.projectOrder.indexOf(project.id) + 1;
-    pendingReorderFocus.current = { projectId: project.id, direction };
-    setOrderAnnouncement(`${project.label} moved to position ${position} of ${projects.length}.`);
-    onPreferences(patch);
-  };
   const toggleStar = (projectId: string) => onPreferences(toggleWorkspaceResourceStar(preferences, "project", projectId));
   return <CollectionWorkspace
     icon={<FolderOutlinedIcon />}
     title="All Projects"
     detail={filteredSnapshots.length === projects.length ? `${projects.length} ${projects.length === 1 ? "Project" : "Projects"} across Ponderosa` : `${filteredSnapshots.length} of ${projects.length} Projects`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
-    toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects">
-      <FormControl size="small" sx={{ minWidth: 170 }}>
-        <InputLabel id="project-sort">Sort</InputLabel>
-        <Select
-          labelId="project-sort"
-          label="Sort"
-          value={preferences.projectSort}
-          onChange={(event) => onPreferences({ projectSort: event.target.value as WorkspacePreferencesDto["projectSort"] })}
-        >
-          <MenuItem value="last_used">Last Used</MenuItem>
-          <MenuItem value="alphabetical">Alphabetical</MenuItem>
-          <MenuItem value="custom">Custom</MenuItem>
-        </Select>
-      </FormControl>
+    toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects" reorderHint>
+      <CollectionDirectoryControls
+        sort={preferences.projectSort}
+        onSort={projectSort => onPreferences({ projectSort })}
+      />
     </CollectionToolbar>}
     listLabel="All Projects"
   >
-    <Box id="project-order-status" role="status" aria-live="polite" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{orderAnnouncement}</Box>
-    {filteredSnapshots.map((snapshot) => {
+    {filteredSnapshots.map((snapshot, index) => {
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
-        const projectIndex = projects.findIndex((project) => project.id === snapshot.project.id);
-        const previousProject = projectIndex > 0 ? projects[projectIndex - 1] : undefined;
-        const nextProject = projectIndex >= 0 && projectIndex < projects.length - 1 ? projects[projectIndex + 1] : undefined;
+        const route = openProjectRoute(snapshot);
+        const menuResource = { route, project: snapshot.project };
         return <ResourceRow
           key={snapshot.project.id}
           label={snapshot.project.label}
           description={`${snapshot.project.hostPath}${recent ? " · Recent chat" : " · No Project chats"}`}
           icon={<FolderOutlinedIcon />}
-          meta={running > 0 ? <Chip size="small" color="info" label={`${running} running`} sx={{ ml: 1 }} /> : null}
-          onOpen={() => onNavigate(openProjectRoute(snapshot))}
-          onContextMenu={(anchor) => setTabMenu({ anchor, resource: openProjectRoute(snapshot) })}
+          meta={
+            <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+              {running > 0 ? (
+                <Chip size="small" color="info" label={`${running} running`} />
+              ) : null}
+              <CollectionTimestamp
+                value={recent?.updatedAt ?? snapshot.project.lastUsedAt ?? snapshot.project.createdAt}
+                hideBelow="md"
+              />
+            </Box>
+          }
+          onOpen={() => onNavigate(route)}
+          onContextMenu={(anchor) => setTabMenu({ anchor, resource: menuResource })}
+          draggable
+          onDragStart={() => setDraggedProjectId(snapshot.project.id)}
+          onDragEnd={() => {
+            setDraggedProjectId(undefined);
+            setDropTarget(undefined);
+          }}
           onDragOver={(event) => {
             if (!draggedProjectId || draggedProjectId === snapshot.project.id) return;
             event.preventDefault();
@@ -186,59 +176,26 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             const bounds = event.currentTarget.getBoundingClientRect();
             dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
           }}
+          onKeyboardMove={(direction) => {
+            const target =
+              filteredSnapshots[
+                direction === "up" ? index - 1 : index + 1
+              ];
+            if (!target) return false;
+            const patch = projectDropPreferencePatch(
+              projects.map(project => project.id),
+              snapshot.project.id,
+              target.project.id,
+              direction === "up" ? "before" : "after",
+            );
+            if (!patch) return false;
+            onPreferences(patch);
+            return {
+              position: direction === "up" ? index : index + 2,
+              total: filteredSnapshots.length,
+            };
+          }}
           highlighted={dropTarget?.projectId === snapshot.project.id}
-          controls={<>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={0} sx={{ alignSelf: "stretch", justifyContent: "center" }}>
-            <Tooltip title={previousProject ? `Move before ${previousProject.label}` : "Already first"}>
-              <span>
-                <IconButton
-                  ref={(node) => {
-                    const key = `${snapshot.project.id}:before`;
-                    if (node) reorderButtonRefs.current.set(key, node);
-                    else reorderButtonRefs.current.delete(key);
-                  }}
-                  size="small"
-                  disabled={!previousProject}
-                  aria-label={previousProject ? `Move ${snapshot.project.label} before ${previousProject.label}` : `${snapshot.project.label} is first`}
-                  aria-describedby="project-order-status"
-                  onClick={() => moveProject(snapshot.project, "before")}
-                  sx={{ minWidth: 36, minHeight: 36 }}
-                ><ArrowUpwardIcon fontSize="small" /></IconButton>
-              </span>
-            </Tooltip>
-            <Tooltip title={nextProject ? `Move after ${nextProject.label}` : "Already last"}>
-              <span>
-                <IconButton
-                  ref={(node) => {
-                    const key = `${snapshot.project.id}:after`;
-                    if (node) reorderButtonRefs.current.set(key, node);
-                    else reorderButtonRefs.current.delete(key);
-                  }}
-                  size="small"
-                  disabled={!nextProject}
-                  aria-label={nextProject ? `Move ${snapshot.project.label} after ${nextProject.label}` : `${snapshot.project.label} is last`}
-                  aria-describedby="project-order-status"
-                  onClick={() => moveProject(snapshot.project, "after")}
-                  sx={{ minWidth: 36, minHeight: 36 }}
-                ><ArrowDownwardIcon fontSize="small" /></IconButton>
-              </span>
-            </Tooltip>
-          </Stack>
-          <Tooltip title={`Drag to reorder ${snapshot.project.label}`}>
-            <IconButton
-              size="small"
-              draggable
-              aria-label={`Drag ${snapshot.project.label} to reorder`}
-              onDragStart={(event) => {
-                setDraggedProjectId(snapshot.project.id);
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", snapshot.project.id);
-              }}
-              onDragEnd={() => { setDraggedProjectId(undefined); setDropTarget(undefined); }}
-              sx={{ cursor: draggedProjectId === snapshot.project.id ? "grabbing" : "grab", color: "text.secondary" }}
-            ><DragIndicatorIcon fontSize="small" /></IconButton>
-          </Tooltip>
-          </>}
           starAction={
           <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
             <IconButton aria-label={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`} onClick={() => toggleStar(snapshot.project.id)}>
@@ -247,16 +204,84 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           </Tooltip>
           }
           overflowAction={
-          <Tooltip title={`Project settings for ${snapshot.project.label}`}>
-            <IconButton aria-label={`Project settings for ${snapshot.project.label}`} onClick={() => onManageProject(snapshot.project)}><MoreVertIcon /></IconButton>
+          <Tooltip title={`Actions for ${snapshot.project.label}`}>
+            <IconButton
+              data-resource-menu-trigger
+              aria-label={`Actions for ${snapshot.project.label}`}
+              aria-haspopup="menu"
+              aria-expanded={
+                tabMenu?.resource.project.id === snapshot.project.id
+              }
+              onClick={(event) => setTabMenu({ anchor: event.currentTarget, resource: menuResource })}
+            >
+              <MoreVertIcon />
+            </IconButton>
           </Tooltip>
           }
         />;
       })}
     {filteredSnapshots.length === 0 ? <CollectionEmptyState
-      title={projects.length === 0 && !filter.trim() ? "No Projects yet" : `No Projects match “${filter.trim()}”`}
+      title={projects.length === 0 && !filter.trim() ? "No Projects Yet" : `No Projects match “${filter.trim()}”`}
       detail={projects.length === 0 && !filter.trim() ? "Create a Project to get started." : "Try a Project name, folder, or Chat title."}
+      action={filter.trim() ? {
+        label: "Clear Search",
+        onClick: () => setFilter(""),
+      } : undefined}
     /> : null}
-    <ResourceContextMenu state={tabMenu} onClose={() => setTabMenu(undefined)} onOpenInNewTab={onOpenInNewTab} />
+    <ResourceContextMenu
+      state={tabMenu}
+      onClose={() => setTabMenu(undefined)}
+      onOpenInNewTab={onOpenInNewTab ? ({ route }) => onOpenInNewTab(route) : undefined}
+      actions={[
+        {
+          id: "settings",
+          label: "Project Settings",
+          icon: <SettingsOutlinedIcon fontSize="small" />,
+          onSelect: ({ project }) =>
+            onNavigate({ kind: "project", projectId: project.id, view: "settings" }),
+        },
+        {
+          id: "rename",
+          label: "Rename",
+          icon: <EditOutlinedIcon fontSize="small" />,
+          onSelect: ({ project }) => setProjectAction({ kind: "rename", project }),
+        },
+        {
+          id: "delete",
+          label: "Delete",
+          icon: <DeleteOutlineIcon fontSize="small" />,
+          color: "error",
+          onSelect: ({ project }) => setProjectAction({ kind: "delete", project }),
+        },
+      ]}
+    />
+    <TextInputDialog
+      open={projectAction?.kind === "rename"}
+      title="Rename Project"
+      label="Project name"
+      initialValue={projectAction?.project.label ?? ""}
+      confirmLabel="Save"
+      pendingLabel="Saving…"
+      pending={renameProject.isPending}
+      error={renameProject.isError ? String(renameProject.error) : undefined}
+      validate={(value) => value.trim() ? undefined : "Enter a Project name."}
+      onCancel={() => {
+        renameProject.reset();
+        setProjectAction(undefined);
+      }}
+      onConfirm={(label) => {
+        if (projectAction?.kind === "rename")
+          renameProject.mutate({ project: projectAction.project, label: label.trim() });
+      }}
+    />
+    {projectAction?.kind === "delete" ? <ProjectDeletionDialog
+      project={projectAction.project}
+      open={projectAction?.kind === "delete"}
+      onClose={() => setProjectAction(undefined)}
+      onDeleted={(projectId) => {
+        setProjectAction(undefined);
+        onProjectDeleted(projectId);
+      }}
+    /> : null}
   </CollectionWorkspace>;
 }

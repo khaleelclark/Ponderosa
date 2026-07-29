@@ -63,6 +63,7 @@ const ROUTE_REGISTRY = {
     toPath: route => {
       const query = new URLSearchParams();
       if (route.projectId) query.set("project", route.projectId);
+      if (route.conversationId) query.set("chat", route.conversationId);
       if (route.managerAgentId) query.set("manager", route.managerAgentId);
       if (route.agentId) query.set("agent", route.agentId);
       return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;
@@ -86,7 +87,7 @@ const ROUTE_REGISTRY = {
   allChat: {
     toPath: () => "/messages",
     workspaceTabKey: () => "all-chat",
-    tabLabel: () => "All Messages",
+    tabLabel: () => "Messages Across Ponderosa",
     tabIcon: "chat",
     scope: "global",
     initialSidebarSection: "home",
@@ -155,7 +156,8 @@ const ROUTE_REGISTRY = {
     synchronizedSidebarSection: "wiki",
   },
   project: {
-    toPath: route => `/projects/${encodeURIComponent(route.projectId)}`,
+    toPath: route =>
+      `/projects/${encodeURIComponent(route.projectId)}${route.view && route.view !== "overview" ? `?view=${route.view}` : ""}`,
     workspaceTabKey: route => `project:${route.projectId}`,
     tabLabel: (_route, context) => context.projectLabel ?? "Project Overview",
     tabIcon: "folder",
@@ -216,13 +218,7 @@ const ROUTE_REGISTRY = {
   },
   agents: {
     toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/agents${route.create || route.managerAgentId || route.continueToTrigger
-        ? `?${new URLSearchParams({
-          ...(route.create ? { create: "1" } : {}),
-          ...(route.managerAgentId ? { manager: route.managerAgentId } : {}),
-          ...(route.continueToTrigger ? { continue: "trigger" } : {}),
-        }).toString()}`
-        : ""}`,
+      `/projects/${encodeURIComponent(route.projectId)}/agents`,
     workspaceTabKey: route => `agents:${route.projectId}`,
     tabLabel: () => "Agents",
     tabIcon: "agent",
@@ -239,8 +235,8 @@ const ROUTE_REGISTRY = {
       } else if (route.view) query.set("view", route.view);
       if (route.view === "technical" && route.technicalFocusId)
         query.set("focus", route.technicalFocusId);
-      if (route.view === "triggers" && route.createTrigger)
-        query.set("create", "1");
+      if (route.view === "triggers" && route.triggerId)
+        query.set("trigger", route.triggerId);
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;
     },
     workspaceTabKey: route => `agent:${route.projectId}:${route.agentId}`,

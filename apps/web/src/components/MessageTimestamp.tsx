@@ -82,6 +82,7 @@ export function MessageTimestamp({
 /** Keeps desktop metadata with actions and revealed mobile time beside its message. */
 export function MessageActionsAndTimestamp({
   actions,
+  footer,
   mobileTimestampAlign = "start",
   mobileTimestampRevealed = false,
   status,
@@ -89,6 +90,7 @@ export function MessageActionsAndTimestamp({
   showTimestamp = true,
 }: {
   actions?: ReactNode;
+  footer?: ReactNode;
   mobileTimestampAlign?: "start" | "end";
   mobileTimestampRevealed?: boolean;
   status?: ReactNode;
@@ -103,9 +105,9 @@ export function MessageActionsAndTimestamp({
     {mobileTimestampRevealed ? <Box data-mobile-message-timestamp sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
       <MessageTimestamp value={value} compact align={mobileTimestampAlign} />
     </Box> : null}
-    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
-      <Box className="chat-message-action-buttons" sx={{ display: "flex", minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>
-      <Box sx={{ flex: 1 }} />
+    <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ alignItems: "flex-start", minWidth: 0, minHeight: { xs: 44, sm: 28 } }}>
+      <Box className="chat-message-action-buttons" sx={{ display: "flex", flexShrink: 0, minWidth: 0, flexWrap: "wrap", alignItems: "center", gap: 0.25 }}>{actions}</Box>
+      {footer ? <Box sx={{ flex: 1, minWidth: 0 }}>{footer}</Box> : <Box sx={{ flex: 1 }} />}
       {status ? <Box sx={{ display: "flex", minWidth: 0, justifyContent: "flex-end" }}>{status}</Box> : showTimestamp ? <MessageTimestamp value={value} desktopOnly /> : null}
     </Stack>
     {status && showTimestamp ? <Box sx={{ color: "text.secondary", mt: 0.1 }}><MessageTimestamp value={value} desktopOnly /></Box> : null}

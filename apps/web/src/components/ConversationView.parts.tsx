@@ -1,4 +1,5 @@
 import AddIcon from "@mui/icons-material/Add";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import DriveFileRenameOutlineIcon from "@mui/icons-material/DriveFileRenameOutline";
@@ -7,6 +8,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import TagIcon from "@mui/icons-material/Tag";
 import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
 import {
   Box,
   Chip,
@@ -310,7 +312,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
-  activeView: "main" | "collaboration" | "agents";
+  activeView: "main" | "collaboration" | "agents" | "triggers";
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
@@ -324,7 +326,7 @@ function ConversationHeader({
   setImportOpen: Dispatch<SetStateAction<boolean>>;
   setDeleteOpen: Dispatch<SetStateAction<boolean>>;
   setActiveView: Dispatch<
-    SetStateAction<"main" | "collaboration" | "agents">
+    SetStateAction<"main" | "collaboration" | "agents" | "triggers">
   >;
 }): JSX.Element {
   return (
@@ -385,12 +387,25 @@ function ConversationHeader({
           setActiveView(next);
         },
         items: [
-          { value: "main", label: "Chat" },
-          { value: "collaboration", label: "Team Chat" },
+          {
+            value: "main",
+            label: "Chat",
+            icon: <ChatBubbleOutlineIcon fontSize="small" />,
+          },
+          {
+            value: "collaboration",
+            label: "Team Chat",
+            icon: <GroupsOutlinedIcon fontSize="small" />,
+          },
           {
             value: "agents",
             label: "Agents",
             icon: <SmartToyOutlinedIcon fontSize="small" />,
+          },
+          {
+            value: "triggers",
+            label: "Triggers",
+            icon: <BoltOutlinedIcon fontSize="small" />,
           },
         ],
       }}

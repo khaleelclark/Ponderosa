@@ -20,7 +20,6 @@ import {
 import { NotificationPanel } from "./components/NotificationPanel";
 import { OperatorProfileDialog } from "./components/OperatorProfileDialog";
 import { ProjectCreationDialog } from "./components/ProjectCreationDialog";
-import { ProjectSettingsDialog } from "./components/ProjectSettingsDialog";
 import {
   OnboardingCompleteDialog,
   SidebarConversationDialogs,
@@ -42,9 +41,8 @@ import {
   useRoute,
   type Route,
 } from "./routing";
-import { isProjectRoute } from "./routeRegistry";
+import { isProjectRoute, workspaceTabKey } from "./routeRegistry";
 import type { ColorMode } from "./theme";
-import { nextProjectAfterDelete } from "./projectLifecycle";
 import {
   closeReadPushNotifications,
   inspectWebPush,
@@ -67,7 +65,8 @@ import {
   openWorkspaceTab,
   openWorkspaceTabInBackground,
   removeProjectWorkspaceTabs,
-  removeWorkspaceRoute,
+  removeProjectWorkspaceTabsWithFallback,
+  removeWorkspaceRouteWithFallback,
   renameWorkspaceTab,
   reusableWorkspaceTab,
   reorderWorkspaceTabs,
@@ -168,7 +167,6 @@ export default function App({
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [engineStatusOpen, setEngineStatusOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [settingsProject, setSettingsProject] = useState<ProjectDto>();
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sidebarConversationAction, setSidebarConversationAction] =
     useState<SidebarConversationAction>();
@@ -430,12 +428,20 @@ export default function App({
   };
   const openCreationForm = (
     kind: "project" | "chat" | "agent" | "trigger",
-    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
   ) => {
     const destination: Route = {
       kind: "create",
       resource: kind,
       ...(context?.projectId ? { projectId: context.projectId } : {}),
+      ...(context?.conversationId
+        ? { conversationId: context.conversationId }
+        : {}),
       ...(context?.managerAgentId
         ? { managerAgentId: context.managerAgentId }
         : {}),
@@ -515,7 +521,55 @@ export default function App({
     );
   };
   const removeWorkspaceView = (removedRoute: Route) => {
-    setWorkspaceTabs(current => removeWorkspaceRoute(current, removedRoute));
+    if (removedRoute.kind === "project") {
+      const fallbackRoute: Route = { kind: "projects" };
+      const activeRoute = workspaceTabs.find(
+        tab => tab.key === activeWorkspaceTabKey,
+      )?.route;
+      const removedActiveProject =
+        activeRoute !== undefined &&
+        "projectId" in activeRoute &&
+        activeRoute.projectId === removedRoute.projectId;
+      setWorkspaceTabs(current =>
+        removeProjectWorkspaceTabsWithFallback(
+          current,
+          activeWorkspaceTabKey,
+          removedRoute.projectId,
+          fallbackRoute,
+        ),
+      );
+      if (removedActiveProject) {
+        navigate(fallbackRoute, { replace: true });
+      }
+      return;
+    }
+    const fallbackRoute: Route =
+      removedRoute.kind === "conversation"
+        ? { kind: "project", projectId: removedRoute.projectId }
+        : removedRoute.kind === "agent"
+          ? { kind: "agents", projectId: removedRoute.projectId }
+          : { kind: "home" };
+    const activeRoute = workspaceTabs.find(
+      tab => tab.key === activeWorkspaceTabKey,
+    )?.route;
+    const removedActiveResource =
+      activeRoute !== undefined &&
+      workspaceTabKey(activeRoute) === workspaceTabKey(removedRoute);
+    setWorkspaceTabs(current =>
+      removeWorkspaceRouteWithFallback(
+        current,
+        activeWorkspaceTabKey,
+        removedRoute,
+        fallbackRoute,
+      ),
+    );
+    if (removedActiveResource) {
+      recordWorkspaceRouteUse(fallbackRoute);
+      navigate(fallbackRoute, { replace: true });
+    }
+  };
+  const handleProjectDeleted = (projectId: string) => {
+    removeWorkspaceView({ kind: "project", projectId });
   };
   useEffect(() => {
     const onWorkspaceTabShortcut = (event: KeyboardEvent) => {
@@ -549,10 +603,6 @@ export default function App({
   const openOperatorProfile = () => {
     setOperatorProfileOpen(true);
   };
-  const openProjectSettings = (project: ProjectDto) => {
-    setSettingsProject(project);
-  };
-
   return (
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
@@ -706,7 +756,7 @@ export default function App({
                 onCreate={openCreationForm}
                 onCancelCreate={cancelCreationWorkspace}
                 onOpenInbox={() => setNotificationPanelOpen(true)}
-                onManageProject={openProjectSettings}
+                onProjectDeleted={handleProjectDeleted}
                 onConversationAction={openSidebarConversationAction}
                 onOpenEngineStatus={() => setEngineStatusOpen(true)}
                 onBrowserRequestHandled={requestId =>
@@ -741,23 +791,12 @@ export default function App({
           onClose={() => setSidebarConversationAction(undefined)}
           onRenamed={() => setSidebarConversationAction(undefined)}
           onDeleted={conversation => {
-            setWorkspaceTabs(current =>
-              removeWorkspaceRoute(current, {
-                kind: "conversation",
-                projectId: conversation.projectId,
-                conversationId: conversation.id,
-              }),
-            );
+            removeWorkspaceView({
+              kind: "conversation",
+              projectId: conversation.projectId,
+              conversationId: conversation.id,
+            });
             setSidebarConversationAction(undefined);
-            if (
-              route.kind === "conversation" &&
-              route.conversationId === conversation.id
-            ) {
-              navigate(
-                { kind: "project", projectId: conversation.projectId },
-                { replace: true },
-              );
-            }
           }}
         />
 
@@ -836,26 +875,6 @@ export default function App({
           profile={preferences.profile}
           onClose={() => setOperatorProfileOpen(false)}
           onSave={profile => savePreferences({ profile })}
-        />
-        <ProjectSettingsDialog
-          project={settingsProject}
-          onClose={() => setSettingsProject(undefined)}
-          onDeleted={projectId => {
-            const next = nextProjectAfterDelete(projects, projectId);
-            const survivingProjectIds = new Set(
-              projects
-                .filter(project => project.id !== projectId)
-                .map(project => project.id),
-            );
-            setWorkspaceTabs(current =>
-              removeProjectWorkspaceTabs(current, survivingProjectIds),
-            );
-            setSettingsProject(undefined);
-            if (next) {
-              saveLastProjectId(next.id);
-              navigate({ kind: "project", projectId: next.id });
-            } else navigate({ kind: "home" });
-          }}
         />
       </Box>
     </ProjectBrowserContext.Provider>

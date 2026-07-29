@@ -1,6 +1,10 @@
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
+import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
+import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -17,6 +21,7 @@ import {
   DialogContent,
   DialogTitle,
   FormControl,
+  IconButton,
   InputAdornment,
   InputLabel,
   List,
@@ -24,6 +29,7 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
+  Menu,
   Select,
   Stack,
   TextField,
@@ -41,6 +47,7 @@ import type {
   WorkspaceNotificationDto,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
+import type { ProjectDetailView, Route } from "../routing";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
@@ -54,7 +61,8 @@ import {
   projectHealthDetail,
   projectHealthPresentation,
 } from "./ProjectOverview";
-import { ProjectSettingsPanel } from "./ProjectSettingsDialog";
+import { ProjectSettingsPanel } from "./ProjectSettingsPanel";
+import { ProjectDeletionDialog } from "./ProjectDeletionDialog";
 import { ProjectArtifactPreview } from "./filePreview/ArtifactPreview";
 import {
   ResourceContextMenu,
@@ -69,6 +77,7 @@ import {
   projectOutputKinds,
   type ProjectFileCategory,
 } from "./ProjectArtifactsView.helpers";
+import { AllTriggersWorkspace } from "./WorkspaceResourceViews";
 
 export function ProjectArtifactsView({
   projectId,
@@ -88,7 +97,12 @@ export function ProjectArtifactsView({
   statusByAgentId,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onOpenAgentSettings,
+  onAgentsDeleted,
   onNewAgent,
+  onNavigateTrigger,
+  onOpenTriggerInNewTab,
+  onCreateTrigger,
   onProjectDeleted,
   onOpenEngineStatus,
   onOpenArtifact,
@@ -97,6 +111,8 @@ export function ProjectArtifactsView({
   onOpenAgentWork,
   conversations,
   onOpenBrowser = () => undefined,
+  initialView,
+  onViewChange,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -115,7 +131,12 @@ export function ProjectArtifactsView({
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onOpenAgentSettings(agentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
+  onNavigateTrigger(route: Route): void;
+  onOpenTriggerInNewTab(route: Route): void;
+  onCreateTrigger(): void;
   onProjectDeleted(projectId: string): void;
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
@@ -124,12 +145,12 @@ export function ProjectArtifactsView({
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
   onOpenBrowser?(): void;
+  initialView?: ProjectDetailView;
+  onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
-  const [tab, setTab] = useState<
-    "overview" | "files" | "agents" | "settings"
-  >("overview");
+  const [tab, setTab] = useState<ProjectDetailView>(initialView ?? "overview");
   const [fileCategories, setFileCategories] = useState<
     Array<Exclude<ProjectFileCategory, "all">>
   >([]);
@@ -140,15 +161,23 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [projectMenuAnchor, setProjectMenuAnchor] =
+    useState<HTMLElement | null>(null);
+  const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
   const [artifactMenu, setArtifactMenu] =
     useState<
       ResourceContextMenuState<{ agentId: string; artifactId: string }>
     >();
   useEffect(() => {
+    setTab(initialView ?? "overview");
     setOlderArtifacts(undefined);
     setPreviewArtifact(undefined);
     setFileCategories([]);
-  }, [projectId]);
+  }, [projectId, initialView]);
+  const changeTab = (next: ProjectDetailView) => {
+    setTab(next);
+    onViewChange(next);
+  };
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
     queryKey: queryKeys.projectArtifacts.project(projectId),
@@ -254,7 +283,7 @@ export function ProjectArtifactsView({
       className="ponderosa-scroll"
       sx={{ minHeight: 0, minWidth: 0, width: "100%", overflowY: "auto" }}
     >
-      <TabbedWorkspaceFrame<"overview" | "files" | "agents" | "settings">
+      <TabbedWorkspaceFrame<ProjectDetailView>
         icon={<FolderOutlinedIcon />}
         title={project.label}
         context={
@@ -287,12 +316,57 @@ export function ProjectArtifactsView({
             </Button>
           </Tooltip>
         }
+        actions={
+          <>
+            <Tooltip title={`Actions for ${project.label}`}>
+              <IconButton
+                aria-label={`Actions for ${project.label}`}
+                onClick={event => setProjectMenuAnchor(event.currentTarget)}
+              >
+                <MoreVertIcon />
+              </IconButton>
+            </Tooltip>
+            <Menu
+              anchorEl={projectMenuAnchor}
+              open={Boolean(projectMenuAnchor)}
+              onClose={() => setProjectMenuAnchor(null)}
+            >
+              <MenuItem
+                onClick={() => {
+                  setProjectMenuAnchor(null);
+                  changeTab("settings");
+                }}
+              >
+                <ListItemIcon>
+                  <SettingsOutlinedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Project Settings</ListItemText>
+              </MenuItem>
+              <MenuItem
+                sx={{ color: "error.main" }}
+                onClick={() => {
+                  setProjectMenuAnchor(null);
+                  setProjectDeleteOpen(true);
+                }}
+              >
+                <ListItemIcon sx={{ color: "inherit" }}>
+                  <DeleteOutlineIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText>Delete Project</ListItemText>
+              </MenuItem>
+            </Menu>
+          </>
+        }
         tabs={{
           value: tab,
-          onChange: setTab,
+          onChange: changeTab,
           label: "Project",
           items: [
-            { value: "overview", label: "Overview" },
+            {
+              value: "overview",
+              label: "Overview",
+              icon: <DashboardOutlinedIcon />,
+            },
             {
               value: "files",
               label: "Files & Results",
@@ -300,12 +374,17 @@ export function ProjectArtifactsView({
             },
             {
               value: "agents",
-              label: "Project Agents",
+              label: "Agents",
               icon: <SmartToyOutlinedIcon />,
             },
             {
+              value: "triggers",
+              label: "Triggers",
+              icon: <BoltOutlinedIcon />,
+            },
+            {
               value: "settings",
-              label: "Project Settings",
+              label: "Settings",
               icon: <SettingsOutlinedIcon />,
             },
           ],
@@ -314,7 +393,7 @@ export function ProjectArtifactsView({
       <Box
         sx={{
           p:
-            tab === "agents" || tab === "settings"
+            tab === "agents" || tab === "triggers" || tab === "settings"
               ? 0
               : { xs: 1.5, sm: 3 },
         }}
@@ -729,7 +808,22 @@ export function ProjectArtifactsView({
               healthByAgentId={healthByAgentId}
               onOpenAgent={onOpenAgent}
               onOpenAgentInNewTab={onOpenAgentInNewTab}
+              onOpenAgentSettings={onOpenAgentSettings}
+              onAgentsDeleted={(_projectId, agentIds) =>
+                onAgentsDeleted(agentIds)}
               onNewAgent={onNewAgent}
+            />
+          ) : null}
+          {tab === "triggers" ? (
+            <AllTriggersWorkspace
+              projects={[project]}
+              filterProjectId={projectId}
+              embedded
+              preferences={preferences}
+              onPreferences={onPreferences}
+              onNavigate={onNavigateTrigger}
+              onOpenInNewTab={onOpenTriggerInNewTab}
+              onCreate={onCreateTrigger}
             />
           ) : null}
           {tab === "settings" ? (
@@ -905,6 +999,12 @@ export function ProjectArtifactsView({
           <Button onClick={() => setPreviewArtifact(undefined)}>Close</Button>
         </DialogActions>
       </Dialog>
+      <ProjectDeletionDialog
+        project={project}
+        open={projectDeleteOpen}
+        onClose={() => setProjectDeleteOpen(false)}
+        onDeleted={onProjectDeleted}
+      />
     </Box>
   );
 }

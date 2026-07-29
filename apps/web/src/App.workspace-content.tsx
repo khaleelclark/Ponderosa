@@ -43,11 +43,16 @@ interface WorkspaceRouteOutletProps {
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onCreate(
     kind: "project" | "chat" | "agent" | "trigger",
-    context?: { projectId?: string; managerAgentId?: string; agentId?: string },
+    context?: {
+      projectId?: string;
+      conversationId?: string;
+      managerAgentId?: string;
+      agentId?: string;
+    },
   ): void;
   onCancelCreate(): void;
   onOpenInbox(): void;
-  onManageProject(project: ProjectDto): void;
+  onProjectDeleted(projectId: string): void;
   onConversationAction(
     kind: "rename" | "delete",
     conversation: ConversationDto,
@@ -75,7 +80,7 @@ export function WorkspaceRouteOutlet({
   onCreate,
   onCancelCreate,
   onOpenInbox,
-  onManageProject,
+  onProjectDeleted,
   onConversationAction,
   onOpenEngineStatus,
   onBrowserRequestHandled,
@@ -133,7 +138,7 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreateProject={() => onCreate("project")}
-          onManageProject={onManageProject}
+          onProjectDeleted={onProjectDeleted}
           onPreferences={onPreferences}
         />
       ) : route.kind === "allAgents" ? (
@@ -146,7 +151,14 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreate={(projectId, managerAgentId) =>
-            onCreate("agent", { projectId, managerAgentId })}
+            onCreate("agent", {
+              ...(projectId ? { projectId } : {}),
+              ...(managerAgentId ? { managerAgentId } : {}),
+            })}
+          onAgentsDeleted={(projectId, agentIds) =>
+            agentIds.forEach(agentId =>
+              onResourceDeleted({ kind: "agent", projectId, agentId }),
+            )}
         />
       ) : route.kind === "allChats" ? (
         <AllChatsWorkspace
@@ -157,6 +169,7 @@ export function WorkspaceRouteOutlet({
           onNavigate={onNavigate}
           onOpenInNewTab={onOpenInNewTab}
           onCreate={projectId => onCreate("chat", { projectId })}
+          onConversationAction={onConversationAction}
         />
       ) : route.kind === "allTriggers" ? (
         <AllTriggersWorkspace
@@ -211,6 +224,7 @@ export function WorkspaceRouteOutlet({
             onBrowserRequestHandled={onBrowserRequestHandled}
             openInNewTab={onOpenInNewTab}
             onResourceDeleted={onResourceDeleted}
+            onCreateAgent={context => onCreate("agent", context)}
           />
         ) : (
           <Box />

@@ -46,10 +46,11 @@ interface AgentDetailPanelsProps {
   projectRoot?: string;
   timeline: ComponentProps<typeof ArtifactsPane>["timeline"];
   delegatedAgentCount: number;
-  createTrigger?: boolean;
+  triggerSettingsId?: string;
   agentWorkFocus?: string;
   settingsPane: JSX.Element;
   onOpenAgent(agentId: string): void;
+  onOpenAgentSettings(agentId: string): void;
   onOpenMessageSource: NonNullable<
     ComponentProps<typeof ChatPane>["onOpenMessageSource"]
   >;
@@ -59,9 +60,12 @@ interface AgentDetailPanelsProps {
   onOpenFile(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
+  onCreateTrigger(): void;
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
   onOpenArtifactInNewTab(artifactId: string): void;
+  onCloseTriggerSettings(): void;
 }
 
 export function AgentDetailPanels({
@@ -87,10 +91,11 @@ export function AgentDetailPanels({
   projectRoot,
   timeline,
   delegatedAgentCount,
-  createTrigger,
+  triggerSettingsId,
   agentWorkFocus,
   settingsPane,
   onOpenAgent,
+  onOpenAgentSettings,
   onOpenMessageSource,
   onMentionAgent,
   onLoadOlderChat,
@@ -98,9 +103,12 @@ export function AgentDetailPanels({
   onOpenFile,
   onOpenFileInNewTab,
   onNewSubagent,
+  onAgentsDeleted,
+  onCreateTrigger,
   onOpenTechnical,
   onOpenArtifact,
   onOpenArtifactInNewTab,
+  onCloseTriggerSettings,
 }: AgentDetailPanelsProps): JSX.Element {
   const panes: Record<AgentTab, JSX.Element> = {
     chat: (
@@ -150,7 +158,10 @@ export function AgentDetailPanels({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={onOpenAgent}
+        onOpenAgentSettings={onOpenAgentSettings}
         onNewAgent={onNewSubagent}
+        onAgentsDeleted={(_projectId, agentIds) =>
+          onAgentsDeleted(agentIds)}
         selectionAllowed={false}
         organizationRootAgentId={detail.agent.id}
         collection={{
@@ -166,7 +177,9 @@ export function AgentDetailPanels({
     triggers: (
       <TriggersPane
         agent={detail.agent}
-        initialCreateOpen={createTrigger}
+        onCreateTrigger={onCreateTrigger}
+        settingsTriggerId={triggerSettingsId}
+        onCloseTriggerSettings={onCloseTriggerSettings}
         onOpenAgentWork={occurrenceId =>
           onOpenTechnical(`trigger:${occurrenceId}`)
         }

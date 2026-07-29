@@ -16,7 +16,6 @@ import {
   Typography,
 } from "@mui/material";
 import type {
-  AgentDetailDto,
   AgentDto,
   ConversationDto,
   EngineDto,
@@ -277,7 +276,7 @@ function AgentMembershipDialog({
           }
           onClick={() => updateMemberships.mutate()}
         >
-          Save Membership
+          {updateMemberships.isPending ? "Saving…" : "Save Membership"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -285,26 +284,26 @@ function AgentMembershipDialog({
 }
 
 function AgentOrganizationDialog({
-  organizationOpen,
-  setOrganizationOpen,
+  open,
+  onClose,
   organizationParentId,
   setOrganizationParentId,
-  detail,
+  agent,
   agents,
   updateOrganization,
 }: {
-  organizationOpen: boolean;
-  setOrganizationOpen: StateSetter<boolean>;
+  open: boolean;
+  onClose(): void;
   organizationParentId: string;
   setOrganizationParentId: StateSetter<string>;
-  detail: AgentDetailDto;
+  agent: AgentDto;
   agents: AgentDto[];
   updateOrganization: VoidMutation;
 }): JSX.Element {
   return (
     <Dialog
-      open={organizationOpen}
-      onClose={() => setOrganizationOpen(false)}
+      open={open}
+      onClose={onClose}
       fullWidth
       maxWidth="xs"
     >
@@ -321,7 +320,7 @@ function AgentOrganizationDialog({
             onChange={event => setOrganizationParentId(event.target.value)}
           >
             <MenuItem value="">Top Level</MenuItem>
-            {eligibleOrganizationParents(detail.agent, agents).map(
+            {eligibleOrganizationParents(agent, agents).map(
               candidate => (
                 <MenuItem key={candidate.id} value={candidate.id}>
                   {candidate.title}
@@ -342,7 +341,7 @@ function AgentOrganizationDialog({
       </DialogContent>
       <DialogActions>
         <Button
-          onClick={() => setOrganizationOpen(false)}
+          onClick={onClose}
           disabled={updateOrganization.isPending}
         >
           Cancel
@@ -352,7 +351,7 @@ function AgentOrganizationDialog({
           disabled={updateOrganization.isPending}
           onClick={() => updateOrganization.mutate()}
         >
-          Save Organization
+          {updateOrganization.isPending ? "Saving…" : "Save Organization"}
         </Button>
       </DialogActions>
     </Dialog>

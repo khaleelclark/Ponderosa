@@ -1,4 +1,4 @@
-import { isAgentDetailView, type Route } from "./routing";
+import { isAgentDetailView, isProjectDetailView, type Route } from "./routing";
 import { createClientId } from "./clientId";
 import { isRouteKind, workspaceTabKey } from "./routeRegistry";
 
@@ -78,6 +78,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
       ) &&
         (candidate.projectId === undefined ||
           typeof candidate.projectId === "string") &&
+        (candidate.conversationId === undefined ||
+          typeof candidate.conversationId === "string") &&
         (candidate.managerAgentId === undefined ||
           typeof candidate.managerAgentId === "string") &&
         (candidate.agentId === undefined ||
@@ -99,7 +101,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         typeof candidate.articleId === "string";
     case "project":
       return typeof candidate.projectId === "string" &&
-        Boolean(candidate.projectId);
+        Boolean(candidate.projectId) &&
+        (candidate.view === undefined || isProjectDetailView(candidate.view));
     case "workspaceFile":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
@@ -107,13 +110,7 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         Boolean(candidate.path);
     case "agents":
       return typeof candidate.projectId === "string" &&
-        Boolean(candidate.projectId) &&
-        (candidate.create === undefined ||
-          typeof candidate.create === "boolean") &&
-        (candidate.managerAgentId === undefined ||
-          typeof candidate.managerAgentId === "string") &&
-        (candidate.continueToTrigger === undefined ||
-          typeof candidate.continueToTrigger === "boolean");
+        Boolean(candidate.projectId);
     case "projectWork":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
@@ -140,8 +137,8 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         typeof candidate.agentId === "string" &&
         Boolean(candidate.agentId) &&
         (candidate.view === undefined || isAgentDetailView(candidate.view)) &&
-        (candidate.createTrigger === undefined ||
-          typeof candidate.createTrigger === "boolean");
+        (candidate.triggerId === undefined ||
+          typeof candidate.triggerId === "string");
     case "review":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
@@ -236,6 +233,65 @@ export function removeWorkspaceRoute(current: WorkspaceTabState[], route: Route)
   const resourceKey = workspaceTabKey(route);
   const retained = current.filter((tab) => workspaceTabKey(tab.route) !== resourceKey);
   return retained.length > 0 ? retained : [createWorkspaceTab({ kind: "home" })];
+}
+
+/**
+ * Removes every tab for a deleted resource while replacing its active tab with
+ * the nearest surviving parent. Keeping the active tab key makes deletion and
+ * navigation one state transition instead of racing missing-tab recovery.
+ */
+export function removeWorkspaceRouteWithFallback(
+  current: WorkspaceTabState[],
+  activeKey: string,
+  removedRoute: Route,
+  fallbackRoute: Route,
+  now = Date.now(),
+): WorkspaceTabState[] {
+  const resourceKey = workspaceTabKey(removedRoute);
+  const fallbackActivatedAt = Math.max(
+    now,
+    ...current.map((tab) => tab.lastActivatedAt + 1),
+    0,
+  );
+  const next = current.flatMap((tab) => {
+    if (workspaceTabKey(tab.route) !== resourceKey) return [tab];
+    if (tab.key !== activeKey) return [];
+    return [{
+      ...tab,
+      route: fallbackRoute,
+      title: undefined,
+      lastActivatedAt: fallbackActivatedAt,
+    }];
+  });
+  return next.length > 0 ? next : [createWorkspaceTab(fallbackRoute)];
+}
+
+/** Project deletion also removes every child workspace owned by that Project. */
+export function removeProjectWorkspaceTabsWithFallback(
+  current: WorkspaceTabState[],
+  activeKey: string,
+  projectId: string,
+  fallbackRoute: Route = { kind: "projects" },
+  now = Date.now(),
+): WorkspaceTabState[] {
+  const fallbackActivatedAt = Math.max(
+    now,
+    ...current.map((tab) => tab.lastActivatedAt + 1),
+    0,
+  );
+  const next = current.flatMap((tab) => {
+    const belongsToDeletedProject =
+      "projectId" in tab.route && tab.route.projectId === projectId;
+    if (!belongsToDeletedProject) return [tab];
+    if (tab.key !== activeKey) return [];
+    return [{
+      ...tab,
+      route: fallbackRoute,
+      title: undefined,
+      lastActivatedAt: fallbackActivatedAt,
+    }];
+  });
+  return next.length > 0 ? next : [createWorkspaceTab(fallbackRoute)];
 }
 
 export function removeProjectWorkspaceTabs(current: WorkspaceTabState[], projectIds: Set<string>): WorkspaceTabState[] {
