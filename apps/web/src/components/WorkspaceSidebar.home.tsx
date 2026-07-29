@@ -7,7 +7,6 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
-  Box,
   IconButton,
   ListItemButton,
   ListItemIcon,
@@ -21,11 +20,7 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
-import {
-  agentStatusColor,
-  agentStatusLabel,
-  type AgentStatus,
-} from "../agents";
+import type { AgentStatus } from "../agents";
 import {
   sortWorkspaceResources,
   starredWorkspaceResources,
@@ -37,6 +32,7 @@ import {
   useWorkspaceResourceRecency,
   workspaceResourceRecencyMap,
 } from "../workspaceRecency";
+import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { starColor } from "./WorkspaceSidebar.helpers";
 import { SharedSidebarPanel } from "./WorkspaceSidebar.parts";
 
@@ -217,20 +213,7 @@ export function HomeSidebarPanel({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            {item.status === "running" || item.status === "compacting" ? (
-              <Box
-                title={agentStatusLabel(item.status)}
-                aria-label={agentStatusLabel(item.status)}
-                sx={{
-                  width: 9,
-                  height: 9,
-                  ml: 1,
-                  borderRadius: "50%",
-                  bgcolor: `${agentStatusColor(item.status)}.main`,
-                  flex: "0 0 auto",
-                }}
-              />
-            ) : null}
+            {item.status ? <AgentStatusIndicator status={item.status} /> : null}
           </ListItemButton>
           <Tooltip
             title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}

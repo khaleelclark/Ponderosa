@@ -24,7 +24,6 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { agentStatusColor, agentStatusLabel } from "../agents";
 import { api } from "../api";
 import {
   useProjectAgentHealth,
@@ -49,6 +48,7 @@ import {
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { markWorkspaceResourceUsed } from "../workspaceRecency";
+import { AgentStatusIndicator } from "./AgentStatusIndicator";
 import { ResourceContextMenu } from "./ResourceContextMenu";
 import { IconTitle } from "./IconTitle";
 import {
@@ -590,20 +590,7 @@ export function WorkspaceSidebar({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
-            <Box
-              title={agentStatusLabel(status)}
-              aria-label={agentStatusLabel(status)}
-              sx={{
-                width: 9,
-                height: 9,
-                borderRadius: "50%",
-                bgcolor:
-                  agentStatusColor(status) === "default"
-                    ? "text.disabled"
-                    : `${agentStatusColor(status)}.main`,
-                flex: "0 0 auto",
-              }}
-            />
+            <AgentStatusIndicator status={status} />
           </ListItemButton>
           <Tooltip title={`${starred ? "Unstar" : "Star"} ${agent.title}`}>
             <IconButton
