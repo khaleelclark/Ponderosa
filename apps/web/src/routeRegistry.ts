@@ -12,6 +12,7 @@ export type RouteTabIcon =
   | "dataUsage"
   | "difference"
   | "folder"
+  | "forum"
   | "home"
   | "language"
   | "menuBook"
@@ -89,7 +90,7 @@ const ROUTE_REGISTRY = {
     toPath: () => "/messages",
     workspaceTabKey: () => "all-chat",
     tabLabel: () => "Messages Across Ponderosa",
-    tabIcon: "chat",
+    tabIcon: "forum",
     scope: "global",
     initialSidebarSection: "home",
   },

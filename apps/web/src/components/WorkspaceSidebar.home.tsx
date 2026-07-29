@@ -1,6 +1,7 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
@@ -243,7 +244,7 @@ export function HomeSidebarPanel({
           }}
         >
           <ListItemIcon sx={{ minWidth: 38 }}>
-            <ChatBubbleOutlineIcon fontSize="small" />
+            <ForumOutlinedIcon fontSize="small" />
           </ListItemIcon>
           <ListItemText
             primary="Messages Across Ponderosa"
