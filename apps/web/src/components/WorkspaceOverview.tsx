@@ -190,7 +190,10 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             );
             if (!patch) return false;
             onPreferences(patch);
-            return true;
+            return {
+              position: direction === "up" ? index : index + 2,
+              total: filteredSnapshots.length,
+            };
           }}
           highlighted={dropTarget?.projectId === snapshot.project.id}
           starAction={

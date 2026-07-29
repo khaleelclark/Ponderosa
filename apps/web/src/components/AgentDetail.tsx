@@ -886,7 +886,6 @@ export function AgentDetail({
         onOpenProject={onOpenProject}
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
-        onOpenAgentSettings={onOpenAgentSettings}
         onStop={stopActiveRun}
         onCopyPackage={(mode, organization) =>
           void copyAgentPackage(mode, organization)
@@ -949,6 +948,7 @@ export function AgentDetail({
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
+        onOpenAgentSettings={onOpenAgentSettings}
         onOpenMessageSource={openCommunicationSourceFromMessage}
         onMentionAgent={() => mentionCurrentAgent()}
         onLoadOlderChat={() => void loadOlderCombinedTimeline()}

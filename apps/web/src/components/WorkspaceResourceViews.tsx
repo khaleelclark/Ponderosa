@@ -124,7 +124,10 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
               direction === "up" ? "before" : "after",
             ),
           });
-          return true;
+          return {
+            position: direction === "up" ? index : index + 2,
+            total: ordered.length,
+          };
         }}
       />;
     })}
@@ -363,7 +366,10 @@ export function AllTriggersWorkspace({
               direction === "up" ? "before" : "after",
             ),
           });
-          return true;
+          return {
+            position: direction === "up" ? index : index + 2,
+            total: ordered.length,
+          };
         }}
       />;
     })}

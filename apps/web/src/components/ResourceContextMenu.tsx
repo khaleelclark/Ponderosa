@@ -47,7 +47,11 @@ export function ResourceContextMenu<T>({
       const switchingMenus = Boolean(
         target?.closest("[data-resource-menu-trigger]"),
       );
-      if (event.button === 2 || switchingMenus) {
+      if (
+        event.button === 2 ||
+        (event.button === 0 && event.ctrlKey) ||
+        switchingMenus
+      ) {
         skipFocusRestoreRef.current = true;
       } else if (event.button === 0) {
         // Match native menu behavior: the first ordinary left-click dismisses

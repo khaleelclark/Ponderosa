@@ -979,7 +979,11 @@ export function AgentsTab({
                               target.agent.id,
                               direction === "up" ? "before" : "after",
                             );
-                            return true;
+                            return {
+                              position:
+                                direction === "up" ? index : index + 2,
+                              total: filtered.length,
+                            };
                           }
                         : undefined
                     }

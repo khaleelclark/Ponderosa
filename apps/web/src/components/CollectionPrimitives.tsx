@@ -14,7 +14,15 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, ProjectSort } from "@ponderosa/core";
-import { useId, useRef, useState, type DragEvent, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useId,
+  useRef,
+  useState,
+  type DragEvent,
+  type ReactNode,
+} from "react";
 import { IconTitle } from "./IconTitle";
 import { relativeTime } from "../agents";
 
@@ -29,6 +37,10 @@ export interface CollectionWorkspaceProps {
   listLabel: string;
   variant?: "page" | "embedded";
 }
+
+const CollectionAnnouncementContext = createContext<(message: string) => void>(
+  () => undefined,
+);
 
 export function CollectionHeader({
   title,
@@ -83,37 +95,57 @@ export function CollectionWorkspace({
   variant = "page",
 }: CollectionWorkspaceProps): JSX.Element {
   const embedded = variant === "embedded";
-  return <Box
-    className={embedded ? undefined : "ponderosa-scroll"}
-    sx={{
-      height: "100%",
-      minHeight: 0,
-      minWidth: 0,
-      overflow: embedded ? "hidden" : undefined,
-      overflowY: embedded ? undefined : "auto",
-      overflowX: "hidden",
-      display: embedded ? "grid" : undefined,
-      gridTemplateRows: embedded ? "auto minmax(0, 1fr)" : undefined,
-    }}
-  >
-    {embedded ? null : <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} />}
-    {toolbar}
-    <Stack
-      className={embedded ? "ponderosa-scroll" : undefined}
-      component="section"
-      aria-label={listLabel}
-      spacing={0.75}
+  const [reorderAnnouncement, setReorderAnnouncement] = useState("");
+  return <CollectionAnnouncementContext.Provider value={setReorderAnnouncement}>
+    <Box
+      className={embedded ? undefined : "ponderosa-scroll"}
       sx={{
+        height: "100%",
         minHeight: 0,
-        overflowY: embedded ? "auto" : undefined,
+        minWidth: 0,
+        overflow: embedded ? "hidden" : undefined,
+        overflowY: embedded ? undefined : "auto",
         overflowX: "hidden",
-        px: { xs: 2, md: 3 },
-        pb: embedded ? 2 : 3,
+        display: embedded ? "grid" : undefined,
+        gridTemplateRows: embedded ? "auto minmax(0, 1fr)" : undefined,
       }}
     >
-      {children}
-    </Stack>
-  </Box>;
+      {embedded ? null : <CollectionHeader title={title} detail={detail} icon={icon} scope={scope} primaryAction={primaryAction} />}
+      {toolbar}
+      <Stack
+        className={embedded ? "ponderosa-scroll" : undefined}
+        component="section"
+        aria-label={listLabel}
+        spacing={0.75}
+        sx={{
+          minHeight: 0,
+          overflowY: embedded ? "auto" : undefined,
+          overflowX: "hidden",
+          px: { xs: 2, md: 3 },
+          pb: embedded ? 2 : 3,
+        }}
+      >
+        {children}
+      </Stack>
+      <Box
+        aria-live="polite"
+        aria-atomic="true"
+        sx={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          p: 0,
+          m: -1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {reorderAnnouncement}
+      </Box>
+    </Box>
+  </CollectionAnnouncementContext.Provider>;
 }
 
 export interface CollectionToolbarProps {
@@ -286,7 +318,9 @@ export interface ResourceRowProps {
   onDragEnd?(): void;
   onDragOver?(event: DragEvent<HTMLElement>): void;
   onDrop?(event: DragEvent<HTMLElement>): void;
-  onKeyboardMove?(direction: "up" | "down"): boolean;
+  onKeyboardMove?(
+    direction: "up" | "down",
+  ): false | { position: number; total: number };
   highlighted?: boolean;
 }
 
@@ -311,10 +345,7 @@ export function ResourceRow({
 }: ResourceRowProps): JSX.Element {
   const dragPreviewRef = useRef<HTMLElement>();
   const openTargetRef = useRef<HTMLDivElement>(null);
-  const [reorderAnnouncement, setReorderAnnouncement] = useState<{
-    message: string;
-    sequence: number;
-  }>();
+  const announceCollectionChange = useContext(CollectionAnnouncementContext);
   const clearDragPreview = () => {
     dragPreviewRef.current?.remove();
     dragPreviewRef.current = undefined;
@@ -421,11 +452,11 @@ export function ResourceRow({
           event.preventDefault();
           event.stopPropagation();
           const direction = event.key === "ArrowUp" ? "up" : "down";
-          if (onKeyboardMove(direction)) {
-            setReorderAnnouncement(current => ({
-              message: `${label} moved ${direction}`,
-              sequence: (current?.sequence ?? 0) + 1,
-            }));
+          const result = onKeyboardMove(direction);
+          if (result) {
+            announceCollectionChange(
+              `${label} moved to position ${result.position} of ${result.total}`,
+            );
             const row = event.currentTarget;
             window.requestAnimationFrame(() =>
               row.scrollIntoView({ block: "nearest" }),
@@ -462,23 +493,6 @@ export function ResourceRow({
         {description ? <Typography component="div" variant="body2" color="text.secondary" noWrap>{description}</Typography> : null}
       </Box>
       {meta ? <Box sx={{ flexShrink: 0, minWidth: 0 }}>{meta}</Box> : null}
-    </Box>
-    <Box
-      key={reorderAnnouncement?.sequence}
-      aria-live="polite"
-      sx={{
-        position: "absolute",
-        width: 1,
-        height: 1,
-        p: 0,
-        m: -1,
-        overflow: "hidden",
-        clip: "rect(0 0 0 0)",
-        whiteSpace: "nowrap",
-        border: 0,
-      }}
-    >
-      {reorderAnnouncement?.message}
     </Box>
     {controls ? <Stack direction="row" spacing={0} sx={{ alignItems: "center", flexShrink: 0 }}>{controls}</Stack> : null}
     {starAction ? <Box sx={{ display: "grid", placeItems: "center", flexShrink: 0 }}>{starAction}</Box> : null}
