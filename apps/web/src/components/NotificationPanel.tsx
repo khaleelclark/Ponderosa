@@ -21,6 +21,8 @@ import {
   Tab,
   Tabs,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { ConversationDto, ProjectDto, WorkspaceNotificationDto } from "@ponderosa/core";
 import { queryKeys } from "../queryKeys";
@@ -104,6 +106,8 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
 }): JSX.Element {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down("sm"));
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<"read" | "clear">();
   const [pendingProjectId, setPendingProjectId] = useState<string>();
@@ -225,7 +229,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
     }
   };
 
-  return <><Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
+  return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="sm" aria-labelledby="notifications-title">
     <DialogTitle id="notifications-title" sx={{ pb: 1 }}>
       <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0, flex: 1 }}>

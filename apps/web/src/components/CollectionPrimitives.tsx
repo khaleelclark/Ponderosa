@@ -53,7 +53,7 @@ export function CollectionHeader({
     component="header"
     direction={{ xs: "column", sm: "row" }}
     spacing={1.5}
-    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}
+    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { xs: "flex-start", sm: "center" }, borderBottom: 1, borderColor: "divider" }}
   >
     <Box sx={{ flex: 1, minWidth: 0 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
@@ -67,8 +67,10 @@ export function CollectionHeader({
         sx={{
           flexShrink: 0,
           width: { xs: "100%", sm: "auto" },
+          display: "flex",
+          justifyContent: "flex-start",
           "& .MuiButton-root": {
-            width: { xs: "100%", sm: "auto" },
+            width: "auto",
             whiteSpace: "nowrap",
           },
         }}
@@ -182,12 +184,40 @@ export function CollectionToolbar({
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
       sx={{
-        flex: searchMaxWidth ? "1 1 320px" : 1,
+        flex: {
+          xs: "0 0 auto",
+          md: searchMaxWidth ? "1 1 320px" : 1,
+        },
+        width: { xs: "100%", md: "auto" },
         minWidth: { md: 240 },
         maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
       }}
     />
-    {children}
+    {children ? (
+      <Box
+        sx={theme => ({
+          display: { xs: "flex", md: "contents" },
+          width: { xs: "100%", md: "auto" },
+          minWidth: 0,
+          gap: 1,
+          alignItems: "center",
+          flexWrap: "wrap",
+          [theme.breakpoints.down("md")]: {
+            "& > .MuiFormControl-root": {
+              width: "auto",
+              minWidth: 140,
+              flex: "1 1 140px",
+            },
+            "& > [data-collection-toolbar-actions]": {
+              flex: "1 1 100%",
+              justifyContent: "flex-start",
+            },
+          },
+        })}
+      >
+        {children}
+      </Box>
+    ) : null}
     {reorderHint ? (
       <Typography
         variant="caption"

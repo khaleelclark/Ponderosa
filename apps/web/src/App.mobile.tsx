@@ -1,19 +1,28 @@
-import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import SettingsIcon from "@mui/icons-material/Settings";
+import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
   AppBar,
   Badge,
   Box,
-  Chip,
+  Divider,
   IconButton,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
   SwipeableDrawer,
   Toolbar,
   Tooltip,
   Typography,
 } from "@mui/material";
+import { useState, type MouseEvent } from "react";
 import type {
   ConversationDto,
   OperatorProfileDto,
@@ -25,9 +34,9 @@ import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
+import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
 
 interface MobileWorkspaceHeaderProps {
-  appIconSource: string;
   preferredQuotaProvider?: string;
   engineAvailability: {
     label: string;
@@ -39,13 +48,11 @@ interface MobileWorkspaceHeaderProps {
   onOpenNavigation(): void;
   onOpenEngineStatus(): void;
   onOpenNotifications(): void;
-  onCreateProject(): void;
   onOpenProfile(): void;
   onOpenSettings(): void;
 }
 
 export function MobileWorkspaceHeader({
-  appIconSource,
   preferredQuotaProvider,
   engineAvailability,
   unreadNotifications,
@@ -53,10 +60,21 @@ export function MobileWorkspaceHeader({
   onOpenNavigation,
   onOpenEngineStatus,
   onOpenNotifications,
-  onCreateProject,
   onOpenProfile,
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
+  const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
+  const mobileWorkspaceActions = useMobileWorkspaceActions();
+  const openOverflow = (event: MouseEvent<HTMLElement>) =>
+    setOverflowAnchor(event.currentTarget);
+  const runWorkspaceAction = (
+    event: MouseEvent<HTMLElement>,
+    action: (anchor: HTMLElement) => void,
+  ) => {
+    setOverflowAnchor(undefined);
+    action(event.currentTarget);
+  };
+
   return (
     <AppBar
       position="static"
@@ -82,20 +100,6 @@ export function MobileWorkspaceHeader({
         >
           <MenuIcon />
         </IconButton>
-        <Box
-          component="img"
-          src={appIconSource}
-          alt=""
-          sx={{
-            display: "block",
-            width: { xs: 26, sm: 28 },
-            height: { xs: 26, sm: 28 },
-            mr: { xs: 0.75, sm: 1 },
-            borderRadius: 1,
-            objectFit: "contain",
-            flexShrink: 0,
-          }}
-        />
         <Box aria-label="Ponderosa" sx={{ flex: 1, minWidth: 0 }}>
           <Typography
             variant="h6"
@@ -106,27 +110,12 @@ export function MobileWorkspaceHeader({
             Ponderosa
           </Typography>
         </Box>
-        <ProviderQuotaIndicator preferredProvider={preferredQuotaProvider} mobile />
-        <Tooltip
-          title={`${engineAvailability.label}. Click for provider details.`}
-          arrow
-          enterTouchDelay={0}
-        >
-          <Chip
-            size="small"
-            label={engineAvailability.label}
-            color={engineAvailability.severity}
-            variant="outlined"
-            tabIndex={0}
-            aria-label={`${engineAvailability.label}. ${engineAvailability.detail}`}
-            onClick={onOpenEngineStatus}
-            sx={{
-              maxWidth: { sm: 132, md: "none" },
-              display: { xs: "none", sm: "inline-flex" },
-              cursor: "pointer",
-            }}
+        <Box sx={{ display: { xs: "none", sm: "block" } }}>
+          <ProviderQuotaIndicator
+            preferredProvider={preferredQuotaProvider}
+            mobile
           />
-        </Tooltip>
+        </Box>
         <Tooltip title="Notifications">
           <IconButton aria-label="Open notifications" onClick={onOpenNotifications}>
             <Badge color="primary" badgeContent={unreadNotifications}>
@@ -134,34 +123,160 @@ export function MobileWorkspaceHeader({
             </Badge>
           </IconButton>
         </Tooltip>
-        <Tooltip title="New Project">
+        <Tooltip title="More">
           <IconButton
-            aria-label="New project"
-            onClick={onCreateProject}
-            sx={{ display: { xs: "none", sm: "inline-flex", md: "none" } }}
+            aria-label="Open workspace actions"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(overflowAnchor)}
+            onClick={openOverflow}
           >
-            <AddIcon />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Operator Profile">
-          <IconButton
-            aria-label="Open operator profile"
-            onClick={onOpenProfile}
-            sx={{ ml: 0.5, p: 0, width: 44, height: 44 }}
-          >
-            <OperatorAvatar profile={profile} size={32} />
-          </IconButton>
-        </Tooltip>
-        <Tooltip title="Settings">
-          <IconButton
-            aria-label="Open settings"
-            onClick={onOpenSettings}
-            sx={{ ml: 0.5 }}
-          >
-            <SettingsIcon />
+            <MoreVertIcon />
           </IconButton>
         </Tooltip>
       </Toolbar>
+      <Menu
+        anchorEl={overflowAnchor}
+        open={Boolean(overflowAnchor)}
+        onClose={() => setOverflowAnchor(undefined)}
+        keepMounted
+        MenuListProps={{ "aria-label": "Workspace actions" }}
+        slotProps={{
+          paper: { sx: { minWidth: 260, maxWidth: "calc(100vw - 24px)" } },
+        }}
+      >
+        {mobileWorkspaceActions ? (
+          <Box sx={{ px: 2, pt: 1.25, pb: 0.5 }}>
+            <Typography
+              variant="overline"
+              color="text.secondary"
+              sx={{ lineHeight: 1.5 }}
+            >
+              {mobileWorkspaceActions.label}
+            </Typography>
+          </Box>
+        ) : null}
+        {mobileWorkspaceActions?.details ? (
+          <MenuItem
+            disabled={mobileWorkspaceActions.details.disabled}
+            onClick={event =>
+              runWorkspaceAction(
+                event,
+                mobileWorkspaceActions.details!.onSelect,
+              )
+            }
+            sx={
+              mobileWorkspaceActions.details.destructive
+                ? { color: "error.main" }
+                : undefined
+            }
+          >
+            {mobileWorkspaceActions.details.icon ? (
+              <ListItemIcon>
+                {mobileWorkspaceActions.details.icon}
+              </ListItemIcon>
+            ) : null}
+            <ListItemText>{mobileWorkspaceActions.details.label}</ListItemText>
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions?.actions.map(action => (
+          <MenuItem
+            key={action.label}
+            disabled={action.disabled}
+            onClick={event =>
+              runWorkspaceAction(event, action.onSelect)
+            }
+            sx={action.destructive ? { color: "error.main" } : undefined}
+          >
+            {action.icon ? (
+              <ListItemIcon
+                sx={action.destructive ? { color: "inherit" } : undefined}
+              >
+                {action.icon}
+              </ListItemIcon>
+            ) : null}
+            <ListItemText>{action.label}</ListItemText>
+          </MenuItem>
+        ))}
+        {mobileWorkspaceActions?.copy ? (
+          <MenuItem
+            onClick={event =>
+              runWorkspaceAction(event, mobileWorkspaceActions.copy!.onSelect)
+            }
+          >
+            <ListItemIcon>{mobileWorkspaceActions.copy.icon}</ListItemIcon>
+            <ListItemText>{mobileWorkspaceActions.copy.label}</ListItemText>
+            <ChevronRightIcon fontSize="small" />
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions?.download ? (
+          <MenuItem
+            onClick={event =>
+              runWorkspaceAction(
+                event,
+                mobileWorkspaceActions.download!.onSelect,
+              )
+            }
+          >
+            <ListItemIcon>{mobileWorkspaceActions.download.icon}</ListItemIcon>
+            <ListItemText>{mobileWorkspaceActions.download.label}</ListItemText>
+            <ChevronRightIcon fontSize="small" />
+          </MenuItem>
+        ) : null}
+        {mobileWorkspaceActions ? <Divider /> : null}
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenEngineStatus();
+          }}
+        >
+          <ListItemIcon><SpeedOutlinedIcon /></ListItemIcon>
+          <ListItemText
+            primary="Provider Status"
+            secondary={engineAvailability.label}
+          />
+        </MenuItem>
+        <ProviderQuotaIndicator
+          preferredProvider={preferredQuotaProvider}
+          mobile
+          renderTrigger={openUsage => (
+            <MenuItem
+              onClick={event => {
+                const usageAnchor = overflowAnchor ?? event.currentTarget;
+                setOverflowAnchor(undefined);
+                openUsage(usageAnchor);
+              }}
+            >
+              <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
+              <ListItemText>Provider Usage</ListItemText>
+            </MenuItem>
+          )}
+        />
+        <Divider />
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenProfile();
+          }}
+        >
+          <ListItemIcon>
+            {profile ? (
+              <OperatorAvatar profile={profile} size={24} />
+            ) : (
+              <PersonOutlineIcon />
+            )}
+          </ListItemIcon>
+          <ListItemText>Operator Profile</ListItemText>
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            setOverflowAnchor(undefined);
+            onOpenSettings();
+          }}
+        >
+          <ListItemIcon><SettingsIcon /></ListItemIcon>
+          <ListItemText>Settings</ListItemText>
+        </MenuItem>
+      </Menu>
     </AppBar>
   );
 }

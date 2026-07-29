@@ -3,12 +3,12 @@ import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -231,7 +231,6 @@ export function AgentsTab({
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();
-  const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
   const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
   const [organizationView, setOrganizationView] = useState<
@@ -465,6 +464,7 @@ export function AgentsTab({
     });
   const selectionControls = selectionMode ? (
     <Stack
+      data-collection-toolbar-actions
       direction="row"
       spacing={0.75}
       useFlexGap
@@ -490,6 +490,7 @@ export function AgentsTab({
   ) : null;
   const headerActions = (
     <Stack
+      data-collection-toolbar-actions
       direction="row"
       spacing={1}
       useFlexGap
@@ -499,6 +500,7 @@ export function AgentsTab({
       {selectionMode ? selectionControls : null}
       {!selectionMode && selectionAllowed && agents.length > 0 ? (
         <Button
+          size="small"
           variant="outlined"
           color="inherit"
           onClick={() => setSelectionMode(true)}
@@ -507,63 +509,37 @@ export function AgentsTab({
         </Button>
       ) : null}
       {collection && !selectionMode ? (
-        <>
-          <Button
-            variant="contained"
-            startIcon={<AddIcon />}
-            onClick={() => onNewAgent(organizationRootAgentId)}
-          >
-            New Agent
-          </Button>
-        </>
-      ) : null}
-      {!selectionMode ? (
-        <Tooltip title="More Agent actions">
-          <IconButton
-            aria-label="Agent actions"
-            onClick={event => setActionsAnchor(event.currentTarget)}
-          >
-            <MoreVertIcon />
-          </IconButton>
-        </Tooltip>
-      ) : null}
-      {actionsAnchor ? (
-        <Menu
-          anchorEl={actionsAnchor}
-          open
-          onClose={() => setActionsAnchor(undefined)}
+        <Button
+          size="small"
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={() => onNewAgent(organizationRootAgentId)}
         >
-          <MenuItem
-            disabled={activeRunTargets.length === 0 || stoppingAll}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              void stopAll();
-            }}
-          >
-            Stop All
-          </MenuItem>
-          {showImportAction ? (
-            <MenuItem
-              disabled={!projectId}
-              onClick={() => {
-                setActionsAnchor(undefined);
-                setImportOpen(true);
-              }}
-            >
-              <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-              Import Agent or Organization
-            </MenuItem>
-          ) : null}
-          <MenuItem
-            onClick={() => {
-              setActionsAnchor(undefined);
-              onNewAgent(organizationRootAgentId);
-            }}
-          >
-            <AddIcon fontSize="small" sx={{ mr: 1 }} />
-            New Agent
-          </MenuItem>
-        </Menu>
+          New Agent
+        </Button>
+      ) : null}
+      {!selectionMode && activeRunTargets.length > 0 ? (
+        <Button
+          size="small"
+          color="error"
+          variant="outlined"
+          disabled={stoppingAll}
+          onClick={() => void stopAll()}
+        >
+          {stoppingAll ? "Stopping…" : "Stop All"}
+        </Button>
+      ) : null}
+      {!selectionMode && showImportAction ? (
+        <Button
+          size="small"
+          color="inherit"
+          variant="outlined"
+          startIcon={<FileUploadOutlinedIcon />}
+          disabled={!projectId}
+          onClick={() => setImportOpen(true)}
+        >
+          Import
+        </Button>
       ) : null}
     </Stack>
   );

@@ -101,7 +101,7 @@ export function MessageActionsAndTimestamp({
   const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") setTouchRevealed(true);
   };
-  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: { xs: 1, sm: 0.35 }, minWidth: { xs: 44, sm: 28 }, minHeight: { xs: 44, sm: 28 } }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
+  return <Box className={touchRevealed ? "chat-message-actions revealed" : "chat-message-actions"} onPointerDown={revealOnTouch} sx={{ mt: 0.25, minWidth: 0, minHeight: { xs: 44, sm: 28 }, "& .MuiIconButton-root": { p: 0.35, minWidth: 28, minHeight: 28 }, "& .MuiSvgIcon-root": { fontSize: "1rem" } }}>
     {mobileTimestampRevealed ? <Box data-mobile-message-timestamp sx={{ display: { xs: "block", sm: "none" }, color: "text.secondary", mb: 0.25 }}>
       <MessageTimestamp value={value} compact align={mobileTimestampAlign} />
     </Box> : null}

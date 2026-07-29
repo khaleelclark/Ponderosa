@@ -4,7 +4,6 @@ import DashboardOutlinedIcon from "@mui/icons-material/DashboardOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import Inventory2OutlinedIcon from "@mui/icons-material/Inventory2Outlined";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import OpenInNewOutlinedIcon from "@mui/icons-material/OpenInNewOutlined";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -29,12 +28,13 @@ import {
   ListItemIcon,
   ListItemText,
   MenuItem,
-  Menu,
   Select,
   Stack,
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from "@mui/material";
 import type { SelectChangeEvent } from "@mui/material/Select";
 import type {
@@ -69,6 +69,7 @@ import {
   type ResourceContextMenuState,
 } from "./ResourceContextMenu";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
+import { ChatOverflowMenu } from "./ChatOverflowMenu";
 import {
   PROJECT_FILE_CATEGORIES,
   matchesProjectFileCategories,
@@ -147,6 +148,8 @@ export function ProjectArtifactsView({
   onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const theme = useTheme();
+  const phonePreview = useMediaQuery(theme.breakpoints.down("sm"));
   const [filter, setFilter] = useState("");
   const [tab, setTab] = useState<ProjectDetailView>(initialView ?? "overview");
   const [fileCategories, setFileCategories] = useState<
@@ -159,8 +162,6 @@ export function ProjectArtifactsView({
     hasMore: boolean;
   }>();
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [projectMenuAnchor, setProjectMenuAnchor] =
-    useState<HTMLElement | null>(null);
   const [projectDeleteOpen, setProjectDeleteOpen] = useState(false);
   const [artifactMenu, setArtifactMenu] =
     useState<
@@ -315,45 +316,25 @@ export function ProjectArtifactsView({
           </Tooltip>
         }
         actions={
-          <>
-            <Tooltip title={`Actions for ${project.label}`}>
-              <IconButton
-                aria-label={`Actions for ${project.label}`}
-                onClick={event => setProjectMenuAnchor(event.currentTarget)}
-              >
-                <MoreVertIcon />
-              </IconButton>
-            </Tooltip>
-            <Menu
-              anchorEl={projectMenuAnchor}
-              open={Boolean(projectMenuAnchor)}
-              onClose={() => setProjectMenuAnchor(null)}
-            >
-              <MenuItem
-                onClick={() => {
-                  setProjectMenuAnchor(null);
-                  changeTab("settings");
-                }}
-              >
-                <ListItemIcon>
-                  <SettingsOutlinedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Project Settings</ListItemText>
-              </MenuItem>
-              <MenuItem
-                sx={{ color: "error.main" }}
-                onClick={() => {
-                  setProjectMenuAnchor(null);
-                  setProjectDeleteOpen(true);
-                }}
-              >
-                <ListItemIcon sx={{ color: "inherit" }}>
-                  <DeleteOutlineIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText>Delete Project</ListItemText>
-              </MenuItem>
-            </Menu>
-          </>
+          <ChatOverflowMenu
+            label={`Actions for ${project.label}`}
+            transcriptMarkdown=""
+            transcriptFileName=""
+            showExports={false}
+            actions={[
+              {
+                label: "Project Settings",
+                icon: <SettingsOutlinedIcon fontSize="small" />,
+                onSelect: () => changeTab("settings"),
+              },
+              {
+                label: "Delete Project",
+                icon: <DeleteOutlineIcon fontSize="small" />,
+                destructive: true,
+                onSelect: () => setProjectDeleteOpen(true),
+              },
+            ]}
+          />
         }
         tabs={{
           value: tab,
@@ -840,9 +821,17 @@ export function ProjectArtifactsView({
       <Dialog
         open={Boolean(previewArtifact)}
         onClose={() => setPreviewArtifact(undefined)}
+        fullScreen={phonePreview}
         fullWidth
         maxWidth="lg"
         aria-labelledby="artifact-preview-title"
+        slotProps={{
+          paper: {
+            sx: {
+              maxHeight: { xs: "100dvh", sm: "calc(100% - 64px)" },
+            },
+          },
+        }}
       >
         <DialogTitle component="div">
           <Stack
@@ -908,6 +897,7 @@ export function ProjectArtifactsView({
             flexWrap: "wrap",
             gap: 0.5,
             px: { xs: 1, sm: 2 },
+            pb: { xs: "max(8px, env(safe-area-inset-bottom))", sm: 1 },
             "& .MuiButton-root": { minHeight: { xs: 44, sm: 36 } },
           }}
         >
