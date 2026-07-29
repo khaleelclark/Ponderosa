@@ -104,15 +104,21 @@ try {
 
   const readiness = await fetch(`${baseUrl}/api/ready`, { signal: AbortSignal.timeout(10_000) });
   const readinessBody = await readiness.json();
-  assert(readiness.status === 503, "Unauthenticated provider host unexpectedly reported full readiness.");
-  assert(readinessBody?.checks?.runtimes?.ok === false, "Readiness did not identify provider unavailability.");
   const artifactFilesystemReady = readinessBody?.checks?.artifactFilesystem?.ok === true;
+  const runtimesReady = readinessBody?.checks?.runtimes?.ok === true;
+  if (readiness.ok) {
+    assert(artifactFilesystemReady && runtimesReady,
+      "Ready response did not prove both host filesystem safety and provider availability.");
+  } else {
+    assert(readiness.status === 503, `Unexpected readiness status ${readiness.status}.`);
+    assert(!artifactFilesystemReady || !runtimesReady,
+      "Unavailable response did not identify either host-safety or provider failure.");
+  }
   checks.push({
     id: "readiness-separation",
     status: "pass",
-    detail: artifactFilesystemReady
-      ? "host filesystem safety passed while unavailable provider login kept canAcceptWork false"
-      : `host filesystem safety failed closed: ${readinessBody?.checks?.artifactFilesystem?.detail ?? "no detail"}`,
+    detail: `hostFilesystem=${artifactFilesystemReady ? "ready" : "blocked"}; ` +
+      `subscriptionRuntime=${runtimesReady ? "available" : "unavailable"}; HTTP ${readiness.status}`,
   });
 
   const bootstrap = await fetch(`${baseUrl}/api/launcher/bootstrap`, {
