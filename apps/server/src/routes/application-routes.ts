@@ -574,7 +574,7 @@ registerAgentMessageRunRoute(app, {
   teardownPersistentRuntime, teardownPersistentRuntimeInBackground, claimActiveRun,
   persistRuntimeEvent, receiveRuntimeEvent, releaseActiveRun, renewExecutionLease,
   waitBeforeRuntimePersist, communicationArtifactAccess, prepareUserCommunicationText,
-  projectCommunicationArtifact, runtimeArtifactMetadata, projectBroadcastToAgentAudits,
+  projectCommunicationArtifact, runtimeArtifactMetadata, projectCommunicationToAgentAudit,
   publish, publishCoordinationV3Changed, publishMessageDeliveryChanged, teamDirectory,
   canonicalConversationContext, agentCanReadRuntimeArtifact,
   createOperationalNotification, resolveOperationalNotification, reconcileProjectWorkspace,

@@ -16,6 +16,7 @@ import type { FastifyInstance } from "fastify";
 import {
   MAX_AGENT_MENTION_REPLAY_WINDOW,
   agentMentionHandle,
+  renderScopedMessage,
 } from "../agent-mentions.js";
 import {
   ASSET_LIMITS,
@@ -84,7 +85,7 @@ export type AgentMessageRunContext =
   Pick<ArtifactAuthority,
     "communicationArtifactAccess" | "prepareUserCommunicationText" |
     "projectCommunicationArtifact" | "runtimeArtifactMetadata"> &
-  Pick<AgentEventService, "projectBroadcastToAgentAudits" | "publish"> &
+  Pick<AgentEventService, "projectCommunicationToAgentAudit" | "publish"> &
   Pick<ServerReadModels,
     "canonicalConversationContext" | "publishCoordinationV3Changed" |
     "publishMessageDeliveryChanged" | "teamDirectory"> &
@@ -180,7 +181,7 @@ export function registerAgentMessageRunRoute(
     prepareUserCommunicationText,
     projectCommunicationArtifact,
     runtimeArtifactMetadata,
-    projectBroadcastToAgentAudits,
+    projectCommunicationToAgentAudit,
     publish,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
@@ -544,7 +545,14 @@ export function registerAgentMessageRunRoute(
             text: sharedCommunication ? publishedText : `#${agentMentionHandle(agent.title)} ${publishedText}`,
             attachments: messageAttachments,
           }, undefined, "main", undefined, undefined, communicationEventId);
-          if (sharedCommunication) projectBroadcastToAgentAudits(sharedCommunication, [agent.id], messageAttachments);
+          if (sharedCommunication) {
+            projectCommunicationToAgentAudit(
+              agent.id,
+              sharedCommunication,
+              renderScopedMessage("broadcast", sharedCommunication.text),
+              messageAttachments,
+            );
+          }
         }
       }
       if (!sourceMasterMessage && communication && directMessageConversationId) {
