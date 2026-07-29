@@ -30,12 +30,22 @@ function writeExecutable(pathname, content) {
   try { chmodSync(pathname, 0o755); } catch { /* Windows ignores POSIX modes. */ }
 }
 
-function checksumArtifact(target) {
+function finalizeArtifact(target, security) {
   if (!existsSync(target)) throw new Error(`Installer was not produced: ${target}`);
   const checksum = createHash("sha256").update(readFileSync(target)).digest("hex");
   const checksumPath = `${target}.sha256`;
+  const metadataPath = `${target}.metadata.json`;
   writeFileSync(checksumPath, `${checksum}  ${path.basename(target)}\n`);
-  process.stdout.write(`${target}\n${checksumPath}\n`);
+  writeFileSync(metadataPath, `${JSON.stringify({
+    schemaVersion: 1,
+    artifact: path.basename(target),
+    sha256: checksum,
+    version: manifest.version,
+    commit: manifest.commit,
+    target: manifest.target,
+    ...security,
+  }, null, 2)}\n`);
+  process.stdout.write(`${target}\n${checksumPath}\n${metadataPath}\n`);
 }
 
 function numericAppleVersion(version) {
@@ -100,7 +110,13 @@ exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "
     run("xcrun", ["notarytool", "submit", target, "--keychain-profile", notaryProfile, "--wait"]);
     run("xcrun", ["stapler", "staple", target]);
   }
-  checksumArtifact(target);
+  finalizeArtifact(target, {
+    signed: Boolean(signingIdentity),
+    notarized: Boolean(notaryProfile),
+    warning: notaryProfile
+      ? null
+      : "Unsigned or unnotarized private-beta build: macOS Gatekeeper may block first launch.",
+  });
 } else if (format === "appimage") {
   if (process.platform !== "linux") throw new Error("AppImage packages must be built on Linux.");
   const appDir = path.join(os.tmpdir(), `ponderosa-appimage-${process.pid}.AppDir`);
@@ -130,7 +146,11 @@ Terminal=false
   run(tool, [appDir, target]);
   chmodSync(target, 0o755);
   rmSync(appDir, { recursive: true, force: true });
-  checksumArtifact(target);
+  finalizeArtifact(target, {
+    signed: false,
+    notarized: false,
+    warning: "Unsigned private-beta AppImage.",
+  });
 } else if (format === "deb") {
   if (process.platform !== "linux") throw new Error("Debian packages must be built on Linux.");
   const root = path.join(os.tmpdir(), `ponderosa-deb-${process.pid}`);
@@ -164,7 +184,11 @@ Terminal=false
   const target = path.join(output, `${artifactBase}.deb`);
   run("dpkg-deb", ["--root-owner-group", "--build", root, target]);
   rmSync(root, { recursive: true, force: true });
-  checksumArtifact(target);
+  finalizeArtifact(target, {
+    signed: false,
+    notarized: false,
+    warning: "Unsigned private-beta Debian package.",
+  });
 } else if (format === "exe") {
   if (process.platform !== "win32") throw new Error("Windows installers must be built on Windows.");
   const iscc = process.env.ISCC?.trim() || "ISCC.exe";
@@ -212,7 +236,13 @@ Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Descript
     ]);
     run(signtool, ["verify", "/pa", "/v", target]);
   }
-  checksumArtifact(target);
+  finalizeArtifact(target, {
+    signed: Boolean(signingCertificate),
+    notarized: false,
+    warning: signingCertificate
+      ? null
+      : "Unsigned private-beta build: Windows SmartScreen may warn or block first launch.",
+  });
 } else {
   throw new Error(`Unknown package format: ${format}`);
 }

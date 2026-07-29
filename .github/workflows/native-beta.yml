@@ -1,0 +1,137 @@
+name: Native private-beta artifacts
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-beta-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu 24.04 x64
+            os: ubuntu-24.04
+            format: deb
+            artifact_glob: dist/installers/*.deb
+          - name: macOS 15 arm64 (supports macOS 14+)
+            os: macos-15
+            format: dmg
+            artifact_glob: dist/installers/*.dmg
+          - name: Windows x64 build (Windows 11 manual gate)
+            os: windows-2025
+            format: exe
+            artifact_glob: dist/installers/*.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      CI: "true"
+      PONDEROSA_BUILD_VERSION: 0.0.0-beta.${{ github.run_number }}
+      PONDEROSA_RELEASE_CHANNEL: beta
+      PONDEROSA_NODE_VERSION: 22.22.1
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.10.0
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.1
+          cache: pnpm
+
+      - name: Assert exact source and toolchain
+        shell: bash
+        run: |
+          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          test "$(git rev-parse HEAD)" = "$expected"
+          test "$(node --version)" = "v22.22.1"
+          test "$(pnpm --version)" = "11.10.0"
+
+      - name: Assert native host identity
+        shell: bash
+        run: |
+          node -e "const expected={linux:'x64',darwin:'arm64',win32:'x64'}[process.platform]; if(process.arch!==expected) throw new Error('wrong runner architecture: '+process.platform+'/'+process.arch)"
+
+      - name: Install exact dependencies
+        shell: bash
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        shell: bash
+        run: pnpm typecheck
+
+      - name: Production build
+        shell: bash
+        run: pnpm build
+
+      - name: Prepare checksummed official Node 22
+        shell: bash
+        run: node packaging/prepare-node-runtime.mjs
+
+      - name: Build native bundle
+        shell: bash
+        run: node packaging/build-beta-bundle.mjs --version "$PONDEROSA_BUILD_VERSION" --channel "$PONDEROSA_RELEASE_CHANNEL"
+
+      - name: Verify native bundle
+        shell: bash
+        run: node packaging/verify-beta-bundle.mjs
+
+      - name: Install Inno Setup when absent
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            choco install innosetup --no-progress -y
+          }
+          $iscc = (Get-Command ISCC.exe -ErrorAction Stop).Source
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build installer
+        shell: bash
+        run: node packaging/package-beta.mjs --format "${{ matrix.format }}"
+
+      - name: Qualify installed artifact
+        shell: bash
+        run: |
+          artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
+          test -n "$artifact"
+          node packaging/qualification/qualify-installer.mjs --artifact "$artifact"
+
+      - name: Record safe failure context
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p dist/qualification
+          node -e "require('node:fs').writeFileSync('dist/qualification/native-failure.json', JSON.stringify({commit:process.env.GITHUB_SHA,runner:process.env.RUNNER_OS,arch:process.arch,note:'Inspect redacted workflow step logs; no provider or signing credentials were supplied.'},null,2)+'\n')"
+
+      - name: Upload native evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ponderosa-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ matrix.artifact_glob }}
+            dist/installers/*.sha256
+            dist/installers/*.metadata.json
+            dist/beta/*/Ponderosa
+            dist/beta/*/Ponderosa/build-manifest.json
+            dist/beta/*/qualification-report.json
+            dist/qualification/*.json
