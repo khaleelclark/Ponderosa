@@ -186,6 +186,7 @@ export function registerApplicationRoutes(
     browserScopeForRun,
     browserSessions,
     closeRunBrowser,
+    transitionRun,
     projectBrowserDto,
     projectBrowserGrants,
     projectBrowserScope,

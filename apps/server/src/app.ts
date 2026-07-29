@@ -302,6 +302,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     browserScopeForRun,
     browserSessions,
     closeRunBrowser,
+    transitionRun,
     projectBrowserDto,
     projectBrowserGrants,
     projectBrowserScope,
