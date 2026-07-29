@@ -450,6 +450,44 @@ export function AgentsTab({
             : collection.detail,
       }
     : undefined;
+  const visibleAgentIds = filtered.map(({ agent }) => agent.id);
+  const allVisibleSelected =
+    visibleAgentIds.length > 0 &&
+    visibleAgentIds.every(id => selectedAgentIds.has(id));
+  const toggleVisibleSelection = () =>
+    setSelectedAgentIds(current => {
+      const next = new Set(current);
+      const shouldSelect = visibleAgentIds.some(id => !current.has(id));
+      visibleAgentIds.forEach(id =>
+        shouldSelect ? next.add(id) : next.delete(id),
+      );
+      return next;
+    });
+  const selectionControls = selectionMode ? (
+    <Stack
+      direction="row"
+      spacing={0.75}
+      useFlexGap
+      flexWrap="wrap"
+      sx={{ alignItems: "center" }}
+    >
+      <Button color="inherit" size="small" onClick={toggleVisibleSelection}>
+        {allVisibleSelected ? "Clear Visible" : "Select All Visible"}
+      </Button>
+      <Button
+        color="error"
+        variant="outlined"
+        size="small"
+        disabled={selectedAgentIds.size === 0}
+        onClick={beginSelectedDeletion}
+      >
+        Delete Selected ({selectedAgentIds.size})
+      </Button>
+      <Button color="inherit" size="small" onClick={leaveSelectionMode}>
+        Cancel Selection
+      </Button>
+    </Stack>
+  ) : null;
   const headerActions = (
     <Stack
       direction="row"
@@ -467,44 +505,7 @@ export function AgentsTab({
           New Agent
         </Button>
       ) : null}
-      {selectionMode ? (
-        <>
-          <Button
-            color="inherit"
-            size="small"
-            onClick={() => {
-              const visibleIds = filtered.map(({ agent }) => agent.id);
-              const allVisibleSelected =
-                visibleIds.length > 0 &&
-                visibleIds.every(id => selectedAgentIds.has(id));
-              setSelectedAgentIds(current => {
-                const next = new Set(current);
-                visibleIds.forEach(id =>
-                  allVisibleSelected ? next.delete(id) : next.add(id),
-                );
-                return next;
-              });
-            }}
-          >
-            {filtered.length > 0 &&
-            filtered.every(({ agent }) => selectedAgentIds.has(agent.id))
-              ? "Clear Visible"
-              : "Select All Visible"}
-          </Button>
-          <Button
-            color="error"
-            variant="outlined"
-            size="small"
-            disabled={selectedAgentIds.size === 0}
-            onClick={beginSelectedDeletion}
-          >
-            Delete Selected ({selectedAgentIds.size})
-          </Button>
-          <Button color="inherit" size="small" onClick={leaveSelectionMode}>
-            Cancel Selection
-          </Button>
-        </>
-      ) : (
+      {!selectionMode ? (
         <Tooltip title="Agent actions: stop, select, import, or create">
           <IconButton
             aria-label="Agent actions"
@@ -513,7 +514,7 @@ export function AgentsTab({
             <MoreVertIcon />
           </IconButton>
         </Tooltip>
-      )}
+      ) : null}
       {actionsAnchor ? (
         <Menu
           anchorEl={actionsAnchor}
@@ -573,10 +574,12 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
+          searchMaxWidth={selectionMode ? 520 : undefined}
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
         >
+          {selectionControls}
           {toolbarControls}
           <Stack
             direction="row"
@@ -851,6 +854,7 @@ export function AgentsTab({
                           <Checkbox
                             checked={selectedAgentIds.has(agent.id)}
                             onChange={() => toggleSelection(agent.id)}
+                            onClick={event => event.stopPropagation()}
                             inputProps={{
                               "aria-label": `Select ${agent.title}`,
                             }}

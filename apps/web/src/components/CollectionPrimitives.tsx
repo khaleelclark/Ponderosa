@@ -152,6 +152,7 @@ export interface CollectionToolbarProps {
   search: string;
   onSearch(value: string): void;
   searchLabel: string;
+  searchMaxWidth?: number;
   reorderHint?: boolean;
   children?: ReactNode;
 }
@@ -160,6 +161,7 @@ export function CollectionToolbar({
   search,
   onSearch,
   searchLabel,
+  searchMaxWidth,
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
@@ -179,7 +181,11 @@ export function CollectionToolbar({
       placeholder="Search"
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
-      sx={{ flex: 1, minWidth: { md: 240 } }}
+      sx={{
+        flex: searchMaxWidth ? "1 1 320px" : 1,
+        minWidth: { md: 240 },
+        maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
+      }}
     />
     {children}
     {reorderHint ? (
