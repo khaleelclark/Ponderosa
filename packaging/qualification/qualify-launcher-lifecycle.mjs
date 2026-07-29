@@ -14,6 +14,7 @@ import { gunzipSync } from "node:zlib";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
+import { pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
 
@@ -237,7 +238,7 @@ try {
   let secureReadPassed = false;
   const serverRequire = createRequire(path.join(installRoot, "app", "server", "package.json"));
   const nativeHost = serverRequire("@ponderosa/native-host");
-  if (nativeHost.secureFileAuthoritySupported()) {
+  if (process.platform === "linux" && nativeHost.secureFileAuthoritySupported()) {
     const authorityRoot = path.join(dataDir, "secure-authority");
     const outside = path.join(dataDir, "secure-authority-outside");
     mkdirSync(path.join(authorityRoot, "nested"), { recursive: true });
@@ -261,13 +262,48 @@ try {
       relativePath: "directory-link/secret.txt",
       maxBytes: 16,
     }) === undefined, "Retained-descriptor read followed a symlink directory.");
+
+    const projectFileAccess = await import(pathToFileURL(
+      path.join(installRoot, "app", "server", "dist", "project-file-access.js"),
+    ).href);
+    assert(projectFileAccess.readWorkspaceArtifactFile({
+      rootPath: authorityRoot,
+      requestedPath: "nested/safe.txt",
+      purpose: "generated_capture",
+      maxBytes: 16,
+    })?.body.toString() === "safe", "Installed production Project reader failed a safe retained-root read.");
+    assert(projectFileAccess.readWorkspaceArtifactFile({
+      rootPath: authorityRoot,
+      requestedPath: "directory-link/secret.txt",
+      purpose: "generated_capture",
+      maxBytes: 16,
+    }) === undefined, "Installed production Project reader followed a symlink directory.");
+
+    const agentsEntry = serverRequire.resolve("@ponderosa/agents");
+    const agents = await import(pathToFileURL(agentsEntry).href);
+    const managedRoot = path.join(dataDir, "secure-managed-authority");
+    mkdirSync(managedRoot);
+    const managed = agents.publishManagedArtifactContent(
+      managedRoot,
+      "qualification",
+      "artifact",
+      Buffer.from("managed-safe"),
+    );
+    assert(agents.readManagedArtifactContent(
+      managedRoot,
+      "qualification",
+      "artifact",
+      managed.size,
+      managed.sha256,
+    )?.body.toString() === "managed-safe",
+    "Installed production managed-artifact publisher/reader did not preserve exact bytes.");
     secureReadPassed = true;
   }
   checks.push({
     id: "secure-file-authority",
     status: secureReadPassed ? "pass" : "fail",
     detail: secureReadPassed
-      ? "retained-descriptor normal read passed and symlink leaf/directory attacks failed closed"
+      ? "native helper plus installed Project reader and managed publisher passed retained-descriptor checks"
       : "platform retained-handle secure file authority is unavailable",
   });
 

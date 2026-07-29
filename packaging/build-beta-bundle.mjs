@@ -141,7 +141,8 @@ const officialNodeUrl = `https://nodejs.org/dist/${nodeIdentity.version}/` +
 if (nodeSource.version !== nodeIdentity.version ||
     nodeSource.target !== `${targetPlatform}-${targetArch}` ||
     nodeSource.url !== officialNodeUrl ||
-    !/^[a-f0-9]{64}$/u.test(nodeSource.archiveSha256 ?? "")) {
+    !/^[a-f0-9]{64}$/u.test(nodeSource.archiveSha256 ?? "") ||
+    nodeSource.executableSha256 !== nodeIdentity.sha256) {
   throw new Error("Bundled Node SOURCE.json does not match the executable and requested native target.");
 }
 if (nodeIdentity.platform !== targetPlatform || nodeIdentity.arch !== targetArch) {
@@ -234,6 +235,7 @@ const manifest = {
   nodeSource: {
     url: nodeSource.url,
     archiveSha256: nodeSource.archiveSha256,
+    executableSha256: nodeSource.executableSha256,
   },
   nativeAbi: {
     modules: nodeIdentity.modules,

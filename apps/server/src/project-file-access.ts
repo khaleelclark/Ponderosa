@@ -106,6 +106,9 @@ function openProjectPathFromRoot(root: OpenedProjectRoot, relativePath: string):
       descriptors.push(descriptor);
       const info = fstatSync(descriptor);
       if (!info.isDirectory()) throw new Error("Project path component is not a directory");
+      if (info.dev !== root.identity.dev) {
+        throw new Error("Project path crosses a filesystem boundary");
+      }
       identities.push({ dev: info.dev, ino: info.ino });
       parentDescriptor = descriptor;
     }
@@ -116,6 +119,9 @@ function openProjectPathFromRoot(root: OpenedProjectRoot, relativePath: string):
     );
     descriptors.push(fileDescriptor);
     const fileInfo = fstatSync(fileDescriptor);
+    if (fileInfo.dev !== root.identity.dev) {
+      throw new Error("Project file crosses a filesystem boundary");
+    }
     identities.push({ dev: fileInfo.dev, ino: fileInfo.ino });
     return { descriptors, identities, fileDescriptor };
   } catch (error) {

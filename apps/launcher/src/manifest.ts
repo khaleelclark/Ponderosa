@@ -61,6 +61,7 @@ export function parseBuildManifest(value: unknown): BuildManifest {
     nodeSource: {
       url: requiredString(nodeSource.url, "nodeSource.url"),
       archiveSha256: requiredString(nodeSource.archiveSha256, "nodeSource.archiveSha256"),
+      executableSha256: requiredString(nodeSource.executableSha256, "nodeSource.executableSha256"),
     },
     nativeAbi: {
       modules: requiredString(nativeAbi.modules, "nativeAbi.modules"),

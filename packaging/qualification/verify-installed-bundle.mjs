@@ -50,6 +50,8 @@ assert(manifest.nodeExecutableSha256 === sha256(process.execPath), "Bundled Node
 assert(typeof manifest.nodeSource?.url === "string", "Bundled Node source URL is missing.");
 assert(/^[a-f0-9]{64}$/u.test(manifest.nodeSource?.archiveSha256 ?? ""),
   "Bundled Node archive checksum is missing.");
+assert(manifest.nodeSource?.executableSha256 === manifest.nodeExecutableSha256,
+  "Prepared Node executable identity is not bound to the installed runtime.");
 assert(manifest.nativeAbi?.modules === process.versions.modules, "Manifest Node modules ABI does not match runtime.");
 assert(manifest.nativeAbi?.napi === process.versions.napi, "Manifest Node-API ABI does not match runtime.");
 pass("identity", `${manifest.version} ${manifest.commit} ${manifest.channel} ${process.platform}/${process.arch}`);
@@ -98,10 +100,17 @@ if (process.platform === "darwin") {
     assert(inspection.status === 0, `${label} Mach-O deployment target could not be inspected.`);
     const minimums = [...inspection.stdout.matchAll(/\b(?:minos|version)\s+(\d+\.\d+(?:\.\d+)?)/gu)]
       .map((match) => Number.parseFloat(match[1]));
-    assert(minimums.length > 0 && Math.min(...minimums) <= 14,
+    assert(minimums.length > 0 && minimums.every((minimum) => minimum <= 14),
       `${label} is not compatible with macOS 14.`);
+    const architectures = spawnSync("lipo", ["-archs", binary], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert(architectures.status === 0, `${label} Mach-O architecture could not be inspected.`);
+    assert(architectures.stdout.trim().split(/\s+/u).every((architecture) => architecture === "arm64"),
+      `${label} contains a non-arm64 Mach-O slice.`);
   }
-  pass("macos-deployment-target", "Node and both native addons declare compatibility with macOS 14");
+  pass("macos-deployment-target", "Every Node/native-addon slice is arm64 and declares macOS 14 compatibility");
 }
 const disposable = path.join(os.tmpdir(), `ponderosa-qualification-${process.pid}-${Date.now()}`);
 mkdirSync(disposable, { recursive: false, mode: 0o700 });

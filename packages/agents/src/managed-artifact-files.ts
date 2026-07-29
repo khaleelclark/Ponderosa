@@ -146,6 +146,9 @@ function openManagedDirectory(dataDir: string, projectId: string, create: boolea
       descriptors.push(childDescriptor);
       const childInfo = fstatSync(childDescriptor);
       if (!childInfo.isDirectory()) throw new Error("managed artifact path component is not a directory");
+      if (childInfo.dev !== rootInfo.dev) {
+        throw new Error("managed artifact path crosses a filesystem boundary");
+      }
       identities.push({ dev: childInfo.dev, ino: childInfo.ino });
       parentDescriptor = childDescriptor;
     }
@@ -479,7 +482,8 @@ export function repairManagedArtifactContent(
           fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
         );
         const info = fstatSync(descriptor);
-        if (!info.isFile() || info.mtimeMs >= graceBoundaryMs) continue;
+        if (!info.isFile() || info.dev !== opened.identities[0]!.dev ||
+            info.mtimeMs >= graceBoundaryMs) continue;
         if (!sameManagedDirectory(dataDir, projectId, opened) || referencedArtifactIds.has(name) ||
             managedLeafIsActive(dataDir, projectId, name)) continue;
         rmSync(descriptorPath(opened.directoryDescriptor, name));
@@ -520,7 +524,8 @@ export function readManagedArtifactContent(
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
     );
     const before = fstatSync(descriptor);
-    if (!before.isFile() || before.nlink !== 1 || before.size !== expectedSize) return undefined;
+    if (!before.isFile() || before.dev !== opened.identities[0]!.dev ||
+        before.nlink !== 1 || before.size !== expectedSize) return undefined;
     faults?.afterOpen?.(file);
     const body = readFileSync(descriptor);
     const after = fstatSync(descriptor);
@@ -601,7 +606,8 @@ export async function openManagedArtifactContent(
       fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
     );
     const before = await sourceHandle.stat();
-    if (!before.isFile() || before.nlink !== 1 || before.size !== expectedSize) return undefined;
+    if (!before.isFile() || before.dev !== opened.identities[0]!.dev ||
+        before.nlink !== 1 || before.size !== expectedSize) return undefined;
 
     snapshotLeaf = `.${artifactId}.${randomUUID()}.snapshot`;
     snapshotActiveKey = snapshotKey(dataDir, projectId, snapshotLeaf);

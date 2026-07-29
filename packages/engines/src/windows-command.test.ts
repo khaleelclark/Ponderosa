@@ -32,4 +32,16 @@ describe("containedWindowsInvocation", () => {
       "cannot be transported safely",
     );
   });
+
+  it("rejects oversized values, argument counts, and aggregate environment blocks", () => {
+    expect(() => containedWindowsInvocation("codex.cmd", ["x".repeat(8_192)], {})).toThrow(
+      "bounded Windows environment-slot transport",
+    );
+    expect(() => containedWindowsInvocation("codex.cmd", Array.from({ length: 129 }, () => "x"), {})).toThrow(
+      "128-argument transport limit",
+    );
+    expect(() => containedWindowsInvocation("codex.cmd", ["ok"], {
+      EXISTING: "x".repeat(32_760),
+    })).toThrow("bounded environment-block transport");
+  });
 });

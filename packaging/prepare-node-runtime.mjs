@@ -67,11 +67,13 @@ try {
   if (platform !== "win32") {
     execFileSync("chmod", ["0755", path.join(output, executableName)]);
   }
+  const executableSha256 = sha256(readFileSync(path.join(output, executableName)));
   writeFileSync(path.join(output, "SOURCE.json"), `${JSON.stringify({
     version: `v${version}`,
     target,
     url: `${baseUrl}/${archiveName}`,
     archiveSha256: actual,
+    executableSha256,
   }, null, 2)}\n`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

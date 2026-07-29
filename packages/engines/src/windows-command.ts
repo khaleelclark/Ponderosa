@@ -6,10 +6,22 @@ export interface WindowsInvocation {
   env: NodeJS.ProcessEnv;
 }
 
+const MAX_SHIM_ARGUMENTS = 128;
+const MAX_TRANSPORT_VALUE_UNITS = 8_191;
+const MAX_ENVIRONMENT_BLOCK_UNITS = 32_767;
+
 function assertEnvironmentTransportValue(value: string, label: string): void {
   if (/[\u0000\r\n"]/u.test(value)) {
     throw new Error(`${label} contains a character that cannot be transported safely through cmd.exe`);
   }
+  if (value.length > MAX_TRANSPORT_VALUE_UNITS) {
+    throw new Error(`${label} exceeds the bounded Windows environment-slot transport`);
+  }
+}
+
+function environmentBlockUnits(environment: NodeJS.ProcessEnv): number {
+  return Object.entries(environment).reduce((units, [key, value]) =>
+    value === undefined ? units : units + key.length + 1 + value.length + 1, 1);
 }
 
 /**
@@ -27,6 +39,9 @@ export function containedWindowsInvocation(
   if (extension !== ".cmd" && extension !== ".bat") {
     return { bin, args: [...args], env: environment };
   }
+  if (args.length > MAX_SHIM_ARGUMENTS) {
+    throw new Error(`Windows command shim exceeds the ${MAX_SHIM_ARGUMENTS}-argument transport limit`);
+  }
 
   assertEnvironmentTransportValue(bin, "Windows command shim path");
   const env: NodeJS.ProcessEnv = { ...environment, PONDEROSA_CMD_SHIM: bin };
@@ -37,6 +52,9 @@ export function containedWindowsInvocation(
     env[key] = value;
     command.push(`"%${key}%"`);
   });
+  if (environmentBlockUnits(env) > MAX_ENVIRONMENT_BLOCK_UNITS) {
+    throw new Error("Windows command shim exceeds the bounded environment-block transport");
+  }
   const commandInterpreter = environment.ComSpec?.trim() ||
     environment.COMSPEC?.trim() ||
     "cmd.exe";

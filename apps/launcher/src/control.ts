@@ -218,20 +218,18 @@ async function defaultSpawnServer(
         stdio: ["ignore", stdout, stderr, "ipc"],
       });
       if (!supervisor.pid) throw new Error("Windows server supervisor started without a process ID.");
-      state.supervisorPid = supervisor.pid;
-      state.supervisorGeneration = generation;
-      // Persist the exact Job owner before it can authorize the server gate.
-      // Recovery and restart must wait for this process, not only the server
-      // root, because the supervisor exits only after the Job drains.
-      writeJsonAtomic(paths.statePath, state);
       const pid = await new Promise<number>((resolve, reject) => {
         let settled = false;
+        let authorized = false;
         const finish = (error: Error | undefined, value?: number): void => {
           if (settled) return;
           settled = true;
           supervisor.off("error", onError);
           supervisor.off("exit", onExit);
-          if (error) reject(error);
+          if (error) {
+            if (supervisor.connected) supervisor.disconnect();
+            reject(error);
+          }
           else resolve(value!);
         };
         const onError = (error: Error): void => finish(error);
@@ -241,8 +239,38 @@ async function defaultSpawnServer(
         supervisor.once("exit", onExit);
         supervisor.on("message", (message: unknown) => {
           if (!message || typeof message !== "object" || Array.isArray(message)) return;
-          const input = message as { type?: unknown; pid?: unknown; detail?: unknown };
-          if (input.type === "server-started" && Number.isSafeInteger(input.pid) && (input.pid as number) > 0) {
+          const input = message as {
+            type?: unknown;
+            pid?: unknown;
+            supervisorPid?: unknown;
+            generation?: unknown;
+            detail?: unknown;
+          };
+          if (input.type === "supervisor-ready") {
+            if (authorized ||
+                input.generation !== generation ||
+                input.supervisorPid !== supervisor.pid) {
+              finish(new Error("Windows server supervisor reported an invalid authorization identity."));
+              supervisor.disconnect();
+              return;
+            }
+            try {
+              state.supervisorPid = supervisor.pid;
+              state.supervisorGeneration = generation;
+              // This atomic write is the fence: only after it succeeds may the
+              // supervisor create a server process inside its empty Job.
+              writeJsonAtomic(paths.statePath, state);
+              authorized = true;
+              supervisor.send({ type: "authorize", generation }, (error) => {
+                if (error) finish(error);
+              });
+            } catch (error) {
+              finish(error instanceof Error ? error : new Error(String(error)));
+            }
+          } else if (input.type === "server-started" &&
+              authorized &&
+              Number.isSafeInteger(input.pid) &&
+              (input.pid as number) > 0) {
             finish(undefined, input.pid as number);
           } else if (input.type === "supervisor-error") {
             finish(new Error(typeof input.detail === "string" ? input.detail : "Windows server supervision failed."));
@@ -430,8 +458,15 @@ export async function startPonderosa(input: {
     try {
       pid = await spawnServer(input.paths, provisional, environment);
     } catch (error) {
-      removeSupervisorStatus(input.paths, provisional);
-      rmSync(input.paths.statePath, { force: true });
+      if (!provisional.supervisorGeneration) {
+        rmSync(input.paths.statePath, { force: true });
+      } else if ((!provisional.supervisorPid || !processAlive(provisional.supervisorPid)) &&
+          supervisorDrained(input.paths, provisional)) {
+        removeSupervisorStatus(input.paths, provisional);
+        rmSync(input.paths.statePath, { force: true });
+      }
+      // A live supervisor or missing exact drained record keeps its durable
+      // fence after launch failure, so restart cannot race Job teardown.
       throw error;
     }
     const state = { ...provisional, pid };

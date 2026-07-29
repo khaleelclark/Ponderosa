@@ -18,6 +18,7 @@ export interface BuildManifest {
   nodeSource: {
     url: string;
     archiveSha256: string;
+    executableSha256: string;
   };
   nativeAbi: {
     modules: string;
