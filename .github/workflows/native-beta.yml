@@ -80,6 +80,7 @@ jobs:
       - name: Native safety unit suites
         shell: bash
         run: |
+          node --test packaging/qualification/*.test.mjs
           pnpm --filter @ponderosa/native-host test
           pnpm --filter @ponderosa/agents exec vitest run test/managed-artifact-files.test.ts
           if [ "$RUNNER_OS" = "Linux" ]; then

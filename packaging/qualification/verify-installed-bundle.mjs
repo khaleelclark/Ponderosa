@@ -13,6 +13,10 @@ import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import {
+  macosDeploymentTargetAtMost,
+  macosDeploymentTargets,
+} from "./macos-deployment-target.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -98,9 +102,9 @@ if (process.platform === "darwin") {
       timeout: 10_000,
     });
     assert(inspection.status === 0, `${label} Mach-O deployment target could not be inspected.`);
-    const minimums = [...inspection.stdout.matchAll(/\b(?:minos|version)\s+(\d+\.\d+(?:\.\d+)?)/gu)]
-      .map((match) => Number.parseFloat(match[1]));
-    assert(minimums.length > 0 && minimums.every((minimum) => minimum <= 14),
+    const minimums = macosDeploymentTargets(inspection.stdout);
+    assert(minimums.length > 0 &&
+      minimums.every((minimum) => macosDeploymentTargetAtMost(minimum, "14.0")),
       `${label} is not compatible with macOS 14.`);
     const architectures = spawnSync("lipo", ["-archs", binary], {
       encoding: "utf8",
