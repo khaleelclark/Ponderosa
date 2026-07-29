@@ -877,7 +877,9 @@ export function ProjectArtifactsView({
         <DialogContent
           sx={{
             minWidth: 0,
-            p: { xs: 1, sm: 2 },
+            px: { xs: 1, sm: 2 },
+            pt: { xs: "12px !important", sm: "20px !important" },
+            pb: { xs: 1, sm: 2 },
             bgcolor: "background.default",
             overflow: "auto",
           }}
