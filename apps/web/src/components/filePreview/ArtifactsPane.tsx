@@ -59,7 +59,6 @@ export function ArtifactsPane({
   initialArtifactId,
   onSelectArtifact,
   onOpenArtifactInNewTab,
-  onOpenRun,
 }: {
   artifacts: ArtifactDto[];
   agentId: string;
@@ -68,7 +67,6 @@ export function ArtifactsPane({
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
   onOpenArtifactInNewTab?(artifactId: string): void;
-  onOpenRun(runId: string): void;
 }): JSX.Element {
   const orderedArtifacts = artifacts.filter((artifact) => artifact.kind !== "log").sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
@@ -168,7 +166,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
+        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} liveContent={liveContent} />
         </Box>
       </Box>
       <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />

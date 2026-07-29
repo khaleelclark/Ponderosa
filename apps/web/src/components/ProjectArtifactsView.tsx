@@ -107,7 +107,6 @@ export function ProjectArtifactsView({
   onOpenEngineStatus,
   onOpenArtifact,
   onOpenArtifactInNewTab,
-  onOpenRun,
   onOpenAgentWork,
   conversations,
   onOpenBrowser = () => undefined,
@@ -141,7 +140,6 @@ export function ProjectArtifactsView({
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
-  onOpenRun(agentId: string, runId: string): void;
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
   onOpenBrowser?(): void;
@@ -861,39 +859,6 @@ export function ProjectArtifactsView({
                 size="small"
                 label={`Created by ${agents.find(agent => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`}
               />
-              {previewArtifact.executionId ? (
-                (() => {
-                  const originAgentId =
-                    previewArtifact.originAgentId ?? previewArtifact.agentId;
-                  const originAgent = agents.find(
-                    agent => agent.id === originAgentId,
-                  );
-                  return originAgent ? (
-                    <Button
-                      size="small"
-                      aria-label={`Open originating Run ${previewArtifact.executionId}`}
-                      onClick={() =>
-                        onOpenRun(originAgent.id, previewArtifact.executionId!)
-                      }
-                    >
-                      Generated from Run{" "}
-                      {previewArtifact.executionId.slice(0, 8)}
-                    </Button>
-                  ) : (
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={`Run ${previewArtifact.executionId.slice(0, 8)} · originating Agent deleted`}
-                    />
-                  );
-                })()
-              ) : (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label="No originating Run recorded"
-                />
-              )}
               <Chip
                 size="small"
                 variant="outlined"

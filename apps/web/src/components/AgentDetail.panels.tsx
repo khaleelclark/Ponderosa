@@ -198,7 +198,6 @@ export function AgentDetailPanels({
         }
         onSelectArtifact={onOpenArtifact}
         onOpenArtifactInNewTab={onOpenArtifactInNewTab}
-        onOpenRun={runId => onOpenTechnical(`run:${runId}`)}
       />
     ),
     settings: <></>,

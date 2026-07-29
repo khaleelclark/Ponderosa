@@ -427,7 +427,6 @@ export function ProjectShell({
         onOpenBrowser={() => navigate({ kind: "browser", projectId })}
         onOpenArtifact={openProjectArtifact}
         onOpenArtifactInNewTab={(agentId, artifactId) => openInNewTab?.({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } })}
-        onOpenRun={(agentId, runId) => navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "runs", id: runId } })}
         onOpenAgentWork={() => navigate({ kind: "projectWork", projectId })}
       />
   } else {
