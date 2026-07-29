@@ -166,6 +166,9 @@ importers:
       '@ponderosa/core':
         specifier: workspace:*
         version: link:../core
+      '@ponderosa/native-host':
+        specifier: workspace:*
+        version: link:../native-host
       better-sqlite3:
         specifier: ^11.7.0
         version: 11.10.0

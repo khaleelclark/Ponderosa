@@ -83,13 +83,14 @@ systems, but qualification remains intentionally fail-closed:
 - macOS: the DMG recipe must be built on Apple Silicon and pass Gatekeeper,
   browser-bootstrap, process-group, provider, and restart checks before
   distribution.
-- Windows: the native Job Object supervisor is implemented, but the EXE must
-  still be built and exercised on Windows 11. Durable work remains blocked
-  until retained-handle/reparse-safe file authority and nested provider/helper
-  qualification pass on the exact artifact.
+- Windows: the native Job Object supervisor and retained-handle/reparse-safe
+  Project and managed-artifact authority are implemented, but the EXE must
+  still be built and exercised on Windows 11. Distribution remains blocked
+  until the filesystem authority and nested provider/helper trees pass
+  qualification on the exact artifact.
 
 Do not weaken Doctor to turn an unqualified artifact green. Add the missing
-native filesystem authority at the platform boundary, then qualify the exact
+native filesystem evidence at the platform boundary, then qualify the exact
 artifact and its complete process trees.
 
 ## Installed security boundary

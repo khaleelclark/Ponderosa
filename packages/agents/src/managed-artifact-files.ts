@@ -18,6 +18,12 @@ import {
 import type { FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
+import {
+  listSecureDirectory,
+  readSecureFile,
+  removeSecureFile,
+  writeSecureFileAtomic,
+} from "@ponderosa/native-host";
 import { managedArtifactContentPath } from "./paths.js";
 
 export const MANAGED_ARTIFACT_MAX_BYTES = 64 * 1024 * 1024;
@@ -194,6 +200,91 @@ function safeArtifactId(artifactId: string): boolean {
   return Boolean(artifactId) && path.basename(artifactId) === artifactId && artifactId !== "." && artifactId !== "..";
 }
 
+function nativeManagedDirectory(projectId: string): string {
+  return path.posix.join("projects", projectId, "artifacts", "content");
+}
+
+function nativeManagedFile(projectId: string, artifactId: string): string {
+  return path.posix.join(nativeManagedDirectory(projectId), artifactId);
+}
+
+function publishManagedArtifactContentNative(
+  dataDir: string,
+  projectId: string,
+  artifactId: string,
+  body: Buffer,
+  sha256: string,
+  faults?: ManagedArtifactPublicationFaults,
+): { created: boolean; result: Omit<ManagedArtifactFile, "body"> } {
+  const destination = managedArtifactContentPath(dataDir, projectId, artifactId);
+  const existing = readManagedArtifactContent(
+    dataDir,
+    projectId,
+    artifactId,
+    body.length,
+    sha256,
+  );
+  if (existing) {
+    return {
+      created: false,
+      result: { path: destination, size: body.length, sha256 },
+    };
+  }
+
+  const temporaryLeaf = `.${artifactId}.${randomUUID()}.tmp`;
+  faults?.afterTemporaryOpen?.(
+    managedArtifactContentPath(dataDir, projectId, temporaryLeaf),
+  );
+  faults?.beforeRename?.(destination);
+  try {
+    writeSecureFileAtomic({
+      root: dataDir,
+      relativeDirectory: nativeManagedDirectory(projectId),
+      leaf: artifactId,
+      temporaryLeaf,
+      body,
+    });
+  } catch (error) {
+    const concurrent = readManagedArtifactContent(
+      dataDir,
+      projectId,
+      artifactId,
+      body.length,
+      sha256,
+    );
+    if (!concurrent) throw error;
+    return {
+      created: false,
+      result: { path: destination, size: body.length, sha256 },
+    };
+  }
+  faults?.afterRename?.(destination);
+
+  const published = readManagedArtifactContent(
+    dataDir,
+    projectId,
+    artifactId,
+    body.length,
+    sha256,
+  );
+  if (!published) {
+    try {
+      removeSecureFile({
+        root: dataDir,
+        relativeDirectory: nativeManagedDirectory(projectId),
+        leaf: artifactId,
+      });
+    } catch {
+      // Preserve the verification failure; repair can retry an unreachable leaf.
+    }
+    throw new Error("managed artifact changed during atomic publication");
+  }
+  return {
+    created: true,
+    result: { path: destination, size: body.length, sha256 },
+  };
+}
+
 /**
  * Publish immutable Project-owned bytes before any catalog metadata can point
  * at them. A completed call has fsynced the file, atomically installed it, and
@@ -218,6 +309,20 @@ export function publishManagedArtifactContent(
   if (activePublications.has(activeKey)) throw new Error("managed artifact publication is already active");
   activePublications.add(activeKey);
   const destination = managedArtifactContentPath(dataDir, projectId, artifactId);
+  if (process.platform !== "linux") {
+    try {
+      return publishManagedArtifactContentNative(
+        dataDir,
+        projectId,
+        artifactId,
+        body,
+        sha256,
+        faults,
+      ).result;
+    } finally {
+      activePublications.delete(activeKey);
+    }
+  }
   let opened: OpenedManagedDirectory | undefined;
   let descriptor: number | undefined;
   let temporaryLeaf: string | undefined;
@@ -276,9 +381,10 @@ export function publishManagedArtifactContent(
 
 /**
  * Publish a set of immutable blobs as one durability group. Every file is
- * independently written and fsynced before any destination name is installed;
- * all destination entries are then made durable by one parent-directory fsync.
- * A failed in-process publication removes every new leaf before returning.
+ * independently written and fsynced. Linux stages every body before installing
+ * destination names; the native authority installs each immutable leaf as one
+ * transaction. No caller can advance catalog metadata until the group returns,
+ * and a failed in-process publication removes every new leaf before returning.
  *
  * The bounded writers overlap independent data fsync latency without weakening
  * the guarantee provided by publishManagedArtifactContent.
@@ -319,6 +425,45 @@ export async function publishManagedArtifactContents(
     };
   });
   if (planned.length === 0) return [];
+
+  if (process.platform !== "linux") {
+    const nativeActiveKeys = planned.map((item) =>
+      publicationKey(dataDir, projectId, item.artifactId)
+    );
+    if (nativeActiveKeys.some((key) => activePublications.has(key))) {
+      throw new Error("managed artifact publication is already active");
+    }
+    for (const key of nativeActiveKeys) activePublications.add(key);
+    const created: string[] = [];
+    try {
+      return planned.map((item) => {
+        const published = publishManagedArtifactContentNative(
+          dataDir,
+          projectId,
+          item.artifactId,
+          item.body,
+          item.sha256,
+        );
+        if (published.created) created.push(item.artifactId);
+        return published.result;
+      });
+    } catch (error) {
+      for (const artifactId of created) {
+        try {
+          removeSecureFile({
+            root: dataDir,
+            relativeDirectory: nativeManagedDirectory(projectId),
+            leaf: artifactId,
+          });
+        } catch {
+          // Preserve the publication failure; repair can retry an unreachable leaf.
+        }
+      }
+      throw error;
+    } finally {
+      for (const key of nativeActiveKeys) activePublications.delete(key);
+    }
+  }
 
   const activeKeys = planned.map((item) =>
     publicationKey(dataDir, projectId, item.artifactId)
@@ -467,6 +612,36 @@ export function repairManagedArtifactContent(
   referencedArtifactIds: ReadonlySet<string>,
   graceBoundaryMs: number,
 ): string[] {
+  if (!safeProjectId(projectId)) return [];
+  if (process.platform !== "linux") {
+    const entries = listSecureDirectory({
+      root: dataDir,
+      relativePath: nativeManagedDirectory(projectId),
+    });
+    if (!entries) return [];
+    const removed: string[] = [];
+    for (const entry of entries) {
+      const name = entry.name;
+      if (entry.kind !== "file" || !safeArtifactId(name) ||
+          referencedArtifactIds.has(name) ||
+          managedLeafIsActive(dataDir, projectId, name) ||
+          entry.modifiedMs >= graceBoundaryMs) continue;
+      try {
+        if (referencedArtifactIds.has(name) ||
+            managedLeafIsActive(dataDir, projectId, name)) continue;
+        if (removeSecureFile({
+          root: dataDir,
+          relativeDirectory: nativeManagedDirectory(projectId),
+          leaf: name,
+        })) {
+          removed.push(name);
+        }
+      } catch {
+        // A concurrent publication, repair, or Project teardown may resolve it.
+      }
+    }
+    return removed;
+  }
   if (!existsSync(path.dirname(managedArtifactContentPath(dataDir, projectId, "leaf")))) return [];
   let opened: OpenedManagedDirectory | undefined;
   const removed: string[] = [];
@@ -510,9 +685,27 @@ export function readManagedArtifactContent(
   expectedSha256: string,
   faults?: { afterOpen?: (path: string) => void },
 ): ManagedArtifactFile | undefined {
-  if (!safeArtifactId(artifactId)) return undefined;
+  if (!safeArtifactId(artifactId) || !safeProjectId(projectId)) return undefined;
   if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
       !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
+  if (process.platform !== "linux") {
+    try {
+      const file = managedArtifactContentPath(dataDir, projectId, artifactId);
+      faults?.afterOpen?.(file);
+      const body = readSecureFile({
+        root: dataDir,
+        relativePath: nativeManagedFile(projectId, artifactId),
+        maxBytes: expectedSize,
+        requireNonEmpty: true,
+      });
+      if (!body || body.length !== expectedSize) return undefined;
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      if (sha256 !== expectedSha256) return undefined;
+      return { path: file, body, size: body.length, sha256 };
+    } catch {
+      return undefined;
+    }
+  }
   let opened: OpenedManagedDirectory | undefined;
   let descriptor: number | undefined;
   try {
@@ -590,6 +783,65 @@ export async function openManagedArtifactContent(
   if (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > MANAGED_ARTIFACT_MAX_BYTES ||
       !/^[a-f0-9]{64}$/u.test(expectedSha256)) return undefined;
   const signal = options?.signal;
+  if (process.platform !== "linux") {
+    signal?.throwIfAborted();
+    const file = managedArtifactContentPath(dataDir, projectId, artifactId);
+    await options?.faults?.afterOpen?.(file);
+    const managed = readManagedArtifactContent(
+      dataDir,
+      projectId,
+      artifactId,
+      expectedSize,
+      expectedSha256,
+    );
+    if (!managed) return undefined;
+    signal?.throwIfAborted();
+    await options?.faults?.afterSnapshotOpen?.(file);
+    await options?.faults?.afterVerification?.(file);
+    let closed = false;
+    const close = async (): Promise<void> => {
+      closed = true;
+    };
+    const readRange = async (
+      maxBytes: number,
+      readSignal?: AbortSignal,
+    ): Promise<Buffer> => {
+      if (closed) throw new Error("managed artifact handle is closed");
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+        throw new Error("managed artifact range must be bounded");
+      }
+      readSignal?.throwIfAborted();
+      const body = Buffer.from(
+        managed.body.subarray(0, Math.min(expectedSize, maxBytes)),
+      );
+      readSignal?.throwIfAborted();
+      return body;
+    };
+    const createReadStream = (readSignal?: AbortSignal): Readable => {
+      if (closed) throw new Error("managed artifact handle is closed");
+      const stream = Readable.from([Buffer.from(managed.body)]);
+      const abort = (): void => {
+        stream.destroy(readSignal?.reason instanceof Error
+          ? readSignal.reason
+          : new Error("managed artifact transfer aborted"));
+      };
+      if (readSignal?.aborted) abort();
+      else readSignal?.addEventListener("abort", abort, { once: true });
+      const cleanup = (): void => {
+        readSignal?.removeEventListener("abort", abort);
+      };
+      stream.once("close", cleanup).once("error", cleanup);
+      return stream;
+    };
+    return {
+      path: file,
+      size: expectedSize,
+      sha256: expectedSha256,
+      readRange,
+      createReadStream,
+      close,
+    };
+  }
   let opened: OpenedManagedDirectory | undefined;
   let sourceHandle: FileHandle | undefined;
   let snapshotWriter: FileHandle | undefined;

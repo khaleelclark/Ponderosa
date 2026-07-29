@@ -1,16 +1,26 @@
 #include <node_api.h>
 
+#include <algorithm>
+#include <climits>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <winternl.h>
+#include <io.h>
 #else
 #include <cerrno>
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 #endif
 
 namespace {
@@ -18,17 +28,6 @@ namespace {
 void Throw(napi_env env, const std::string& message) {
   napi_throw_error(env, nullptr, message.c_str());
 }
-
-#ifndef _WIN32
-
-struct DescriptorSet {
-  std::vector<int> values;
-  ~DescriptorSet() {
-    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator) {
-      close(*iterator);
-    }
-  }
-};
 
 bool ReadUtf8(napi_env env, napi_value value, std::string* output) {
   size_t length = 0;
@@ -39,8 +38,14 @@ bool ReadUtf8(napi_env env, napi_value value, std::string* output) {
   return true;
 }
 
-bool ParseRelativePath(const std::string& input, std::vector<std::string>* components) {
-  if (input.empty() || input.size() > 4096 || input[0] == '/' || input[0] == '\\') return false;
+bool ParseRelativePath(
+    const std::string& input, std::vector<std::string>* components,
+    bool allow_empty = false) {
+  if ((input.empty() && !allow_empty) || input.size() > 4096 ||
+      (!input.empty() && (input[0] == '/' || input[0] == '\\'))) {
+    return false;
+  }
+  if (input.empty()) return true;
   std::string current;
   for (const char value : input) {
     if (value == '/' || value == '\\') {
@@ -56,15 +61,40 @@ bool ParseRelativePath(const std::string& input, std::vector<std::string>* compo
   return true;
 }
 
-bool SameIdentity(const struct stat& left, const struct stat& right) {
-  return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
-      (left.st_mode & S_IFMT) == (right.st_mode & S_IFMT);
-}
-
 napi_value Null(napi_env env) {
   napi_value value;
   napi_get_null(env, &value);
   return value;
+}
+
+napi_value Boolean(napi_env env, bool input) {
+  napi_value value;
+  napi_get_boolean(env, input, &value);
+  return value;
+}
+
+bool SafeLeaf(const std::string& input) {
+  if (input.empty() || input.size() > 255 || input == "." || input == "..") return false;
+  for (const unsigned char value : input) {
+    if (value == '/' || value == '\\' || value == '\0') return false;
+  }
+  return true;
+}
+
+#ifndef _WIN32
+
+struct DescriptorSet {
+  std::vector<int> values;
+  ~DescriptorSet() {
+    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator) {
+      close(*iterator);
+    }
+  }
+};
+
+bool SameIdentity(const struct stat& left, const struct stat& right) {
+  return left.st_dev == right.st_dev && left.st_ino == right.st_ino &&
+      (left.st_mode & S_IFMT) == (right.st_mode & S_IFMT);
 }
 
 napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
@@ -161,6 +191,289 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
   return result;
 }
 
+std::string PosixError(const char* operation) {
+  return std::string(operation) + " failed (" + std::to_string(errno) + "): " +
+      std::strerror(errno);
+}
+
+bool OpenSecureDirectory(
+    const std::string& root, const std::string& relative, bool create,
+    DescriptorSet* descriptors, std::vector<struct stat>* identities,
+    std::vector<std::string>* components) {
+  if (!ParseRelativePath(relative, components, true)) return false;
+  const int root_fd = open(
+      root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (root_fd < 0) return false;
+  descriptors->values.push_back(root_fd);
+  struct stat root_identity{};
+  if (fstat(root_fd, &root_identity) != 0 ||
+      !S_ISDIR(root_identity.st_mode)) {
+    return false;
+  }
+  identities->push_back(root_identity);
+  int parent = root_fd;
+  for (const std::string& component : *components) {
+    if (create) {
+      if (mkdirat(parent, component.c_str(), 0700) == 0) {
+        if (fsync(parent) != 0) return false;
+      } else if (errno != EEXIST) {
+        return false;
+      }
+    }
+    const int child = openat(
+        parent, component.c_str(),
+        O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (child < 0) return false;
+    descriptors->values.push_back(child);
+    struct stat identity{};
+    if (fstat(child, &identity) != 0 || !S_ISDIR(identity.st_mode) ||
+        identity.st_dev != root_identity.st_dev) {
+      return false;
+    }
+    identities->push_back(identity);
+    parent = child;
+  }
+  return true;
+}
+
+bool SecureDirectoryStillCurrent(
+    const std::string& root, const std::vector<std::string>& components,
+    const DescriptorSet& descriptors,
+    const std::vector<struct stat>& identities) {
+  const int current_root = open(
+      root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (current_root < 0) return false;
+  struct stat root_identity{};
+  const bool root_stable =
+      fstat(current_root, &root_identity) == 0 &&
+      SameIdentity(identities.front(), root_identity);
+  close(current_root);
+  if (!root_stable) return false;
+  for (size_t index = 0; index < components.size(); ++index) {
+    struct stat current{};
+    if (fstatat(
+            descriptors.values[index], components[index].c_str(), &current,
+            AT_SYMLINK_NOFOLLOW) != 0 ||
+        !SameIdentity(identities[index + 1], current)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  if (argc != 2 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative)) {
+    return Null(env);
+  }
+  DescriptorSet descriptors;
+  std::vector<struct stat> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, false, &descriptors, &identities, &components)) {
+    return Null(env);
+  }
+  const int duplicate = dup(descriptors.values.back());
+  if (duplicate < 0) return Null(env);
+  DIR* directory = fdopendir(duplicate);
+  if (!directory) {
+    close(duplicate);
+    return Null(env);
+  }
+  napi_value result;
+  napi_create_array(env, &result);
+  uint32_t output_index = 0;
+  errno = 0;
+  while (dirent* entry = readdir(directory)) {
+    const std::string name(entry->d_name);
+    if (!SafeLeaf(name)) continue;
+    struct stat identity{};
+    if (fstatat(
+            descriptors.values.back(), name.c_str(), &identity,
+            AT_SYMLINK_NOFOLLOW) != 0 ||
+        identity.st_dev != identities.front().st_dev ||
+        (!S_ISDIR(identity.st_mode) && !S_ISREG(identity.st_mode))) {
+      continue;
+    }
+    napi_value item;
+    napi_create_object(env, &item);
+    napi_value name_value;
+    napi_create_string_utf8(env, name.c_str(), name.size(), &name_value);
+    napi_set_named_property(env, item, "name", name_value);
+    napi_value kind_value;
+    const char* kind = S_ISDIR(identity.st_mode) ? "directory" : "file";
+    napi_create_string_utf8(env, kind, NAPI_AUTO_LENGTH, &kind_value);
+    napi_set_named_property(env, item, "kind", kind_value);
+    if (S_ISREG(identity.st_mode) && identity.st_size >= 0) {
+      napi_value size_value;
+      napi_create_int64(env, static_cast<int64_t>(identity.st_size), &size_value);
+      napi_set_named_property(env, item, "size", size_value);
+    }
+    double modified_ms = 0;
+#ifdef __APPLE__
+    modified_ms = static_cast<double>(identity.st_mtimespec.tv_sec) * 1000.0 +
+        static_cast<double>(identity.st_mtimespec.tv_nsec) / 1000000.0;
+#else
+    modified_ms = static_cast<double>(identity.st_mtim.tv_sec) * 1000.0 +
+        static_cast<double>(identity.st_mtim.tv_nsec) / 1000000.0;
+#endif
+    napi_value modified_value;
+    napi_create_double(env, modified_ms, &modified_value);
+    napi_set_named_property(env, item, "modifiedMs", modified_value);
+    napi_set_element(env, result, output_index++, item);
+  }
+  const int iteration_error = errno;
+  closedir(directory);
+  if (iteration_error != 0 ||
+      !SecureDirectoryStillCurrent(
+          root, components, descriptors, identities)) {
+    return Null(env);
+  }
+  return result;
+}
+
+napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  std::string leaf;
+  std::string temporary;
+  void* raw_body = nullptr;
+  size_t body_size = 0;
+  if (argc != 5 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative) ||
+      !ReadUtf8(env, args[2], &leaf) ||
+      !ReadUtf8(env, args[3], &temporary) ||
+      !SafeLeaf(leaf) || !SafeLeaf(temporary) ||
+      napi_get_buffer_info(env, args[4], &raw_body, &body_size) != napi_ok ||
+      body_size == 0 || body_size > 64 * 1024 * 1024) {
+    Throw(env, "invalid secure atomic file publication");
+    return nullptr;
+  }
+  DescriptorSet descriptors;
+  std::vector<struct stat> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, true, &descriptors, &identities, &components)) {
+    Throw(env, "could not open secure publication directory");
+    return nullptr;
+  }
+  const int directory = descriptors.values.back();
+  const int output = openat(
+      directory, temporary.c_str(),
+      O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (output < 0) {
+    Throw(env, PosixError("openat temporary file"));
+    return nullptr;
+  }
+  bool temporary_exists = true;
+  const auto cleanup = [&]() {
+    close(output);
+    if (temporary_exists) {
+      unlinkat(directory, temporary.c_str(), 0);
+    }
+  };
+  const auto* body = static_cast<const uint8_t*>(raw_body);
+  size_t offset = 0;
+  while (offset < body_size) {
+    const ssize_t written =
+        write(output, body + offset, body_size - offset);
+    if (written <= 0) {
+      const std::string error = PosixError("write");
+      cleanup();
+      Throw(env, error);
+      return nullptr;
+    }
+    offset += static_cast<size_t>(written);
+  }
+  struct stat identity{};
+  if (fsync(output) != 0 || fstat(output, &identity) != 0 ||
+      !S_ISREG(identity.st_mode) ||
+      identity.st_dev != identities.front().st_dev ||
+      identity.st_nlink != 1 ||
+      static_cast<uint64_t>(identity.st_size) != body_size ||
+      !SecureDirectoryStillCurrent(
+          root, components, descriptors, identities)) {
+    cleanup();
+    Throw(env, "secure temporary file failed durability or identity validation");
+    return nullptr;
+  }
+  if (linkat(
+          directory, temporary.c_str(), directory, leaf.c_str(), 0) != 0) {
+    const std::string error = PosixError("linkat publication");
+    cleanup();
+    Throw(env, error);
+    return nullptr;
+  }
+  if (unlinkat(directory, temporary.c_str(), 0) != 0) {
+    const std::string error = PosixError("unlinkat temporary publication");
+    cleanup();
+    Throw(env, error);
+    return nullptr;
+  }
+  temporary_exists = false;
+  if (fsync(directory) != 0 ||
+      !SecureDirectoryStillCurrent(
+          root, components, descriptors, identities)) {
+    close(output);
+    Throw(env, "secure publication directory failed durability validation");
+    return nullptr;
+  }
+  close(output);
+  return Boolean(env, true);
+}
+
+napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  std::string leaf;
+  if (argc != 3 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative) ||
+      !ReadUtf8(env, args[2], &leaf) || !SafeLeaf(leaf)) {
+    Throw(env, "invalid secure file removal");
+    return nullptr;
+  }
+  DescriptorSet descriptors;
+  std::vector<struct stat> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, false, &descriptors, &identities, &components)) {
+    return Boolean(env, false);
+  }
+  struct stat identity{};
+  if (fstatat(
+          descriptors.values.back(), leaf.c_str(), &identity,
+          AT_SYMLINK_NOFOLLOW) != 0) {
+    if (errno == ENOENT) return Boolean(env, false);
+    Throw(env, PosixError("fstatat removal target"));
+    return nullptr;
+  }
+  if (!S_ISREG(identity.st_mode) ||
+      identity.st_dev != identities.front().st_dev ||
+      identity.st_nlink != 1 ||
+      !SecureDirectoryStillCurrent(
+          root, components, descriptors, identities)) {
+    Throw(env, "secure removal target failed identity validation");
+    return nullptr;
+  }
+  if (unlinkat(descriptors.values.back(), leaf.c_str(), 0) != 0 ||
+      fsync(descriptors.values.back()) != 0) {
+    Throw(env, PosixError("secure file removal"));
+    return nullptr;
+  }
+  return Boolean(env, true);
+}
+
 #endif
 
 #ifdef _WIN32
@@ -180,6 +493,605 @@ std::string WindowsError(const char* operation) {
   std::string detail = length && buffer ? std::string(buffer, length) : "unknown error";
   if (buffer) LocalFree(buffer);
   return std::string(operation) + " failed (" + std::to_string(code) + "): " + detail;
+}
+
+std::wstring Wide(const std::string& input) {
+  if (input.empty()) return {};
+  const int length = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, input.data(),
+      static_cast<int>(input.size()), nullptr, 0);
+  if (length <= 0) return {};
+  std::wstring output(static_cast<size_t>(length), L'\0');
+  if (MultiByteToWideChar(
+          CP_UTF8, MB_ERR_INVALID_CHARS, input.data(),
+          static_cast<int>(input.size()), output.data(), length) != length) {
+    return {};
+  }
+  return output;
+}
+
+std::string Utf8(const WCHAR* input, size_t length) {
+  if (length == 0) return {};
+  const int bytes = WideCharToMultiByte(
+      CP_UTF8, WC_ERR_INVALID_CHARS, input, static_cast<int>(length),
+      nullptr, 0, nullptr, nullptr);
+  if (bytes <= 0) return {};
+  std::string output(static_cast<size_t>(bytes), '\0');
+  if (WideCharToMultiByte(
+          CP_UTF8, WC_ERR_INVALID_CHARS, input, static_cast<int>(length),
+          output.data(), bytes, nullptr, nullptr) != bytes) {
+    return {};
+  }
+  return output;
+}
+
+struct WindowsHandleSet {
+  std::vector<HANDLE> values;
+  ~WindowsHandleSet() {
+    for (auto iterator = values.rbegin(); iterator != values.rend(); ++iterator) {
+      if (*iterator && *iterator != INVALID_HANDLE_VALUE) CloseHandle(*iterator);
+    }
+  }
+};
+
+struct WindowsIdentity {
+  ULONGLONG volume = 0;
+  FILE_ID_128 file_id{};
+  DWORD attributes = 0;
+  DWORD reparse_tag = 0;
+  DWORD links = 0;
+  uint64_t size = 0;
+};
+
+bool GetWindowsIdentity(HANDLE handle, WindowsIdentity* output) {
+  FILE_ID_INFO id{};
+  FILE_ATTRIBUTE_TAG_INFO tag{};
+  BY_HANDLE_FILE_INFORMATION legacy{};
+  if (!GetFileInformationByHandleEx(
+          handle, FileIdInfo, &id, sizeof(id)) ||
+      !GetFileInformationByHandleEx(
+          handle, FileAttributeTagInfo, &tag, sizeof(tag)) ||
+      !GetFileInformationByHandle(handle, &legacy)) {
+    return false;
+  }
+  output->volume = id.VolumeSerialNumber;
+  output->file_id = id.FileId;
+  output->attributes = tag.FileAttributes;
+  output->reparse_tag = tag.ReparseTag;
+  output->links = legacy.nNumberOfLinks;
+  output->size =
+      (static_cast<uint64_t>(legacy.nFileSizeHigh) << 32) |
+      legacy.nFileSizeLow;
+  return true;
+}
+
+bool SameIdentity(
+    const WindowsIdentity& left, const WindowsIdentity& right) {
+  return left.volume == right.volume &&
+      std::memcmp(&left.file_id, &right.file_id, sizeof(FILE_ID_128)) == 0 &&
+      ((left.attributes ^ right.attributes) & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+using NtCreateFilePointer = NTSTATUS(NTAPI*)(
+    PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+    PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+using NtQueryDirectoryFilePointer = NTSTATUS(NTAPI*)(
+    HANDLE, HANDLE, PVOID, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG,
+    FILE_INFORMATION_CLASS, BOOLEAN, PUNICODE_STRING, BOOLEAN);
+using RtlNtStatusToDosErrorPointer = ULONG(WINAPI*)(NTSTATUS);
+
+struct NtApi {
+  NtCreateFilePointer create_file = nullptr;
+  NtQueryDirectoryFilePointer query_directory = nullptr;
+  RtlNtStatusToDosErrorPointer status_to_dos = nullptr;
+
+  NtApi() {
+    HMODULE module = GetModuleHandleW(L"ntdll.dll");
+    if (!module) return;
+    create_file = reinterpret_cast<NtCreateFilePointer>(
+        GetProcAddress(module, "NtCreateFile"));
+    query_directory = reinterpret_cast<NtQueryDirectoryFilePointer>(
+        GetProcAddress(module, "NtQueryDirectoryFile"));
+    status_to_dos = reinterpret_cast<RtlNtStatusToDosErrorPointer>(
+        GetProcAddress(module, "RtlNtStatusToDosError"));
+  }
+};
+
+NtApi& NativeWindowsApi() {
+  static NtApi api;
+  return api;
+}
+
+bool NtSuccess(NTSTATUS status) {
+  return status >= 0;
+}
+
+std::string NtError(const char* operation, NTSTATUS status) {
+  NtApi& api = NativeWindowsApi();
+  const DWORD error = api.status_to_dos
+      ? static_cast<DWORD>(api.status_to_dos(status))
+      : ERROR_GEN_FAILURE;
+  SetLastError(error);
+  return WindowsError(operation);
+}
+
+constexpr ULONG kFileOpen = 1;
+constexpr ULONG kFileCreate = 2;
+constexpr ULONG kFileOpenIf = 3;
+constexpr ULONG kFileDirectoryFile = 0x00000001;
+constexpr ULONG kFileSynchronousIoNonAlert = 0x00000020;
+constexpr ULONG kFileNonDirectoryFile = 0x00000040;
+constexpr ULONG kFileOpenReparsePoint = 0x00200000;
+constexpr NTSTATUS kStatusNoMoreFiles =
+    static_cast<NTSTATUS>(0x80000006L);
+constexpr NTSTATUS kStatusObjectNameNotFound =
+    static_cast<NTSTATUS>(0xC0000034L);
+constexpr NTSTATUS kStatusObjectPathNotFound =
+    static_cast<NTSTATUS>(0xC000003AL);
+
+HANDLE OpenWindowsRoot(const std::string& root, bool create = false) {
+  const std::wstring wide = Wide(root);
+  if (wide.empty()) return INVALID_HANDLE_VALUE;
+  return CreateFileW(
+      wide.c_str(),
+      FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+          SYNCHRONIZE |
+          (create ? FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY : 0),
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      nullptr, OPEN_EXISTING,
+      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+}
+
+NTSTATUS OpenWindowsRelative(
+    HANDLE parent, const std::wstring& name, ACCESS_MASK access,
+    ULONG disposition, ULONG options, HANDLE* output) {
+  NtApi& api = NativeWindowsApi();
+  if (!api.create_file || name.empty() ||
+      name.size() > (USHRT_MAX / sizeof(WCHAR))) {
+    return static_cast<NTSTATUS>(0xC000000DL);
+  }
+  UNICODE_STRING unicode{};
+  unicode.Length = static_cast<USHORT>(name.size() * sizeof(WCHAR));
+  unicode.MaximumLength = unicode.Length;
+  unicode.Buffer = const_cast<PWCH>(name.data());
+  OBJECT_ATTRIBUTES attributes{};
+  InitializeObjectAttributes(
+      &attributes, &unicode, OBJ_CASE_INSENSITIVE, parent, nullptr);
+  IO_STATUS_BLOCK status_block{};
+  return api.create_file(
+      output, access, &attributes, &status_block, nullptr,
+      FILE_ATTRIBUTE_NORMAL,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      disposition, options | kFileOpenReparsePoint, nullptr, 0);
+}
+
+bool OpenSecureDirectoryComponents(
+    const std::string& root, const std::vector<std::string>& components,
+    bool create, WindowsHandleSet* handles,
+    std::vector<WindowsIdentity>* identities) {
+  HANDLE root_handle = OpenWindowsRoot(root, create);
+  if (root_handle == INVALID_HANDLE_VALUE) return false;
+  handles->values.push_back(root_handle);
+  WindowsIdentity root_identity{};
+  if (!GetWindowsIdentity(root_handle, &root_identity) ||
+      !(root_identity.attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+      (root_identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    return false;
+  }
+  identities->push_back(root_identity);
+  HANDLE parent = root_handle;
+  for (const std::string& component : components) {
+    const std::wstring wide = Wide(component);
+    HANDLE child = INVALID_HANDLE_VALUE;
+    const ACCESS_MASK directory_access =
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+        SYNCHRONIZE |
+        (create ? FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY : 0);
+    const NTSTATUS status = OpenWindowsRelative(
+        parent, wide,
+        directory_access,
+        create ? kFileOpenIf : kFileOpen,
+        kFileDirectoryFile | kFileSynchronousIoNonAlert, &child);
+    if (!NtSuccess(status)) return false;
+    handles->values.push_back(child);
+    WindowsIdentity identity{};
+    if (!GetWindowsIdentity(child, &identity) ||
+        !(identity.attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+        (identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+        identity.volume != root_identity.volume) {
+      return false;
+    }
+    identities->push_back(identity);
+    parent = child;
+  }
+  return true;
+}
+
+bool OpenSecureDirectory(
+    const std::string& root, const std::string& relative, bool create,
+    WindowsHandleSet* handles, std::vector<WindowsIdentity>* identities,
+    std::vector<std::string>* components) {
+  if (!ParseRelativePath(relative, components, true)) return false;
+  return OpenSecureDirectoryComponents(
+      root, *components, create, handles, identities);
+}
+
+bool SecureDirectoryStillCurrent(
+    const std::string& root, const std::vector<std::string>& components,
+    const WindowsHandleSet& handles,
+    const std::vector<WindowsIdentity>& identities) {
+  HANDLE current_root = OpenWindowsRoot(root);
+  if (current_root == INVALID_HANDLE_VALUE) return false;
+  WindowsIdentity current_root_identity{};
+  const bool root_stable =
+      GetWindowsIdentity(current_root, &current_root_identity) &&
+      SameIdentity(identities.front(), current_root_identity);
+  CloseHandle(current_root);
+  if (!root_stable) return false;
+  for (size_t index = 0; index < components.size(); ++index) {
+    HANDLE current = INVALID_HANDLE_VALUE;
+    const NTSTATUS status = OpenWindowsRelative(
+        handles.values[index], Wide(components[index]),
+        FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES |
+            SYNCHRONIZE,
+        kFileOpen, kFileDirectoryFile | kFileSynchronousIoNonAlert,
+        &current);
+    if (!NtSuccess(status)) return false;
+    WindowsIdentity current_identity{};
+    const bool stable =
+        GetWindowsIdentity(current, &current_identity) &&
+        SameIdentity(identities[index + 1], current_identity);
+    CloseHandle(current);
+    if (!stable) return false;
+  }
+  return true;
+}
+
+napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
+  size_t argc = 4;
+  napi_value args[4];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  uint32_t max_bytes = 0;
+  bool require_non_empty = false;
+  if (argc != 4 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative) ||
+      napi_get_value_uint32(env, args[2], &max_bytes) != napi_ok ||
+      napi_get_value_bool(env, args[3], &require_non_empty) != napi_ok) {
+    return Null(env);
+  }
+  std::vector<std::string> components;
+  if (!ParseRelativePath(relative, &components)) return Null(env);
+  const std::string leaf = components.back();
+  components.pop_back();
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+  if (!OpenSecureDirectoryComponents(
+          root, components, false, &handles, &identities)) {
+    return Null(env);
+  }
+  HANDLE file = INVALID_HANDLE_VALUE;
+  const NTSTATUS status = OpenWindowsRelative(
+      handles.values.back(), Wide(leaf),
+      GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+      &file);
+  if (!NtSuccess(status)) return Null(env);
+  handles.values.push_back(file);
+  WindowsIdentity before{};
+  if (!GetWindowsIdentity(file, &before) ||
+      (before.attributes & (FILE_ATTRIBUTE_DIRECTORY |
+                            FILE_ATTRIBUTE_REPARSE_POINT)) ||
+      before.volume != identities.front().volume ||
+      before.links != 1 || before.size > max_bytes ||
+      (require_non_empty && before.size == 0)) {
+    return Null(env);
+  }
+  std::vector<uint8_t> body(static_cast<size_t>(before.size));
+  size_t offset = 0;
+  while (offset < body.size()) {
+    const DWORD requested = static_cast<DWORD>(
+        (std::min)(body.size() - offset, static_cast<size_t>(UINT32_MAX)));
+    DWORD read = 0;
+    if (!ReadFile(file, body.data() + offset, requested, &read, nullptr) ||
+        read == 0) {
+      return Null(env);
+    }
+    offset += read;
+  }
+  WindowsIdentity after{};
+  if (!GetWindowsIdentity(file, &after) ||
+      !SameIdentity(before, after) || before.size != after.size ||
+      after.links != 1 ||
+      !SecureDirectoryStillCurrent(
+          root, components, handles, identities)) {
+    return Null(env);
+  }
+  HANDLE current = INVALID_HANDLE_VALUE;
+  const NTSTATUS current_status = OpenWindowsRelative(
+      handles.values[handles.values.size() - 2], Wide(leaf),
+      FILE_READ_ATTRIBUTES | SYNCHRONIZE, kFileOpen,
+      kFileNonDirectoryFile | kFileSynchronousIoNonAlert, &current);
+  if (!NtSuccess(current_status)) return Null(env);
+  WindowsIdentity current_identity{};
+  const bool leaf_stable =
+      GetWindowsIdentity(current, &current_identity) &&
+      SameIdentity(before, current_identity);
+  CloseHandle(current);
+  if (!leaf_stable) return Null(env);
+  napi_value result;
+  if (napi_create_buffer_copy(
+          env, body.size(), body.empty() ? nullptr : body.data(),
+          nullptr, &result) != napi_ok) {
+    return Null(env);
+  }
+  return result;
+}
+
+struct FileIdBothDirectoryEntry {
+  ULONG NextEntryOffset;
+  ULONG FileIndex;
+  LARGE_INTEGER CreationTime;
+  LARGE_INTEGER LastAccessTime;
+  LARGE_INTEGER LastWriteTime;
+  LARGE_INTEGER ChangeTime;
+  LARGE_INTEGER EndOfFile;
+  LARGE_INTEGER AllocationSize;
+  ULONG FileAttributes;
+  ULONG FileNameLength;
+  ULONG EaSize;
+  CCHAR ShortNameLength;
+  WCHAR ShortName[12];
+  LARGE_INTEGER FileId;
+  WCHAR FileName[1];
+};
+
+napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value args[2];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  if (argc != 2 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative)) {
+    return Null(env);
+  }
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, false, &handles, &identities, &components)) {
+    return Null(env);
+  }
+  NtApi& api = NativeWindowsApi();
+  if (!api.query_directory) return Null(env);
+  napi_value result;
+  napi_create_array(env, &result);
+  uint32_t output_index = 0;
+  std::vector<uint8_t> buffer(64 * 1024);
+  BOOLEAN restart = TRUE;
+  while (true) {
+    IO_STATUS_BLOCK status_block{};
+    const NTSTATUS status = api.query_directory(
+        handles.values.back(), nullptr, nullptr, nullptr, &status_block,
+        buffer.data(), static_cast<ULONG>(buffer.size()),
+        static_cast<FILE_INFORMATION_CLASS>(37), FALSE, nullptr, restart);
+    restart = FALSE;
+    if (status == kStatusNoMoreFiles) break;
+    if (!NtSuccess(status)) return Null(env);
+    size_t offset = 0;
+    while (offset < status_block.Information) {
+      const auto* entry =
+          reinterpret_cast<const FileIdBothDirectoryEntry*>(
+              buffer.data() + offset);
+      const std::string name = Utf8(
+          entry->FileName, entry->FileNameLength / sizeof(WCHAR));
+      if (SafeLeaf(name) &&
+          !(entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        napi_value item;
+        napi_create_object(env, &item);
+        napi_value name_value;
+        napi_create_string_utf8(
+            env, name.c_str(), name.size(), &name_value);
+        napi_set_named_property(env, item, "name", name_value);
+        napi_value kind_value;
+        const bool directory =
+            entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+        napi_create_string_utf8(
+            env, directory ? "directory" : "file",
+            NAPI_AUTO_LENGTH, &kind_value);
+        napi_set_named_property(env, item, "kind", kind_value);
+        if (!directory && entry->EndOfFile.QuadPart >= 0) {
+          napi_value size_value;
+          napi_create_int64(
+              env, entry->EndOfFile.QuadPart, &size_value);
+          napi_set_named_property(env, item, "size", size_value);
+        }
+        constexpr double kWindowsToUnixEpoch100ns = 116444736000000000.0;
+        const double modified_ms =
+            (static_cast<double>(entry->LastWriteTime.QuadPart) -
+             kWindowsToUnixEpoch100ns) / 10000.0;
+        napi_value modified_value;
+        napi_create_double(env, modified_ms, &modified_value);
+        napi_set_named_property(env, item, "modifiedMs", modified_value);
+        napi_set_element(env, result, output_index++, item);
+      }
+      if (entry->NextEntryOffset == 0) break;
+      offset += entry->NextEntryOffset;
+    }
+  }
+  if (!SecureDirectoryStillCurrent(
+          root, components, handles, identities)) {
+    return Null(env);
+  }
+  return result;
+}
+
+void DeleteWindowsFileHandle(HANDLE handle) {
+  FILE_DISPOSITION_INFO disposition{};
+  disposition.DeleteFile = TRUE;
+  SetFileInformationByHandle(
+      handle, FileDispositionInfo, &disposition, sizeof(disposition));
+}
+
+napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
+  size_t argc = 5;
+  napi_value args[5];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  std::string leaf;
+  std::string temporary;
+  void* raw_body = nullptr;
+  size_t body_size = 0;
+  if (argc != 5 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative) ||
+      !ReadUtf8(env, args[2], &leaf) ||
+      !ReadUtf8(env, args[3], &temporary) ||
+      !SafeLeaf(leaf) || !SafeLeaf(temporary) ||
+      napi_get_buffer_info(env, args[4], &raw_body, &body_size) != napi_ok ||
+      body_size == 0 || body_size > 64 * 1024 * 1024) {
+    Throw(env, "invalid secure atomic file publication");
+    return nullptr;
+  }
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, true, &handles, &identities, &components)) {
+    Throw(env, "could not open secure publication directory");
+    return nullptr;
+  }
+  HANDLE output = INVALID_HANDLE_VALUE;
+  const NTSTATUS open_status = OpenWindowsRelative(
+      handles.values.back(), Wide(temporary),
+      GENERIC_WRITE | DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      kFileCreate, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+      &output);
+  if (!NtSuccess(open_status)) {
+    Throw(env, NtError("NtCreateFile temporary publication", open_status));
+    return nullptr;
+  }
+  bool installed = false;
+  const auto fail = [&](const std::string& error) -> napi_value {
+    if (!installed) DeleteWindowsFileHandle(output);
+    CloseHandle(output);
+    Throw(env, error);
+    return nullptr;
+  };
+  const auto* body = static_cast<const uint8_t*>(raw_body);
+  size_t offset = 0;
+  while (offset < body_size) {
+    const DWORD requested = static_cast<DWORD>(
+        (std::min)(body_size - offset, static_cast<size_t>(UINT32_MAX)));
+    DWORD written = 0;
+    if (!WriteFile(
+            output, body + offset, requested, &written, nullptr) ||
+        written == 0) {
+      return fail(WindowsError("WriteFile"));
+    }
+    offset += written;
+  }
+  WindowsIdentity identity{};
+  if (!FlushFileBuffers(output) ||
+      !GetWindowsIdentity(output, &identity) ||
+      (identity.attributes & (FILE_ATTRIBUTE_DIRECTORY |
+                              FILE_ATTRIBUTE_REPARSE_POINT)) ||
+      identity.volume != identities.front().volume ||
+      identity.links != 1 || identity.size != body_size ||
+      !SecureDirectoryStillCurrent(
+          root, components, handles, identities)) {
+    return fail("secure temporary file failed durability or identity validation");
+  }
+  const std::wstring destination = Wide(leaf);
+  const size_t rename_size =
+      sizeof(FILE_RENAME_INFO) + destination.size() * sizeof(WCHAR);
+  std::vector<uint8_t> rename_buffer(rename_size);
+  auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(rename_buffer.data());
+  rename->ReplaceIfExists = FALSE;
+  rename->RootDirectory = handles.values.back();
+  rename->FileNameLength =
+      static_cast<DWORD>(destination.size() * sizeof(WCHAR));
+  std::memcpy(
+      rename->FileName, destination.data(), rename->FileNameLength);
+  if (!SetFileInformationByHandle(
+          output, FileRenameInfo, rename,
+          static_cast<DWORD>(rename_buffer.size()))) {
+    return fail(WindowsError("SetFileInformationByHandle rename"));
+  }
+  installed = true;
+  if (!FlushFileBuffers(output) ||
+      !SecureDirectoryStillCurrent(
+          root, components, handles, identities)) {
+    CloseHandle(output);
+    Throw(env, "secure publication failed final durability validation");
+    return nullptr;
+  }
+  CloseHandle(output);
+  return Boolean(env, true);
+}
+
+napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
+  size_t argc = 3;
+  napi_value args[3];
+  napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+  std::string root;
+  std::string relative;
+  std::string leaf;
+  if (argc != 3 || !ReadUtf8(env, args[0], &root) ||
+      !ReadUtf8(env, args[1], &relative) ||
+      !ReadUtf8(env, args[2], &leaf) || !SafeLeaf(leaf)) {
+    Throw(env, "invalid secure file removal");
+    return nullptr;
+  }
+  WindowsHandleSet handles;
+  std::vector<WindowsIdentity> identities;
+  std::vector<std::string> components;
+  if (!OpenSecureDirectory(
+          root, relative, false, &handles, &identities, &components)) {
+    return Boolean(env, false);
+  }
+  HANDLE target = INVALID_HANDLE_VALUE;
+  const NTSTATUS status = OpenWindowsRelative(
+      handles.values.back(), Wide(leaf),
+      DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+      kFileOpen, kFileNonDirectoryFile | kFileSynchronousIoNonAlert,
+      &target);
+  if (status == kStatusObjectNameNotFound ||
+      status == kStatusObjectPathNotFound) {
+    return Boolean(env, false);
+  }
+  if (!NtSuccess(status)) {
+    Throw(env, NtError("NtCreateFile removal target", status));
+    return nullptr;
+  }
+  WindowsIdentity identity{};
+  if (!GetWindowsIdentity(target, &identity) ||
+      (identity.attributes & (FILE_ATTRIBUTE_DIRECTORY |
+                              FILE_ATTRIBUTE_REPARSE_POINT)) ||
+      identity.volume != identities.front().volume ||
+      identity.links != 1 ||
+      !SecureDirectoryStillCurrent(
+          root, components, handles, identities)) {
+    CloseHandle(target);
+    Throw(env, "secure removal target failed identity validation");
+    return nullptr;
+  }
+  FILE_DISPOSITION_INFO disposition{};
+  disposition.DeleteFile = TRUE;
+  if (!SetFileInformationByHandle(
+          target, FileDispositionInfo, &disposition,
+          sizeof(disposition))) {
+    const std::string error = WindowsError(
+        "SetFileInformationByHandle disposition");
+    CloseHandle(target);
+    Throw(env, error);
+    return nullptr;
+  }
+  CloseHandle(target);
+  return Boolean(env, true);
 }
 
 JobAuthority* Authority(napi_env env, napi_value value) {
@@ -328,11 +1240,7 @@ napi_value WindowsJobObjectsSupported(napi_env env, napi_callback_info) {
 
 napi_value SecureFileAuthoritySupported(napi_env env, napi_callback_info) {
   napi_value value;
-#ifdef _WIN32
-  napi_get_boolean(env, false, &value);
-#else
   napi_get_boolean(env, true, &value);
-#endif
   return value;
 }
 
@@ -340,20 +1248,22 @@ napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
       {"windowsJobObjectsSupported", nullptr, WindowsJobObjectsSupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"secureFileAuthoritySupported", nullptr, SecureFileAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"listSecureDirectory", nullptr, ListSecureDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"writeSecureFileAtomic", nullptr, WriteSecureFileAtomic, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"removeSecureFile", nullptr, RemoveSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
 #ifdef _WIN32
       {"createWindowsJob", nullptr, CreateWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"assignWindowsJob", nullptr, AssignWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"terminateWindowsJob", nullptr, TerminateWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsJobActiveProcesses", nullptr, WindowsJobActiveProcesses, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeWindowsJob", nullptr, CloseWindowsJob, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"readSecureFile", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
 #else
       {"createWindowsJob", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"assignWindowsJob", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"terminateWindowsJob", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"windowsJobActiveProcesses", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeWindowsJob", nullptr, Unsupported, nullptr, nullptr, nullptr, napi_default, nullptr},
-      {"readSecureFile", nullptr, ReadSecureFile, nullptr, nullptr, nullptr, napi_default, nullptr},
 #endif
   };
   napi_define_properties(

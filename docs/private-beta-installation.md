@@ -124,11 +124,12 @@ after verifying no recovery or rollback is needed.
 
 - Provider-authenticated Codex and Claude Runs are a manual release-candidate
   gate when CI has no subscription login.
-- A macOS build is not qualified until its complete managed-artifact file
-  authority passes native adversarial tests; read-only `openat` coverage alone
-  is insufficient.
-- A Windows build is not qualified until retained-handle reparse-point
-  rejection and Windows 11 Job Object teardown pass natively.
+- The macOS retained-root Project and managed-artifact implementation is a
+  release candidate until publish/read/repair and adversarial ancestor-swap
+  checks pass on Apple Silicon macOS 14+.
+- The Windows retained-handle Project and managed-artifact implementation is a
+  release candidate until reparse-point rejection and Windows 11 Job Object
+  teardown pass on native Windows 11.
 - GitHub-hosted Windows runners build on Windows Server, not Windows 11. A
   native Windows 11 machine remains the final OS gate.
 - Unsigned artifacts are private test artifacts and carry the warnings above.

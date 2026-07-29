@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { gunzipSync } from "node:zlib";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { createServer } from "node:net";
@@ -238,7 +239,7 @@ try {
   let secureReadPassed = false;
   const serverRequire = createRequire(path.join(installRoot, "app", "server", "package.json"));
   const nativeHost = serverRequire("@ponderosa/native-host");
-  if (process.platform === "linux" && nativeHost.secureFileAuthoritySupported()) {
+  if (nativeHost.secureFileAuthoritySupported()) {
     const authorityRoot = path.join(dataDir, "secure-authority");
     const outside = path.join(dataDir, "secure-authority-outside");
     mkdirSync(path.join(authorityRoot, "nested"), { recursive: true });
@@ -262,6 +263,29 @@ try {
       relativePath: "directory-link/secret.txt",
       maxBytes: 16,
     }) === undefined, "Retained-descriptor read followed a symlink directory.");
+    nativeHost.writeSecureFileAtomic({
+      root: authorityRoot,
+      relativeDirectory: "published",
+      leaf: "safe.bin",
+      temporaryLeaf: `.safe.${randomUUID()}.tmp`,
+      body: Buffer.from("published-safe"),
+    });
+    assert(nativeHost.readSecureFile({
+      root: authorityRoot,
+      relativePath: "published/safe.bin",
+      maxBytes: 32,
+    })?.toString() === "published-safe",
+    "Retained authority did not preserve atomically published bytes.");
+    assert(nativeHost.listSecureDirectory({
+      root: authorityRoot,
+      relativePath: "published",
+    })?.some((entry) => entry.name === "safe.bin" && entry.kind === "file"),
+    "Retained authority did not enumerate the published regular file.");
+    assert(nativeHost.removeSecureFile({
+      root: authorityRoot,
+      relativeDirectory: "published",
+      leaf: "safe.bin",
+    }), "Retained authority did not remove the verified regular file.");
 
     const projectFileAccess = await import(pathToFileURL(
       path.join(installRoot, "app", "server", "dist", "project-file-access.js"),
@@ -297,13 +321,34 @@ try {
       managed.sha256,
     )?.body.toString() === "managed-safe",
     "Installed production managed-artifact publisher/reader did not preserve exact bytes.");
+    agents.publishManagedArtifactContent(
+      managedRoot,
+      "qualification",
+      "orphan",
+      Buffer.from("repair-safe"),
+    );
+    assert(agents.repairManagedArtifactContent(
+      managedRoot,
+      "qualification",
+      new Set(["artifact"]),
+      Date.now() + 1_000,
+    ).includes("orphan"),
+    "Installed production managed-artifact repair did not remove an unreferenced verified leaf.");
+    assert(agents.readManagedArtifactContent(
+      managedRoot,
+      "qualification",
+      "artifact",
+      managed.size,
+      managed.sha256,
+    )?.body.toString() === "managed-safe",
+    "Managed-artifact repair changed a referenced immutable leaf.");
     secureReadPassed = true;
   }
   checks.push({
     id: "secure-file-authority",
     status: secureReadPassed ? "pass" : "fail",
     detail: secureReadPassed
-      ? "native helper plus installed Project reader and managed publisher passed retained-descriptor checks"
+      ? "native helper plus installed Project reader and managed publish/read/repair paths passed retained-authority checks"
       : "platform retained-handle secure file authority is unavailable",
   });
 

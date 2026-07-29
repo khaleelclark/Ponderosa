@@ -6,6 +6,7 @@ import {
   watch,
   writeFileSync,
   rmSync,
+  rmdirSync,
 } from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -15,7 +16,11 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
+  listSecureDirectory,
+  readSecureFile,
+  removeSecureFile,
   secureFileAuthoritySupported,
+  writeSecureFileAtomic,
   WindowsProcessJob,
   windowsJobObjectsSupported,
 } from "@ponderosa/native-host";
@@ -31,6 +36,44 @@ import type {
 } from "./types.js";
 
 const execFileAsync = promisify(execFile);
+
+function testSecureFileAuthority(dataDir: string): boolean {
+  if (!secureFileAuthoritySupported()) return false;
+  const relativeDirectory = `doctor-secure-${randomUUID()}`;
+  const leaf = "authority.txt";
+  const temporaryLeaf = `.authority.${randomUUID()}.tmp`;
+  try {
+    writeSecureFileAtomic({
+      root: dataDir,
+      relativeDirectory,
+      leaf,
+      temporaryLeaf,
+      body: Buffer.from("retained-authority", "utf8"),
+    });
+    const body = readSecureFile({
+      root: dataDir,
+      relativePath: `${relativeDirectory}/${leaf}`,
+      maxBytes: 64,
+      requireNonEmpty: true,
+    });
+    const entries = listSecureDirectory({
+      root: dataDir,
+      relativePath: relativeDirectory,
+    });
+    return body?.toString("utf8") === "retained-authority" &&
+      entries?.some((entry) =>
+        entry.name === leaf &&
+        entry.kind === "file" &&
+        entry.size === body.length
+      ) === true &&
+      removeSecureFile({ root: dataDir, relativeDirectory, leaf });
+  } catch {
+    return false;
+  } finally {
+    try { rmdirSync(path.join(dataDir, relativeDirectory)); }
+    catch { /* a failed probe remains fail-closed and can be removed manually */ }
+  }
+}
 
 function check(
   id: string,
@@ -243,19 +286,16 @@ export async function runDoctor(input: {
     sqlite ? "A disposable database was written, read, and closed." : "The bundled SQLite runtime could not persist data.",
     sqlite ? undefined : "Reinstall the Ponderosa package built for this operating system and architecture.",
   ));
-  const secureReads = secureFileAuthoritySupported();
-  const completeFilesystemAuthority = process.platform === "linux";
+  const completeFilesystemAuthority = testSecureFileAuthority(input.paths.dataDir);
   checks.push(check(
     "secure-filesystem",
     "Secure Project filesystem authority",
     completeFilesystemAuthority ? "pass" : "fail",
-    process.platform === "linux"
-      ? "Linux descriptor-relative no-follow authority is available."
-      : process.platform === "darwin" && secureReads
-        ? "The macOS native helper is available, but production retained-root Project and managed authority is disabled."
-        : process.platform === "win32"
-          ? "Windows retained-handle reparse-safe authority is unavailable."
-          : `Secure filesystem authority is unavailable on ${process.platform}.`,
+    completeFilesystemAuthority
+      ? process.platform === "win32"
+        ? "Windows retained-handle reparse-safe authority passed a read, write, list, and remove probe."
+        : "Descriptor-relative no-follow authority passed a read, write, list, and remove probe."
+      : `Secure filesystem authority is unavailable on ${process.platform}.`,
     completeFilesystemAuthority
       ? undefined
       : "Install a build with the complete retained-handle filesystem implementation before durable Agent work.",

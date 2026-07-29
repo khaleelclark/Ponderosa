@@ -10,7 +10,12 @@
           }
         }],
         ["OS=='win'", {
-          "defines": ["UNICODE", "_UNICODE", "WIN32_LEAN_AND_MEAN"]
+          "defines": [
+            "UNICODE",
+            "_UNICODE",
+            "WIN32_LEAN_AND_MEAN",
+            "_WIN32_WINNT=0x0A00"
+          ]
         }]
       ]
     }

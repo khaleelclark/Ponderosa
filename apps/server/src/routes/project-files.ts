@@ -2,8 +2,10 @@ import { isUtf8 } from "node:buffer";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type { AgentStore } from "@ponderosa/agents";
 import type { WorkspaceFileViewDto } from "@ponderosa/core";
+import { listSecureDirectory, readSecureFile } from "@ponderosa/native-host";
 import type { FastifyInstance } from "fastify";
 import { contentDisposition } from "../assets.js";
 import {
@@ -194,6 +196,25 @@ export class ProjectFileAuthority {
     return false;
   }
 
+  private async nativeRelativePath(
+    rootPath: string,
+    input: string,
+  ): Promise<{ root: string; relative: string; resolved: string } | undefined> {
+    const root = await fs.realpath(rootPath);
+    const requested = input.startsWith("file://")
+      ? fileURLToPath(input)
+      : input;
+    const candidate = path.isAbsolute(requested)
+      ? path.resolve(requested)
+      : path.resolve(root, safeRelativePath(requested));
+    if (candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
+      return undefined;
+    }
+    const relative = path.relative(root, candidate).replaceAll(path.sep, "/");
+    if (!relative || !isProjectFileReferenceAllowed(relative)) return undefined;
+    return { root, relative, resolved: path.join(root, relative) };
+  }
+
   async fileForBrowser(
     projectId: string,
     input: string | undefined,
@@ -203,6 +224,33 @@ export class ProjectFileAuthority {
   > {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
+    if (process.platform !== "linux") {
+      try {
+        const target = await this.nativeRelativePath(project.hostPath, input);
+        if (!target) return undefined;
+        await this.faults?.afterResolve?.(target.resolved);
+        const body = readSecureFile({
+          root: project.hostPath,
+          relativePath: target.relative,
+          maxBytes: options.maxBytes,
+        });
+        if (!body) return undefined;
+        const mediaType = options.previewMediaType ??
+          contentTypeForStatic(target.relative.toLowerCase());
+        if (options.previewMediaType &&
+            !this.validPreviewMagic(options.previewMediaType, body.subarray(0, 16))) {
+          return undefined;
+        }
+        return {
+          body: Readable.from([body]),
+          name: path.basename(target.relative),
+          mediaType,
+          size: body.length,
+        };
+      } catch {
+        return undefined;
+      }
+    }
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
       const root = await fs.realpath(project.hostPath);
@@ -296,6 +344,65 @@ export class ProjectFileAuthority {
   ): Promise<WorkspaceFileViewDto | undefined> {
     const project = this.store.getProject(projectId);
     if (!project || !input?.trim()) return undefined;
+    if (process.platform !== "linux") {
+      try {
+        const target = await this.nativeRelativePath(project.hostPath, input);
+        if (!target) return undefined;
+        const segments = target.relative.split("/");
+        const leaf = segments.pop()!;
+        const parent = segments.join("/");
+        const entry = listSecureDirectory({
+          root: project.hostPath,
+          relativePath: parent,
+        })?.find((candidate) =>
+          candidate.name === leaf && candidate.kind === "file");
+        if (!entry || entry.size === undefined) return undefined;
+        const mediaType = this.workspaceFileContentType(target.relative);
+        const previewCandidate =
+          this.previewMediaTypes.has(mediaType) &&
+          entry.size <= PROJECT_PREVIEW_MAX_BYTES;
+        const textMedia =
+          mediaType.startsWith("text/") ||
+          ["application/json", "application/javascript", "application/xml"].includes(mediaType);
+        const readLimit = previewCandidate
+          ? PROJECT_PREVIEW_MAX_BYTES
+          : textMedia && entry.size <= MAX_FILE_BYTES
+            ? MAX_FILE_BYTES
+            : 0;
+        const body = readLimit > 0
+          ? readSecureFile({
+            root: project.hostPath,
+            relativePath: target.relative,
+            maxBytes: readLimit,
+          })
+          : undefined;
+        const previewable = previewCandidate && Boolean(body) &&
+          this.validPreviewMagic(mediaType, body!.subarray(0, 16));
+        let text: string | undefined;
+        if (textMedia && body && isUtf8(body)) text = body.toString("utf8");
+        const encodedPath = encodeURIComponent(target.relative);
+        return {
+          projectId,
+          path: target.relative,
+          name: leaf,
+          mediaType,
+          size: entry.size,
+          previewable,
+          ...(text !== undefined ? { text } : {}),
+          truncated:
+            (textMedia && text === undefined) ||
+            entry.size > PROJECT_DOWNLOAD_MAX_BYTES,
+          ...(previewable ? {
+            previewUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?path=${encodedPath}`,
+          } : {}),
+          ...(entry.size <= PROJECT_DOWNLOAD_MAX_BYTES ? {
+            downloadUrl: `/api/projects/${encodeURIComponent(projectId)}/workspace-files/download?path=${encodedPath}`,
+          } : {}),
+        };
+      } catch {
+        return undefined;
+      }
+    }
     let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
     try {
       const root = await fs.realpath(project.hostPath);

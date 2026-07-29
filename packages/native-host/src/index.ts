@@ -11,6 +11,22 @@ interface NativeJobBinding {
   closeWindowsJob(job: unknown): void;
   secureFileAuthoritySupported(): boolean;
   readSecureFile(root: string, relativePath: string, maxBytes: number, requireNonEmpty: boolean): Buffer | null;
+  listSecureDirectory(root: string, relativePath: string): SecureDirectoryEntry[] | null;
+  writeSecureFileAtomic(
+    root: string,
+    relativeDirectory: string,
+    leaf: string,
+    temporaryLeaf: string,
+    body: Buffer,
+  ): boolean;
+  removeSecureFile(root: string, relativeDirectory: string, leaf: string): boolean;
+}
+
+export interface SecureDirectoryEntry {
+  name: string;
+  kind: "file" | "directory";
+  size?: number;
+  modifiedMs: number;
 }
 
 let loaded: NativeJobBinding | undefined;
@@ -83,10 +99,22 @@ function assertSafeRelativePath(relativePath: string): void {
   }
 }
 
+function assertSafeRelativeDirectory(relativePath: string): void {
+  if (relativePath === "") return;
+  assertSafeRelativePath(relativePath);
+}
+
+function assertSafeLeaf(leaf: string, label: string): void {
+  if (!leaf || leaf.length > 255 || leaf === "." || leaf === ".." ||
+      /[\\/\u0000]/u.test(leaf)) {
+    throw new Error(`${label} must be one bounded path leaf`);
+  }
+}
+
 export function secureFileAuthoritySupported(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
-  if (platform !== "linux" && platform !== "darwin") return false;
+  if (platform !== "linux" && platform !== "darwin" && platform !== "win32") return false;
   try {
     return binding().secureFileAuthoritySupported();
   } catch {
@@ -117,4 +145,63 @@ export function readSecureFile(input: {
     input.maxBytes,
     input.requireNonEmpty === true,
   ) ?? undefined;
+}
+
+/** Enumerate only regular files and directories below a retained secure root. */
+export function listSecureDirectory(input: {
+  root: string;
+  relativePath?: string;
+}): SecureDirectoryEntry[] | undefined {
+  if (!secureFileAuthoritySupported()) return undefined;
+  const relativePath = input.relativePath ?? "";
+  assertSafeRelativeDirectory(relativePath);
+  return binding().listSecureDirectory(input.root, relativePath) ?? undefined;
+}
+
+/**
+ * Write and fsync one temporary regular file, then atomically install it
+ * without replacement below a retained directory chain.
+ */
+export function writeSecureFileAtomic(input: {
+  root: string;
+  relativeDirectory?: string;
+  leaf: string;
+  temporaryLeaf: string;
+  body: Buffer;
+}): void {
+  if (!secureFileAuthoritySupported()) {
+    throw new Error("secure file publication authority is unavailable");
+  }
+  const relativeDirectory = input.relativeDirectory ?? "";
+  assertSafeRelativeDirectory(relativeDirectory);
+  assertSafeLeaf(input.leaf, "secure publication leaf");
+  assertSafeLeaf(input.temporaryLeaf, "secure temporary leaf");
+  if (!Buffer.isBuffer(input.body) || input.body.length < 1 ||
+      input.body.length > 64 * 1024 * 1024) {
+    throw new Error("secure publication body must contain 1 to 64 MiB");
+  }
+  if (!binding().writeSecureFileAtomic(
+    input.root,
+    relativeDirectory,
+    input.leaf,
+    input.temporaryLeaf,
+    input.body,
+  )) {
+    throw new Error("secure file publication was not installed");
+  }
+}
+
+/** Remove one verified regular leaf below a retained secure directory chain. */
+export function removeSecureFile(input: {
+  root: string;
+  relativeDirectory?: string;
+  leaf: string;
+}): boolean {
+  if (!secureFileAuthoritySupported()) {
+    throw new Error("secure file removal authority is unavailable");
+  }
+  const relativeDirectory = input.relativeDirectory ?? "";
+  assertSafeRelativeDirectory(relativeDirectory);
+  assertSafeLeaf(input.leaf, "secure removal leaf");
+  return binding().removeSecureFile(input.root, relativeDirectory, input.leaf);
 }
