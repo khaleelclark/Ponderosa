@@ -822,13 +822,19 @@ export function registerAgentPackageRoutes(
         throw new Error("Project deletion is already in progress");
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
-      await publishManagedArtifactContentsAsync(
+      const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
         plannedArtifacts.map((artifact) => ({
           artifactId: artifact.destinationId,
           input: artifact.data,
         })),
+      );
+      const publicationById = new Map(
+        plannedArtifacts.map((artifact, index) => [
+          artifact.destinationId,
+          publishedArtifacts[index]!,
+        ]),
       );
 
       const created = new Map<string, AgentDto>();
@@ -872,8 +878,9 @@ export function registerAgentPackageRoutes(
             sha256: artifact.sha256,
           };
           if (catalogArtifact.kind === "generated_file") {
-            assets.registerGeneratedArtifact(
+            assets.registerPublishedGeneratedArtifact(
               catalogArtifact as RegisteredGeneratedArtifact,
+              publicationById.get(artifact.destinationId)!,
             );
           }
           catalogArtifacts.push({ artifact: catalogArtifact });
@@ -939,7 +946,7 @@ export function registerAgentPackageRoutes(
     Body: ImportAgentPackageRequest;
   }>(
     "/api/projects/:id/import-agents",
-    { bodyLimit: 96 * 1024 * 1024 },
+    { bodyLimit: 1024 * 1024 },
     (request, reply) => importPackage(request.params.id, request.body, reply),
   );
 

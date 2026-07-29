@@ -359,37 +359,58 @@ export function publishManagedArtifactContentAsync(
       return;
     }
     let settled = false;
-    const cleanup = (): void => {
-      activePublications.delete(activeKey);
+    const detachListeners = (): void => {
       signal?.removeEventListener("abort", abort);
       worker.removeAllListeners();
+    };
+    const release = (): void => {
+      activePublications.delete(activeKey);
     };
     const finish = (
       outcome: {
         result?: Omit<ManagedArtifactFile, "body">;
         error?: string;
       },
+      workerExited = false,
     ): void => {
       if (settled) return;
       settled = true;
-      cleanup();
-      void worker.terminate();
-      if (outcome.error) reject(new Error(outcome.error));
-      else if (outcome.result) resolve(outcome.result);
-      else reject(new Error("managed artifact publication worker returned no result"));
+      detachListeners();
+      const settle = (): void => {
+        release();
+        if (outcome.error) reject(new Error(outcome.error));
+        else if (outcome.result) resolve(outcome.result);
+        else reject(new Error("managed artifact publication worker returned no result"));
+      };
+      if (workerExited) settle();
+      else {
+        void worker.terminate().then(
+          settle,
+          (error: unknown) => {
+            release();
+            reject(error instanceof Error
+              ? error
+              : new Error("managed artifact publication worker termination failed"));
+          },
+        );
+      }
     };
     const abort = (): void => {
       if (settled) return;
       settled = true;
-      cleanup();
+      detachListeners();
       const reason = signal?.reason instanceof Error
         ? signal.reason
         : new Error("managed artifact publication aborted");
       void worker.terminate().then(
-        () => reject(reason),
-        (error: unknown) => reject(
-          error instanceof Error ? error : reason,
-        ),
+        () => {
+          release();
+          reject(reason);
+        },
+        (error: unknown) => {
+          release();
+          reject(error instanceof Error ? error : reason);
+        },
       );
     };
     worker.once("message", finish);
@@ -398,7 +419,7 @@ export function publishManagedArtifactContentAsync(
       if (!settled) {
         finish({
           error: `managed artifact publication worker exited without a result (code ${code})`,
-        });
+        }, true);
       }
     });
     signal?.addEventListener("abort", abort, { once: true });
