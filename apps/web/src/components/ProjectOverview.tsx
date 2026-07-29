@@ -220,7 +220,7 @@ export function ProjectOverview({
   }));
   const starred = starredWorkspaceResources(preferences);
 
-  return <Stack spacing={1.5}>
+  return <Stack spacing={3}>
     <Accordion defaultExpanded disableGutters variant="outlined" sx={{ borderRadius: "10px !important", "&:before": { display: "none" } }}>
       <AccordionSummary expandIcon={<ExpandMoreIcon />} aria-controls="project-overview-content">
         <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", width: "100%", minWidth: 0 }}>
@@ -261,7 +261,7 @@ export function ProjectOverview({
     </Accordion>
 
     <Box component="section" aria-labelledby="project-chats-title">
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, mb: 1 }}>
+      <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" }, mb: 2 }}>
         <Box sx={{ flex: 1 }}>
           <Typography id="project-chats-title" variant="h5" component="h2" fontWeight={800}>Project Chats</Typography>
           <Typography variant="body2" color="text.secondary">Search, organize, and open every Chat in this Project.</Typography>

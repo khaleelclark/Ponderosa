@@ -152,6 +152,7 @@ export interface CollectionToolbarProps {
   search: string;
   onSearch(value: string): void;
   searchLabel: string;
+  searchMaxWidth?: number;
   reorderHint?: boolean;
   children?: ReactNode;
 }
@@ -160,6 +161,7 @@ export function CollectionToolbar({
   search,
   onSearch,
   searchLabel,
+  searchMaxWidth,
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
@@ -179,7 +181,11 @@ export function CollectionToolbar({
       placeholder="Search"
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
-      sx={{ flex: 1, minWidth: { md: 240 } }}
+      sx={{
+        flex: searchMaxWidth ? "1 1 320px" : 1,
+        minWidth: { md: 240 },
+        maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
+      }}
     />
     {children}
     {reorderHint ? (
@@ -200,19 +206,24 @@ export function CollectionDirectoryControls({
   onProject,
   sort,
   onSort,
+  compact = false,
 }: {
   projects?: ProjectDto[];
   projectId?: string;
   onProject?(value: string): void;
   sort: ProjectSort;
   onSort(value: ProjectSort): void;
+  compact?: boolean;
 }): JSX.Element {
   const controlId = useId();
   return <>
     {projects && onProject ? (
       <FormControl
         size="small"
-        sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}
+        sx={{
+          minWidth: compact ? 145 : 190,
+          width: { xs: "100%", sm: "auto" },
+        }}
       >
         <InputLabel id={`${controlId}-project`}>Project</InputLabel>
         <Select
@@ -232,7 +243,10 @@ export function CollectionDirectoryControls({
     ) : null}
     <FormControl
       size="small"
-      sx={{ minWidth: 170, width: { xs: "100%", sm: "auto" } }}
+      sx={{
+        minWidth: compact ? 150 : 170,
+        width: { xs: "100%", sm: "auto" },
+      }}
     >
       <InputLabel id={`${controlId}-sort`}>Sort</InputLabel>
       <Select

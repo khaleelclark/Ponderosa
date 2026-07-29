@@ -1,4 +1,4 @@
-import { Alert, Box, Button, Chip, Stack } from "@mui/material";
+import { Alert, Box, Chip, Stack } from "@mui/material";
 import type { AgentDto, ArtifactContentDto, ArtifactDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../api";
@@ -20,17 +20,12 @@ function artifactLabel(artifact: Pick<ArtifactDto, "kind" | "path" | "summary">)
 function ArtifactProvenance({
   artifact,
   agentTitle,
-  onOpenRun,
 }: {
   artifact: ArtifactDto;
   agentTitle: string;
-  onOpenRun(runId: string): void;
 }): JSX.Element {
   return <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
     <Chip size="small" label={`Created by ${agentTitle}`} />
-    {artifact.executionId
-      ? <Button size="small" onClick={() => onOpenRun(artifact.executionId!)}>Generated from Run {artifact.executionId.slice(0, 8)}</Button>
-      : <Chip size="small" variant="outlined" label="No originating Run recorded" />}
     <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project scope"} />
   </Stack>;
 }
@@ -39,13 +34,11 @@ export function AgentArtifactPreview({
   artifact,
   agentId,
   agentTitle,
-  onOpenRun,
   liveContent,
 }: {
   artifact?: ArtifactDto;
   agentId: string;
   agentTitle: string;
-  onOpenRun(runId: string): void;
   liveContent?: string;
 }): JSX.Element {
   const contentQuery = useQuery({
@@ -63,7 +56,7 @@ export function AgentArtifactPreview({
     ? { ...artifact, content: liveContent, contentType: artifact.kind === "diff" ? "diff" : "markdown" }
     : contentQuery.data;
   return <Box sx={{ p: 1.5, minWidth: 0 }}>
-    <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} onOpenRun={onOpenRun} />
+    <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} />
     <FilePreview
       title={artifactLabel(artifact)}
       path={artifact.path}

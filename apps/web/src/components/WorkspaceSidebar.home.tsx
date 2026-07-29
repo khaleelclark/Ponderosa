@@ -1,11 +1,13 @@
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import {
+  Box,
   IconButton,
   ListItemButton,
   ListItemIcon,
@@ -19,6 +21,11 @@ import type {
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  agentStatusColor,
+  agentStatusLabel,
+  type AgentStatus,
+} from "../agents";
 import {
   sortWorkspaceResources,
   starredWorkspaceResources,
@@ -50,6 +57,16 @@ interface HomeSidebarPanelProps {
   ): void;
 }
 
+type HomeResource = {
+  id: string;
+  title: string;
+  detail: string;
+  updatedAt: string;
+  route: Route;
+  icon: JSX.Element;
+  status?: AgentStatus;
+};
+
 export function HomeSidebarPanel({
   snapshots,
   triggers,
@@ -68,6 +85,11 @@ export function HomeSidebarPanel({
   const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const starredResourceIds = starredWorkspaceResources(preferences);
+  const agentStatusById = new Map<string, AgentStatus>(
+    snapshots.flatMap(snapshot =>
+      snapshot.health.map(entry => [entry.agentId, entry.status] as const),
+    ),
+  );
   const agentDestinations = new Map(
     snapshots.flatMap(snapshot =>
       snapshot.agents.map(
@@ -75,7 +97,7 @@ export function HomeSidebarPanel({
       ),
     ),
   );
-  const resourceCatalog = [
+  const resourceCatalog: HomeResource[] = [
     ...snapshots.map(snapshot => ({
       id: `project:${snapshot.project.id}`,
       title: snapshot.project.label,
@@ -114,6 +136,7 @@ export function HomeSidebarPanel({
             agentId: agent.id,
           } as Route,
           icon: <SmartToyOutlinedIcon fontSize="small" />,
+          status: agentStatusById.get(agent.id) ?? "idle",
         })),
     ),
     ...triggers.flatMap(trigger => {
@@ -194,6 +217,20 @@ export function HomeSidebarPanel({
               }}
               secondaryTypographyProps={{ noWrap: true, fontSize: 11 }}
             />
+            {item.status === "running" || item.status === "compacting" ? (
+              <Box
+                title={agentStatusLabel(item.status)}
+                aria-label={agentStatusLabel(item.status)}
+                sx={{
+                  width: 9,
+                  height: 9,
+                  ml: 1,
+                  borderRadius: "50%",
+                  bgcolor: `${agentStatusColor(item.status)}.main`,
+                  flex: "0 0 auto",
+                }}
+              />
+            ) : null}
           </ListItemButton>
           <Tooltip
             title={starred ? `Unstar ${item.title}` : `Star ${item.title}`}
@@ -243,7 +280,7 @@ export function HomeSidebarPanel({
           }}
         >
           <ListItemIcon sx={{ minWidth: 38 }}>
-            <ChatBubbleOutlineIcon fontSize="small" />
+            <ForumOutlinedIcon fontSize="small" />
           </ListItemIcon>
           <ListItemText
             primary="Messages Across Ponderosa"

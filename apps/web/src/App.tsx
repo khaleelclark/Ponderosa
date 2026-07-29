@@ -173,6 +173,7 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const creationOriginByWorkspace = useRef(new Map<string, Route>());
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
@@ -390,6 +391,9 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
     recordWorkspaceRouteUse(next);
     const reusable = reusableWorkspaceTab(
       workspaceTabs,
@@ -399,6 +403,16 @@ export default function App({
     const targetKey = reusable?.key ?? activeWorkspaceTabKey;
     if (reusable) setActiveWorkspaceTabKey(targetKey);
     setWorkspaceTabs(current => navigateWorkspaceTab(current, targetKey, next));
+    navigate(next);
+  };
+  const replaceActiveWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
+    recordWorkspaceRouteUse(next);
+    setWorkspaceTabs(current =>
+      navigateWorkspaceTab(current, activeWorkspaceTabKey, next),
+    );
     navigate(next);
   };
   const activateWorkspaceView = (key: string) => {
@@ -435,9 +449,13 @@ export default function App({
       agentId?: string;
     },
   ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
     const destination: Route = {
       kind: "create",
       resource: kind,
+      surface: "workspace",
       ...(context?.projectId ? { projectId: context.projectId } : {}),
       ...(context?.conversationId
         ? { conversationId: context.conversationId }
@@ -447,8 +465,18 @@ export default function App({
         : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     };
-    if (route.kind === "create") navigateWorkspace(destination);
-    else openWorkspaceRoute(destination);
+    replaceActiveWorkspace(destination);
+  };
+  const replaceWorkspaceWithCreationForm = (
+    kind: "project" | "chat" | "agent" | "trigger",
+  ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
+    replaceActiveWorkspace({
+      kind: "create",
+      resource: kind,
+    });
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -499,6 +527,14 @@ export default function App({
     }
   };
   const cancelCreationWorkspace = () => {
+    const origin = creationOriginByWorkspace.current.get(
+      activeWorkspaceTabKey,
+    );
+    if (origin) {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+      replaceActiveWorkspace(origin);
+      return;
+    }
     if (workspaceTabs.length > 1) {
       closeWorkspaceView(activeWorkspaceTabKey);
       return;
@@ -677,7 +713,7 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreate={kind => openCreationForm(kind)}
+              onCreate={replaceWorkspaceWithCreationForm}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -780,7 +816,7 @@ export default function App({
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onOpenInNewTab={openWorkspaceRoute}
-          onCreate={openCreationForm}
+          onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}

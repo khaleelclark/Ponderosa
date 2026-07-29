@@ -25,14 +25,6 @@ function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   return <ArticleIcon fontSize="small" />;
 }
 
-function compactPath(path: string): string {
-  const parts = path.split("/");
-  if (parts.length <= 3) {
-    return path;
-  }
-  return `${parts[0]}/.../${parts.at(-1)}`;
-}
-
 function fileName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
@@ -59,7 +51,6 @@ export function ArtifactsPane({
   initialArtifactId,
   onSelectArtifact,
   onOpenArtifactInNewTab,
-  onOpenRun,
 }: {
   artifacts: ArtifactDto[];
   agentId: string;
@@ -68,7 +59,6 @@ export function ArtifactsPane({
   initialArtifactId?: string;
   onSelectArtifact?(artifactId: string): void;
   onOpenArtifactInNewTab?(artifactId: string): void;
-  onOpenRun(runId: string): void;
 }): JSX.Element {
   const orderedArtifacts = artifacts.filter((artifact) => artifact.kind !== "log").sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | undefined>(
@@ -143,6 +133,8 @@ export function ArtifactsPane({
                 const selected = artifact.id === selectedArtifactId;
                 return <ListItemButton
                   key={artifact.id}
+                  aria-label={`Open ${artifactDisplayLabel(artifact)} (${artifact.path})`}
+                  title={artifact.path}
                   id={telemetryElementId("artifacts", artifact.id)}
                   tabIndex={initialArtifactId === artifact.id ? -1 : undefined}
                   selected={selected}
@@ -157,7 +149,7 @@ export function ArtifactsPane({
                   <ListItemIcon sx={{ minWidth: 34, mt: 0.25, color: selected ? "primary.main" : "text.secondary" }}>{artifactIcon(artifact.kind)}</ListItemIcon>
                   <ListItemText
                     primary={artifactDisplayLabel(artifact)}
-                    secondary={<>{compactPath(artifact.path)}<br />{new Date(artifact.createdAt).toLocaleString()}</>}
+                    secondary={new Date(artifact.createdAt).toLocaleString()}
                     primaryTypographyProps={{ variant: "body2", fontWeight: selected ? 750 : 600, noWrap: true }}
                     secondaryTypographyProps={{ variant: "caption", color: "text.secondary", component: "span", sx: { lineHeight: 1.35 } }}
                     sx={{ minWidth: 0, m: 0 }}
@@ -168,7 +160,7 @@ export function ArtifactsPane({
           </Box>)}
         </Box>
         <Box sx={{ minWidth: 0, minHeight: 0, overflow: "auto", bgcolor: "background.default" }}>
-        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} onOpenRun={onOpenRun} liveContent={liveContent} />
+        <AgentArtifactPreview artifact={selectedArtifact} agentId={agentId} agentTitle={agentTitle} liveContent={liveContent} />
         </Box>
       </Box>
       <ResourceContextMenu state={artifactMenu} onClose={() => setArtifactMenu(undefined)} onOpenInNewTab={onOpenArtifactInNewTab} />

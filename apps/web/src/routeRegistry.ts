@@ -12,6 +12,7 @@ export type RouteTabIcon =
   | "dataUsage"
   | "difference"
   | "folder"
+  | "forum"
   | "home"
   | "language"
   | "menuBook"
@@ -66,6 +67,7 @@ const ROUTE_REGISTRY = {
       if (route.conversationId) query.set("chat", route.conversationId);
       if (route.managerAgentId) query.set("manager", route.managerAgentId);
       if (route.agentId) query.set("agent", route.agentId);
+      if (route.surface) query.set("surface", route.surface);
       return `/create/${route.resource}${query.size ? `?${query.toString()}` : ""}`;
     },
     workspaceTabKey: () => "create",
@@ -88,7 +90,7 @@ const ROUTE_REGISTRY = {
     toPath: () => "/messages",
     workspaceTabKey: () => "all-chat",
     tabLabel: () => "Messages Across Ponderosa",
-    tabIcon: "chat",
+    tabIcon: "forum",
     scope: "global",
     initialSidebarSection: "home",
   },
@@ -138,9 +140,9 @@ const ROUTE_REGISTRY = {
   usage: {
     toPath: route =>
       `/usage${route.projectId ? `?project=${encodeURIComponent(route.projectId)}` : ""}`,
-    workspaceTabKey: route => `usage:${route.projectId ?? "overall"}`,
-    tabLabel: () => "Provider Activity",
-    tabIcon: "dataUsage",
+    workspaceTabKey: () => "settings",
+    tabLabel: () => "Settings",
+    tabIcon: "settings",
     scope: "global",
     initialSidebarSection: "settings",
     synchronizedSidebarSection: "settings",
@@ -286,12 +288,14 @@ export function routeTabIcon(route: Route): RouteTabIcon {
 export function routeInitialSidebarSection(
   route: Route,
 ): RouteSidebarSection {
+  if (route.kind === "create" && route.surface === "workspace") return "home";
   return entryFor(route).initialSidebarSection;
 }
 
 export function routeSynchronizedSidebarSection(
   route: Route,
 ): RouteSidebarSection | undefined {
+  if (route.kind === "create" && route.surface === "workspace") return undefined;
   return entryFor(route).synchronizedSidebarSection;
 }
 

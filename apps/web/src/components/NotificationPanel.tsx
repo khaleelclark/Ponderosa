@@ -48,9 +48,8 @@ function notificationsNewestFirst(notifications: WorkspaceNotificationDto[]): Wo
   return [...notifications].sort(compareNotificationsNewestFirst);
 }
 
-function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "mentions" | "urgent"): WorkspaceNotificationDto[] {
+function filterNotifications(notifications: WorkspaceNotificationDto[], filter: "all" | "urgent"): WorkspaceNotificationDto[] {
   const visible = notifications.filter(visibleNotification);
-  if (filter === "mentions") return visible.filter((item) => !item.readAt && item.kind === "mentions");
   if (filter === "urgent") return visible.filter(isOpenAttention);
   return visible;
 }
@@ -108,7 +107,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
   const queryClient = useQueryClient();
   const [pending, setPending] = useState<"read" | "clear">();
   const [pendingProjectId, setPendingProjectId] = useState<string>();
-  const [filter, setFilter] = useState<"all" | "mentions" | "urgent">("all");
+  const [filter, setFilter] = useState<"all" | "urgent">("all");
   const [error, setError] = useState<string>();
   const visibleNotifications = filterNotifications(notifications, filter);
   const projectIds = useMemo(() => [...new Set(visibleNotifications.map((item) => item.projectId).filter((id): id is string => Boolean(id)))], [visibleNotifications]);
@@ -236,10 +235,9 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
         <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
     </DialogTitle>
-    <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "mentions" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
+    <Tabs value={filter} onChange={(_event, value) => setFilter(value as "all" | "urgent")} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="all" label={`All (${filterNotifications(notifications, "all").length})`} sx={{ minHeight: 42 }} />
       <Tab value="urgent" label={`Issues (${filterNotifications(notifications, "urgent").length})`} sx={{ minHeight: 42 }} />
-      <Tab value="mentions" label={`Mentions (${filterNotifications(notifications, "mentions").length})`} sx={{ minHeight: 42 }} />
     </Tabs>
     <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
@@ -281,7 +279,7 @@ export function NotificationPanel({ open, projects, notifications, onClose, onNa
             </List>
           </Box>;
         })}
-        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "mentions" ? "No mentions" : filter === "urgent" ? "No current issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "mentions" ? "Messages that mention you will appear here." : filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New agent responses and mentions will appear here."}</Typography></Box> : null}
+        {visibleNotifications.length === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "urgent" ? "No current issues" : "No notifications"}</Typography><Typography variant="body2" color="text.secondary">{filter === "urgent" ? "Open decisions, blockers, and failures stay here even after you have seen them." : "New activity that needs your attention will appear here."}</Typography></Box> : null}
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: 2, py: 1.25 }}>

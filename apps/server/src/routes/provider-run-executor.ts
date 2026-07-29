@@ -34,6 +34,7 @@ import type {
 } from "../app-contracts.js";
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
+import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
 function humanizeProviderName(value: string): string {
@@ -87,6 +88,8 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
+  runtimeAttachmentDirectory: string | undefined;
+  runtimeAttachmentCleanupAfterRun: boolean;
   seedHistory: ChatMessage[];
   sourceChannel: "main" | "individual";
   v3FencingToken: number | undefined;
@@ -194,6 +197,8 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
+    runtimeAttachmentDirectory,
+    runtimeAttachmentCleanupAfterRun,
     seedHistory,
     sourceChannel,
     v3FencingToken,
@@ -980,7 +985,13 @@ export function startProviderRunExecution(
   }).catch(() => undefined);
   const cleanup = execution.finally(async () => {
     const oneShot = oneShotRuntime(agent.id, runId);
-    if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
+    try {
+      if (oneShot) await teardownOneShotRuntime(oneShot, "Run completion");
+    } finally {
+      if (runtimeAttachmentCleanupAfterRun) {
+        await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+      }
+    }
   });
   void cleanup.catch((error) => app.log.error({ err: error, agentId: agent.id, runId }, "provider Run cleanup remains pending"));
 

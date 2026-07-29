@@ -1,14 +1,13 @@
 import ArticleOutlinedIcon from "@mui/icons-material/ArticleOutlined";
 import CodeOutlinedIcon from "@mui/icons-material/CodeOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
-import SearchIcon from "@mui/icons-material/Search";
 import {
-  Alert, Box, Chip, CircularProgress, Divider, InputAdornment, Link, List,
-  ListItemButton, ListItemText, MenuItem, Paper, Stack, TextField, Typography,
+  Alert, Box, Chip, CircularProgress, Divider, Link, List,
+  ListItemButton, ListItemText, MenuItem, Stack, TextField, Typography,
 } from "@mui/material";
 import type { WikiArticleSummaryDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api } from "../api";
@@ -25,40 +24,21 @@ function articleIdFromRef(ref: string): string {
 }
 
 export function WikiView({ articleId, navigate }: { articleId?: string; navigate(route: Route): void }): JSX.Element {
-  const [search, setSearch] = useState("");
   const index = useQuery({ queryKey: queryKeys.wiki.index, queryFn: () => api.getWikiIndex(), staleTime: 60_000 });
   const articles = useMemo(() => index.data?.sections.flatMap((section) => section.articles) ?? [], [index.data]);
   const activeId = articleId ?? articles[0]?.id;
   const article = useQuery({
     queryKey: queryKeys.wiki.article(activeId), queryFn: () => api.getWikiArticle(activeId!), enabled: Boolean(activeId), staleTime: 60_000,
   });
-  const normalizedSearch = search.trim();
-  const results = useQuery({
-    queryKey: queryKeys.wiki.search(normalizedSearch), queryFn: () => api.searchWiki(normalizedSearch, 20),
-    enabled: normalizedSearch.length >= 2, staleTime: 30_000,
-  });
   const open = (candidate: WikiArticleSummaryDto) => {
-    setSearch("");
     navigate({ kind: "wiki", articleId: candidate.id });
   };
 
   return <Box sx={{ minHeight: 0, height: "100%", overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
-    <Paper component="header" square elevation={0} sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: 1, borderColor: "divider" }}>
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ alignItems: { sm: "center" } }}>
-        <Box sx={{ flex: 1, minWidth: { sm: 230 } }}>
-          <IconTitle icon={<MenuBookOutlinedIcon />} title="Ponderosa Wiki" component="h1" />
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>Version-controlled product guide</Typography>
-        </Box>
-        <Box sx={{ position: "relative", flex: 1, maxWidth: 720 }}>
-          <TextField fullWidth size="small" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search product documentation" inputProps={{ "aria-label": "Search product documentation" }} InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }} />
-          {normalizedSearch.length >= 2 ? <Paper role="listbox" aria-label="Wiki search results" elevation={6} sx={{ position: "absolute", top: "calc(100% + 8px)", left: 0, right: 0, maxHeight: 360, overflow: "auto", zIndex: 10, border: 1, borderColor: "divider" }}>
-            {results.isLoading ? <Stack direction="row" spacing={1} sx={{ p: 2, alignItems: "center" }}><CircularProgress size={18} /><Typography variant="body2">Searching…</Typography></Stack> : null}
-            {results.data?.results.map((result) => <ListItemButton key={result.article.id} role="option" onClick={() => open(result.article)} sx={{ alignItems: "flex-start" }}><ListItemText primary={result.article.title} secondary={result.snippet} primaryTypographyProps={{ fontWeight: 750 }} secondaryTypographyProps={{ sx: { display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }} /></ListItemButton>)}
-            {results.data && results.data.results.length === 0 ? <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>No documentation matches “{normalizedSearch}”.</Typography> : null}
-          </Paper> : null}
-        </Box>
-      </Stack>
-    </Paper>
+    <Box component="header" sx={{ px: { xs: 2, md: 3 }, py: 2, borderBottom: 1, borderColor: "divider" }}>
+      <IconTitle icon={<MenuBookOutlinedIcon />} title="Ponderosa Wiki" component="h1" />
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.15 }}>Version-controlled product guide</Typography>
+    </Box>
 
     <Box sx={{ minHeight: 0, width: "100%", display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", xl: "minmax(0, 1fr) 280px" }, overflow: "hidden" }}>
       <Box component="article" className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, sm: 4, lg: 6 }, py: { xs: 2.5, md: 4 }, scrollBehavior: "smooth" }}>

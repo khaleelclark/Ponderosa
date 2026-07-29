@@ -1,5 +1,6 @@
 import TagIcon from "@mui/icons-material/Tag";
 import { ButtonBase, IconButton, Tooltip } from "@mui/material";
+import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
 import type {
   AgentActivityDto,
   AgentRunDto,
@@ -39,7 +40,9 @@ function CommunicationSourceLink({
 }): JSX.Element {
   const projectBroadcast = message.communicationIntent === "broadcast";
   const sourceLabel = projectBroadcast
-    ? "to Project Chat"
+    ? outgoing
+      ? "to Project Chat"
+      : "via Project Chat"
     : outgoing
       ? "to Team Chat"
       : "via Team Chat";
@@ -218,17 +221,36 @@ function ChatPaneComponent({
       const request = run.communicationEventId
         ? messageByCommunicationId.get(run.communicationEventId)
         : undefined;
-      const anchor = response ?? request;
-      if (!anchor) {
-        standalone.push(run);
+      if (response) {
+        const placedRuns = afterMessage.get(response.id);
+        if (placedRuns) placedRuns.push(run);
+        else afterMessage.set(response.id, [run]);
         continue;
       }
-      const placedRuns = afterMessage.get(anchor.id);
-      if (placedRuns) placedRuns.push(run);
-      else afterMessage.set(anchor.id, [run]);
+
+      const runEntries = activityByRun.get(run.id) ?? [];
+      const hasVisibleActivity = runEntries.some(
+        entry =>
+          entry.kind !== "run_header" &&
+          !(
+            entry.kind === "tool" &&
+            entry.name === PONDEROSA_MESSAGE_TOOL.name &&
+            entry.result?.isError !== true
+          ),
+      );
+      const representedByDeliveryStatus =
+        request?.role === "user" &&
+        Boolean(request.deliveryReceipts?.length) &&
+        !hasVisibleActivity;
+      if (!representedByDeliveryStatus) standalone.push(run);
     }
     return { afterMessage, standalone };
-  }, [agentChat.runs, chatMessages, messageByCommunicationId]);
+  }, [
+    activityByRun,
+    agentChat.runs,
+    chatMessages,
+    messageByCommunicationId,
+  ]);
   const timeline = useMemo(
     () =>
       [

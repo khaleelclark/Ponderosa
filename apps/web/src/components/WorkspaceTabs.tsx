@@ -6,6 +6,7 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import DifferenceOutlinedIcon from "@mui/icons-material/DifferenceOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
+import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
 import LanguageIcon from "@mui/icons-material/Language";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
@@ -52,6 +53,7 @@ const TAB_ICONS = {
   dataUsage: DataUsageOutlinedIcon,
   difference: DifferenceOutlinedIcon,
   folder: FolderOutlinedIcon,
+  forum: ForumOutlinedIcon,
   home: HomeOutlinedIcon,
   language: LanguageIcon,
   menuBook: MenuBookOutlinedIcon,

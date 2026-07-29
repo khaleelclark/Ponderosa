@@ -51,6 +51,10 @@ import { registerServerControlRoutes } from "./routes/server-control.js";
 import { createRuntimeAuthority } from "./runtime-authority.js";
 import { createRuntimeEventAuthority } from "./runtime-event-authority.js";
 import { RuntimeElicitationBroker } from "./runtime-elicitation-broker.js";
+import {
+  cleanupAgentRuntimeAttachments,
+  cleanupAllRuntimeAttachments,
+} from "./runtime-attachments.js";
 import type { ServerContext } from "./server-context.js";
 import { registerServerLifecycle } from "./server-lifecycle.js";
 import { createServerReadModels } from "./server-read-models.js";
@@ -97,6 +101,9 @@ export {
 export type { CreateServerOptions, EngineRegistration, PonderosaServer } from "./app-contracts.js";
 
 export function createServer(opts: CreateServerOptions): PonderosaServer {
+  // Provider processes and their opaque sessions do not survive a daemon
+  // restart, so no runtime-only attachment path can remain authoritative.
+  cleanupAllRuntimeAttachments(opts.dataDir);
   const {
     networkSecurity,
     launcherNow,
@@ -337,6 +344,9 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reason: Parameters<typeof store.clearResumeSession>[1],
   ): boolean => {
     contextRolloverPending.delete(agentId);
+    if (!activeRuns.has(agentId)) {
+      cleanupAgentRuntimeAttachments(opts.dataDir, agentId);
+    }
     return store.clearResumeSession(agentId, reason);
   };
   // Capability used only by this server's queue dispatcher. It prevents a client

@@ -23,6 +23,9 @@ export function useAgentRunCancellation(
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.detailPrefix(agentId),
       });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.healthAll,
+      });
     },
   });
   const stopActiveRun = () => {

@@ -1,4 +1,3 @@
-import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -10,7 +9,6 @@ import {
   Button,
   FormControl,
   FormControlLabel,
-  IconButton,
   InputLabel,
   MenuItem,
   Paper,
@@ -19,7 +17,6 @@ import {
   Select,
   Stack,
   TextField,
-  Tooltip,
   Typography,
   createFilterOptions,
 } from "@mui/material";
@@ -48,7 +45,6 @@ import {
 } from "../projectLifecycle";
 import { queryKeys } from "../queryKeys";
 import type { Route } from "../routing";
-import { pickAgentName } from "../parkNames";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { HostFolderPicker } from "./HostFolderPicker";
 import { IconTitle } from "./IconTitle";
@@ -98,11 +94,9 @@ const resourcePresentation = {
 
 function CreateSurface({
   route,
-  onBack,
   children,
 }: {
   route: Extract<Route, { kind: "create" }>;
-  onBack(): void;
   children: ReactNode;
 }): JSX.Element {
   const presentation = resourcePresentation[route.resource];
@@ -112,23 +106,12 @@ function CreateSurface({
       sx={{ minHeight: 0, overflowY: "auto", px: { xs: 2, md: 4 }, py: 3 }}
     >
       <Box sx={{ width: "100%", maxWidth: 780, mx: "auto" }}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start", mb: 2.5 }}>
-          <Tooltip title="Return to previous workspace">
-            <IconButton
-              aria-label="Return to previous workspace"
-              onClick={onBack}
-              sx={{ mt: -0.75, ml: -1 }}
-            >
-              <ArrowBackIcon />
-            </IconButton>
-          </Tooltip>
-          <Box sx={{ minWidth: 0 }}>
-            <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
-            <Typography color="text.secondary" sx={{ mt: 0.5 }}>
-              {presentation.description}
-            </Typography>
-          </Box>
-        </Stack>
+        <Box sx={{ minWidth: 0, mb: 2.5 }}>
+          <IconTitle icon={presentation.icon} title={presentation.title} component="h1" />
+          <Typography color="text.secondary" sx={{ mt: 0.5 }}>
+            {presentation.description}
+          </Typography>
+        </Box>
         <Paper variant="outlined" sx={{ p: { xs: 2, sm: 3 } }}>
           {children}
         </Paper>
@@ -349,7 +332,6 @@ function ChatCreateForm({
 
 function TriggerCreateForm({
   projects,
-  engines,
   initialProjectId,
   initialConversationId,
   initialAgentId,
@@ -357,14 +339,12 @@ function TriggerCreateForm({
   onCreated,
 }: {
   projects: ProjectDto[];
-  engines: EngineDto[];
   initialProjectId?: string;
   initialConversationId?: string;
   initialAgentId?: string;
   onCancel(): void;
   onCreated(projectId: string, agentId: string): void;
 }): JSX.Element {
-  const queryClient = useQueryClient();
   const agentQueries = useProjectAgents(projects);
   const conversationQueries = useProjectConversations(projects);
   const options = projects
@@ -408,86 +388,13 @@ function TriggerCreateForm({
     );
   }, [initialAgentId, options.map(option => option.agent.id).join(":")]);
   const selectedOption = options.find(option => option.agent.id === agentId);
-  const [creatingAgent, setCreatingAgent] = useState(false);
-  const [newAgentProjectId, setNewAgentProjectId] = useState("");
-  const [newAgentName, setNewAgentName] = useState("");
-  const newAgentProjectIndex = projects.findIndex(
-    project => project.id === newAgentProjectId,
-  );
-  const newAgentProject =
-    newAgentProjectIndex >= 0 ? projects[newAgentProjectIndex] : undefined;
-  const newAgentProjectChats = newAgentProjectIndex >= 0
-    ? (conversationQueries[newAgentProjectIndex]?.data ?? []).filter(
-      chat => !chat.archived,
-    )
-    : [];
-  const newAgentConversation = initialConversationId
-    ? newAgentProjectChats.find(chat => chat.id === initialConversationId)
-    : newAgentProjectChats[0];
-  const quickCreateEngine =
-    newAgentProject?.defaultEngine ??
-    engines.find(engineIsAvailable)?.id ??
-    engines[0]?.id ??
-    "";
-  const createAgent = useMutation({
-    mutationFn: () => api.createAgent(
-      newAgentProjectId,
-      newAgentConversation!.id,
-      {
-        title: newAgentName.trim(),
-        engine: quickCreateEngine,
-        model: newAgentProject?.defaultModel,
-        effort: newAgentProject?.defaultEffort,
-      },
-    ),
-    onSuccess: agent => {
-      queryClient.setQueryData<AgentDto[]>(
-        queryKeys.agents.project(newAgentProjectId),
-        (current = []) =>
-          current.some(item => item.id === agent.id)
-            ? current
-            : [...current, agent],
-      );
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.agents.project(newAgentProjectId),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.conversations.detailPrefix(newAgentConversation!.id),
-      });
-      setAgentId(agent.id);
-      setCreatingAgent(false);
-      setNewAgentName("");
-    },
-  });
-  const beginAgentCreation = () => {
-    createAgent.reset();
-    const projectId =
-      selectedOption?.project.id ??
-      (projects.some(project => project.id === initialProjectId)
-        ? initialProjectId!
-        : projects[0]?.id ?? "");
-    const projectIndex = projects.findIndex(project => project.id === projectId);
-    const projectAgents =
-      projectIndex >= 0 ? agentQueries[projectIndex]?.data ?? [] : [];
-    setNewAgentProjectId(projectId);
-    setNewAgentName(pickAgentName(projectAgents.map(agent => agent.title)));
-    setCreatingAgent(true);
-  };
   return (
     <Stack spacing={2.25}>
-      <Stack
-        direction={{ xs: "column", sm: "row" }}
-        spacing={1}
-        sx={{ alignItems: { sm: "flex-start" } }}
-      >
-        <Autocomplete
+      <Autocomplete
           fullWidth
           options={options}
           value={selectedOption ?? null}
-          onChange={(_event, value) => {
-            setAgentId(value?.agent.id ?? "");
-            setCreatingAgent(false);
-          }}
+          onChange={(_event, value) => setAgentId(value?.agent.id ?? "")}
           filterOptions={filterTriggerAgents}
           groupBy={option => option.project.label}
           getOptionLabel={option =>
@@ -521,112 +428,11 @@ function TriggerCreateForm({
               </Box>
             </Box>
           )}
-          sx={{ flex: 1, minWidth: 0 }}
         />
-        <Button
-          variant="outlined"
-          startIcon={<SmartToyOutlinedIcon />}
-          disabled={!projects.length}
-          onClick={beginAgentCreation}
-          sx={{ minHeight: 56, whiteSpace: "nowrap" }}
-        >
-          Create Dedicated Agent
-        </Button>
-      </Stack>
       {agentQueries.some(query => query.isLoading) ? (
         <Typography variant="body2" color="text.secondary">Loading Agents…</Typography>
       ) : null}
-      {creatingAgent ? (
-        <Paper variant="outlined" sx={{ p: 2.25, bgcolor: "action.hover" }}>
-          <Stack spacing={2}>
-            <Box>
-              <Typography variant="subtitle1" fontWeight={750}>Create a Dedicated Agent</Typography>
-              <Typography variant="body2" color="text.secondary">
-                Ponderosa will handle its runtime and Chat assignment.
-              </Typography>
-            </Box>
-            <FormControl fullWidth>
-              <InputLabel id="quick-trigger-agent-project-label">Project</InputLabel>
-              <Select
-                labelId="quick-trigger-agent-project-label"
-                label="Project"
-                value={newAgentProjectId}
-                disabled={Boolean(initialProjectId)}
-                onChange={event => {
-                  const nextProjectId = event.target.value;
-                  const nextIndex = projects.findIndex(
-                    project => project.id === nextProjectId,
-                  );
-                  const nextAgents =
-                    nextIndex >= 0 ? agentQueries[nextIndex]?.data ?? [] : [];
-                  setNewAgentProjectId(nextProjectId);
-                  setNewAgentName(
-                    pickAgentName(nextAgents.map(agent => agent.title)),
-                  );
-                }}
-              >
-                {projects
-                  .filter(project =>
-                    !initialProjectId || project.id === initialProjectId)
-                  .map(project => (
-                  <MenuItem key={project.id} value={project.id}>
-                    {project.label}
-                  </MenuItem>
-                  ))}
-              </Select>
-            </FormControl>
-            <TextField
-              label="Agent Name"
-              value={newAgentName}
-              onChange={event => setNewAgentName(event.target.value)}
-              autoFocus
-              fullWidth
-            />
-            <Typography variant="body2" color="text.secondary">
-              Uses {newAgentProject?.label ?? "the Project"} defaults
-              {newAgentConversation
-                ? ` and joins ${newAgentConversation.title}.`
-                : "."}
-            </Typography>
-            {newAgentProject &&
-            !conversationQueries[newAgentProjectIndex]?.isLoading &&
-            !newAgentConversation ? (
-              <Alert severity="info">
-                Create a Chat in this Project before creating a dedicated Agent.
-              </Alert>
-            ) : null}
-            {!quickCreateEngine ? (
-              <Alert severity="error">Configure an available Project runtime before creating this Agent.</Alert>
-            ) : null}
-            {createAgent.isError ? <Alert severity="error">{String(createAgent.error)}</Alert> : null}
-            <Stack direction="row" spacing={1} sx={{ justifyContent: "flex-end" }}>
-              <Button
-                disabled={createAgent.isPending}
-                onClick={() => {
-                  createAgent.reset();
-                  setCreatingAgent(false);
-                }}
-              >
-                Use Existing Agent
-              </Button>
-              <Button
-                variant="contained"
-                disabled={
-                  !newAgentProjectId ||
-                  !newAgentConversation ||
-                  !newAgentName.trim() ||
-                  !quickCreateEngine ||
-                  createAgent.isPending
-                }
-                onClick={() => createAgent.mutate()}
-              >
-                {createAgent.isPending ? "Creating…" : "Create and Use Agent"}
-              </Button>
-            </Stack>
-          </Stack>
-        </Paper>
-      ) : null}
-      {!creatingAgent && selectedOption ? (
+      {selectedOption ? (
         <TriggersPane
           key={selectedOption.agent.id}
           agent={selectedOption.agent}
@@ -637,11 +443,11 @@ function TriggerCreateForm({
             onCreated(selectedOption.project.id, selectedOption.agent.id)}
           onCancelCreate={onCancel}
         />
-      ) : !creatingAgent ? (
+      ) : (
         <Stack direction="row" sx={{ justifyContent: "flex-end" }}>
           <Button onClick={onCancel}>Cancel</Button>
         </Stack>
-      ) : null}
+      )}
     </Stack>
   );
 }
@@ -662,7 +468,7 @@ export function CreateWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   return (
-    <CreateSurface route={route} onBack={onCancel}>
+    <CreateSurface route={route}>
       {route.resource === "project" ? (
         <ProjectCreateForm
           engines={engines}
@@ -697,7 +503,6 @@ export function CreateWorkspace({
       ) : (
         <TriggerCreateForm
           projects={projects}
-          engines={engines}
           initialProjectId={route.projectId}
           initialConversationId={route.conversationId}
           initialAgentId={route.agentId}

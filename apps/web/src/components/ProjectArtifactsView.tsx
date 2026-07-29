@@ -107,7 +107,6 @@ export function ProjectArtifactsView({
   onOpenEngineStatus,
   onOpenArtifact,
   onOpenArtifactInNewTab,
-  onOpenRun,
   onOpenAgentWork,
   conversations,
   onOpenBrowser = () => undefined,
@@ -141,7 +140,6 @@ export function ProjectArtifactsView({
   onOpenEngineStatus(): void;
   onOpenArtifact(agentId: string, artifactId: string): void;
   onOpenArtifactInNewTab?(agentId: string, artifactId: string): void;
-  onOpenRun(agentId: string, runId: string): void;
   onOpenAgentWork(): void;
   conversations: ConversationDto[];
   onOpenBrowser?(): void;
@@ -660,7 +658,8 @@ export function ProjectArtifactsView({
                             }}
                           >
                             <ListItemButton
-                              aria-label={`Open ${label} from ${owner}`}
+                              aria-label={`Open ${label} (${artifact.sourcePath ?? artifact.path}) from ${owner}`}
+                              title={artifact.sourcePath ?? artifact.path}
                               disabled={!canOpen}
                               onContextMenu={event => {
                                 if (!agent) return;
@@ -689,7 +688,15 @@ export function ProjectArtifactsView({
                               </ListItemIcon>
                               <ListItemText
                                 primary={label}
-                                secondary={`${owner}${artifact.executionId ? ` · Run ${artifact.executionId.slice(0, 8)}` : ""} · ${artifact.visibility === "published" ? "Published" : "Project"} · ${artifact.sourcePath ?? artifact.path}`}
+                                secondary={[
+                                  owner,
+                                  artifact.executionId
+                                    ? `Run ${artifact.executionId.slice(0, 8)}`
+                                    : "No Run",
+                                  artifact.visibility === "published"
+                                    ? "Published"
+                                    : "Project",
+                                ].join(" · ")}
                                 primaryTypographyProps={{
                                   fontWeight: 750,
                                   noWrap: true,
@@ -732,20 +739,6 @@ export function ProjectArtifactsView({
                                 </Typography>
                               </Stack>
                             </ListItemButton>
-                            {artifact.kind === "diff" ? (
-                              <Button
-                                aria-label={`Preview ${label}`}
-                                onClick={() => setPreviewArtifact(artifact)}
-                                size="small"
-                                sx={{
-                                  display: { xs: "none", lg: "inline-flex" },
-                                  mr: 0.5,
-                                  flexShrink: 0,
-                                }}
-                              >
-                                View Diff
-                              </Button>
-                            ) : null}
                             {artifact.previewUrl ? (
                               <Button
                                 aria-label={`Preview ${label}`}
@@ -849,76 +842,55 @@ export function ProjectArtifactsView({
         onClose={() => setPreviewArtifact(undefined)}
         fullWidth
         maxWidth="lg"
+        aria-labelledby="artifact-preview-title"
       >
-        <DialogTitle>
-          {previewArtifact
-            ? artifactDisplayLabel(previewArtifact)
-            : "File Preview"}
+        <DialogTitle component="div">
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            flexWrap="wrap"
+            sx={{ alignItems: "center" }}
+          >
+            <Typography
+              component="h2"
+              variant="h6"
+              id="artifact-preview-title"
+              sx={{ m: 0 }}
+            >
+              {previewArtifact
+                ? artifactDisplayLabel(previewArtifact)
+                : "File Preview"}
+            </Typography>
+            {previewArtifact ? (
+              <>
+                <Chip
+                  size="small"
+                  label={`Created by ${agents.find(agent => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`}
+                />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={
+                    previewArtifact.visibility === "published"
+                      ? "Published"
+                      : "Project Scope"
+                  }
+                />
+              </>
+            ) : null}
+          </Stack>
         </DialogTitle>
         <DialogContent
           sx={{
             minWidth: 0,
-            p: { xs: 1, sm: 2 },
+            px: { xs: 1, sm: 2 },
+            pt: { xs: "12px !important", sm: "20px !important" },
+            pb: { xs: 1, sm: 2 },
             bgcolor: "background.default",
             overflow: "auto",
           }}
         >
-          {previewArtifact ? (
-            <Stack
-              direction="row"
-              spacing={0.75}
-              useFlexGap
-              flexWrap="wrap"
-              sx={{ mb: 1.25, alignItems: "center" }}
-            >
-              <Chip
-                size="small"
-                label={`Created by ${agents.find(agent => agent.id === (previewArtifact.originAgentId ?? previewArtifact.agentId))?.title ?? "deleted Agent"}`}
-              />
-              {previewArtifact.executionId ? (
-                (() => {
-                  const originAgentId =
-                    previewArtifact.originAgentId ?? previewArtifact.agentId;
-                  const originAgent = agents.find(
-                    agent => agent.id === originAgentId,
-                  );
-                  return originAgent ? (
-                    <Button
-                      size="small"
-                      aria-label={`Open originating Run ${previewArtifact.executionId}`}
-                      onClick={() =>
-                        onOpenRun(originAgent.id, previewArtifact.executionId!)
-                      }
-                    >
-                      Generated from Run{" "}
-                      {previewArtifact.executionId.slice(0, 8)}
-                    </Button>
-                  ) : (
-                    <Chip
-                      size="small"
-                      variant="outlined"
-                      label={`Run ${previewArtifact.executionId.slice(0, 8)} · originating Agent deleted`}
-                    />
-                  );
-                })()
-              ) : (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label="No originating Run recorded"
-                />
-              )}
-              <Chip
-                size="small"
-                variant="outlined"
-                label={
-                  previewArtifact.visibility === "published"
-                    ? "Published"
-                    : "Project Scope"
-                }
-              />
-            </Stack>
-          ) : null}
           {previewArtifact ? (
             <ProjectArtifactPreview
               key={previewArtifact.id}
