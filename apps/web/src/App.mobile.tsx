@@ -1,10 +1,10 @@
 import AddIcon from "@mui/icons-material/Add";
 import CloseIcon from "@mui/icons-material/Close";
+import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
 import MenuIcon from "@mui/icons-material/Menu";
 import MoreVertIcon from "@mui/icons-material/MoreVert";
 import NotificationsOutlinedIcon from "@mui/icons-material/NotificationsOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
-import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import SpeedOutlinedIcon from "@mui/icons-material/SpeedOutlined";
 import {
@@ -164,15 +164,22 @@ export function MobileWorkspaceHeader({
             secondary={engineAvailability.label}
           />
         </MenuItem>
-        <MenuItem
-          onClick={() => {
-            setOverflowAnchor(undefined);
-            onOpenNavigation();
-          }}
-        >
-          <ListItemIcon><SearchIcon /></ListItemIcon>
-          <ListItemText>Browse Workspaces</ListItemText>
-        </MenuItem>
+        <ProviderQuotaIndicator
+          preferredProvider={preferredQuotaProvider}
+          mobile
+          renderTrigger={openUsage => (
+            <MenuItem
+              onClick={event => {
+                const usageAnchor = overflowAnchor ?? event.currentTarget;
+                setOverflowAnchor(undefined);
+                openUsage(usageAnchor);
+              }}
+            >
+              <ListItemIcon><DataUsageOutlinedIcon /></ListItemIcon>
+              <ListItemText>Provider Usage</ListItemText>
+            </MenuItem>
+          )}
+        />
         <Divider />
         <MenuItem
           onClick={() => {
