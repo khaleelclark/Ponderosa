@@ -118,6 +118,34 @@ test("secure file authority retains root-relative no-follow access", async () =>
       temporaryLeaf: ".artifact.collision.tmp",
       body: Buffer.from("collision"),
     }));
+    writeSecureFileAtomic({
+      root,
+      relativeDirectory: "managed/content",
+      leaf: "race",
+      temporaryLeaf: ".race.test.tmp",
+      body: Buffer.from("original"),
+    });
+    const publishedEntry = listSecureDirectory({
+      root,
+      relativePath: "managed/content",
+    })?.find(({ name }) => name === "race");
+    assert.ok(publishedEntry?.identity);
+    rmSync(path.join(root, "managed", "content", "race"));
+    writeFileSync(path.join(root, "managed", "content", "race"), "replacement");
+    assert.throws(() => removeSecureFile({
+      root,
+      relativeDirectory: "managed/content",
+      leaf: "race",
+      expectedIdentity: publishedEntry.identity,
+    }));
+    assert.equal(
+      readSecureFile({
+        root,
+        relativePath: "managed/content/race",
+        maxBytes: 16,
+      })?.toString(),
+      "replacement",
+    );
     assert.equal(removeSecureFile({
       root,
       relativeDirectory: "managed/content",

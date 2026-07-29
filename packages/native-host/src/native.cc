@@ -4,6 +4,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -115,6 +116,28 @@ bool SameIdentity(const struct stat& left, const struct stat& right) {
       (left.st_mode & S_IFMT) == (right.st_mode & S_IFMT);
 }
 
+bool SameContentState(const struct stat& left, const struct stat& right) {
+#ifdef __APPLE__
+  return left.st_size == right.st_size &&
+      left.st_mtimespec.tv_sec == right.st_mtimespec.tv_sec &&
+      left.st_mtimespec.tv_nsec == right.st_mtimespec.tv_nsec &&
+      left.st_ctimespec.tv_sec == right.st_ctimespec.tv_sec &&
+      left.st_ctimespec.tv_nsec == right.st_ctimespec.tv_nsec;
+#else
+  return left.st_size == right.st_size &&
+      left.st_mtim.tv_sec == right.st_mtim.tv_sec &&
+      left.st_mtim.tv_nsec == right.st_mtim.tv_nsec &&
+      left.st_ctim.tv_sec == right.st_ctim.tv_sec &&
+      left.st_ctim.tv_nsec == right.st_ctim.tv_nsec;
+#endif
+}
+
+std::string IdentityToken(const struct stat& identity) {
+  return std::to_string(static_cast<unsigned long long>(identity.st_dev)) +
+      ":" +
+      std::to_string(static_cast<unsigned long long>(identity.st_ino));
+}
+
 napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
   size_t argc = 4;
   napi_value args[4];
@@ -176,7 +199,7 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
 
   struct stat after{};
   if (fstat(descriptors.values.back(), &after) != 0 ||
-      !SameIdentity(before, after) || before.st_size != after.st_size ||
+      !SameIdentity(before, after) || !SameContentState(before, after) ||
       after.st_nlink != 1) {
     return Null(env);
   }
@@ -195,7 +218,9 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
     if (fstatat(
             descriptors.values[index], components[index].c_str(), &current,
             AT_SYMLINK_NOFOLLOW) != 0 ||
-        !SameIdentity(identities[index + 1], current)) {
+        !SameIdentity(identities[index + 1], current) ||
+        (index + 1 == components.size() &&
+         !SameContentState(before, current))) {
       return Null(env);
     }
   }
@@ -343,6 +368,11 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
     napi_value modified_value;
     napi_create_double(env, modified_ms, &modified_value);
     napi_set_named_property(env, item, "modifiedMs", modified_value);
+    const std::string identity_token = IdentityToken(identity);
+    napi_value identity_value;
+    napi_create_string_utf8(
+        env, identity_token.c_str(), identity_token.size(), &identity_value);
+    napi_set_named_property(env, item, "identity", identity_value);
     napi_set_element(env, result, output_index++, item);
   }
   const int iteration_error = errno;
@@ -493,15 +523,20 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
 }
 
 napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3];
+  size_t argc = 5;
+  napi_value args[5];
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string root;
   std::string relative;
   std::string leaf;
-  if (argc != 3 || !ReadUtf8(env, args[0], &root) ||
+  std::string quarantine;
+  std::string expected_identity;
+  if (argc != 5 || !ReadUtf8(env, args[0], &root) ||
       !ReadUtf8(env, args[1], &relative) ||
-      !ReadUtf8(env, args[2], &leaf) || !SafeLeaf(leaf)) {
+      !ReadUtf8(env, args[2], &leaf) ||
+      !ReadUtf8(env, args[3], &quarantine) ||
+      !ReadUtf8(env, args[4], &expected_identity) ||
+      !SafeLeaf(leaf) || !SafeLeaf(quarantine)) {
     Throw(env, "invalid secure file removal");
     return nullptr;
   }
@@ -523,14 +558,45 @@ napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
   if (!S_ISREG(identity.st_mode) ||
       identity.st_dev != identities.front().st_dev ||
       identity.st_nlink != 1 ||
+      (!expected_identity.empty() &&
+       IdentityToken(identity) != expected_identity) ||
       !SecureDirectoryStillCurrent(
           root, components, descriptors, identities)) {
     Throw(env, "secure removal target failed identity validation");
     return nullptr;
   }
-  if (unlinkat(descriptors.values.back(), leaf.c_str(), 0) != 0 ||
-      fsync(descriptors.values.back()) != 0) {
-    Throw(env, PosixError("secure file removal"));
+  const int directory = descriptors.values.back();
+#ifdef __APPLE__
+  const int rename_result = renameatx_np(
+      directory, leaf.c_str(), directory, quarantine.c_str(), RENAME_EXCL);
+#else
+  const int rename_result = static_cast<int>(syscall(
+      SYS_renameat2, directory, leaf.c_str(), directory, quarantine.c_str(),
+      RENAME_NOREPLACE));
+#endif
+  if (rename_result != 0) {
+    if (errno == ENOENT) return Boolean(env, false);
+    Throw(env, PosixError("secure removal quarantine rename"));
+    return nullptr;
+  }
+  const int quarantined = openat(
+      directory, quarantine.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  struct stat quarantined_identity{};
+  const bool quarantine_stable =
+      quarantined >= 0 &&
+      fstat(quarantined, &quarantined_identity) == 0 &&
+      SameIdentity(identity, quarantined_identity) &&
+      quarantined_identity.st_nlink == 1 &&
+      SecureDirectoryStillCurrent(
+          root, components, descriptors, identities);
+  if (quarantined >= 0) close(quarantined);
+  if (!quarantine_stable) {
+    Throw(env, "secure removal quarantine failed identity validation");
+    return nullptr;
+  }
+  if (unlinkat(directory, quarantine.c_str(), 0) != 0 ||
+      fsync(directory) != 0) {
+    Throw(env, PosixError("secure quarantined file removal"));
     return nullptr;
   }
   return Boolean(env, true);
@@ -603,16 +669,21 @@ struct WindowsIdentity {
   DWORD reparse_tag = 0;
   DWORD links = 0;
   uint64_t size = 0;
+  int64_t last_write = 0;
+  int64_t change = 0;
 };
 
 bool GetWindowsIdentity(HANDLE handle, WindowsIdentity* output) {
   FILE_ID_INFO id{};
   FILE_ATTRIBUTE_TAG_INFO tag{};
+  FILE_BASIC_INFO basic{};
   BY_HANDLE_FILE_INFORMATION legacy{};
   if (!GetFileInformationByHandleEx(
           handle, FileIdInfo, &id, sizeof(id)) ||
       !GetFileInformationByHandleEx(
           handle, FileAttributeTagInfo, &tag, sizeof(tag)) ||
+      !GetFileInformationByHandleEx(
+          handle, FileBasicInfo, &basic, sizeof(basic)) ||
       !GetFileInformationByHandle(handle, &legacy)) {
     return false;
   }
@@ -624,7 +695,27 @@ bool GetWindowsIdentity(HANDLE handle, WindowsIdentity* output) {
   output->size =
       (static_cast<uint64_t>(legacy.nFileSizeHigh) << 32) |
       legacy.nFileSizeLow;
+  output->last_write = basic.LastWriteTime.QuadPart;
+  output->change = basic.ChangeTime.QuadPart;
   return true;
+}
+
+bool SameContentState(
+    const WindowsIdentity& left, const WindowsIdentity& right) {
+  return left.size == right.size &&
+      left.last_write == right.last_write &&
+      left.change == right.change;
+}
+
+std::string IdentityToken(const WindowsIdentity& identity) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string output = std::to_string(identity.volume) + ":";
+  output.reserve(output.size() + sizeof(identity.file_id.Identifier) * 2);
+  for (const unsigned char value : identity.file_id.Identifier) {
+    output.push_back(kHex[value >> 4]);
+    output.push_back(kHex[value & 0x0f]);
+  }
+  return output;
 }
 
 bool SameIdentity(
@@ -865,7 +956,7 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
   }
   WindowsIdentity after{};
   if (!GetWindowsIdentity(file, &after) ||
-      !SameIdentity(before, after) || before.size != after.size ||
+      !SameIdentity(before, after) || !SameContentState(before, after) ||
       after.links != 1 ||
       !SecureDirectoryStillCurrent(
           root, components, handles, identities)) {
@@ -880,7 +971,8 @@ napi_value ReadSecureFile(napi_env env, napi_callback_info info) {
   WindowsIdentity current_identity{};
   const bool leaf_stable =
       GetWindowsIdentity(current, &current_identity) &&
-      SameIdentity(before, current_identity);
+      SameIdentity(before, current_identity) &&
+      SameContentState(before, current_identity);
   CloseHandle(current);
   if (!leaf_stable) return Null(env);
   napi_value result;
@@ -952,6 +1044,26 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
           entry->FileName, entry->FileNameLength / sizeof(WCHAR));
       if (SafeLeaf(name) &&
           !(entry->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        HANDLE retained = INVALID_HANDLE_VALUE;
+        const bool directory =
+            entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+        const NTSTATUS retained_status = OpenWindowsRelative(
+            handles.values.back(), Wide(name),
+            FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            kFileOpen,
+            (directory ? kFileDirectoryFile : kFileNonDirectoryFile) |
+                kFileSynchronousIoNonAlert,
+            &retained);
+        WindowsIdentity retained_identity{};
+        if (!NtSuccess(retained_status) ||
+            !GetWindowsIdentity(retained, &retained_identity) ||
+            (retained_identity.attributes & FILE_ATTRIBUTE_REPARSE_POINT) ||
+            retained_identity.volume != identities.front().volume) {
+          if (retained != INVALID_HANDLE_VALUE) CloseHandle(retained);
+          if (entry->NextEntryOffset == 0) break;
+          offset += entry->NextEntryOffset;
+          continue;
+        }
         napi_value item;
         napi_create_object(env, &item);
         napi_value name_value;
@@ -959,8 +1071,6 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
             env, name.c_str(), name.size(), &name_value);
         napi_set_named_property(env, item, "name", name_value);
         napi_value kind_value;
-        const bool directory =
-            entry->FileAttributes & FILE_ATTRIBUTE_DIRECTORY;
         napi_create_string_utf8(
             env, directory ? "directory" : "file",
             NAPI_AUTO_LENGTH, &kind_value);
@@ -978,7 +1088,15 @@ napi_value ListSecureDirectory(napi_env env, napi_callback_info info) {
         napi_value modified_value;
         napi_create_double(env, modified_ms, &modified_value);
         napi_set_named_property(env, item, "modifiedMs", modified_value);
+        const std::string identity_token =
+            IdentityToken(retained_identity);
+        napi_value identity_value;
+        napi_create_string_utf8(
+            env, identity_token.c_str(), identity_token.size(),
+            &identity_value);
+        napi_set_named_property(env, item, "identity", identity_value);
         napi_set_element(env, result, output_index++, item);
+        CloseHandle(retained);
       }
       if (entry->NextEntryOffset == 0) break;
       offset += entry->NextEntryOffset;
@@ -1173,15 +1291,20 @@ napi_value WriteSecureFileAtomic(napi_env env, napi_callback_info info) {
 }
 
 napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
-  size_t argc = 3;
-  napi_value args[3];
+  size_t argc = 5;
+  napi_value args[5];
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   std::string root;
   std::string relative;
   std::string leaf;
-  if (argc != 3 || !ReadUtf8(env, args[0], &root) ||
+  std::string quarantine;
+  std::string expected_identity;
+  if (argc != 5 || !ReadUtf8(env, args[0], &root) ||
       !ReadUtf8(env, args[1], &relative) ||
-      !ReadUtf8(env, args[2], &leaf) || !SafeLeaf(leaf)) {
+      !ReadUtf8(env, args[2], &leaf) ||
+      !ReadUtf8(env, args[3], &quarantine) ||
+      !ReadUtf8(env, args[4], &expected_identity) ||
+      !SafeLeaf(leaf) || !SafeLeaf(quarantine)) {
     Throw(env, "invalid secure file removal");
     return nullptr;
   }
@@ -1212,6 +1335,8 @@ napi_value RemoveSecureFile(napi_env env, napi_callback_info info) {
                               FILE_ATTRIBUTE_REPARSE_POINT)) ||
       identity.volume != identities.front().volume ||
       identity.links != 1 ||
+      (!expected_identity.empty() &&
+       IdentityToken(identity) != expected_identity) ||
       !SecureDirectoryStillCurrent(
           root, components, handles, identities)) {
     CloseHandle(target);

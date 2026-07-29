@@ -18,7 +18,7 @@ interface BrowserAuthorityContext {
     agentId: string,
     run: ActiveRun,
     event: LogEvent | AgentEvent,
-  ): StoredLogEvent | undefined;
+  ): Promise<StoredLogEvent | undefined>;
 }
 
 export function createBrowserAuthority(context: BrowserAuthorityContext) {
@@ -37,7 +37,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
         publish(scope.agentId, store.appendEvent(scope.agentId, event));
         return;
       }
-      persistRuntimeEvent(scope.agentId, run, event);
+      void persistRuntimeEvent(scope.agentId, run, event);
     },
   );
   const projectBrowserGrants = new Map<string, { agentId: string; runId: string }>();
@@ -49,7 +49,7 @@ export function createBrowserAuthority(context: BrowserAuthorityContext) {
       if (!grant || scope.actorAgentId !== grant.agentId || scope.actorRunId !== grant.runId) return;
       const run = activeRuns.get(grant.agentId);
       if (!run || run.runId !== grant.runId) return;
-      persistRuntimeEvent(grant.agentId, run, { ...event, executionId: grant.runId });
+      void persistRuntimeEvent(grant.agentId, run, { ...event, executionId: grant.runId });
     },
   );
 

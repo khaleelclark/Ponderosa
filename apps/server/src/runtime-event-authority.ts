@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { realpathSync, statSync, promises as fs } from "node:fs";
 import path from "node:path";
 import type { AgentEvent } from "@ponderosa/core";
 import {
   artifactContentPath,
-  publishManagedArtifactContent,
+  publishManagedArtifactContentAsync,
   type AgentStore,
   type CoordinationV3Store,
   type LogEvent,
@@ -18,7 +18,7 @@ import type {
   PersistentRuntime,
   RuntimeOwnershipState,
 } from "./app-contracts.js";
-import { readWorkspaceArtifactFile } from "./project-file-access.js";
+import { readWorkspaceArtifactFileAsync } from "./project-file-access.js";
 
 interface RuntimeEventAuthorityContext {
   opts: CreateServerOptions;
@@ -104,7 +104,11 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     return ownsActiveRunForAuditDrain(agentId, run) && run.ownershipState !== "cancelling";
   }
 
-  function persistRuntimeEvent(agentId: string, run: ActiveRun, event: LogEvent): StoredLogEvent | undefined {
+  async function persistRuntimeEvent(
+    agentId: string,
+    run: ActiveRun,
+    event: LogEvent,
+  ): Promise<StoredLogEvent | undefined> {
     if (!ownsActiveRunForAuditDrain(agentId, run) || run.ownershipState === "cancelling") return undefined;
     const canonicalEvent = normalizeRuntimeFileChange(agentId, run, event);
     const stored = store.appendEvent(agentId, canonicalEvent);
@@ -122,12 +126,13 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
       const mediaType = generatedArtifactMediaType(canonicalEvent.path, canonicalEvent.kind);
       if (agent && project && mediaType) {
         try {
-          const source = readWorkspaceArtifactFile({
+          const source = await readWorkspaceArtifactFileAsync({
             rootPath: project.hostPath,
             requestedPath: canonicalEvent.path,
             purpose: "generated_capture",
             maxBytes: 64 * 1024 * 1024,
             requireNonEmpty: true,
+            signal: run.controller.signal,
             faults: opts.workspaceArtifactReadFaults,
           });
           if (!source) throw new Error("generated artifact is unavailable through the retained Project root");
@@ -135,9 +140,19 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
           const artifactId = randomUUID();
           const managedPath = `generated/${artifactId}${path.extname(source.name).toLowerCase()}`;
           const legacyDestination = artifactContentPath(opts.dataDir, agent.projectId, agent.id, managedPath);
-          mkdirSync(path.dirname(legacyDestination), { recursive: true });
-          writeFileSync(legacyDestination, body, { flag: "wx", mode: 0o600 });
-          const publishedArtifact = publishManagedArtifactContent(opts.dataDir, agent.projectId, artifactId, body);
+          await fs.mkdir(path.dirname(legacyDestination), { recursive: true });
+          await fs.writeFile(legacyDestination, body, { flag: "wx", mode: 0o600 });
+          const publishedArtifact = await publishManagedArtifactContentAsync(
+            opts.dataDir,
+            agent.projectId,
+            artifactId,
+            body,
+            run.controller.signal,
+          );
+          if (!ownsActiveRunForAuditDrain(agentId, run) ||
+              ["cancelling"].includes(run.ownershipState)) {
+            throw new Error("generated artifact capture lost exact Run authority");
+          }
           const contentHash = publishedArtifact.sha256;
           const captured = store.appendEvent(agent.id, {
             type: "generated_artifact", artifactId, executionId: run.executionId, path: managedPath,

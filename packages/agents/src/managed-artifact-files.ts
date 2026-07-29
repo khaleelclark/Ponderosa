@@ -18,6 +18,7 @@ import {
 import type { FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
 import path from "node:path";
+import { Worker } from "node:worker_threads";
 import {
   listSecureDirectory,
   readSecureFile,
@@ -211,8 +212,14 @@ function nativeManagedFile(projectId: string, artifactId: string): string {
 
 function useNativeManagedAuthority(): boolean {
   return process.platform !== "linux" ||
-    (process.env.NODE_ENV === "test" &&
-      process.env.PONDEROSA_TEST_NATIVE_MANAGED_AUTHORITY === "1");
+    process.env.NODE_ENV !== "test" ||
+    process.env.PONDEROSA_TEST_LEGACY_LINUX_MANAGED_AUTHORITY !== "1";
+}
+
+function publicationWorkerUrl(): URL {
+  return import.meta.url.endsWith(".ts")
+    ? new URL("../dist/managed-artifact-publication-worker.js", import.meta.url)
+    : new URL("./managed-artifact-publication-worker.js", import.meta.url);
 }
 
 function publishManagedArtifactContentNative(
@@ -282,6 +289,109 @@ function publishManagedArtifactContentNative(
     created: true,
     result: { path: destination, size: body.length, sha256 },
   };
+}
+
+/** Worker-only entry point. It deliberately uses the cross-platform native
+ * authority so concurrent isolates still meet atomic no-replace semantics. */
+export function publishManagedArtifactContentInWorker(
+  dataDir: string,
+  projectId: string,
+  artifactId: string,
+  body: Buffer,
+): Omit<ManagedArtifactFile, "body"> {
+  if (!safeArtifactId(artifactId) || !safeProjectId(projectId)) {
+    throw new Error("managed artifact worker received an unsafe identity");
+  }
+  if (!Buffer.isBuffer(body) || body.length < 1 ||
+      body.length > MANAGED_ARTIFACT_MAX_BYTES) {
+    throw new Error("managed artifact must contain 1 to 64 MiB");
+  }
+  const sha256 = createHash("sha256").update(body).digest("hex");
+  return publishManagedArtifactContentNative(
+    dataDir,
+    projectId,
+    artifactId,
+    body,
+    sha256,
+  ).result;
+}
+
+/** Publish bounded immutable bytes without running native hashing, writes, or
+ * durability waits on the server event loop. Aborted workers may leave only an
+ * uncatalogued immutable leaf, which startup repair is authorized to reclaim. */
+export function publishManagedArtifactContentAsync(
+  dataDir: string,
+  projectId: string,
+  artifactId: string,
+  input: Buffer | string,
+  signal?: AbortSignal,
+): Promise<Omit<ManagedArtifactFile, "body">> {
+  if (!safeArtifactId(artifactId)) {
+    throw new Error("managed artifact id must be a single safe leaf");
+  }
+  if (!safeProjectId(projectId)) {
+    throw new Error("managed artifact Project id must be a single safe leaf");
+  }
+  const source = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
+  if (source.length < 1 || source.length > MANAGED_ARTIFACT_MAX_BYTES) {
+    throw new Error("managed artifact must contain 1 to 64 MiB");
+  }
+  const body = new Uint8Array(source.length);
+  body.set(source);
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const worker = new Worker(
+      publicationWorkerUrl(),
+      {
+        workerData: {
+          dataDir,
+          projectId,
+          artifactId,
+          body,
+        },
+        transferList: [body.buffer],
+      },
+    );
+    let settled = false;
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", abort);
+      worker.removeAllListeners();
+    };
+    const finish = (
+      outcome: {
+        result?: Omit<ManagedArtifactFile, "body">;
+        error?: string;
+      },
+    ): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate();
+      if (outcome.error) reject(new Error(outcome.error));
+      else if (outcome.result) resolve(outcome.result);
+      else reject(new Error("managed artifact publication worker returned no result"));
+    };
+    const abort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      void worker.terminate();
+      reject(signal?.reason instanceof Error
+        ? signal.reason
+        : new Error("managed artifact publication aborted"));
+    };
+    worker.once("message", finish);
+    worker.once("error", (error) => finish({ error: error.message }));
+    worker.once("exit", (code) => {
+      if (!settled) {
+        finish({
+          error: `managed artifact publication worker exited without a result (code ${code})`,
+        });
+      }
+    });
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
 }
 
 /**
@@ -383,7 +493,9 @@ export function publishManagedArtifactContent(
  * independently written and fsynced. Linux stages every body before installing
  * destination names; the native authority installs each immutable leaf as one
  * transaction. No caller can advance catalog metadata until the group returns,
- * and a failed in-process publication removes every new leaf before returning.
+ * and a failed in-process publication best-effort removes new leaves. Any leaf
+ * that cannot be removed remains uncatalogued and is recovered by durable orphan
+ * repair; rollback is intentionally not presented as an atomic filesystem group.
  *
  * The bounded writers overlap independent data fsync latency without weakening
  * the guarantee provided by publishManagedArtifactContent.
@@ -610,69 +722,41 @@ export function repairManagedArtifactContent(
   projectId: string,
   referencedArtifactIds: ReadonlySet<string>,
   graceBoundaryMs: number,
+  faults?: { beforeRemove?: (path: string) => void },
 ): string[] {
   if (!safeProjectId(projectId)) return [];
-  if (useNativeManagedAuthority()) {
-    const entries = listSecureDirectory({
-      root: dataDir,
-      relativePath: nativeManagedDirectory(projectId),
-    });
-    if (!entries) return [];
-    const removed: string[] = [];
-    for (const entry of entries) {
-      const name = entry.name;
-      if (entry.kind !== "file" || !safeArtifactId(name) ||
-          referencedArtifactIds.has(name) ||
-          managedLeafIsActive(dataDir, projectId, name) ||
-          entry.modifiedMs >= graceBoundaryMs) continue;
-      try {
-        if (referencedArtifactIds.has(name) ||
-            managedLeafIsActive(dataDir, projectId, name)) continue;
-        if (removeSecureFile({
-          root: dataDir,
-          relativeDirectory: nativeManagedDirectory(projectId),
-          leaf: name,
-        })) {
-          removed.push(name);
-        }
-      } catch {
-        // A concurrent publication, repair, or Project teardown may resolve it.
-      }
-    }
-    return removed;
-  }
-  if (!existsSync(path.dirname(managedArtifactContentPath(dataDir, projectId, "leaf")))) return [];
-  let opened: OpenedManagedDirectory | undefined;
+  const entries = listSecureDirectory({
+    root: dataDir,
+    relativePath: nativeManagedDirectory(projectId),
+  });
+  if (!entries) return [];
   const removed: string[] = [];
-  try {
-    opened = openManagedDirectory(dataDir, projectId, false);
-    for (const name of readdirSync(descriptorPath(opened.directoryDescriptor))) {
-      if (!safeArtifactId(name) || referencedArtifactIds.has(name) ||
+  for (const entry of entries) {
+    const name = entry.name;
+    if (entry.kind !== "file" || !safeArtifactId(name) ||
+        referencedArtifactIds.has(name) ||
+        managedLeafIsActive(dataDir, projectId, name) ||
+        entry.modifiedMs >= graceBoundaryMs) continue;
+    try {
+      if (referencedArtifactIds.has(name) ||
           managedLeafIsActive(dataDir, projectId, name)) continue;
-      let descriptor: number | undefined;
-      try {
-        descriptor = openSync(
-          descriptorPath(opened.directoryDescriptor, name),
-          fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW,
-        );
-        const info = fstatSync(descriptor);
-        if (!info.isFile() || info.dev !== opened.identities[0]!.dev ||
-            info.mtimeMs >= graceBoundaryMs) continue;
-        if (!sameManagedDirectory(dataDir, projectId, opened) || referencedArtifactIds.has(name) ||
-            managedLeafIsActive(dataDir, projectId, name)) continue;
-        rmSync(descriptorPath(opened.directoryDescriptor, name));
-        fsyncSync(opened.directoryDescriptor);
+      faults?.beforeRemove?.(
+        managedArtifactContentPath(dataDir, projectId, name),
+      );
+      if (removeSecureFile({
+        root: dataDir,
+        relativeDirectory: nativeManagedDirectory(projectId),
+        leaf: name,
+        expectedIdentity: entry.identity,
+      })) {
         removed.push(name);
-      } catch {
-        // A concurrent publication or repair may have resolved the leaf.
-      } finally {
-        if (descriptor !== undefined) closeSync(descriptor);
       }
+    } catch {
+      // A concurrent publication, repair, or Project teardown may resolve it.
+      // Identity mismatches preserve the replacement and any quarantined leaf.
     }
-    return removed;
-  } finally {
-    closeManagedDirectory(opened);
   }
+  return removed;
 }
 
 /** Read immutable managed bytes only through verified retained descriptors. */
@@ -796,8 +880,13 @@ export async function openManagedArtifactContent(
     }, signal);
     if (!body) return undefined;
     signal?.throwIfAborted();
-    await options?.faults?.afterSnapshotOpen?.(file);
-    await options?.faults?.afterVerification?.(file);
+    try {
+      await options?.faults?.afterSnapshotOpen?.(file);
+      await options?.faults?.afterVerification?.(file);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      return undefined;
+    }
     let closed = false;
     const close = async (): Promise<void> => {
       closed = true;

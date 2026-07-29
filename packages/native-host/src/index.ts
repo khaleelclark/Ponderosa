@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -20,7 +21,13 @@ interface NativeJobBinding {
     temporaryLeaf: string,
     body: Buffer,
   ): boolean;
-  removeSecureFile(root: string, relativeDirectory: string, leaf: string): boolean;
+  removeSecureFile(
+    root: string,
+    relativeDirectory: string,
+    leaf: string,
+    quarantineLeaf: string,
+    expectedIdentity: string,
+  ): boolean;
 }
 
 export interface SecureDirectoryEntry {
@@ -28,6 +35,7 @@ export interface SecureDirectoryEntry {
   kind: "file" | "directory";
   size?: number;
   modifiedMs: number;
+  identity: string;
 }
 
 let loaded: NativeJobBinding | undefined;
@@ -179,8 +187,8 @@ export function readSecureFileAsync(
       !/^[a-f0-9]{64}$/u.test(input.expectedSha256)) {
     throw new Error("secure file authority expectedSha256 is invalid");
   }
-  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
     const worker = new Worker(
       new URL("./secure-file-worker.js", import.meta.url),
       { workerData: input },
@@ -217,6 +225,7 @@ export function readSecureFileAsync(
       }
     });
     signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -269,6 +278,7 @@ export function removeSecureFile(input: {
   root: string;
   relativeDirectory?: string;
   leaf: string;
+  expectedIdentity?: string;
 }): boolean {
   if (!secureFileAuthoritySupported()) {
     throw new Error("secure file removal authority is unavailable");
@@ -276,5 +286,18 @@ export function removeSecureFile(input: {
   const relativeDirectory = input.relativeDirectory ?? "";
   assertSafeRelativeDirectory(relativeDirectory);
   assertSafeLeaf(input.leaf, "secure removal leaf");
-  return binding().removeSecureFile(input.root, relativeDirectory, input.leaf);
+  if (input.expectedIdentity !== undefined &&
+      (!input.expectedIdentity || input.expectedIdentity.length > 128 ||
+       /[^A-Fa-f0-9:-]/u.test(input.expectedIdentity))) {
+    throw new Error("secure removal expected identity is invalid");
+  }
+  const quarantineLeaf = `.remove-${randomUUID()}`;
+  assertSafeLeaf(quarantineLeaf, "secure removal quarantine leaf");
+  return binding().removeSecureFile(
+    input.root,
+    relativeDirectory,
+    input.leaf,
+    quarantineLeaf,
+    input.expectedIdentity ?? "",
+  );
 }

@@ -55,6 +55,7 @@ export {
 export {
   MANAGED_ARTIFACT_MAX_BYTES,
   publishManagedArtifactContent,
+  publishManagedArtifactContentAsync,
   publishManagedArtifactContents,
   openManagedArtifactContent,
   readManagedArtifactContent,
