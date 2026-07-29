@@ -13,7 +13,9 @@ import type {
 import { mapClaudeAssistantUsage, mapClaudeEvent } from "./claude-events.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import type { SpawnFn } from "./process.js";
-import { assertPersistentRuntimeHostingSupported, terminateProcessGroup } from "./process-termination.js";
+import { terminateProcessGroup } from "./process-termination.js";
+import type { NativeProcessTreeAuthority } from "./process-termination.js";
+import { spawnWindowsContainedProcess } from "./windows-job-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
@@ -39,12 +41,12 @@ export class ClaudeStreamSession implements RuntimeSession {
   private claudeCodeVersion?: string;
   private readonly modelInitializationRequestId = `ponderosa-models-${randomUUID()}`;
   private latestContextOccupancy?: number;
+  private readonly nativeAuthority?: NativeProcessTreeAuthority;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
     if (!opts.onRuntimeSpawned) {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
-    assertPersistentRuntimeHostingSupported();
     this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
     this.engineAgentId = opts.resumeSessionId ?? randomUUID();
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
@@ -70,12 +72,24 @@ export class ClaudeStreamSession implements RuntimeSession {
       ...(opts.effort ? ["--effort", opts.effort] : []),
       ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
     ];
-    this.child = (opts.spawnFn ?? nodeSpawn)(opts.bin, args, {
+    const spawnFn = opts.spawnFn ?? nodeSpawn;
+    const environment = { ...process.env, ...opts.environment };
+    const contained = process.platform === "win32" && spawnFn === nodeSpawn
+      ? spawnWindowsContainedProcess({
+        bin: opts.bin,
+        args,
+        cwd: opts.cwd,
+        env: environment,
+        stdin: "pipe",
+      })
+      : undefined;
+    this.child = contained?.child ?? spawnFn(opts.bin, args, {
       cwd: opts.cwd,
-      env: { ...process.env, ...opts.environment },
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
     });
+    this.nativeAuthority = contained?.authority;
     opts.onRuntimeSpawned(this);
     let rootExitReported = false;
     let postExitDrainTimer: NodeJS.Timeout | undefined;
@@ -152,7 +166,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   isAlive(): boolean {
-    return !this.closed && this.child.exitCode === null && this.child.signalCode === null;
+    return !this.closed &&
+      (this.nativeAuthority?.isAlive() ?? (this.child.exitCode === null && this.child.signalCode === null));
   }
 
   close(): Promise<void> {
@@ -162,7 +177,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     const attempt = terminateProcessGroup(this.child, {
       label: "Claude runtime",
       termGraceMs: this.opts.killGraceMs,
-    });
+    }, this.nativeAuthority);
     const shared = attempt.catch((error) => {
       if (this.closePromise === shared) this.closePromise = undefined;
       throw error;

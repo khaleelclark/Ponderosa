@@ -11,6 +11,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { discoverProviders } from "./providers.js";
 import {
   ensureDataLayout,
@@ -176,6 +177,46 @@ async function defaultSpawnServer(
   const stdout = openSync(paths.stdoutLogPath, "a", 0o600);
   const stderr = openSync(paths.stderrLogPath, "a", 0o600);
   try {
+    if (process.platform === "win32") {
+      const supervisor = spawn(paths.nodeExecutable, [
+        fileURLToPath(new URL("./windows-server-supervisor.js", import.meta.url)),
+        paths.serverEntry,
+        paths.installRoot,
+      ], {
+        cwd: paths.installRoot,
+        env,
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", stdout, stderr, "ipc"],
+      });
+      const pid = await new Promise<number>((resolve, reject) => {
+        let settled = false;
+        const finish = (error: Error | undefined, value?: number): void => {
+          if (settled) return;
+          settled = true;
+          supervisor.off("error", onError);
+          supervisor.off("exit", onExit);
+          if (error) reject(error);
+          else resolve(value!);
+        };
+        const onError = (error: Error): void => finish(error);
+        const onExit = (code: number | null): void =>
+          finish(new Error(`Windows server supervisor exited before launch (code ${code ?? "unknown"}).`));
+        supervisor.once("error", onError);
+        supervisor.once("exit", onExit);
+        supervisor.on("message", (message: unknown) => {
+          if (!message || typeof message !== "object" || Array.isArray(message)) return;
+          const input = message as { type?: unknown; pid?: unknown; detail?: unknown };
+          if (input.type === "server-started" && Number.isSafeInteger(input.pid) && (input.pid as number) > 0) {
+            finish(undefined, input.pid as number);
+          } else if (input.type === "supervisor-error") {
+            finish(new Error(typeof input.detail === "string" ? input.detail : "Windows server supervision failed."));
+          }
+        });
+      });
+      supervisor.unref();
+      return pid;
+    }
     const child = spawn(paths.nodeExecutable, [paths.serverEntry], {
       cwd: paths.installRoot,
       env,

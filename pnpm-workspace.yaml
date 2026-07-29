@@ -2,6 +2,7 @@ packages:
   - "apps/*"
   - "packages/*"
 allowBuilds:
+  '@ponderosa/native-host@file:packages/native-host': true
   better-sqlite3: true
   core-js: false
   esbuild: true

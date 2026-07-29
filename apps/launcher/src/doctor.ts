@@ -13,6 +13,8 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { WindowsProcessJob, windowsJobObjectsSupported } from "@ponderosa/native-host";
 import { currentPonderosaStatus } from "./control.js";
 import { discoverProviders } from "./providers.js";
 import { readLauncherConfiguration } from "./paths.js";
@@ -89,7 +91,40 @@ function unixProcessGroupAlive(pid: number): boolean {
 }
 
 async function testProcessTreeCancellation(nodeExecutable: string): Promise<boolean> {
-  if (process.platform === "win32") return false;
+  if (process.platform === "win32") {
+    if (!windowsJobObjectsSupported()) return false;
+    const job = new WindowsProcessJob();
+    const child = spawn(nodeExecutable, [
+      fileURLToPath(new URL("./job-object-doctor-child.js", import.meta.url)),
+    ], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+      windowsHide: true,
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", reject);
+      });
+      if (!child.pid) return false;
+      job.assign(child.pid);
+      const ready = new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => resolve(false), 5_000);
+        child.once("message", (message: unknown) => {
+          clearTimeout(timer);
+          resolve(Boolean(message && typeof message === "object" &&
+            (message as { ready?: unknown }).ready === true));
+        });
+      });
+      child.send?.("start");
+      if (!await ready) return false;
+      job.terminate();
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && job.activeProcesses() > 0) await delay(25);
+      return job.activeProcesses() === 0;
+    } finally {
+      job.close();
+    }
+  }
   const child = spawn(nodeExecutable, [
     "-e",
     [

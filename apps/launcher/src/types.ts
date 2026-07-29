@@ -7,11 +7,18 @@ export interface BuildManifest {
   commit: string;
   communicationProtocolVersion: string;
   databaseSchemaVersion: string;
+  databaseSchemaSha256: string;
   target: {
     platform: NodeJS.Platform | string;
     arch: NodeJS.Architecture | string;
   };
   nodeVersion: string;
+  nodeExecutableBytes: number;
+  nodeExecutableSha256: string;
+  nativeAbi: {
+    modules: string;
+    napi: string;
+  };
   buildTime: string;
   channel: ReleaseChannel;
 }

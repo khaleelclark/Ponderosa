@@ -5,10 +5,12 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
-  readdirSync,
+  readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,14 +31,45 @@ function exactCommit() {
   }).trim();
 }
 
-function databaseSchemaVersion() {
-  const migrations = readdirSync(path.join(repositoryRoot, "packages", "agents", "src", "migrations"))
-    .map((name) => name.match(/^(\d{4})_/u)?.[1])
-    .filter(Boolean)
-    .sort();
-  const latest = migrations.at(-1);
-  if (!latest) throw new Error("No database migrations were found.");
-  return latest;
+function sha256(pathname) {
+  return createHash("sha256").update(readFileSync(pathname)).digest("hex");
+}
+
+function nodeRuntimeIdentity(binary) {
+  const bytes = statSync(binary).size;
+  if (bytes < 5 * 1024 * 1024) {
+    throw new Error(
+      `The proposed bundled Node executable is only ${bytes} bytes and is not self-contained. ` +
+      "Run `pnpm beta:node` to prepare the checksummed official Node 22 runtime.",
+    );
+  }
+  let raw;
+  try {
+    raw = execFileSync(binary, [
+      "--input-type=module",
+      "--eval",
+      "process.stdout.write(JSON.stringify({version:process.version,platform:process.platform,arch:process.arch,modules:process.versions.modules,napi:process.versions.napi}))",
+    ], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+  } catch (error) {
+    throw new Error(
+      `The bundled Node executable could not be run on this build host. ` +
+      `Native beta bundles must be assembled on their target OS/architecture: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const identity = JSON.parse(raw);
+  if (!/^v22\.\d+\.\d+(?:[-+].*)?$/u.test(identity.version)) {
+    throw new Error(`Ponderosa private beta requires bundled Node 22; found ${identity.version ?? "unknown"}.`);
+  }
+  for (const field of ["platform", "arch", "modules", "napi"]) {
+    if (typeof identity[field] !== "string" || identity[field] === "") {
+      throw new Error(`Bundled Node did not report ${field}.`);
+    }
+  }
+  return { ...identity, bytes, sha256: sha256(binary) };
 }
 
 function executable(pathname) {
@@ -47,21 +80,43 @@ const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
 const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? "0.0.0-beta.local");
 const channel = option("channel", process.env.PONDEROSA_RELEASE_CHANNEL ?? "beta");
-const nodeBinary = path.resolve(option("node", process.env.PONDEROSA_NODE_BINARY ?? process.execPath));
+const preparedNode = path.join(
+  repositoryRoot,
+  "dist",
+  "node-runtime",
+  `${targetPlatform}-${targetArch}`,
+  targetPlatform === "win32" ? "node.exe" : "node",
+);
+const nodeBinary = path.resolve(option(
+  "node",
+  process.env.PONDEROSA_NODE_BINARY ?? (existsSync(preparedNode) ? preparedNode : process.execPath),
+));
 const outputParent = path.resolve(option(
   "output",
   path.join(repositoryRoot, "dist", "beta", `${targetPlatform}-${targetArch}`),
 ));
 const bundleRoot = path.join(outputParent, "Ponderosa");
 const runtimeNodeName = targetPlatform === "win32" ? "node.exe" : "node";
+const baselineName = "0000_current_schema.sql";
+const schemaSource = path.join(repositoryRoot, "packages", "agents", "src", "schema", baselineName);
 
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "web", "dist", "index.html"),
+  path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
+  schemaSource,
   nodeBinary,
 ]) {
   if (!existsSync(required)) throw new Error(`Required build input is missing: ${required}`);
+}
+
+const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
+if (nodeIdentity.platform !== targetPlatform || nodeIdentity.arch !== targetArch) {
+  throw new Error(
+    `Bundled Node is ${nodeIdentity.platform}/${nodeIdentity.arch}, but the requested target is ` +
+    `${targetPlatform}/${targetArch}. Cross-assembled bundles are not release artifacts.`,
+  );
 }
 
 rmSync(outputParent, { recursive: true, force: true });
@@ -77,22 +132,26 @@ execFileSync("pnpm", [
   stdio: "inherit",
   env: { ...process.env, CI: process.env.CI ?? "true" },
 });
+const launcherTarget = path.join(bundleRoot, "app", "launcher");
+execFileSync("pnpm", [
+  "--filter", "@ponderosa/launcher",
+  "deploy", "--prod", "--legacy", launcherTarget,
+], {
+  cwd: repositoryRoot,
+  stdio: "inherit",
+  env: { ...process.env, CI: process.env.CI ?? "true" },
+});
 cpSync(
   path.join(repositoryRoot, "apps", "web", "dist"),
   path.join(bundleRoot, "app", "web", "dist"),
-  { recursive: true },
-);
-cpSync(
-  path.join(repositoryRoot, "apps", "launcher", "dist"),
-  path.join(bundleRoot, "app", "launcher", "dist"),
   { recursive: true },
 );
 mkdirSync(path.join(bundleRoot, "runtime"), { recursive: true });
 cpSync(nodeBinary, path.join(bundleRoot, "runtime", runtimeNodeName));
 executable(path.join(bundleRoot, "runtime", runtimeNodeName));
 cpSync(
-  path.join(repositoryRoot, "packages", "agents", "src", "migrations"),
-  path.join(bundleRoot, "migrations"),
+  path.join(repositoryRoot, "packages", "agents", "src", "schema"),
+  path.join(bundleRoot, "schema"),
   { recursive: true },
 );
 cpSync(
@@ -101,8 +160,8 @@ cpSync(
   { recursive: true },
 );
 cpSync(
-  path.join(repositoryRoot, "starter-pack"),
-  path.join(bundleRoot, "starter-pack"),
+  path.join(repositoryRoot, "packaging", "qualification"),
+  path.join(bundleRoot, "qualification"),
   { recursive: true },
 );
 
@@ -113,9 +172,16 @@ const manifest = {
   version,
   commit,
   communicationProtocolVersion: "communication-v3",
-  databaseSchemaVersion: databaseSchemaVersion(),
+  databaseSchemaVersion: baselineName,
+  databaseSchemaSha256: sha256(schemaSource),
   target: { platform: targetPlatform, arch: targetArch },
-  nodeVersion: process.version,
+  nodeVersion: nodeIdentity.version,
+  nodeExecutableBytes: nodeIdentity.bytes,
+  nodeExecutableSha256: nodeIdentity.sha256,
+  nativeAbi: {
+    modules: nodeIdentity.modules,
+    napi: nodeIdentity.napi,
+  },
   buildTime: new Date().toISOString(),
   channel,
 };

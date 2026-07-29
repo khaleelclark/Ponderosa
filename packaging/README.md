@@ -20,18 +20,24 @@ On the target operating system:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm beta:node
 pnpm beta:bundle -- --version 3.5.0-beta.1 --channel beta
 pnpm beta:verify
 ```
 
+`beta:node` downloads the target-native official Node archive, verifies it
+against the release `SHASUMS256.txt`, and stages only the runtime executable.
 The bundle contains its own Node runtime, production server dependencies, web
-assets, migrations, launcher, build manifest, and starter pack. It does not
+assets, the launch-baseline schema, launcher, build manifest, and a maintained
+native qualification payload. It does not
 contain Codex, Claude Code, provider credentials, Projects, or user data.
 
-Cross-target assembly requires a target-native Node binary passed with `--node`.
-Native dependencies such as `better-sqlite3` and `sharp` must still be installed
-and qualified on the target operating system and architecture. Do not label a
-cross-assembled directory as a verified installer.
+Bundles are assembled and qualified on their target operating system and
+architecture. The build executes the proposed bundled Node binary, requires
+Node 22, and rejects target metadata that does not match that runtime.
+`beta:verify` loads and exercises `better-sqlite3` and `sharp` from the deployed
+bundle, creates a database from the bundled launch baseline, and checks launcher
+identity. Static cross-assembly is never labeled as verified.
 
 ## Package formats
 
@@ -54,9 +60,13 @@ The platform host must provide its packaging tool:
 - Linux AppImage: `appimagetool`
 - Ubuntu `.deb`: `dpkg-deb`
 
-Signing and notarization are release operations. Private-beta unsigned builds
-must disclose their operating-system warning; credentials never belong in the
-repository or build manifest.
+Signing and notarization are optional release operations. Set
+`PONDEROSA_MACOS_SIGN_IDENTITY` and, for notarization, a preconfigured
+`PONDEROSA_MACOS_NOTARY_PROFILE`. Windows certificate-store signing uses
+`PONDEROSA_WINDOWS_CERT_SHA1` with optional `PONDEROSA_SIGNTOOL` and
+`PONDEROSA_WINDOWS_TIMESTAMP_URL`. Private-beta unsigned builds must disclose
+their operating-system warning; credentials never belong in the repository,
+workflow arguments, logs, or build manifest.
 
 ## Qualification state
 

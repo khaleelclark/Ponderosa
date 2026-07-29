@@ -9,6 +9,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +28,19 @@ function run(command, args) {
 function writeExecutable(pathname, content) {
   writeFileSync(pathname, content, { mode: 0o755 });
   try { chmodSync(pathname, 0o755); } catch { /* Windows ignores POSIX modes. */ }
+}
+
+function checksumArtifact(target) {
+  if (!existsSync(target)) throw new Error(`Installer was not produced: ${target}`);
+  const checksum = createHash("sha256").update(readFileSync(target)).digest("hex");
+  const checksumPath = `${target}.sha256`;
+  writeFileSync(checksumPath, `${checksum}  ${path.basename(target)}\n`);
+  process.stdout.write(`${target}\n${checksumPath}\n`);
+}
+
+function numericAppleVersion(version) {
+  const values = version.match(/\d+/gu)?.slice(0, 3) ?? [];
+  return [...values, "0", "0", "0"].slice(0, 3).join(".");
 }
 
 const bundle = path.resolve(option(
@@ -58,17 +72,35 @@ exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "
 <key>CFBundleName</key><string>Ponderosa Beta</string>
 <key>CFBundleDisplayName</key><string>Ponderosa Beta</string>
 <key>CFBundleIdentifier</key><string>app.ponderosa.beta</string>
-<key>CFBundleVersion</key><string>${manifest.version}</string>
-<key>CFBundleShortVersionString</key><string>${manifest.version}</string>
+<key>CFBundleVersion</key><string>${numericAppleVersion(manifest.version)}</string>
+<key>CFBundleShortVersionString</key><string>${numericAppleVersion(manifest.version)}</string>
 <key>CFBundleExecutable</key><string>Ponderosa</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);
+  const signingIdentity = process.env.PONDEROSA_MACOS_SIGN_IDENTITY?.trim();
+  if (signingIdentity) {
+    run("codesign", [
+      "--force",
+      "--deep",
+      "--options", "runtime",
+      "--timestamp",
+      "--sign", signingIdentity,
+      app,
+    ]);
+    run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", app]);
+  }
   const target = path.join(output, `${artifactBase}.dmg`);
   rmSync(target, { force: true });
   run("hdiutil", ["create", "-volname", "Ponderosa Beta", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
   rmSync(stage, { recursive: true, force: true });
-  process.stdout.write(`${target}\n`);
+  const notaryProfile = process.env.PONDEROSA_MACOS_NOTARY_PROFILE?.trim();
+  if (notaryProfile) {
+    if (!signingIdentity) throw new Error("Notarization requires PONDEROSA_MACOS_SIGN_IDENTITY.");
+    run("xcrun", ["notarytool", "submit", target, "--keychain-profile", notaryProfile, "--wait"]);
+    run("xcrun", ["stapler", "staple", target]);
+  }
+  checksumArtifact(target);
 } else if (format === "appimage") {
   if (process.platform !== "linux") throw new Error("AppImage packages must be built on Linux.");
   const appDir = path.join(os.tmpdir(), `ponderosa-appimage-${process.pid}.AppDir`);
@@ -98,7 +130,7 @@ Terminal=false
   run(tool, [appDir, target]);
   chmodSync(target, 0o755);
   rmSync(appDir, { recursive: true, force: true });
-  process.stdout.write(`${target}\n`);
+  checksumArtifact(target);
 } else if (format === "deb") {
   if (process.platform !== "linux") throw new Error("Debian packages must be built on Linux.");
   const root = path.join(os.tmpdir(), `ponderosa-deb-${process.pid}`);
@@ -132,7 +164,7 @@ Terminal=false
   const target = path.join(output, `${artifactBase}.deb`);
   run("dpkg-deb", ["--root-owner-group", "--build", root, target]);
   rmSync(root, { recursive: true, force: true });
-  process.stdout.write(`${target}\n`);
+  checksumArtifact(target);
 } else if (format === "exe") {
   if (process.platform !== "win32") throw new Error("Windows installers must be built on Windows.");
   const iscc = process.env.ISCC?.trim() || "ISCC.exe";
@@ -164,6 +196,23 @@ Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Descript
 `);
   run(iscc, [script]);
   rmSync(script, { force: true });
+  const target = path.join(output, `${artifactBase}.exe`);
+  const signingCertificate = process.env.PONDEROSA_WINDOWS_CERT_SHA1?.trim();
+  if (signingCertificate) {
+    const signtool = process.env.PONDEROSA_SIGNTOOL?.trim() || "signtool.exe";
+    const timestampUrl = process.env.PONDEROSA_WINDOWS_TIMESTAMP_URL?.trim() ||
+      "http://timestamp.digicert.com";
+    run(signtool, [
+      "sign",
+      "/fd", "SHA256",
+      "/td", "SHA256",
+      "/tr", timestampUrl,
+      "/sha1", signingCertificate,
+      target,
+    ]);
+    run(signtool, ["verify", "/pa", "/v", target]);
+  }
+  checksumArtifact(target);
 } else {
   throw new Error(`Unknown package format: ${format}`);
 }
