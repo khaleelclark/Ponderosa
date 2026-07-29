@@ -25,14 +25,6 @@ function artifactIcon(kind: ArtifactDto["kind"]): JSX.Element {
   return <ArticleIcon fontSize="small" />;
 }
 
-function compactPath(path: string): string {
-  const parts = path.split("/");
-  if (parts.length <= 3) {
-    return path;
-  }
-  return `${parts[0]}/.../${parts.at(-1)}`;
-}
-
 function fileName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
@@ -155,7 +147,7 @@ export function ArtifactsPane({
                   <ListItemIcon sx={{ minWidth: 34, mt: 0.25, color: selected ? "primary.main" : "text.secondary" }}>{artifactIcon(artifact.kind)}</ListItemIcon>
                   <ListItemText
                     primary={artifactDisplayLabel(artifact)}
-                    secondary={<>{compactPath(artifact.path)}<br />{new Date(artifact.createdAt).toLocaleString()}</>}
+                    secondary={new Date(artifact.createdAt).toLocaleString()}
                     primaryTypographyProps={{ variant: "body2", fontWeight: selected ? 750 : 600, noWrap: true }}
                     secondaryTypographyProps={{ variant: "caption", color: "text.secondary", component: "span", sx: { lineHeight: 1.35 } }}
                     sx={{ minWidth: 0, m: 0 }}

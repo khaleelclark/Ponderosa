@@ -687,7 +687,15 @@ export function ProjectArtifactsView({
                               </ListItemIcon>
                               <ListItemText
                                 primary={label}
-                                secondary={`${owner}${artifact.executionId ? ` · Run ${artifact.executionId.slice(0, 8)}` : ""} · ${artifact.visibility === "published" ? "Published" : "Project"} · ${artifact.sourcePath ?? artifact.path}`}
+                                secondary={[
+                                  owner,
+                                  artifact.executionId
+                                    ? `Run ${artifact.executionId.slice(0, 8)}`
+                                    : "No Run",
+                                  artifact.visibility === "published"
+                                    ? "Published"
+                                    : "Project",
+                                ].join(" · ")}
                                 primaryTypographyProps={{
                                   fontWeight: 750,
                                   noWrap: true,
