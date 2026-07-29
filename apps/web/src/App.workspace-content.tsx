@@ -155,6 +155,10 @@ export function WorkspaceRouteOutlet({
               ...(projectId ? { projectId } : {}),
               ...(managerAgentId ? { managerAgentId } : {}),
             })}
+          onAgentsDeleted={(projectId, agentIds) =>
+            agentIds.forEach(agentId =>
+              onResourceDeleted({ kind: "agent", projectId, agentId }),
+            )}
         />
       ) : route.kind === "allChats" ? (
         <AllChatsWorkspace

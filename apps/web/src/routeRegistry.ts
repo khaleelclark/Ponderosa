@@ -218,13 +218,7 @@ const ROUTE_REGISTRY = {
   },
   agents: {
     toPath: route =>
-      `/projects/${encodeURIComponent(route.projectId)}/agents${route.create || route.managerAgentId || route.continueToTrigger
-        ? `?${new URLSearchParams({
-          ...(route.create ? { create: "1" } : {}),
-          ...(route.managerAgentId ? { manager: route.managerAgentId } : {}),
-          ...(route.continueToTrigger ? { continue: "trigger" } : {}),
-        }).toString()}`
-        : ""}`,
+      `/projects/${encodeURIComponent(route.projectId)}/agents`,
     workspaceTabKey: route => `agents:${route.projectId}`,
     tabLabel: () => "Agents",
     tabIcon: "agent",
@@ -241,8 +235,6 @@ const ROUTE_REGISTRY = {
       } else if (route.view) query.set("view", route.view);
       if (route.view === "technical" && route.technicalFocusId)
         query.set("focus", route.technicalFocusId);
-      if (route.view === "triggers" && route.createTrigger)
-        query.set("create", "1");
       if (route.view === "triggers" && route.triggerId)
         query.set("trigger", route.triggerId);
       return `/projects/${encodeURIComponent(route.projectId)}/agents/${encodeURIComponent(route.agentId)}${query.size ? `?${query.toString()}` : ""}`;

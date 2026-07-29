@@ -351,6 +351,7 @@ function TriggerCreateForm({
   projects,
   engines,
   initialProjectId,
+  initialConversationId,
   initialAgentId,
   onCancel,
   onCreated,
@@ -358,6 +359,7 @@ function TriggerCreateForm({
   projects: ProjectDto[];
   engines: EngineDto[];
   initialProjectId?: string;
+  initialConversationId?: string;
   initialAgentId?: string;
   onCancel(): void;
   onCreated(projectId: string, agentId: string): void;
@@ -367,10 +369,18 @@ function TriggerCreateForm({
   const conversationQueries = useProjectConversations(projects);
   const options = projects
     .flatMap((project, index) => {
+      if (initialProjectId && project.id !== initialProjectId) return [];
       const chats = conversationQueries[index]?.data ?? [];
       return (agentQueries[index]?.data ?? []).flatMap(agent => {
         if (agent.archived || agent.conversationIds.length === 0) return [];
+        if (
+          initialConversationId &&
+          !agent.conversationIds.includes(initialConversationId)
+        ) {
+          return [];
+        }
         const conversationId =
+          initialConversationId ??
           agent.conversationId ??
           agent.conversationIds.find(id =>
             chats.some(chat => chat.id === id && !chat.archived)) ??
@@ -411,7 +421,9 @@ function TriggerCreateForm({
       chat => !chat.archived,
     )
     : [];
-  const newAgentConversation = newAgentProjectChats[0];
+  const newAgentConversation = initialConversationId
+    ? newAgentProjectChats.find(chat => chat.id === initialConversationId)
+    : newAgentProjectChats[0];
   const quickCreateEngine =
     newAgentProject?.defaultEngine ??
     engines.find(engineIsAvailable)?.id ??
@@ -539,6 +551,7 @@ function TriggerCreateForm({
                 labelId="quick-trigger-agent-project-label"
                 label="Project"
                 value={newAgentProjectId}
+                disabled={Boolean(initialProjectId)}
                 onChange={event => {
                   const nextProjectId = event.target.value;
                   const nextIndex = projects.findIndex(
@@ -552,11 +565,14 @@ function TriggerCreateForm({
                   );
                 }}
               >
-                {projects.map(project => (
+                {projects
+                  .filter(project =>
+                    !initialProjectId || project.id === initialProjectId)
+                  .map(project => (
                   <MenuItem key={project.id} value={project.id}>
                     {project.label}
                   </MenuItem>
-                ))}
+                  ))}
               </Select>
             </FormControl>
             <TextField
@@ -667,6 +683,9 @@ export function CreateWorkspace({
           projects={projects}
           engines={engines}
           initialProjectId={route.projectId}
+          fixedProjectId={
+            route.conversationId ? route.projectId : undefined
+          }
           fixedConversationId={route.conversationId}
           initialManagerAgentId={route.managerAgentId}
           onCancel={onCancel}
@@ -680,6 +699,7 @@ export function CreateWorkspace({
           projects={projects}
           engines={engines}
           initialProjectId={route.projectId}
+          initialConversationId={route.conversationId}
           initialAgentId={route.agentId}
           onCancel={onCancel}
           onCreated={(projectId, agentId) =>

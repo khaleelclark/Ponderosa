@@ -79,7 +79,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
           : `${rows.length} Project ${rows.length === 1 ? "Chat" : "Chats"} across Ponderosa`
     }
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={() => onCreate(projectId || undefined)}>New Chat</Button>}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats">
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Chats" reorderHint>
       <CollectionDirectoryControls
         projects={filterProjectId ? undefined : projects}
         projectId={filterProjectId ? undefined : projectId}
@@ -90,7 +90,7 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
     </CollectionToolbar>}
     listLabel="All Chats"
   >
-    {ordered.map(({ project, conversation }) => {
+    {ordered.map(({ project, conversation }, index) => {
       const route: Route = { kind: "conversation", projectId: project.id, conversationId: conversation.id };
       const menuResource = { route, conversation };
       const key = resourcePreferenceKey("conversation", conversation.id);
@@ -101,15 +101,30 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
         icon={<ChatBubbleOutlineIcon />}
         meta={<CollectionTimestamp value={conversation.updatedAt} />}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Chat" : "Star Chat"}><IconButton aria-label={starred.has(key) ? `Unstar ${conversation.title}` : `Star ${conversation.title}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "conversation", conversation.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${conversation.title}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.conversation.id === conversation.id} aria-label={`Actions for ${conversation.title}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => onNavigate(route)}
         onContextMenu={(anchor) => setMenu({ anchor, resource: menuResource })}
         draggable
         onDragStart={() => setDragged(conversation.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, scopedRows.map((row) => row.conversation.id), dragged, conversation.id) });
+          if (dragged) onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(preferences.chatOrder, ordered.map((row) => row.conversation.id), dragged, conversation.id) });
           setDragged(undefined);
+        }}
+        onKeyboardMove={(direction) => {
+          const target = ordered[direction === "up" ? index - 1 : index + 1];
+          if (!target) return false;
+          onPreferences({
+            chatSort: "custom",
+            chatOrder: reorderStableIds(
+              preferences.chatOrder,
+              ordered.map(row => row.conversation.id),
+              conversation.id,
+              target.conversation.id,
+              direction === "up" ? "before" : "after",
+            ),
+          });
+          return true;
         }}
       />;
     })}
@@ -147,11 +162,12 @@ export function AllChatsWorkspace({ projects, filterProjectId, preferences, onPr
   </CollectionWorkspace>;
 }
 
-export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate }: {
+export function AllAgentsWorkspace({ projects, engines, filterProjectId, preferences, onPreferences, onNavigate, onOpenInNewTab, onCreate, onAgentsDeleted }: {
   projects: ProjectDto[]; engines: EngineDto[]; filterProjectId?: string; preferences: WorkspacePreferencesDto;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onNavigate(route: Route): void; onOpenInNewTab(route: Route): void;
   onCreate(projectId?: string, managerAgentId?: string): void;
+  onAgentsDeleted(projectId: string, agentIds: string[]): void;
 }): JSX.Element {
   const agentQueries = useProjectAgents(projects);
   const conversationQueries = useProjectConversations(projects);
@@ -187,12 +203,12 @@ export function AllAgentsWorkspace({ projects, engines, filterProjectId, prefere
         sort={sort}
         onSort={value => onPreferences(workspaceResourceSortPatch("agent", value))}
       />
-    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
+    </>} agents={agents} projectId={projectId || undefined} engines={engines} conversations={conversations} statusByAgentId={statusByAgentId} healthByAgentId={healthByAgentId} projectByAgentId={projectByAgentId} displayOrder={agents.map((agent) => agent.id)} selectionAllowed onReorder={(sourceId, targetId, position) => onPreferences({ agentSort: "custom", agentOrder: reorderStableIds(preferences.agentOrder, agents.map((agent) => agent.id), sourceId, targetId, position) })} starredAgentIds={starredIds} onToggleStar={(agentId) => onPreferences(toggleWorkspaceResourceStar(preferences, "agent", agentId))} onOpenAgent={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentInNewTab={(agentId) => { const project = projectByAgentId.get(agentId)!; onOpenInNewTab({ kind: "agent", projectId: project.id, agentId }); }} onOpenAgentSettings={(agentId) => { const project = projectByAgentId.get(agentId)!; onNavigate({ kind: "agent", projectId: project.id, agentId, view: "settings" }); }} onNewAgent={(managerAgentId) => onCreate(
       managerAgentId
         ? projectByAgentId.get(managerAgentId)?.id
         : projectId || undefined,
       managerAgentId,
-    )} showImportAction={false} />
+    )} onAgentsDeleted={onAgentsDeleted} showImportAction={false} />
   </Box>;
 }
 
@@ -204,6 +220,7 @@ type TriggerDirectoryResource = {
 export function AllTriggersWorkspace({
   projects,
   filterProjectId,
+  filterConversationId,
   filterAgentIds,
   scopeTitle,
   embedded = false,
@@ -215,6 +232,7 @@ export function AllTriggersWorkspace({
 }: {
   projects: ProjectDto[]; preferences: WorkspacePreferencesDto; onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   filterProjectId?: string;
+  filterConversationId?: string;
   filterAgentIds?: readonly string[];
   scopeTitle?: string;
   embedded?: boolean;
@@ -251,6 +269,12 @@ export function AllTriggersWorkspace({
   const scopedAgentIds = filterAgentIds ? new Set(filterAgentIds) : undefined;
   const rows = (triggers.data ?? []).flatMap((trigger) => {
     if (scopedAgentIds && !scopedAgentIds.has(trigger.agentId)) return [];
+    if (
+      filterConversationId &&
+      trigger.conversationId !== filterConversationId
+    ) {
+      return [];
+    }
     const destination = destinations.get(trigger.agentId);
     return destination ? [{ trigger, ...destination }] : [];
   });
@@ -281,7 +305,7 @@ export function AllTriggersWorkspace({
           : `${rows.length} ${rows.length === 1 ? "Trigger" : "Triggers"} across Ponderosa`
     }
     primaryAction={createButton}
-    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers">
+    toolbar={<CollectionToolbar search={search} onSearch={setSearch} searchLabel="Search Triggers" reorderHint>
       <CollectionDirectoryControls
         projects={filterProjectId ? undefined : projects}
         projectId={filterProjectId ? undefined : projectId}
@@ -294,7 +318,7 @@ export function AllTriggersWorkspace({
     listLabel={scopeTitle ?? "All Triggers"}
     variant={embedded ? "embedded" : "page"}
   >
-    {ordered.map(({ project, agent, trigger }) => {
+    {ordered.map(({ project, agent, trigger }, index) => {
       const route: Route = { kind: "agent", projectId: project.id, agentId: agent.id, view: "triggers" };
       const menuResource = { route, trigger };
       const key = resourcePreferenceKey("trigger", trigger.id);
@@ -313,7 +337,7 @@ export function AllTriggersWorkspace({
           <CollectionTimestamp value={trigger.updatedAt} hideBelow="md" />
         </Stack>}
         starAction={<Tooltip title={starred.has(key) ? "Unstar Trigger" : "Star Trigger"}><IconButton aria-label={starred.has(key) ? `Unstar ${trigger.name}` : `Star ${trigger.name}`} onClick={() => onPreferences(toggleWorkspaceResourceStar(preferences, "trigger", trigger.id))}>{starred.has(key) ? <StarRoundedIcon sx={{ color: "var(--ponderosa-star)" }} /> : <StarBorderRoundedIcon />}</IconButton></Tooltip>}
-        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
+        overflowAction={<Tooltip title={`Actions for ${trigger.name}`}><IconButton data-resource-menu-trigger aria-haspopup="menu" aria-expanded={menu?.resource.trigger.id === trigger.id} aria-label={`Actions for ${trigger.name}`} onClick={(event) => setMenu({ anchor: event.currentTarget, resource: menuResource })}><MoreVertIcon /></IconButton></Tooltip>}
         onOpen={() => {
           markWorkspaceResourceUsed(queryClient, "trigger", trigger.id);
           onNavigate(route);
@@ -323,8 +347,23 @@ export function AllTriggersWorkspace({
         onDragStart={() => setDragged(trigger.id)}
         onDragEnd={() => setDragged(undefined)}
         onDrop={() => {
-          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, scopedRows.map((row) => row.trigger.id), dragged, trigger.id) });
+          if (dragged) onPreferences({ triggerSort: "custom", triggerOrder: reorderStableIds(preferences.triggerOrder, ordered.map((row) => row.trigger.id), dragged, trigger.id) });
           setDragged(undefined);
+        }}
+        onKeyboardMove={(direction) => {
+          const target = ordered[direction === "up" ? index - 1 : index + 1];
+          if (!target) return false;
+          onPreferences({
+            triggerSort: "custom",
+            triggerOrder: reorderStableIds(
+              preferences.triggerOrder,
+              ordered.map(row => row.trigger.id),
+              trigger.id,
+              target.trigger.id,
+              direction === "up" ? "before" : "after",
+            ),
+          });
+          return true;
         }}
       />;
     })}

@@ -15,7 +15,6 @@ export interface AgentDetailProps {
   focusTelemetry?: AgentTelemetryFocus;
   technicalFocusId?: string;
   initialView?: AgentDetailView;
-  createTrigger?: boolean;
   triggerSettingsId?: string;
   onViewChange?(view: AgentDetailView): void;
   onOpenTechnicalDetails(focusId?: string): void;
@@ -35,6 +34,7 @@ export interface AgentDetailProps {
   conversations: ConversationDto[];
   onOpenProject(): void;
   onOpenAgent(agentId: string): void;
+  onOpenAgentSettings(agentId: string): void;
   onOpenCommunicationSource(
     conversationId: string,
     communicationEventId: string,
@@ -48,5 +48,6 @@ export interface AgentDetailProps {
   onOpenBrowser(runId: string): void;
   onNewSubagent(managerAgentId: string): void;
   onCreateTrigger(): void;
-  onDeleted(): void;
+  onDeleted(deletedAgentIds: string[]): void;
+  onAgentsDeleted(agentIds: string[]): void;
 }

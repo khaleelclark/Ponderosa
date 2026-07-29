@@ -85,6 +85,9 @@ export function AgentCreateForm({
   const presetsQuery = useAgentPresets(projectId || undefined);
   const agents = agentsQuery.data ?? [];
   const chats = chatsQuery.data ?? [];
+  const fixedConversation = fixedConversationId
+    ? chats.find(chat => chat.id === fixedConversationId)
+    : undefined;
   const presets = presetsQuery.data ?? [];
   const [title, setTitle] = useState(initialName ?? "");
   const [engine, setEngine] = useState(UNSET);
@@ -305,7 +308,16 @@ export function AgentCreateForm({
               ))}
           </Select>
         </FormControl>
-      ) : null}
+      ) : (
+        <TextField
+          label="Project chat"
+          value={fixedConversation?.title ?? "Selected Chat"}
+          helperText="This Agent will join the Chat where creation was started."
+          InputProps={{ readOnly: true }}
+          fullWidth
+          size="small"
+        />
+      )}
       <FormControl fullWidth size="small">
         <InputLabel id="create-agent-manager-label">Delegated under</InputLabel>
         <Select

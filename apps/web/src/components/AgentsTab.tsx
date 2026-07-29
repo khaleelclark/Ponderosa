@@ -161,6 +161,7 @@ export function AgentsTab({
   onOpenAgent,
   onOpenAgentInNewTab,
   onOpenAgentSettings,
+  onAgentsDeleted,
   onNewAgent,
   showImportAction = true,
   projectByAgentId,
@@ -183,6 +184,7 @@ export function AgentsTab({
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
   onOpenAgentSettings?(agentId: string): void;
+  onAgentsDeleted?(projectId: string, agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
   showImportAction?: boolean;
   projectByAgentId?: Map<string, { id: string; label: string }>;
@@ -190,7 +192,11 @@ export function AgentsTab({
   onToggleStar?(agentId: string): void;
   displayOrder?: readonly string[];
   selectionAllowed?: boolean;
-  onReorder?(sourceAgentId: string, targetAgentId: string): void;
+  onReorder?(
+    sourceAgentId: string,
+    targetAgentId: string,
+    position?: "before" | "after",
+  ): void;
   toolbarControls?: ReactNode;
   scopeLabel?: string;
   collection?: {
@@ -567,6 +573,9 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
+          reorderHint={
+            organizationView === "flat" && Boolean(onReorder)
+          }
         >
           {toolbarControls}
           <Stack
@@ -731,7 +740,7 @@ export function AgentsTab({
           />
         ) : (
           <Stack spacing={0.75} role="tree" aria-label="Agent organization">
-            {filtered.map(({ agent, depth }) => {
+            {filtered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const profile = agentRoleProfile(agent);
               const organizationParent = agent.managerAgentId
@@ -921,8 +930,11 @@ export function AgentsTab({
                     overflowAction={
                       !selectionMode ? (
                         <IconButton
+                          data-resource-menu-trigger
                           size="small"
                           aria-label={`Actions for ${agent.title}`}
+                          aria-haspopup="menu"
+                          aria-expanded={agentMenu?.resource === agent.id}
                           onClick={event =>
                             setAgentMenu({
                               anchor: event.currentTarget,
@@ -954,6 +966,23 @@ export function AgentsTab({
                         onReorder?.(draggedAgentId, agent.id);
                       setDraggedAgentId(undefined);
                     }}
+                    onKeyboardMove={
+                      organizationView === "flat" && onReorder
+                        ? direction => {
+                            const target =
+                              filtered[
+                                direction === "up" ? index - 1 : index + 1
+                              ];
+                            if (!target) return false;
+                            onReorder(
+                              agent.id,
+                              target.agent.id,
+                              direction === "up" ? "before" : "after",
+                            );
+                            return true;
+                          }
+                        : undefined
+                    }
                   />
                 </Stack>
               );
@@ -968,7 +997,10 @@ export function AgentsTab({
           projectId={pendingDelete.projectId}
           rootAgentIds={pendingDelete ? [pendingDelete.id] : []}
           onClose={() => setPendingDelete(undefined)}
-          onDeleted={() => setPendingDelete(undefined)}
+          onDeleted={(deletedAgentIds) => {
+            onAgentsDeleted?.(pendingDelete.projectId, deletedAgentIds);
+            setPendingDelete(undefined);
+          }}
         />
       ) : null}
       <TextInputDialog
@@ -1071,11 +1103,11 @@ export function AgentsTab({
           }
           confirmationText="DELETE SELECTED"
           onClose={() => setDeleteSelectedGroups([])}
-          onDeleted={() => {
+          onDeleted={(deletedAgentIds) => {
+            const deletedProjectId = deleteSelectedGroups[0]!.projectId;
+            onAgentsDeleted?.(deletedProjectId, deletedAgentIds);
             if (deleteSelectedGroups.length > 1) {
-              const deletedIds = new Set(
-                deleteSelectedGroups[0]?.agentIds ?? [],
-              );
+              const deletedIds = new Set(deletedAgentIds);
               setSelectedAgentIds(current => {
                 const next = new Set(current);
                 deletedIds.forEach(id => next.delete(id));

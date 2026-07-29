@@ -110,13 +110,7 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         Boolean(candidate.path);
     case "agents":
       return typeof candidate.projectId === "string" &&
-        Boolean(candidate.projectId) &&
-        (candidate.create === undefined ||
-          typeof candidate.create === "boolean") &&
-        (candidate.managerAgentId === undefined ||
-          typeof candidate.managerAgentId === "string") &&
-        (candidate.continueToTrigger === undefined ||
-          typeof candidate.continueToTrigger === "boolean");
+        Boolean(candidate.projectId);
     case "projectWork":
       return typeof candidate.projectId === "string" &&
         Boolean(candidate.projectId) &&
@@ -143,8 +137,6 @@ function isWorkspaceTabRoute(route: unknown): route is WorkspaceTabRoute {
         typeof candidate.agentId === "string" &&
         Boolean(candidate.agentId) &&
         (candidate.view === undefined || isAgentDetailView(candidate.view)) &&
-        (candidate.createTrigger === undefined ||
-          typeof candidate.createTrigger === "boolean") &&
         (candidate.triggerId === undefined ||
           typeof candidate.triggerId === "string");
     case "review":

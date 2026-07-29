@@ -14,7 +14,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectDto, ProjectSort } from "@ponderosa/core";
-import { useId, useRef, type DragEvent, type ReactNode } from "react";
+import { useId, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { IconTitle } from "./IconTitle";
 import { relativeTime } from "../agents";
 
@@ -120,10 +120,17 @@ export interface CollectionToolbarProps {
   search: string;
   onSearch(value: string): void;
   searchLabel: string;
+  reorderHint?: boolean;
   children?: ReactNode;
 }
 
-export function CollectionToolbar({ search, onSearch, searchLabel, children }: CollectionToolbarProps): JSX.Element {
+export function CollectionToolbar({
+  search,
+  onSearch,
+  searchLabel,
+  reorderHint = false,
+  children,
+}: CollectionToolbarProps): JSX.Element {
   return <Stack
     component="section"
     aria-label="Collection controls"
@@ -143,6 +150,15 @@ export function CollectionToolbar({ search, onSearch, searchLabel, children }: C
       sx={{ flex: 1, minWidth: { md: 240 } }}
     />
     {children}
+    {reorderHint ? (
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ width: { xs: "100%", md: "auto" }, whiteSpace: "nowrap" }}
+      >
+        Reorder: Alt+Shift+↑/↓
+      </Typography>
+    ) : null}
   </Stack>;
 }
 
@@ -270,6 +286,7 @@ export interface ResourceRowProps {
   onDragEnd?(): void;
   onDragOver?(event: DragEvent<HTMLElement>): void;
   onDrop?(event: DragEvent<HTMLElement>): void;
+  onKeyboardMove?(direction: "up" | "down"): boolean;
   highlighted?: boolean;
 }
 
@@ -289,9 +306,15 @@ export function ResourceRow({
   onDragEnd,
   onDragOver,
   onDrop,
+  onKeyboardMove,
   highlighted = false,
 }: ResourceRowProps): JSX.Element {
   const dragPreviewRef = useRef<HTMLElement>();
+  const openTargetRef = useRef<HTMLDivElement>(null);
+  const [reorderAnnouncement, setReorderAnnouncement] = useState<{
+    message: string;
+    sequence: number;
+  }>();
   const clearDragPreview = () => {
     dragPreviewRef.current?.remove();
     dragPreviewRef.current = undefined;
@@ -361,9 +384,10 @@ export function ResourceRow({
     onContextMenu={(event) => {
       if (!onContextMenu) return;
       event.preventDefault();
-      onContextMenu(event.currentTarget);
+      onContextMenu(openTargetRef.current ?? event.currentTarget);
     }}
     sx={{
+      position: "relative",
       display: "flex",
       alignItems: "stretch",
       overflow: "hidden",
@@ -374,12 +398,41 @@ export function ResourceRow({
     }}
   >
     <Box
+      ref={openTargetRef}
       component="div"
       role="button"
       tabIndex={0}
       aria-label={`Open ${label}`}
+      aria-keyshortcuts={
+        onKeyboardMove
+          ? "Alt+Shift+ArrowUp Alt+Shift+ArrowDown"
+          : undefined
+      }
       onClick={onOpen}
       onKeyDown={(event) => {
+        if (
+          onKeyboardMove &&
+          event.altKey &&
+          event.shiftKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          (event.key === "ArrowUp" || event.key === "ArrowDown")
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          const direction = event.key === "ArrowUp" ? "up" : "down";
+          if (onKeyboardMove(direction)) {
+            setReorderAnnouncement(current => ({
+              message: `${label} moved ${direction}`,
+              sequence: (current?.sequence ?? 0) + 1,
+            }));
+            const row = event.currentTarget;
+            window.requestAnimationFrame(() =>
+              row.scrollIntoView({ block: "nearest" }),
+            );
+          }
+          return;
+        }
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
         onOpen();
@@ -409,6 +462,23 @@ export function ResourceRow({
         {description ? <Typography component="div" variant="body2" color="text.secondary" noWrap>{description}</Typography> : null}
       </Box>
       {meta ? <Box sx={{ flexShrink: 0, minWidth: 0 }}>{meta}</Box> : null}
+    </Box>
+    <Box
+      key={reorderAnnouncement?.sequence}
+      aria-live="polite"
+      sx={{
+        position: "absolute",
+        width: 1,
+        height: 1,
+        p: 0,
+        m: -1,
+        overflow: "hidden",
+        clip: "rect(0 0 0 0)",
+        whiteSpace: "nowrap",
+        border: 0,
+      }}
+    >
+      {reorderAnnouncement?.message}
     </Box>
     {controls ? <Stack direction="row" spacing={0} sx={{ alignItems: "center", flexShrink: 0 }}>{controls}</Stack> : null}
     {starAction ? <Box sx={{ display: "grid", placeItems: "center", flexShrink: 0 }}>{starAction}</Box> : null}

@@ -128,7 +128,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     title="All Projects"
     detail={filteredSnapshots.length === projects.length ? `${projects.length} ${projects.length === 1 ? "Project" : "Projects"} across Ponderosa` : `${filteredSnapshots.length} of ${projects.length} Projects`}
     primaryAction={<Button variant="contained" startIcon={<AddIcon />} onClick={onCreateProject} sx={{ whiteSpace: "nowrap" }}>New Project</Button>}
-    toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects">
+    toolbar={<CollectionToolbar search={filter} onSearch={setFilter} searchLabel="Search Projects" reorderHint>
       <CollectionDirectoryControls
         sort={preferences.projectSort}
         onSort={projectSort => onPreferences({ projectSort })}
@@ -136,7 +136,7 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
     </CollectionToolbar>}
     listLabel="All Projects"
   >
-    {filteredSnapshots.map((snapshot) => {
+    {filteredSnapshots.map((snapshot, index) => {
         const recent = [...snapshot.conversations].filter((item) => !item.archived).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
         const running = snapshot.health.filter((entry) => entry.status === "running" || entry.status === "compacting").length;
         const route = openProjectRoute(snapshot);
@@ -176,6 +176,22 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
             const bounds = event.currentTarget.getBoundingClientRect();
             dropProject(snapshot.project.id, event.clientY >= bounds.top + bounds.height / 2 ? "after" : "before");
           }}
+          onKeyboardMove={(direction) => {
+            const target =
+              filteredSnapshots[
+                direction === "up" ? index - 1 : index + 1
+              ];
+            if (!target) return false;
+            const patch = projectDropPreferencePatch(
+              projects.map(project => project.id),
+              snapshot.project.id,
+              target.project.id,
+              direction === "up" ? "before" : "after",
+            );
+            if (!patch) return false;
+            onPreferences(patch);
+            return true;
+          }}
           highlighted={dropTarget?.projectId === snapshot.project.id}
           starAction={
           <Tooltip title={`${starredResourceIds.has(resourcePreferenceKey("project", snapshot.project.id)) ? "Unstar" : "Star"} ${snapshot.project.label}`}>
@@ -187,7 +203,12 @@ export function AllProjectsView({ projects, preferences, onNavigate, onOpenInNew
           overflowAction={
           <Tooltip title={`Actions for ${snapshot.project.label}`}>
             <IconButton
+              data-resource-menu-trigger
               aria-label={`Actions for ${snapshot.project.label}`}
+              aria-haspopup="menu"
+              aria-expanded={
+                tabMenu?.resource.project.id === snapshot.project.id
+              }
               onClick={(event) => setTabMenu({ anchor: event.currentTarget, resource: menuResource })}
             >
               <MoreVertIcon />

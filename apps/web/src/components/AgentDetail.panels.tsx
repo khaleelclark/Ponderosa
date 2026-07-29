@@ -50,6 +50,7 @@ interface AgentDetailPanelsProps {
   agentWorkFocus?: string;
   settingsPane: JSX.Element;
   onOpenAgent(agentId: string): void;
+  onOpenAgentSettings(agentId: string): void;
   onOpenMessageSource: NonNullable<
     ComponentProps<typeof ChatPane>["onOpenMessageSource"]
   >;
@@ -59,6 +60,7 @@ interface AgentDetailPanelsProps {
   onOpenFile(file: ResponseFileActivityDto): void;
   onOpenFileInNewTab(file: ResponseFileActivityDto): void;
   onNewSubagent(managerAgentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
   onCreateTrigger(): void;
   onOpenTechnical(focusId?: string): void;
   onOpenArtifact(artifactId: string): void;
@@ -93,6 +95,7 @@ export function AgentDetailPanels({
   agentWorkFocus,
   settingsPane,
   onOpenAgent,
+  onOpenAgentSettings,
   onOpenMessageSource,
   onMentionAgent,
   onLoadOlderChat,
@@ -100,6 +103,7 @@ export function AgentDetailPanels({
   onOpenFile,
   onOpenFileInNewTab,
   onNewSubagent,
+  onAgentsDeleted,
   onCreateTrigger,
   onOpenTechnical,
   onOpenArtifact,
@@ -154,7 +158,10 @@ export function AgentDetailPanels({
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
         onOpenAgent={onOpenAgent}
+        onOpenAgentSettings={onOpenAgentSettings}
         onNewAgent={onNewSubagent}
+        onAgentsDeleted={(_projectId, agentIds) =>
+          onAgentsDeleted(agentIds)}
         selectionAllowed={false}
         organizationRootAgentId={detail.agent.id}
         collection={{

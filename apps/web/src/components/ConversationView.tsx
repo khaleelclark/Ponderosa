@@ -91,6 +91,7 @@ export function ConversationView({
   onOpenProject,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onAgentsDeleted,
   onOpenReview,
   onOpenAgentWork,
   onOpenBrowser,
@@ -119,10 +120,11 @@ export function ConversationView({
   onOpenProject(): void;
   onOpenAgent(
     agentId: string,
-    view?: "technical",
+    view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string): void;
   onOpenAgentWork(focusId?: string): void;
   onOpenBrowser(): void;
@@ -866,6 +868,10 @@ export function ConversationView({
             healthByAgentId={healthByAgentId}
             onOpenAgent={agentId => onOpenAgent(agentId)}
             onOpenAgentInNewTab={onOpenAgentInNewTab}
+            onOpenAgentSettings={agentId =>
+              onOpenAgent(agentId, "settings")}
+            onAgentsDeleted={(_projectId, agentIds) =>
+              onAgentsDeleted(agentIds)}
             onNewAgent={managerAgentId =>
               onNewAgent(conversation, managerAgentId)
             }
@@ -879,6 +885,7 @@ export function ConversationView({
           <AllTriggersWorkspace
             projects={project ? [project] : []}
             filterProjectId={conversation.projectId}
+            filterConversationId={conversation.id}
             filterAgentIds={conversationAgents.map(agent => agent.id)}
             scopeTitle={`${conversation.title} Triggers`}
             embedded

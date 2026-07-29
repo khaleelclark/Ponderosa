@@ -73,8 +73,8 @@ export type Route =
   | { kind: "projectWork"; projectId: string; conversationId?: string; focusId?: string }
   | { kind: "browser"; projectId: string; agentId?: string; runId?: string }
   | { kind: "conversation"; projectId: string; conversationId: string; focusMessageId?: string; channel?: ConversationChannel; urlDriven?: boolean }
-  | { kind: "agents"; projectId: string; create?: boolean; managerAgentId?: string; continueToTrigger?: boolean }
-  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; createTrigger?: boolean; triggerId?: string }
+  | { kind: "agents"; projectId: string }
+  | { kind: "agent"; projectId: string; agentId: string; focusMessageId?: string; focusTelemetry?: AgentTelemetryFocus; technicalFocusId?: string; view?: AgentDetailView; triggerId?: string }
   | { kind: "review"; projectId: string; agentId: string; path?: string };
 
 const LAST_PROJECT_KEY = "ponderosa.lastProjectId";
@@ -163,7 +163,6 @@ export function parseRoute(pathname: string, search = ""): Route {
       ...(!focusMessageId && focusTelemetry ? { focusTelemetry } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView ? { view: agentView } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView === "technical" && technicalFocusId ? { technicalFocusId } : {}),
-      ...(!focusMessageId && !focusTelemetry && agentView === "triggers" && query.get("create") === "1" ? { createTrigger: true } : {}),
       ...(!focusMessageId && !focusTelemetry && agentView === "triggers" && query.get("trigger")?.trim() ? { triggerId: query.get("trigger")!.trim() } : {}),
     };
   }
@@ -171,13 +170,7 @@ export function parseRoute(pathname: string, search = ""): Route {
     return { kind: "review", projectId, agentId: decodeURIComponent(parts[3]), ...(reviewPath ? { path: reviewPath } : {}) };
   }
   if (parts[2] === "agents") {
-    return {
-      kind: "agents",
-      projectId,
-      ...(query.get("create") === "1" ? { create: true } : {}),
-      ...(query.get("manager")?.trim() ? { managerAgentId: query.get("manager")!.trim() } : {}),
-      ...(query.get("continue") === "trigger" ? { continueToTrigger: true } : {}),
-    };
+    return { kind: "agents", projectId };
   }
   return {
     kind: "project",

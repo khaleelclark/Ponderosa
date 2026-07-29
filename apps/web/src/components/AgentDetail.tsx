@@ -107,6 +107,7 @@ export function AgentDetail({
   conversations,
   onOpenProject,
   onOpenAgent,
+  onOpenAgentSettings,
   onOpenCommunicationSource,
   onOpenMaster,
   onOpenArtifact,
@@ -117,6 +118,7 @@ export function AgentDetail({
   onNewSubagent,
   onCreateTrigger,
   onDeleted,
+  onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId, 100);
@@ -884,6 +886,7 @@ export function AgentDetail({
         onOpenProject={onOpenProject}
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
+        onOpenAgentSettings={onOpenAgentSettings}
         onStop={stopActiveRun}
         onCopyPackage={(mode, organization) =>
           void copyAgentPackage(mode, organization)
@@ -953,6 +956,7 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onOpenFileInNewTab={openActivityFileInNewTab}
         onNewSubagent={onNewSubagent}
+        onAgentsDeleted={onAgentsDeleted}
         onCreateTrigger={onCreateTrigger}
         onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
@@ -1048,9 +1052,9 @@ export function AgentDetail({
           projectId: detail.agent.projectId,
           rootAgentIds: [detail.agent.id],
           onClose: () => setDeleteOpen(false),
-          onDeleted: () => {
+          onDeleted: (deletedAgentIds) => {
             setDeleteOpen(false);
-            onDeleted();
+            onDeleted(deletedAgentIds);
           },
         }}
         rename={{

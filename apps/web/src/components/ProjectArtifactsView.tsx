@@ -97,6 +97,8 @@ export function ProjectArtifactsView({
   statusByAgentId,
   onOpenAgent,
   onOpenAgentInNewTab,
+  onOpenAgentSettings,
+  onAgentsDeleted,
   onNewAgent,
   onNavigateTrigger,
   onOpenTriggerInNewTab,
@@ -110,6 +112,7 @@ export function ProjectArtifactsView({
   conversations,
   onOpenBrowser = () => undefined,
   initialView,
+  onViewChange,
 }: {
   projectId: string;
   project: ProjectDto;
@@ -128,6 +131,8 @@ export function ProjectArtifactsView({
   statusByAgentId: ReadonlyMap<string, AgentStatus>;
   onOpenAgent(agentId: string): void;
   onOpenAgentInNewTab?(agentId: string): void;
+  onOpenAgentSettings(agentId: string): void;
+  onAgentsDeleted(agentIds: string[]): void;
   onNewAgent(managerAgentId?: string): void;
   onNavigateTrigger(route: Route): void;
   onOpenTriggerInNewTab(route: Route): void;
@@ -141,6 +146,7 @@ export function ProjectArtifactsView({
   conversations: ConversationDto[];
   onOpenBrowser?(): void;
   initialView?: ProjectDetailView;
+  onViewChange(view: ProjectDetailView): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState("");
@@ -168,6 +174,10 @@ export function ProjectArtifactsView({
     setPreviewArtifact(undefined);
     setFileCategories([]);
   }, [projectId, initialView]);
+  const changeTab = (next: ProjectDetailView) => {
+    setTab(next);
+    onViewChange(next);
+  };
   const normalizedFilter = filter.trim().toLocaleLowerCase();
   const projectArtifacts = useQuery({
     queryKey: queryKeys.projectArtifacts.project(projectId),
@@ -324,7 +334,7 @@ export function ProjectArtifactsView({
               <MenuItem
                 onClick={() => {
                   setProjectMenuAnchor(null);
-                  setTab("settings");
+                  changeTab("settings");
                 }}
               >
                 <ListItemIcon>
@@ -349,7 +359,7 @@ export function ProjectArtifactsView({
         }
         tabs={{
           value: tab,
-          onChange: setTab,
+          onChange: changeTab,
           label: "Project",
           items: [
             {
@@ -798,6 +808,9 @@ export function ProjectArtifactsView({
               healthByAgentId={healthByAgentId}
               onOpenAgent={onOpenAgent}
               onOpenAgentInNewTab={onOpenAgentInNewTab}
+              onOpenAgentSettings={onOpenAgentSettings}
+              onAgentsDeleted={(_projectId, agentIds) =>
+                onAgentsDeleted(agentIds)}
               onNewAgent={onNewAgent}
             />
           ) : null}
