@@ -71,6 +71,33 @@ if (format === "dmg") {
   mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
   mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
   cpSync(bundle, path.join(app, "Contents", "Resources", "Ponderosa"), { recursive: true });
+  const iconset = path.join(stage, "Ponderosa.iconset");
+  const iconSource = path.join(bundle, "app", "web", "dist", "icons", "app-icon.png");
+  mkdirSync(iconset);
+  for (const [pixels, name] of [
+    [16, "icon_16x16.png"],
+    [32, "icon_16x16@2x.png"],
+    [32, "icon_32x32.png"],
+    [64, "icon_32x32@2x.png"],
+    [128, "icon_128x128.png"],
+    [256, "icon_128x128@2x.png"],
+    [256, "icon_256x256.png"],
+    [512, "icon_256x256@2x.png"],
+    [512, "icon_512x512.png"],
+    [1024, "icon_512x512@2x.png"],
+  ]) {
+    run("sips", [
+      "-z", String(pixels), String(pixels),
+      iconSource,
+      "--out", path.join(iconset, name),
+    ]);
+  }
+  run("iconutil", [
+    "--convert", "icns",
+    "--output", path.join(app, "Contents", "Resources", "Ponderosa.icns"),
+    iconset,
+  ]);
+  rmSync(iconset, { recursive: true, force: true });
   writeExecutable(path.join(app, "Contents", "MacOS", "Ponderosa"), `#!/bin/sh
 set -eu
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../Resources/Ponderosa" && pwd)"
@@ -85,6 +112,7 @@ exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "
 <key>CFBundleVersion</key><string>${numericAppleVersion(manifest.version)}</string>
 <key>CFBundleShortVersionString</key><string>${numericAppleVersion(manifest.version)}</string>
 <key>CFBundleExecutable</key><string>Ponderosa</string>
+<key>CFBundleIconFile</key><string>Ponderosa.icns</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>`);

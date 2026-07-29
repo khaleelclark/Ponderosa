@@ -34,10 +34,12 @@ process.once("message", (message: unknown) => {
   child.once("error", (error) => {
     process.stderr.write(`Ponderosa contained runtime spawn failed: ${error.message}\n`);
     process.exitCode = 126;
+    process.stdin.destroy();
     process.disconnect?.();
   });
   child.once("exit", (code) => {
     process.exitCode = code ?? 1;
+    process.stdin.destroy();
     process.disconnect?.();
   });
 });
