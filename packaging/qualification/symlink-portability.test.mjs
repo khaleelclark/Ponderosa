@@ -31,15 +31,21 @@ test("preserves internal relative links without embedding the source path", (t) 
   mkdirSync(path.join(source, "lib"), { recursive: true });
   writeFileSync(path.join(source, "lib", "value.txt"), "portable");
   symlinkSync(path.join("lib", "value.txt"), path.join(source, "value-link"));
+  symlinkSync("lib", path.join(source, "lib-link"), "dir");
 
   const audit = copyPortableTree(source, destination, { label: "fixture artifact" });
   const copiedTarget = readlinkSync(path.join(destination, "value-link"));
+  const copiedDirectoryTarget = readlinkSync(path.join(destination, "lib-link"));
 
   assert.equal(copiedTarget, path.join("lib", "value.txt"));
+  assert.equal(copiedDirectoryTarget, "lib");
   assert.equal(path.isAbsolute(copiedTarget), false);
+  assert.equal(path.isAbsolute(copiedDirectoryTarget), false);
   assert.equal(copiedTarget.includes(source), false);
-  assert.equal(audit.symlinkCount, 1);
+  assert.equal(copiedDirectoryTarget.includes(source), false);
+  assert.equal(audit.symlinkCount, 2);
   assert.equal(readFileSync(path.join(destination, "value-link"), "utf8"), "portable");
+  assert.equal(readFileSync(path.join(destination, "lib-link", "value.txt"), "utf8"), "portable");
 });
 
 test("rejects absolute, escaping, and dangling links", async (t) => {
@@ -58,6 +64,13 @@ test("rejects absolute, escaping, and dangling links", async (t) => {
       expected: /absolute symlink/u,
       target() {
         return "C:\\build-host\\checkout\\dependency";
+      },
+    },
+    {
+      name: "unc-absolute",
+      expected: /absolute symlink/u,
+      target() {
+        return "\\\\builder\\share\\checkout\\dependency";
       },
     },
     {
@@ -99,12 +112,12 @@ test("rejects an internal link chain that ultimately escapes", (t) => {
   mkdirSync(root);
   mkdirSync(outside);
   writeFileSync(path.join(outside, "value.txt"), "outside");
-  symlinkSync(outside, path.join(root, "indirect"));
-  symlinkSync(path.join("indirect", "value.txt"), path.join(root, "value-link"));
+  symlinkSync(path.join("..", "outside"), path.join(root, "z-indirect"));
+  symlinkSync(path.join("z-indirect", "value.txt"), path.join(root, "a-value-link"));
 
   assert.throws(
     () => auditPortableSymlinkTree(root, { label: "indirect fixture" }),
-    /resolving outside its root|absolute symlink/u,
+    /resolving outside its root/u,
   );
 });
 
