@@ -104,7 +104,14 @@ export function selectedRunConfig(
 /** Prefer the provider's exact effort roster for a selected model. */
 export function effortOptionsForModel(engine: EngineDto | undefined, model: string): EffortOption[] {
   if (!engine) return [];
-  return engine.models.find((option) => option.id === model)?.efforts ?? engine.efforts;
+  const efforts = engine.models.find((option) => option.id === model)?.efforts ?? engine.efforts;
+  if (engine.id !== "claude") return efforts;
+  return efforts.map((option) => ({
+    ...option,
+    label: option.id === "xhigh"
+      ? "XHigh"
+      : `${option.id.charAt(0).toUpperCase()}${option.id.slice(1)}`,
+  }));
 }
 
 export function modelSelectionIsCompatible(engine: EngineDto | undefined, model: string): boolean {
