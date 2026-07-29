@@ -426,7 +426,6 @@ export function ConversationView({
     setStopConfirmation,
     steerQueued,
     stopConfirmation,
-    stoppedNotice,
     stopOperation,
     submit,
   } = useConversationMessagingController({
@@ -942,11 +941,6 @@ export function ConversationView({
             {queuedMessageNotice}
           </Alert>
         ) : null}
-        {activeView === "main" && stoppedNotice ? (
-          <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>
-            {stoppedNotice}
-          </Alert>
-        ) : null}
         {sendError ? (
           <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
             Message not sent. {String(sendError)}
@@ -1081,9 +1075,7 @@ export function ConversationView({
         onImportClose={() => setImportOpen(false)}
         onImported={agentId => onOpenAgent(agentId)}
         onStopCancel={() => setStopConfirmation(undefined)}
-        onStopConfirm={(targets, names) =>
-          void cancelOperationTargets(targets, names)
-        }
+        onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
         onRenameValueChange={setRenameValue}
         onRename={() => rename.mutate(renameValue.trim())}
