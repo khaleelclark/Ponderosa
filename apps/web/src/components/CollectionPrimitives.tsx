@@ -53,7 +53,7 @@ export function CollectionHeader({
     component="header"
     direction={{ xs: "column", sm: "row" }}
     spacing={1.5}
-    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: "flex-start", borderBottom: 1, borderColor: "divider" }}
+    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { xs: "flex-start", sm: "center" }, borderBottom: 1, borderColor: "divider" }}
   >
     <Box sx={{ flex: 1, minWidth: 0 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>

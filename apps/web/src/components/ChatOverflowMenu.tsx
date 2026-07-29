@@ -19,7 +19,11 @@ import type { ReactNode } from "react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import { downloadMarkdownTranscript } from "../chatTranscript";
-import { useMobileWorkspaceActionsRegistry } from "./MobileWorkspaceActionsContext";
+import {
+  useMobileWorkspaceActionsRegistry,
+  type MobileWorkspaceActions,
+  type MobileWorkspaceActionsRegistration,
+} from "./MobileWorkspaceActionsContext";
 
 export interface ChatOverflowAction {
   label: string;
@@ -57,36 +61,19 @@ export function ChatOverflowMenu({
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const [notice, setNotice] = useState<string>();
   const mobileWorkspaceActionsRegistry = useMobileWorkspaceActionsRegistry();
-  const mobileWorkspaceActionsOwner = useRef(Symbol("mobile-workspace-actions"));
+  const mobileWorkspaceActions = useRef<MobileWorkspaceActions>();
+  const mobileWorkspaceRegistration =
+    useRef<MobileWorkspaceActionsRegistration>();
+  if (!mobileWorkspaceRegistration.current) {
+    mobileWorkspaceRegistration.current = {
+      getActions: () => mobileWorkspaceActions.current!,
+    };
+  }
   const close = () => setAnchor(null);
   const run = (action: () => void) => {
     close();
     action();
   };
-  const mobileWorkspaceActions = useRef({
-    label: "Current Workspace",
-    details: details ? {
-      label: detailsLabel,
-      icon: <TuneOutlinedIcon fontSize="small" />,
-      onSelect: (mobileAnchor: HTMLElement) => setDetailsAnchor(mobileAnchor),
-    } : undefined,
-    actions: actions.map(action => ({
-      ...action,
-      onSelect: () => action.onSelect(),
-    })),
-    copy: showExports ? {
-      label: CHAT_EXPORT_ACTION_LABELS[0],
-      icon: <ContentCopyOutlinedIcon fontSize="small" />,
-      onSelect: (mobileAnchor: HTMLElement) =>
-        setExportMenu({ kind: "copy", anchor: mobileAnchor }),
-    } : undefined,
-    download: showExports ? {
-      label: CHAT_EXPORT_ACTION_LABELS[1],
-      icon: <DownloadOutlinedIcon fontSize="small" />,
-      onSelect: (mobileAnchor: HTMLElement) =>
-        setExportMenu({ kind: "download", anchor: mobileAnchor }),
-    } : undefined,
-  });
   mobileWorkspaceActions.current = {
     label: "Current Workspace",
     details: details ? {
@@ -113,20 +100,16 @@ export function ChatOverflowMenu({
   };
   useLayoutEffect(() => {
     if (!mobileWorkspaceActionsRegistry) return;
-    const registration = {
-      owner: mobileWorkspaceActionsOwner.current,
-      getActions: () => mobileWorkspaceActions.current,
-    };
-    mobileWorkspaceActionsRegistry.current = registration;
-    return () => {
-      if (
-        mobileWorkspaceActionsRegistry.current?.owner ===
-        mobileWorkspaceActionsOwner.current
-      ) {
-        mobileWorkspaceActionsRegistry.current = undefined;
-      }
-    };
+    return mobileWorkspaceActionsRegistry.register(
+      mobileWorkspaceRegistration.current!,
+    );
   }, [mobileWorkspaceActionsRegistry]);
+  useLayoutEffect(() => {
+    if (!mobileWorkspaceActionsRegistry) return;
+    mobileWorkspaceActionsRegistry.notify(
+      mobileWorkspaceRegistration.current!,
+    );
+  });
 
   return <>
     <Tooltip title={label}>

@@ -133,9 +133,6 @@ html {
     overscroll-behavior-inline: contain;
   }
 
-  .chat-scroll-region {
-    overflow-x: hidden;
-  }
 }
 
 @media (max-width: 599.95px) {

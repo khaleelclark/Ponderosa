@@ -1,8 +1,8 @@
 import {
   createContext,
   useContext,
-  useRef,
-  type MutableRefObject,
+  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -22,23 +22,53 @@ export interface MobileWorkspaceActions {
   download?: MobileWorkspaceAction;
 }
 
-interface MobileWorkspaceActionsRegistration {
-  owner: symbol;
+export interface MobileWorkspaceActionsRegistration {
   getActions(): MobileWorkspaceActions;
 }
 
-export type MobileWorkspaceActionsRegistry =
-  MutableRefObject<MobileWorkspaceActionsRegistration | undefined>;
+export interface MobileWorkspaceActionsRegistry {
+  register(registration: MobileWorkspaceActionsRegistration): () => void;
+  notify(registration: MobileWorkspaceActionsRegistration): void;
+  subscribe(listener: () => void): () => void;
+  getSnapshot(): MobileWorkspaceActions | undefined;
+}
 
 const MobileWorkspaceActionsContext =
   createContext<MobileWorkspaceActionsRegistry | null>(null);
+
+function createMobileWorkspaceActionsRegistry(): MobileWorkspaceActionsRegistry {
+  let current: MobileWorkspaceActionsRegistration | undefined;
+  const listeners = new Set<() => void>();
+  const emit = () => listeners.forEach(listener => listener());
+  return {
+    register(registration) {
+      current = registration;
+      emit();
+      return () => {
+        if (current !== registration) return;
+        current = undefined;
+        emit();
+      };
+    },
+    notify(registration) {
+      if (current === registration) emit();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot() {
+      return current?.getActions();
+    },
+  };
+}
 
 export function MobileWorkspaceActionsProvider({
   children,
 }: {
   children: ReactNode;
 }): JSX.Element {
-  const registry = useRef<MobileWorkspaceActionsRegistration>();
+  const [registry] = useState(createMobileWorkspaceActionsRegistry);
   return (
     <MobileWorkspaceActionsContext.Provider value={registry}>
       {children}
@@ -50,4 +80,15 @@ export function useMobileWorkspaceActionsRegistry():
   | MobileWorkspaceActionsRegistry
   | null {
   return useContext(MobileWorkspaceActionsContext);
+}
+
+export function useMobileWorkspaceActions():
+  | MobileWorkspaceActions
+  | undefined {
+  const registry = useMobileWorkspaceActionsRegistry();
+  return useSyncExternalStore(
+    registry?.subscribe ?? (() => () => undefined),
+    registry?.getSnapshot ?? (() => undefined),
+    registry?.getSnapshot ?? (() => undefined),
+  );
 }

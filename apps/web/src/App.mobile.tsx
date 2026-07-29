@@ -34,7 +34,7 @@ import type { Route } from "./routing";
 import { OperatorAvatar } from "./components/OperatorAvatar";
 import { ProviderQuotaIndicator } from "./components/ProviderUsageCenter";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
-import { useMobileWorkspaceActionsRegistry } from "./components/MobileWorkspaceActionsContext";
+import { useMobileWorkspaceActions } from "./components/MobileWorkspaceActionsContext";
 
 interface MobileWorkspaceHeaderProps {
   preferredQuotaProvider?: string;
@@ -64,9 +64,7 @@ export function MobileWorkspaceHeader({
   onOpenSettings,
 }: MobileWorkspaceHeaderProps): JSX.Element {
   const [overflowAnchor, setOverflowAnchor] = useState<HTMLElement>();
-  const mobileWorkspaceActionsRegistry = useMobileWorkspaceActionsRegistry();
-  const mobileWorkspaceActions =
-    mobileWorkspaceActionsRegistry?.current?.getActions();
+  const mobileWorkspaceActions = useMobileWorkspaceActions();
   const openOverflow = (event: MouseEvent<HTMLElement>) =>
     setOverflowAnchor(event.currentTarget);
   const runWorkspaceAction = (
@@ -141,6 +139,7 @@ export function MobileWorkspaceHeader({
         open={Boolean(overflowAnchor)}
         onClose={() => setOverflowAnchor(undefined)}
         keepMounted
+        MenuListProps={{ "aria-label": "Workspace actions" }}
         slotProps={{
           paper: { sx: { minWidth: 260, maxWidth: "calc(100vw - 24px)" } },
         }}

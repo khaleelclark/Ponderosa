@@ -51,12 +51,16 @@ function WorkspaceTabBar<T extends string>({ value, items, onChange, label }: {
       onChange={(_, next: T) => select(next)}
       variant="scrollable"
       scrollButtons="auto"
+      allowScrollButtonsMobile
       sx={{
         width: "100%",
         maxWidth: "100%",
         minWidth: 0,
         overflow: "hidden",
         minHeight: 48,
+        "& .MuiTabs-scrollButtons": {
+          width: { xs: 28, sm: 40 },
+        },
       }}
     >
       {items.map((item) => <Tab
@@ -95,7 +99,8 @@ export function TabbedWorkspaceFrame<T extends string>({
         direction="row"
         spacing={1}
         useFlexGap
-        sx={{ alignItems: "flex-start", minWidth: 0 }}
+        flexWrap={{ xs: "wrap", sm: "nowrap" }}
+        sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
       >
         <Box sx={{ minWidth: 0, flex: 1 }}>
           <IconTitle icon={icon} title={title} component="h1" />
