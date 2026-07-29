@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { currentPonderosaStatus, startPonderosa, stopPonderosa } from "./control.js";
 import { writeDiagnosticBundle } from "./diagnostics.js";
 import { runDoctor } from "./doctor.js";
@@ -87,6 +88,15 @@ function parseArguments(argv: string[]): ParsedArguments {
     openBrowser,
     json,
   };
+}
+
+function isDirectInvocation(entryPath: string | undefined, moduleUrl: string): boolean {
+  if (!entryPath) return false;
+  try {
+    return realpathSync(entryPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return pathToFileURL(entryPath).href === moduleUrl;
+  }
 }
 
 function printDoctor(report: Awaited<ReturnType<typeof runDoctor>>): void {
@@ -185,7 +195,7 @@ async function main(argv: string[]): Promise<void> {
   }
 }
 
-const direct = Boolean(process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url);
+const direct = isDirectInvocation(process.argv[1], import.meta.url);
 if (direct) {
   main(process.argv.slice(2)).catch((error: unknown) => {
     process.stderr.write(`Ponderosa launcher error: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -208,4 +218,4 @@ if (direct) {
   });
 }
 
-export { main, parseArguments };
+export { isDirectInvocation, main, parseArguments };
