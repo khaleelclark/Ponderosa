@@ -102,6 +102,26 @@ function processAlive(pid) {
   }
 }
 
+function hostOsIdentity() {
+  if (process.platform === "linux") {
+    try {
+      const fields = Object.fromEntries(readFileSync("/etc/os-release", "utf8")
+        .split(/\r?\n/u)
+        .flatMap((line) => {
+          const separator = line.indexOf("=");
+          if (separator < 1) return [];
+          const key = line.slice(0, separator);
+          const value = line.slice(separator + 1).replace(/^"(.*)"$/u, "$1");
+          return [[key, value]];
+        }));
+      return { platform: process.platform, id: fields.ID, version: fields.VERSION_ID, kernel: os.release() };
+    } catch {
+      return { platform: process.platform, version: os.version(), kernel: os.release() };
+    }
+  }
+  return { platform: process.platform, version: os.version(), kernel: os.release() };
+}
+
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 const port = await availablePort();
 let started = false;
@@ -254,8 +274,19 @@ try {
   const releaseBlockers = [];
   if (filesystemCheck?.status !== "pass") releaseBlockers.push(filesystemCheck?.detail ?? "complete filesystem authority failed");
   if (!secureReadPassed) releaseBlockers.push("secure file adversarial qualification failed");
-  if (process.platform === "win32") {
-    if (/Server/iu.test(os.version())) releaseBlockers.push("GitHub runner is Windows Server; Windows 11 remains a manual gate");
+  const hostOs = hostOsIdentity();
+  if (process.platform === "linux" && (hostOs.id !== "ubuntu" || hostOs.version !== "24.04")) {
+    releaseBlockers.push(`Ubuntu 24.04 is required; host is ${hostOs.id ?? "unknown"} ${hostOs.version ?? hostOs.kernel}`);
+  } else if (process.platform === "darwin" && Number.parseInt(os.release(), 10) < 23) {
+    releaseBlockers.push(`macOS 14 or newer is required; Darwin kernel is ${os.release()}`);
+  } else if (process.platform === "win32") {
+    if (/Server/iu.test(os.version())) {
+      releaseBlockers.push("host is Windows Server; Windows 11 remains a manual gate");
+    }
+    const windowsBuild = Number.parseInt(os.release().split(".").at(-1) ?? "", 10);
+    if (!Number.isFinite(windowsBuild) || windowsBuild < 22_000) {
+      releaseBlockers.push(`Windows 11 build 22000 or newer is required; host kernel is ${os.release()}`);
+    }
   }
   const report = {
     schemaVersion: 1,
@@ -263,7 +294,7 @@ try {
     qualification: "installed-launcher-lifecycle",
     platform: process.platform,
     arch: process.arch,
-    osVersion: os.version(),
+    hostOs,
     checks,
     releaseQualified: releaseBlockers.length === 0,
     releaseBlockers,
