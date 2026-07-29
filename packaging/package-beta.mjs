@@ -17,6 +17,7 @@ import {
   auditPortableSymlinkTree,
   copyPortableTree,
 } from "./qualification/symlink-portability.mjs";
+import { macosLauncherEntry } from "./qualification/macos-gui-entry.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -105,11 +106,10 @@ if (format === "dmg") {
     iconset,
   ]);
   rmSync(iconset, { recursive: true, force: true });
-  writeExecutable(path.join(app, "Contents", "MacOS", "Ponderosa"), `#!/bin/sh
-set -eu
-ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/../Resources/Ponderosa" && pwd)"
-exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "$ROOT"
-`);
+  writeExecutable(
+    path.join(app, "Contents", "MacOS", "Ponderosa"),
+    macosLauncherEntry(),
+  );
   writeFileSync(path.join(app, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>

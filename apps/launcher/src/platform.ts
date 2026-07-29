@@ -1,4 +1,4 @@
-import { accessSync, constants, existsSync } from "node:fs";
+import { accessSync, constants, existsSync, readdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -19,6 +19,35 @@ function pathCandidates(command: string, env: NodeJS.ProcessEnv, platform: NodeJ
     : [""];
   return (env.PATH ?? "").split(path.delimiter).filter(Boolean).flatMap((directory) =>
     suffixes.map((suffix) => path.join(directory, `${command}${suffix.toLowerCase()}`)));
+}
+
+function claudeDesktopCandidates(homeDir: string): string[] {
+  const versionsRoot = path.join(
+    homeDir,
+    "Library",
+    "Application Support",
+    "Claude",
+    "claude-code",
+  );
+  try {
+    return readdirSync(versionsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      }))
+      .map((version) => path.join(
+        versionsRoot,
+        version,
+        "claude.app",
+        "Contents",
+        "MacOS",
+        "claude",
+      ));
+  } catch {
+    return [];
+  }
 }
 
 async function spawnDetached(command: string, args: string[]): Promise<void> {
@@ -70,6 +99,7 @@ class HostPlatformAdapter implements PlatformAdapter {
         path.join(homeDir, ".local", "bin", provider),
         path.join(homeDir, ".npm-global", "bin", provider),
       );
+      if (provider === "claude") candidates.push(...claudeDesktopCandidates(homeDir));
     } else if (this.platform === "win32") {
       const appData = env.APPDATA?.trim() || path.join(homeDir, "AppData", "Roaming");
       const localAppData = env.LOCALAPPDATA?.trim() || path.join(homeDir, "AppData", "Local");

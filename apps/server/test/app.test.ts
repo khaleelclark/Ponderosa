@@ -19,6 +19,7 @@ import type {
 } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
 import { AgentStore, WorkspaceStore } from "@ponderosa/agents";
+import { ClaudeAdapter } from "@ponderosa/engines";
 import { secureFileAuthoritySupported } from "@ponderosa/native-host";
 import { createServer, type EngineRegistration } from "../src/app.js";
 
@@ -119,6 +120,43 @@ describe("server public API behavior", () => {
       },
       runtimes: [{ id: "codex", authenticated: true }],
     });
+  });
+
+  it("survives a missing Claude executable during model discovery", async () => {
+    const project = store.createProject({
+      label: "Missing Claude",
+      hostPath: repoDir,
+      defaultEngine: "claude",
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter: new ClaudeAdapter({
+          bin: path.join(dataDir, "missing-claude"),
+          killGraceMs: 0,
+        }),
+        authStatus: async () => ({
+          authenticated: false,
+          detail: "Claude executable is unavailable",
+        }),
+      }],
+      logger: false,
+    });
+
+    const discovery = await app.inject({
+      method: "GET",
+      url: `/api/projects/${project.id}/engine-models/claude?refresh=true`,
+    });
+    expect(discovery.statusCode).toBe(503);
+    expect(discovery.json()).toEqual(expect.objectContaining({
+      error: expect.any(String),
+    }));
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const health = await app.inject({ method: "GET", url: "/api/health" });
+    expect(health.statusCode).toBe(200);
+    expect(health.json()).toMatchObject({ status: "ok", service: "ponderosa" });
   });
 
   it("validates and persists the workspace-wide Run concurrency limit", async () => {

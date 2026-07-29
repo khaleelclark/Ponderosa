@@ -66,6 +66,7 @@ writeFileSync(projectSentinel, "selected Project source folders survive uninstal
 writeFileSync(dataSentinel, "Ponderosa user data survives uninstall\n");
 
 let installedRoot;
+let installedApplication;
 let uninstall = () => undefined;
 let mounted;
 let installed = false;
@@ -92,6 +93,7 @@ try {
     run("hdiutil", ["detach", mounted]);
     mounted = undefined;
     installedRoot = path.join(installedApp, "Contents", "Resources", "Ponderosa");
+    installedApplication = installedApp;
     uninstall = () => rmSync(installedApp, { recursive: true, force: true });
     installed = true;
   } else if (process.platform === "win32") {
@@ -121,6 +123,18 @@ try {
     "--report", nativeReport,
   ]);
   const nativeQualification = JSON.parse(readFileSync(nativeReport, "utf8"));
+  let guiQualification = { checks: [] };
+  if (process.platform === "darwin") {
+    const guiReportPath = path.join(disposable, "macos-gui-launch-report.json");
+    run(path.join(installedRoot, "runtime", nodeName), [
+      path.join(installedRoot, "qualification", "qualify-macos-gui-launch.mjs"),
+      "--application", installedApplication,
+      "--install-root", installedRoot,
+      "--data-dir", path.join(disposable, "Ponderosa GUI Data"),
+      "--report", guiReportPath,
+    ]);
+    guiQualification = JSON.parse(readFileSync(guiReportPath, "utf8"));
+  }
   const lifecycleReportPath = path.join(disposable, "launcher-lifecycle-report.json");
   run(path.join(installedRoot, "runtime", nodeName), [
     path.join(installedRoot, "qualification", "qualify-launcher-lifecycle.mjs"),
@@ -140,6 +154,7 @@ try {
     artifact: path.basename(artifact),
     checks: [
       ...nativeQualification.checks,
+      ...guiQualification.checks,
       ...lifecycleQualification.checks,
       {
         id: "installed-symlink-portability",

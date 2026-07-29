@@ -228,6 +228,25 @@ async function closeAfter<T>(
   return result;
 }
 
+function observeChildErrors(
+  child: ChildProcess,
+  label: string,
+): Promise<never> {
+  let onError: (error: Error) => void;
+  const failure = new Promise<never>((_resolve, reject) => {
+    onError = (error) => reject(new Error(`${label} failed to start: ${error.message}`, {
+      cause: error,
+    }));
+    // Keep this listener installed through process-handle teardown. Node can
+    // report a spawn failure before close(), and removing the sole listener
+    // while cleanup is still observing the failed child would re-open the
+    // daemon-crashing unhandled-error window.
+    child.on("error", onError);
+    child.once("close", () => child.off("error", onError));
+  });
+  return failure;
+}
+
 export class ClaudeModelCatalogProbe {
   private readonly spawnFn: SpawnFn;
 
@@ -270,6 +289,7 @@ export class ClaudeModelCatalogProbe {
       spawnFn: this.spawnFn,
     });
     const child = spawned.child;
+    const childErrors = observeChildErrors(child, "Claude model validation");
     const handle = registerProcess(
       child,
       "Claude model validation",
@@ -277,69 +297,69 @@ export class ClaudeModelCatalogProbe {
       context,
       spawned.authority,
     );
-    return closeAfter(async () => {
-      const stdout = child.stdout;
-      if (!stdout) return validationError(modelId, "provider_error", "Claude validation stdout is unavailable");
-      let stderr = "";
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8_192); });
-      let initModel: string | undefined;
-      let observedCode: ProviderErrorCode | undefined;
-      let observedDetail = "";
-      let timedOut = false;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        void handle.close().catch(() => undefined);
-      }, VALIDATION_TIMEOUT_MS);
-      const abort = () => { void handle.close().catch(() => undefined); };
-      context.signal.addEventListener("abort", abort, { once: true });
-      try {
-        for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
-          const raw = value as RawClaudeRecord;
-          if (raw.type === "system" && raw.subtype === "init" && typeof raw.model === "string") {
-            initModel = raw.model.trim() || undefined;
+    return closeAfter(() => Promise.race([(async () => {
+        const stdout = child.stdout;
+        if (!stdout) return validationError(modelId, "provider_error", "Claude validation stdout is unavailable");
+        let stderr = "";
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8_192); });
+        let initModel: string | undefined;
+        let observedCode: ProviderErrorCode | undefined;
+        let observedDetail = "";
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          void handle.close().catch(() => undefined);
+        }, VALIDATION_TIMEOUT_MS);
+        const abort = () => { void handle.close().catch(() => undefined); };
+        context.signal.addEventListener("abort", abort, { once: true });
+        try {
+          for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+            const raw = value as RawClaudeRecord;
+            if (raw.type === "system" && raw.subtype === "init" && typeof raw.model === "string") {
+              initModel = raw.model.trim() || undefined;
+            }
+            if (raw.type === "assistant" && raw.error) {
+              observedCode = claudeProviderErrorCode(raw.error, observedDetail);
+            }
+            if (raw.type === "system" && raw.subtype === "api_retry") {
+              observedCode = claudeProviderErrorCode(raw.error, String(raw.error_status ?? ""));
+            }
+            if (raw.type !== "result") continue;
+            const details = [
+              typeof raw.result === "string" ? raw.result : "",
+              ...(Array.isArray(raw.errors) ? raw.errors.filter((item): item is string => typeof item === "string") : []),
+              stderr,
+            ].filter(Boolean).join(" ");
+            observedDetail = details;
+            observedCode = claudeProviderErrorCode(observedCode, details) ?? observedCode;
+            if (raw.is_error === true || raw.subtype !== "success") {
+              return validationError(modelId, observedCode, details);
+            }
+            const label = initModel && !initModel.startsWith("claude-")
+              ? initModel
+              : claudeModelDisplayName(modelId);
+            return {
+              valid: true as const,
+              model: {
+                id: modelId,
+                resolvedModel: modelId.endsWith("[1m]") ? modelId.slice(0, -4) : modelId,
+                label,
+                kind: "exact" as const,
+                source: "operator" as const,
+                validatedAt: new Date().toISOString(),
+                availability: "available" as const,
+              },
+            };
           }
-          if (raw.type === "assistant" && raw.error) {
-            observedCode = claudeProviderErrorCode(raw.error, observedDetail);
-          }
-          if (raw.type === "system" && raw.subtype === "api_retry") {
-            observedCode = claudeProviderErrorCode(raw.error, String(raw.error_status ?? ""));
-          }
-          if (raw.type !== "result") continue;
-          const details = [
-            typeof raw.result === "string" ? raw.result : "",
-            ...(Array.isArray(raw.errors) ? raw.errors.filter((item): item is string => typeof item === "string") : []),
-            stderr,
-          ].filter(Boolean).join(" ");
-          observedDetail = details;
-          observedCode = claudeProviderErrorCode(observedCode, details) ?? observedCode;
-          if (raw.is_error === true || raw.subtype !== "success") {
-            return validationError(modelId, observedCode, details);
-          }
-          const label = initModel && !initModel.startsWith("claude-")
-            ? initModel
-            : claudeModelDisplayName(modelId);
-          return {
-            valid: true,
-            model: {
-              id: modelId,
-              resolvedModel: modelId.endsWith("[1m]") ? modelId.slice(0, -4) : modelId,
-              label,
-              kind: "exact",
-              source: "operator",
-              validatedAt: new Date().toISOString(),
-              availability: "available",
-            },
-          };
+          if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model validation was cancelled");
+          if (timedOut) return validationError(modelId, "network", "Claude model validation timed out");
+          return validationError(modelId, observedCode, observedDetail || stderr || "Claude ended before returning a validation result");
+        } finally {
+          clearTimeout(timeout);
+          context.signal.removeEventListener("abort", abort);
         }
-        if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model validation was cancelled");
-        if (timedOut) return validationError(modelId, "network", "Claude model validation timed out");
-        return validationError(modelId, observedCode, observedDetail || stderr || "Claude ended before returning a validation result");
-      } finally {
-        clearTimeout(timeout);
-        context.signal.removeEventListener("abort", abort);
-      }
-    }, handle);
+      })(), childErrors]), handle);
   }
 
   private async initializationModels(
@@ -362,6 +382,7 @@ export class ClaudeModelCatalogProbe {
       spawnFn: this.spawnFn,
     });
     const child = spawned.child;
+    const childErrors = observeChildErrors(child, "Claude model catalog probe");
     const handle = registerProcess(
       child,
       "Claude model catalog probe",
@@ -369,44 +390,44 @@ export class ClaudeModelCatalogProbe {
       context,
       spawned.authority,
     );
-    return closeAfter(async () => {
-      const stdout = child.stdout;
-      if (!stdout || !child.stdin) throw new Error("Claude model catalog transport is unavailable");
-      let stderr = "";
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8_192); });
-      child.stdin.on("error", () => undefined);
-      const requestId = `ponderosa-models-${randomUUID()}`;
-      child.stdin.write(`${JSON.stringify({
-        type: "control_request",
-        request_id: requestId,
-        request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
-      })}\n`);
-      let timedOut = false;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        void handle.close().catch(() => undefined);
-      }, PROBE_TIMEOUT_MS);
-      const abort = () => { void handle.close().catch(() => undefined); };
-      context.signal.addEventListener("abort", abort, { once: true });
-      try {
-        for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
-          const raw = value as RawClaudeRecord;
-          const response = raw.type === "control_response" ? raw.response : undefined;
-          if (response?.request_id !== requestId) continue;
-          if (response.subtype !== "success") {
-            throw new Error(typeof response.error === "string" ? response.error : "Claude model catalog probe failed");
+    return closeAfter(() => Promise.race([(async () => {
+        const stdout = child.stdout;
+        if (!stdout || !child.stdin) throw new Error("Claude model catalog transport is unavailable");
+        let stderr = "";
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-8_192); });
+        child.stdin.on("error", () => undefined);
+        const requestId = `ponderosa-models-${randomUUID()}`;
+        child.stdin.write(`${JSON.stringify({
+          type: "control_request",
+          request_id: requestId,
+          request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
+        })}\n`);
+        let timedOut = false;
+        const timeout = setTimeout(() => {
+          timedOut = true;
+          void handle.close().catch(() => undefined);
+        }, PROBE_TIMEOUT_MS);
+        const abort = () => { void handle.close().catch(() => undefined); };
+        context.signal.addEventListener("abort", abort, { once: true });
+        try {
+          for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+            const raw = value as RawClaudeRecord;
+            const response = raw.type === "control_response" ? raw.response : undefined;
+            if (response?.request_id !== requestId) continue;
+            if (response.subtype !== "success") {
+              throw new Error(typeof response.error === "string" ? response.error : "Claude model catalog probe failed");
+            }
+            return normalizeClaudeProviderModels(response.response?.models);
           }
-          return normalizeClaudeProviderModels(response.response?.models);
+          if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model catalog probe was cancelled");
+          if (timedOut) throw new Error("Claude model catalog probe timed out");
+          throw new Error(`Claude model catalog probe ended without a response${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+        } finally {
+          clearTimeout(timeout);
+          context.signal.removeEventListener("abort", abort);
         }
-        if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model catalog probe was cancelled");
-        if (timedOut) throw new Error("Claude model catalog probe timed out");
-        throw new Error(`Claude model catalog probe ended without a response${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
-      } finally {
-        clearTimeout(timeout);
-        context.signal.removeEventListener("abort", abort);
-      }
-    }, handle);
+      })(), childErrors]), handle);
   }
 
   private async cliVersion(
