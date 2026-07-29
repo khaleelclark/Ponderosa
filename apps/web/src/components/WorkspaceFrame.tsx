@@ -102,7 +102,12 @@ export function TabbedWorkspaceFrame<T extends string>({
         flexWrap={{ xs: "wrap", sm: "nowrap" }}
         sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}
       >
-        <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Box sx={{
+          minWidth: 0,
+          flexGrow: 1,
+          flexShrink: 1,
+          flexBasis: { xs: "auto", sm: 0 },
+        }}>
           <IconTitle icon={icon} title={title} component="h1" />
           {context ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{context}</Box> : null}
           {meta ? <Box sx={{ mt: 0.15, minWidth: 0 }}>{meta}</Box> : null}

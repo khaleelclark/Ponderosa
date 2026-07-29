@@ -36,29 +36,40 @@ export interface MobileWorkspaceActionsRegistry {
 const MobileWorkspaceActionsContext =
   createContext<MobileWorkspaceActionsRegistry | null>(null);
 
+const EMPTY_SUBSCRIBE = () => () => undefined;
+const EMPTY_SNAPSHOT = () => undefined;
+
 function createMobileWorkspaceActionsRegistry(): MobileWorkspaceActionsRegistry {
   let current: MobileWorkspaceActionsRegistration | undefined;
+  let snapshot: MobileWorkspaceActions | undefined;
   const listeners = new Set<() => void>();
   const emit = () => listeners.forEach(listener => listener());
+  const updateSnapshot = (next: MobileWorkspaceActions | undefined) => {
+    if (Object.is(snapshot, next)) return;
+    snapshot = next;
+    emit();
+  };
   return {
     register(registration) {
       current = registration;
-      emit();
+      updateSnapshot(registration.getActions());
       return () => {
         if (current !== registration) return;
         current = undefined;
-        emit();
+        updateSnapshot(undefined);
       };
     },
     notify(registration) {
-      if (current === registration) emit();
+      if (current === registration) {
+        updateSnapshot(registration.getActions());
+      }
     },
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
     getSnapshot() {
-      return current?.getActions();
+      return snapshot;
     },
   };
 }
@@ -87,8 +98,8 @@ export function useMobileWorkspaceActions():
   | undefined {
   const registry = useMobileWorkspaceActionsRegistry();
   return useSyncExternalStore(
-    registry?.subscribe ?? (() => () => undefined),
-    registry?.getSnapshot ?? (() => undefined),
-    registry?.getSnapshot ?? (() => undefined),
+    registry?.subscribe ?? EMPTY_SUBSCRIBE,
+    registry?.getSnapshot ?? EMPTY_SNAPSHOT,
+    registry?.getSnapshot ?? EMPTY_SNAPSHOT,
   );
 }
