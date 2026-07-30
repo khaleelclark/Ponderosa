@@ -31,7 +31,7 @@ test("macOS metadata exposes an exact identifiable beta candidate", () => {
 });
 
 test("non-mac candidate versions retain their semantic Apple build version", () => {
-  assert.equal(numericAppleBuildVersion("3.5.0-beta.1"), "3.5.0");
+  assert.equal(numericAppleBuildVersion("0.1.0-beta.1"), "0.1.0");
   assert.equal(numericAppleBuildVersion("003.05.000-beta.mac0009"), "3.5.9");
 });
 

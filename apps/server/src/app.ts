@@ -747,6 +747,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
 
   registerRequestSecurityHooks(app, {
     opts,
+    v3DispatchKey,
     agentMessageCapabilities,
     deletingAgentIds,
     validLauncherSession,
