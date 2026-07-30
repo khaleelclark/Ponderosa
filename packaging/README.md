@@ -24,10 +24,22 @@ On the target operating system:
 
 ```bash
 pnpm install --frozen-lockfile
+pnpm beta:cut
 pnpm beta:node
-pnpm beta:bundle -- --version 0.1.0-beta.2 --channel beta
+pnpm beta:bundle -- --channel beta
 pnpm beta:verify
 ```
+
+`beta:cut` refreshes remote release state, requires the current clean commit to
+be the exact `origin/master` tip, calculates the next beta number from canonical
+annotated release tags, creates the tag, and pushes it. Run it once for a
+multi-platform beta; every target-machine build of that tag then receives the
+same version, and pushing the tag starts the native artifact workflow.
+Re-running a tagged commit preserves its exact version. Manually dispatch that
+workflow only from a beta tag. Use an explicit `--version` on `beta:bundle` only
+to reproduce historical evidence.
+The root package version declares the release line (`0.1.0`); beta sequence
+numbers are release metadata and never require a source-only version bump.
 
 `beta:node` downloads the target-native official Node archive, verifies it
 against the release `SHASUMS256.txt`, and stages only the runtime executable.
