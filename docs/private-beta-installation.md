@@ -32,6 +32,12 @@ macOS:
 2. Copy **Ponderosa Beta.app** to Applications.
 3. Open the application.
 
+When a newly installed package opens while a different Ponderosa Server build
+is still running, the launcher identifies both builds and asks whether to
+restart. Approving the restart gracefully stops the old server, starts the
+installed build, and preserves Ponderosa data and selected Project folders.
+Choosing **Not Now** leaves the existing server running and opens it normally.
+
 Windows:
 
 1. Run the `.exe` as the intended user.
