@@ -3,6 +3,7 @@ import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
+  Box,
   Button,
   Chip,
   IconButton,
@@ -161,7 +162,7 @@ export function ComposerProjectDestinationAction({
         label={selectedLabel}
         onDelete={chooseNewAgent}
         sx={{
-          maxWidth: { xs: 148, sm: 240 },
+          maxWidth: { xs: 124, sm: 240 },
           height: 34,
           fontWeight: 700,
           "& .MuiChip-label": {
@@ -176,6 +177,7 @@ export function ComposerProjectDestinationAction({
   if (!continueWith) return null;
   return (
     <Button
+      aria-label={`Continue with ${continueWith.title}`}
       size="small"
       color="primary"
       startIcon={<SubdirectoryArrowRightIcon />}
@@ -183,8 +185,8 @@ export function ComposerProjectDestinationAction({
       sx={{
         minHeight: 40,
         minWidth: 0,
-        maxWidth: { xs: 148, sm: 240 },
-        px: 0.75,
+        maxWidth: { xs: 124, sm: 240 },
+        px: { xs: 0.5, sm: 0.75 },
         fontWeight: 700,
         textTransform: "none",
         justifyContent: "flex-start",
@@ -197,7 +199,13 @@ export function ComposerProjectDestinationAction({
         noWrap
         sx={{ minWidth: 0, fontWeight: 700 }}
       >
-        Continue with {continueWith.title}
+        <Box
+          component="span"
+          sx={{ display: { xs: "none", sm: "inline" } }}
+        >
+          Continue with{" "}
+        </Box>
+        {continueWith.title}
       </Typography>
     </Button>
   );
