@@ -10,6 +10,7 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
 } from "@ponderosa/core";
+import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { uniqueBy } from "../collections";
 import type { AgentDetailView } from "../routing";
@@ -256,7 +257,7 @@ function mergeAgentDetailProjection(
     ) as AgentDetailDto["telemetryHistory"],
     history: olderMessages
       ? {
-          limit: current.history?.limit ?? 100,
+          limit: current.history?.limit ?? AGENT_DETAIL_PAGE_SIZE,
           hasMore: olderMessages.hasMore,
           ...(olderMessages.cursor ? { cursor: olderMessages.cursor } : {}),
         }

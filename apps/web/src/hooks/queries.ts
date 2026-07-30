@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../api";
+import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
 
 export function useProjects() {
@@ -76,7 +77,10 @@ export function useAgentPresets(projectId: string | undefined) {
   return useQuery({ queryKey: queryKeys.agents.presets(projectId), queryFn: () => api.listAgentPresets(projectId ?? ""), enabled: Boolean(projectId) });
 }
 
-export function useAgent(agentId: string | undefined, limit = 100) {
+export function useAgent(
+  agentId: string | undefined,
+  limit = AGENT_DETAIL_PAGE_SIZE,
+) {
   return useQuery({
     queryKey: queryKeys.agents.detail(agentId, limit),
     queryFn: () => api.getAgent(agentId ?? "", limit),

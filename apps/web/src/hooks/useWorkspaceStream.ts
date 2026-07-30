@@ -2,6 +2,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
+import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import { reconcileCursor } from "./streamCursor";
 
@@ -9,26 +10,30 @@ const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
 
 function initialCursor(): number {
-  const value = Number(window.sessionStorage.getItem(CURSOR_KEY) ?? 0);
-  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  try {
+    const value = Number(window.sessionStorage.getItem(CURSOR_KEY) ?? 0);
+    return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function initialInstanceId(): string | null {
-  return window.sessionStorage.getItem(INSTANCE_KEY);
+  try {
+    const value = window.sessionStorage.getItem(INSTANCE_KEY);
+    return value && value.length <= 256 ? value : null;
+  } catch {
+    return null;
+  }
 }
-
-type WorkspaceCapabilityBoundary =
-  | { kind: "runtime-change"; projectId: string }
-  | { kind: "reconnect" };
 
 /** Apply the same adapter-discovery cache boundary in every mounted tab. */
 function invalidateWorkspaceCapabilities(
   queryClient: QueryClient,
-  boundary: WorkspaceCapabilityBoundary,
+  projectId: string,
 ): Promise<void> {
-  if (boundary.kind === "reconnect") return Promise.resolve();
   return queryClient.invalidateQueries({
-    queryKey: queryKeys.engines.capabilities(boundary.projectId),
+    queryKey: queryKeys.engines.capabilities(projectId),
   });
 }
 
@@ -83,12 +88,27 @@ function workspaceEventChangesResourceRecency(event: WorkspaceEvent): boolean {
     );
 }
 
-function workspaceReconnectRequiresRefresh(
-  cursor: number,
-  previousInstance: string | null,
-  status: { cursor: number; instanceId: string; reset: boolean },
-): boolean {
-  return status.reset || Boolean(previousInstance && previousInstance !== status.instanceId) || cursor > status.cursor;
+function persistWorkspaceCursor(cursor: number, instanceId?: string): void {
+  try {
+    window.sessionStorage.setItem(CURSOR_KEY, String(cursor));
+    if (instanceId) window.sessionStorage.setItem(INSTANCE_KEY, instanceId);
+  } catch {
+    // Persistence improves reconnection behavior but must not block live updates.
+  }
+}
+
+function invalidateActiveQueries(queryClient: QueryClient, queryKey: readonly unknown[]): void {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey })) {
+    if (query.getObserversCount() > 0) {
+      void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true });
+    }
+  }
+}
+
+function hasActiveQuery(queryClient: QueryClient, queryKey: readonly unknown[]): boolean {
+  return queryClient.getQueryCache()
+    .findAll({ queryKey })
+    .some((query) => query.getObserversCount() > 0);
 }
 
 /** Coalesces a burst of coordination events into one refetch per affected
@@ -129,7 +149,7 @@ function createAgentWorkInvalidator(
 /** Coalesces repeated lifecycle notifications before refreshing Project rosters.
  * Agent detail remains event-driven; this only prevents the shared list from
  * refetching once for every event in a short lifecycle burst. */
-function createAgentListInvalidator(
+function createAgentStateInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 350,
 ): { schedule(projectId: string): void; flush(): void; dispose(): void } {
@@ -138,7 +158,10 @@ function createAgentListInvalidator(
   const flush = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
-    for (const projectId of projectIds) void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+    for (const projectId of projectIds) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+    }
     projectIds.clear();
   };
   return {
@@ -203,18 +226,19 @@ export function useWorkspaceStream(): void {
 
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
-    const agentListInvalidator = createAgentListInvalidator(queryClient);
+    const agentStateInvalidator = createAgentStateInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
+    let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
-      agentListInvalidator.dispose();
+      agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailAll });
+      invalidateActiveQueries(queryClient, queryKeys.agents.all);
+      invalidateActiveQueries(queryClient, queryKeys.agents.healthAll);
+      invalidateActiveQueries(queryClient, queryKeys.agents.detailAll);
       void queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceStatus.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceFile.all });
@@ -234,15 +258,33 @@ export function useWorkspaceStream(): void {
         item => item.id,
       );
       if (reconciliation.duplicate) return;
-      if (reconciliation.gap) invalidateAll();
       cursor.current = reconciliation.cursor;
-      window.sessionStorage.setItem(CURSOR_KEY, String(envelope.id));
+      persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
+      if (reconciliation.gap) {
+        invalidateAll();
+        return;
+      }
       const event = envelope.event;
+      if (event.type === "preferences_updated") {
+        queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
+      }
+      // Replayed workspace events are historical catch-up. The canonical
+      // queries already include them, so applying live invalidations here
+      // would multiply one reconnect into hundreds of network requests. Reset
+      // one quiet-period timer instead, then reconcile mounted views once.
+      if (envelope.replayed) {
+        if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
+        replayReconcileTimer = setTimeout(() => {
+          replayReconcileTimer = undefined;
+          invalidateAll();
+        }, 250);
+        return;
+      }
       if (workspaceEventInvalidatesGlobalSearch(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.globalSearch.all });
       if (workspaceEventInvalidatesAllChat(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll });
       if (workspaceEventChangesResourceRecency(event)) void queryClient.invalidateQueries({ queryKey: queryKeys.workspaceResourceRecency.all });
-      if (event.type === "preferences_updated") queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
-      else if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
+      if (event.type === "preferences_updated") return;
+      if (event.type === "project_changed") void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       else if (event.type === "conversation_changed") {
         for (const queryKey of conversationChangedQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
@@ -283,13 +325,15 @@ export function useWorkspaceStream(): void {
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
-        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(event.agentId) });
         for (const queryKey of fileActivityConversationQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
         if (event.category === "lifecycle") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(event.projectId) });
-          agentListInvalidator.schedule(event.projectId);
+          // The mounted Agent stream owns its live detail, roster, health, and
+          // terminal reconciliation. Workspace events cover inactive Agents.
+          if (!hasActiveQuery(queryClient, queryKeys.agents.detailPrefix(event.agentId))) {
+            agentStateInvalidator.schedule(event.projectId);
+          }
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
         }
@@ -304,31 +348,56 @@ export function useWorkspaceStream(): void {
         void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
       }
       else if (event.type === "runtime_capabilities_changed") {
-        void invalidateWorkspaceCapabilities(queryClient, { kind: "runtime-change", projectId: event.projectId });
+        void invalidateWorkspaceCapabilities(queryClient, event.projectId);
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
         agentWorkInvalidator.schedule();
       }
     };
-    const subscription = api.subscribeWorkspace(cursor.current, {
-      onEvent: apply,
-      onStatus: (status) => {
-        const previousInstance = instanceId.current;
-        if (workspaceReconnectRequiresRefresh(cursor.current, previousInstance, status)) {
-          cursor.current = 0;
-          window.sessionStorage.setItem(CURSOR_KEY, "0");
-          invalidateAll();
-        }
-        instanceId.current = status.instanceId;
-        window.sessionStorage.setItem(INSTANCE_KEY, status.instanceId);
-      },
-      onError: () => undefined,
-    });
+    let stopped = false;
+    let subscription: StreamSubscription | undefined;
+    let reconnectQueued = false;
+    const connect = (lastSeenId: number) => {
+      if (stopped) return;
+      subscription = api.subscribeWorkspace(lastSeenId, {
+        onEvent: apply,
+        onStatus: (status) => {
+          const changedInstance = Boolean(
+            instanceId.current && instanceId.current !== status.instanceId,
+          );
+          if (changedInstance) {
+            cursor.current = 0;
+            instanceId.current = status.instanceId;
+            persistWorkspaceCursor(0, status.instanceId);
+            invalidateAll();
+            subscription?.close();
+            if (!reconnectQueued) {
+              reconnectQueued = true;
+              queueMicrotask(() => {
+                reconnectQueued = false;
+                connect(0);
+              });
+            }
+            return;
+          }
+          if (status.reset || cursor.current > status.cursor) {
+            cursor.current = 0;
+            invalidateAll();
+          }
+          instanceId.current = status.instanceId;
+          persistWorkspaceCursor(cursor.current, status.instanceId);
+        },
+        onError: () => undefined,
+      });
+    };
+    connect(cursor.current);
     return () => {
-      subscription.close();
+      stopped = true;
+      subscription?.close();
+      if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
       agentWorkInvalidator.dispose();
-      agentListInvalidator.dispose();
+      agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
     };
   }, [queryClient]);
