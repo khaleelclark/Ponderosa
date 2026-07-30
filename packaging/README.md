@@ -30,8 +30,9 @@ pnpm beta:bundle -- --channel beta
 pnpm beta:verify
 ```
 
-`beta:cut` calculates the next beta number from the release tags, creates the
-annotated tag on the current clean commit, and pushes it. Run it once for a
+`beta:cut` refreshes remote release state, requires the current clean commit to
+be the exact `origin/master` tip, calculates the next beta number from canonical
+annotated release tags, creates the tag, and pushes it. Run it once for a
 multi-platform beta; every target-machine build of that tag then receives the
 same version, and pushing the tag starts the native artifact workflow.
 Re-running a tagged commit preserves its exact version. Manually dispatch that

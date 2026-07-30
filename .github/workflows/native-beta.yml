@@ -63,6 +63,8 @@ jobs:
         run: |
           expected="${{ github.sha }}"
           test "$(git rev-parse HEAD)" = "$expected"
+          git fetch origin +refs/heads/master:refs/remotes/origin/master
+          git merge-base --is-ancestor "$expected" origin/master
           test "$(node --version)" = "v22.22.1"
           test "$(pnpm --version)" = "11.10.0"
 

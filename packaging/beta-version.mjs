@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const releaseBranch = "master";
 
 function git(args) {
   return execFileSync("git", args, {
@@ -30,8 +31,26 @@ function betaSeries() {
 }
 
 function betaNumber(tag, base) {
-  const match = new RegExp(`^v${base.replaceAll(".", "\\.")}-beta\\.(\\d+)$`, "u").exec(tag);
-  return match ? Number(match[1]) : undefined;
+  const match = new RegExp(
+    `^v${base.replaceAll(".", "\\.")}-beta\\.([1-9]\\d*)$`,
+    "u",
+  ).exec(tag);
+  if (!match) return undefined;
+  const number = Number(match[1]);
+  return Number.isSafeInteger(number) ? number : undefined;
+}
+
+function assertCanonicalAnnotatedTags(tags, base) {
+  for (const tag of tags) {
+    if (betaNumber(tag, base) === undefined) {
+      throw new Error(
+        `Invalid beta tag ${tag}; expected v${base}-beta.<positive canonical integer>.`,
+      );
+    }
+    if (git(["cat-file", "-t", `refs/tags/${tag}`]) !== "tag") {
+      throw new Error(`Beta release tag ${tag} must be an annotated tag.`);
+    }
+  }
 }
 
 export function resolveBetaVersion() {
@@ -43,6 +62,7 @@ export function resolveBetaVersion() {
   const headTags = git(["tag", "--points-at", "HEAD", "--list", tagPattern])
     .split("\n")
     .filter(Boolean);
+  assertCanonicalAnnotatedTags(tags, base);
   const exactVersions = headTags
     .map((tag) => ({ tag, number: betaNumber(tag, base) }))
     .filter((entry) => Number.isSafeInteger(entry.number));
@@ -76,6 +96,28 @@ function assertCleanSource() {
   }
 }
 
+function refreshReleaseAuthority() {
+  execFileSync(
+    "git",
+    ["fetch", "origin", `+refs/heads/${releaseBranch}:refs/remotes/origin/${releaseBranch}`],
+    { cwd: repositoryRoot, stdio: "inherit" },
+  );
+  execFileSync("git", ["fetch", "--tags", "origin"], {
+    cwd: repositoryRoot,
+    stdio: "inherit",
+  });
+}
+
+function assertReleaseBranchTip() {
+  const head = git(["rev-parse", "HEAD"]);
+  const releaseTip = git(["rev-parse", `origin/${releaseBranch}`]);
+  if (head !== releaseTip) {
+    throw new Error(
+      `Beta releases must be cut from the exact origin/${releaseBranch} tip (${releaseTip}); current HEAD is ${head}.`,
+    );
+  }
+}
+
 function main() {
   const cut = process.argv.includes("--cut");
   const push = process.argv.includes("--push");
@@ -83,10 +125,8 @@ function main() {
   if (push && !cut) throw new Error("--push requires --cut.");
   if (cut) {
     assertCleanSource();
-    execFileSync("git", ["fetch", "--tags", "origin"], {
-      cwd: repositoryRoot,
-      stdio: "inherit",
-    });
+    refreshReleaseAuthority();
+    assertReleaseBranchTip();
   }
   const resolved = resolveBetaVersion();
   if (requireTag && !resolved.existingTag) {
