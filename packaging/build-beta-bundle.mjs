@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveBetaVersion } from "./beta-version.mjs";
 import { auditPortableSymlinkTree } from "./qualification/symlink-portability.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -94,10 +95,8 @@ function executable(pathname) {
 
 const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
-const productVersion = JSON.parse(
-  readFileSync(path.join(repositoryRoot, "package.json"), "utf8"),
-).version;
-const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? productVersion);
+const configuredVersion = option("version", process.env.PONDEROSA_BUILD_VERSION);
+const version = configuredVersion ?? resolveBetaVersion().version;
 const channel = option("channel", process.env.PONDEROSA_RELEASE_CHANNEL ?? "beta");
 const preparedNode = path.join(
   repositoryRoot,
