@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   LONG_TEXT_MAX_UTF8_BYTES,
   canonicalizeProviderText,
@@ -13,6 +12,7 @@ import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
+import { requestUpdateCommunicationEventId } from "../request-update-communication.js";
 import type { CreateServerOptions } from "../app-contracts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -205,9 +205,11 @@ export function registerAgentRequestCommandRoutes(
         // The Request update remains the canonical handoff and owns the
         // requester wake-up. This deterministic Communication is its passive,
         // non-delivering audit copy for Team Chat and both Agent timelines.
-        const eventId = `request-update-${createHash("sha256")
-          .update(`${projectId}\0${requestId}\0${updateId}`)
-          .digest("hex")}`;
+        const eventId = requestUpdateCommunicationEventId(
+          projectId,
+          requestId,
+          updateId,
+        );
         const communication = recordCommunication({
           eventId,
           schemaVersion: 2,
@@ -216,7 +218,6 @@ export function registerAgentRequestCommandRoutes(
           sender: {
             kind: "agent",
             agentId: capability.agentId,
-            executionId: capability.runId,
           },
           intent: "collaboration",
           audience: { kind: "agents", agentIds: [peerAgentId] },
