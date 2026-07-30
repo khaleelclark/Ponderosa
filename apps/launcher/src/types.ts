@@ -55,6 +55,7 @@ export interface LauncherState {
   port: number;
   host: "127.0.0.1";
   startedAt: string;
+  /** Application data directory passed to the server, nested below the launcher data root. */
   dataDir: string;
   installRoot: string;
   version: string;
@@ -90,7 +91,9 @@ export interface DoctorReport {
 
 export interface LauncherPaths {
   installRoot: string;
+  /** Launcher-owned root containing state, logs, configuration, and application data. */
   dataDir: string;
+  /** Application data directory passed to the server and persisted in LauncherState. */
   applicationDataDir: string;
   runtimeDir: string;
   logsDir: string;

@@ -2,7 +2,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readLauncherState } from "./paths.js";
+import {
+  launcherStateLocation,
+  readLauncherState,
+  resolveLauncherPaths,
+} from "./paths.js";
+import type { PlatformAdapter } from "./types.js";
 
 const roots: string[] = [];
 
@@ -41,5 +46,32 @@ describe("readLauncherState", () => {
 
   it("rejects an invalid Windows supervisor authority", () => {
     expect(readLauncherState(statePath(0))).toBeUndefined();
+  });
+});
+
+describe("launcherStateLocation", () => {
+  it("projects the resolved launcher root to the application data directory persisted in state", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ponderosa-launcher-paths-"));
+    roots.push(root);
+    const platform: PlatformAdapter = {
+      platform: process.platform,
+      defaultDataDir: () => path.join(root, "default-data"),
+      nodeExecutableName: () => process.platform === "win32" ? "node.exe" : "node",
+      executableCandidates: () => [],
+      openBrowser: async () => undefined,
+    };
+    const paths = resolveLauncherPaths({
+      platform,
+      installRoot: path.join(root, "install"),
+      dataDir: path.join(root, "launcher-root"),
+    });
+
+    expect(launcherStateLocation(paths)).toEqual({
+      installRoot: path.join(root, "install"),
+      dataDir: path.join(root, "launcher-root", "data"),
+    });
+    expect(paths.statePath).toBe(
+      path.join(root, "launcher-root", "launcher-state", "instance.json"),
+    );
   });
 });

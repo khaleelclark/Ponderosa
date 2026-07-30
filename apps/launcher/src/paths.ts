@@ -53,6 +53,15 @@ export function resolveLauncherPaths(input: {
   };
 }
 
+export function launcherStateLocation(
+  paths: LauncherPaths,
+): Pick<LauncherState, "dataDir" | "installRoot"> {
+  return {
+    dataDir: paths.applicationDataDir,
+    installRoot: paths.installRoot,
+  };
+}
+
 export function ensureDataLayout(paths: LauncherPaths): void {
   for (const directory of [
     paths.dataDir,

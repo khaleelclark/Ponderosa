@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { discoverProviders } from "./providers.js";
 import {
   ensureDataLayout,
+  launcherStateLocation,
   readLauncherConfiguration,
   readLauncherState,
   writeJsonAtomic,
@@ -426,8 +427,7 @@ export async function startPonderosa(input: {
       port,
       host: LOOPBACK_HOST,
       startedAt: (input.dependencies?.now ?? (() => new Date()))().toISOString(),
-      dataDir: input.paths.applicationDataDir,
-      installRoot: input.paths.installRoot,
+      ...launcherStateLocation(input.paths),
       version: input.manifest.version,
       commit: input.manifest.commit,
       channel: input.manifest.channel,

@@ -9,6 +9,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { canonicalPath } from "./canonical-path.mjs";
 import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
 import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
@@ -110,9 +111,29 @@ if (!reportOption) {
 const reportPath = canonicalPath(reportOption);
 
 const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa");
-const nodeExecutable = path.join(installRoot, "runtime", "node");
-const launcher = path.join(installRoot, "app", "launcher", "dist", "cli.js");
-const statePath = path.join(dataDir, "launcher-state", "instance.json");
+const installedLauncherDist = path.join(installRoot, "app", "launcher", "dist");
+const {
+  launcherStateLocation,
+  resolveLauncherPaths,
+} = await import(pathToFileURL(path.join(installedLauncherDist, "paths.js")).href);
+const { hostPlatformAdapter } = await import(
+  pathToFileURL(path.join(installedLauncherDist, "platform.js")).href
+);
+const launcherPaths = resolveLauncherPaths({
+  platform: hostPlatformAdapter(),
+  installRoot,
+  dataDir,
+});
+const expectedLauncherStateLocation = launcherStateLocation(launcherPaths);
+const launcherRootDataDir = canonicalPath(launcherPaths.dataDir);
+const applicationDataDir = canonicalPath(expectedLauncherStateLocation.dataDir);
+assert(launcherRootDataDir === dataDir,
+  "Installed launcher resolved an unexpected launcher data root.");
+assert(canonicalPath(expectedLauncherStateLocation.installRoot) === installRoot,
+  "Installed launcher resolved an unexpected install root.");
+const nodeExecutable = canonicalPath(launcherPaths.nodeExecutable);
+const launcher = canonicalPath(path.join(installedLauncherDist, "cli.js"));
+const statePath = canonicalPath(launcherPaths.statePath);
 const guiEnvironment = Object.fromEntries(Object.entries({
   HOME: process.env.HOME,
   USER: process.env.USER,
@@ -176,7 +197,7 @@ async function launchFromApplication(port) {
   const stateInstallRoot = canonicalPath(state.installRoot);
   const stateDataDir = canonicalPath(state.dataDir);
   assert(stateInstallRoot === installRoot, "GUI launch recorded an unexpected install root.");
-  assert(stateDataDir === dataDir, "GUI launch recorded an unexpected data directory.");
+  assert(stateDataDir === applicationDataDir, "GUI launch recorded an unexpected data directory.");
   assert(!/ponderosa-mac-qualification|\/Users\/patmi/iu.test(stateInstallRoot),
     "GUI launch retained a build-host path.");
   const health = await fetchEventually(
