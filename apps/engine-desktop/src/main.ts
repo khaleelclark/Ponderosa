@@ -49,6 +49,12 @@ interface LogTail {
   truncated: boolean;
 }
 
+interface BundleIdentity {
+  version: string;
+  commit: string;
+  channel: string;
+}
+
 type EngineState = "starting" | "running" | "stopped" | "error";
 
 interface EngineSnapshot {
@@ -98,6 +104,7 @@ const launcherRoot = requestedDataDir ||
     path.join(os.homedir(), ".local", "share"), "ponderosa-beta");
 })();
 const launcherStatePath = path.join(launcherRoot, "launcher-state", "instance.json");
+const bundleManifestPath = path.join(installRoot, "build-manifest.json");
 const emptyLog = (stream: "server" | "error"): LogTail => ({
   stream,
   text: "",
@@ -114,6 +121,20 @@ let engineDetail = "Starting the local Ponderosa service…";
 let allowQuit = false;
 let quitInProgress = false;
 let launchOutput = "";
+
+async function bundleIdentity(): Promise<BundleIdentity | undefined> {
+  try {
+    const manifest = JSON.parse(await readFile(bundleManifestPath, "utf8")) as Partial<BundleIdentity>;
+    if (
+      typeof manifest.version !== "string" ||
+      typeof manifest.commit !== "string" ||
+      typeof manifest.channel !== "string"
+    ) return undefined;
+    return manifest as BundleIdentity;
+  } catch {
+    return undefined;
+  }
+}
 
 async function readState(): Promise<LauncherState | undefined> {
   try {
@@ -280,9 +301,14 @@ async function logs(
 async function snapshot(): Promise<EngineSnapshot> {
   const running = await currentStatus();
   if (!running) {
+    const identity = await bundleIdentity();
     return {
       state: engineState,
       detail: engineDetail,
+      version: identity?.version,
+      revision: identity?.commit,
+      channel: identity?.channel,
+      dataDir: path.join(launcherRoot, "data"),
       activeRunCount: 0,
       logs: {
         server: {
