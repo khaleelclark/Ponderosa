@@ -100,10 +100,14 @@ if (!applicationOption || !installRootOption || !dataDirOption) {
 const application = canonicalPath(applicationOption);
 const installRoot = canonicalPath(installRootOption);
 const dataDir = canonicalPath(dataDirOption);
-const reportPath = canonicalPath(option(
+const reportOption = option(
   "report",
   path.join(dataDir, "macos-gui-launch.json"),
-));
+);
+if (!reportOption) {
+  throw new Error("GUI launch qualification requires a non-empty report path.");
+}
+const reportPath = canonicalPath(reportOption);
 
 const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa");
 const nodeExecutable = path.join(installRoot, "runtime", "node");

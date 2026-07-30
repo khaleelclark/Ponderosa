@@ -26,7 +26,11 @@ test("canonicalizes a symlink alias for existing and future descendants", {
     );
     assert.equal(
       canonicalPath(path.join(aliasTemporaryRoot, "Ponderosa GUI Data", "launcher-state")),
-      path.join(canonicalTemporaryRoot, "Ponderosa GUI Data", "launcher-state"),
+      canonicalPath(path.join(
+        canonicalTemporaryRoot,
+        "Ponderosa GUI Data",
+        "launcher-state",
+      )),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
