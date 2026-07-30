@@ -1,5 +1,6 @@
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import RefreshOutlinedIcon from "@mui/icons-material/RefreshOutlined";
 import {
   Alert,
   Box,
@@ -548,18 +549,28 @@ function ProviderSettingsSection({
   preferences,
   engines,
   updatePending,
+  recheckPendingEngineId,
+  recheckSucceededEngineId,
+  recheckErrorEngineId,
+  recheckError,
   validationProjectId,
   modelCatalogLoading,
   onPreferences,
   onToggleEngine,
+  onRecheckEngine,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   updatePending: boolean;
+  recheckPendingEngineId?: string;
+  recheckSucceededEngineId?: string;
+  recheckErrorEngineId?: string;
+  recheckError?: string;
   validationProjectId?: string;
   modelCatalogLoading: boolean;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
+  onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
     engine.authenticated && Boolean(engine.providerUsageCommand)
@@ -616,32 +627,90 @@ function ProviderSettingsSection({
         const efforts = effortOptionsForModel(engine, resolved.model);
         return (
           <Paper key={engine.id} variant="outlined" sx={{ p: 2.5 }}>
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={engine.enabled !== false}
-                  disabled={updatePending}
-                  onChange={(_, enabled) => onToggleEngine(engine.id, enabled)}
-                />
-              }
-              label={
-                <Box>
-                  <Typography fontWeight={800}>{engine.displayName}</Typography>
-                  <Typography
-                    variant="caption"
-                    color={engine.available ? "text.secondary" : "warning.main"}
-                  >
-                    {engine.available
-                      ? "Available"
-                      : (engine.availabilityDetail ?? "Unavailable")}
-                  </Typography>
-                </Box>
-              }
-            />
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              spacing={1.5}
+              sx={{
+                alignItems: { xs: "flex-start", sm: "center" },
+                justifyContent: "space-between",
+              }}
+            >
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={engine.enabled !== false}
+                    disabled={updatePending}
+                    onChange={(_, enabled) => onToggleEngine(engine.id, enabled)}
+                  />
+                }
+                label={
+                  <Box>
+                    <Typography fontWeight={800}>{engine.displayName}</Typography>
+                    <Typography
+                      variant="caption"
+                      color={engine.available ? "text.secondary" : "warning.main"}
+                    >
+                      {engine.available
+                        ? "Available"
+                        : !engine.authenticated
+                          ? (engine.authDetail ?? "CLI sign-in not detected")
+                          : (engine.availabilityDetail ?? "Unavailable")}
+                    </Typography>
+                  </Box>
+                }
+              />
+              <Button
+                variant="outlined"
+                size="small"
+                startIcon={<RefreshOutlinedIcon />}
+                disabled={Boolean(recheckPendingEngineId)}
+                onClick={() => onRecheckEngine(engine.id)}
+              >
+                {recheckPendingEngineId === engine.id
+                  ? "Checking…"
+                  : "Recheck access"}
+              </Button>
+            </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
               Disabled providers finish active Runs, then hold queued work until
               re-enabled.
             </Typography>
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              display="block"
+              sx={{ mt: -1, mb: 2 }}
+            >
+              Signed in with the provider CLI after Ponderosa started? Recheck
+              here to refresh credentials and run one minimal access test
+              without restarting.
+            </Typography>
+            {recheckSucceededEngineId === engine.id ? (
+              <Alert
+                severity={
+                  engine.enabled === false
+                    ? "info"
+                    : engineIsAvailable(engine)
+                      ? "success"
+                      : "warning"
+                }
+                sx={{ mb: 2 }}
+              >
+                Status refreshed.{" "}
+                {!engine.authenticated
+                  ? "Ponderosa still cannot find a CLI sign-in."
+                  : engine.enabled === false
+                    ? "Credentials were found. This provider remains disabled."
+                    : engine.available
+                      ? "This provider is ready."
+                      : "Sign-in was found, but the provider access check did not pass."}
+              </Alert>
+            ) : null}
+            {recheckErrorEngineId === engine.id && recheckError ? (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {recheckError}
+              </Alert>
+            ) : null}
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth>
                 <InputLabel id={`settings-model-${engine.id}`}>
@@ -807,6 +876,26 @@ export function WorkspaceSettingsView({
       );
     },
   });
+  const recheckEngine = useMutation({
+    mutationFn: (engineId: string) => api.recheckEngine(engineId),
+    onSuccess: updated => {
+      queryClient.setQueryData<EngineDto[]>(queryKeys.engines.all, current =>
+        current?.map(candidate =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      );
+      void queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
+    },
+  });
+  useEffect(() => {
+    if (!recheckEngine.isSuccess) return;
+
+    const timeoutId = window.setTimeout(() => {
+      recheckEngine.reset();
+    }, 4_000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [recheckEngine.isSuccess, recheckEngine.reset]);
   const saveAgentDefaults = useMutation({
     mutationFn: (patch: {
       globalInstructions: string;
@@ -891,12 +980,29 @@ export function WorkspaceSettingsView({
             preferences={preferences}
             engines={settingsEngines}
             updatePending={updateEngine.isPending}
+            recheckPendingEngineId={
+              recheckEngine.isPending ? recheckEngine.variables : undefined
+            }
+            recheckSucceededEngineId={
+              recheckEngine.isSuccess ? recheckEngine.data.id : undefined
+            }
+            recheckErrorEngineId={
+              recheckEngine.isError ? recheckEngine.variables : undefined
+            }
+            recheckError={
+              recheckEngine.isError
+                ? recheckEngine.error instanceof Error
+                  ? recheckEngine.error.message
+                  : "Provider status could not be refreshed."
+                : undefined
+            }
             validationProjectId={validationProject?.id}
             modelCatalogLoading={modelCatalogQuery.isLoading}
             onPreferences={onPreferences}
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+            onRecheckEngine={engineId => recheckEngine.mutate(engineId)}
           />
         ) : null}
         {section === "activity" ? (
