@@ -68,6 +68,11 @@ export interface PublicLauncherState extends Omit<LauncherState, "controlToken">
   detail: string;
 }
 
+export interface UpdateRestartPrompt {
+  running: Pick<LauncherState, "version" | "commit" | "channel">;
+  installed: Pick<BuildManifest, "version" | "commit" | "channel">;
+}
+
 export type DoctorCheckStatus = "pass" | "warning" | "fail";
 
 export interface DoctorCheck {
@@ -127,6 +132,7 @@ export interface PlatformAdapter {
   nodeExecutableName(): string;
   executableCandidates(provider: "codex" | "claude", env?: NodeJS.ProcessEnv, homeDir?: string): string[];
   openBrowser(url: string): Promise<void>;
+  confirmUpdateRestart(input: UpdateRestartPrompt): Promise<boolean>;
 }
 
 export interface LauncherOutput {

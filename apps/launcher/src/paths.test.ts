@@ -59,6 +59,7 @@ describe("launcherStateLocation", () => {
       nodeExecutableName: () => process.platform === "win32" ? "node.exe" : "node",
       executableCandidates: () => [],
       openBrowser: async () => undefined,
+      confirmUpdateRestart: async () => false,
     };
     const paths = resolveLauncherPaths({
       platform,

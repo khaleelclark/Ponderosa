@@ -180,6 +180,21 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
 
+  if (parsed.command === "open") {
+    const running = await currentPonderosaStatus(paths);
+    const runningDifferentBuild = running?.healthy && (
+      running.version !== manifest.version ||
+      running.commit !== manifest.commit ||
+      running.channel !== manifest.channel
+    );
+    if (runningDifferentBuild && await platform.confirmUpdateRestart({
+      running,
+      installed: manifest,
+    })) {
+      await stopPonderosa({ paths });
+    }
+  }
+
   const state = await startPonderosa({
     paths,
     manifest,
