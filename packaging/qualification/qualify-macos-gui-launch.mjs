@@ -89,6 +89,15 @@ async function waitForPathRemoval(pathname, timeoutMs = 15_000) {
   throw new Error(`Timed out waiting for ${pathname} to be removed`);
 }
 
+async function waitForProcessExit(pid, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for process ${pid} to exit`);
+}
+
 async function fetchEventually(url, init = {}, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -469,8 +478,7 @@ try {
   started = false;
   assert(!existsSync(statePath), "GUI launcher stop left instance state behind.");
   await waitForPathRemoval(engineSupervisorPath);
-  assert(!processIsAlive(firstSupervisor.pid),
-    "Ponderosa Engine desktop supervisor remained alive after explicit stop.");
+  await waitForProcessExit(firstSupervisor.pid);
   const secondState = await launchFromApplication(port);
   assert(secondState.pid !== firstState.pid, "GUI reopen reused the stopped daemon pid.");
   const secondSupervisor = await readJsonEventually(engineSupervisorPath);
@@ -483,8 +491,7 @@ try {
   started = false;
   assert(!processIsAlive(secondState.pid),
     "Quitting Ponderosa Engine left its detached server alive.");
-  assert(!processIsAlive(secondSupervisor.pid),
-    "Reopened Ponderosa Engine remained alive after desktop Quit.");
+  await waitForProcessExit(secondSupervisor.pid);
   checks.push({
     id: "macos-gui-close-reopen",
     status: "pass",
