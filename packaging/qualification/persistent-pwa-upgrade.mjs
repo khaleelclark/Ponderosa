@@ -368,19 +368,13 @@ function legacyWorkerSource(port) {
   return `const CACHE=${JSON.stringify(cacheName)},URLS=["/index.html","/old.js","/register-sw.js"];
 self.addEventListener("install",event=>event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(URLS)).then(()=>self.skipWaiting())));
 self.addEventListener("activate",event=>event.waitUntil(self.clients.claim()));
-self.addEventListener("fetch",event=>{const url=new URL(event.request.url);if(event.request.mode==="navigate"){event.respondWith(caches.match("/index.html"));return}if(URLS.includes(url.pathname))event.respondWith(caches.match(url.pathname))});`;
+self.addEventListener("fetch",event=>{const url=new URL(event.request.url);if(event.request.mode==="navigate"&&!url.pathname.startsWith("/__ponderosa_bootstrap")){event.respondWith(caches.match("/index.html"));return}if(URLS.includes(url.pathname))event.respondWith(caches.match(url.pathname))});`;
 }
 
 function legacyRegisterSource() {
-  return `navigator.serviceWorker.addEventListener("controllerchange",()=>location.reload());
-navigator.serviceWorker.register("/sw.js").then(registration=>{
-  const activateWaiting=()=>registration.waiting?.postMessage({type:"SKIP_WAITING"});
-  activateWaiting();
-  registration.addEventListener("updatefound",()=>{
-    const worker=registration.installing;
-    worker?.addEventListener("statechange",()=>{if(worker.state==="installed")activateWaiting()});
-  });
-});`;
+  // Model the problematic installed shell: it registers for updates but has no
+  // code capable of activating a replacement worker that reaches "waiting".
+  return `navigator.serviceWorker.register("/sw.js");`;
 }
 
 export async function seedLegacyPwaProfile(port, profileDir, browserExecutable) {
@@ -482,11 +476,6 @@ export async function qualifyPersistentPwaUpgrade({
   let browser = await openBrowser(browserExecutable, profileDir);
   let primaryError;
   try {
-    await browser.navigate(`${baseUrl}/`);
-    await browser.waitFor(
-      currentAssetExpression(expectedAssets, false),
-      "persistent browser profile did not transition from legacy assets to the installed build",
-    );
     await browser.navigate(bootstrapUrl);
     await browser.waitFor(
       `location.pathname==="/"&&${currentAssetExpression(expectedAssets, true)}`,

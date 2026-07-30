@@ -172,7 +172,39 @@ self.addEventListener("fetch",event=>{const pathname=new URL(event.request.url).
       }
       if (url.pathname === "/__ponderosa_bootstrap.js") {
         response.writeHead(200, { "content-type": "text/javascript" }).end(
-          'fetch("/api/launcher/session-exchange",{method:"POST"}).then(()=>location.replace("/"));',
+          `(async()=>{
+await fetch("/api/launcher/session-exchange",{method:"POST"});
+const registration=await navigator.serviceWorker.getRegistration("/");
+if(registration){
+  await registration.update();
+  let candidate=registration.waiting||registration.installing;
+  if(candidate&&candidate.state!=="installed"){
+    await Promise.race([
+      new Promise(resolve=>{
+        const changed=()=>{
+          if(candidate.state==="installed"||candidate.state==="redundant"){
+            candidate.removeEventListener("statechange",changed);
+            resolve();
+          }
+        };
+        candidate.addEventListener("statechange",changed);
+        changed();
+      }),
+      new Promise(resolve=>setTimeout(resolve,5000))
+    ]);
+  }
+  candidate=registration.waiting;
+  if(candidate){
+    const controlled=Promise.race([
+      new Promise(resolve=>navigator.serviceWorker.addEventListener("controllerchange",resolve,{once:true})),
+      new Promise(resolve=>setTimeout(resolve,5000))
+    ]);
+    candidate.postMessage({type:"SKIP_WAITING"});
+    await controlled;
+  }
+}
+location.replace("/");
+})();`,
         );
         return;
       }

@@ -120,6 +120,15 @@ const runtimeNodeName = targetPlatform === "win32" ? "node.exe" : "node";
 const baselineName = "0000_current_schema.sql";
 const schemaSource = path.join(repositoryRoot, "packages", "agents", "src", "schema", baselineName);
 
+assertCleanSource();
+// This command is also a supported release entry point, so never trust a
+// previously generated web/dist tree. A stale PWA shell can otherwise make a
+// correct new daemon look like the old installed version.
+execFileSync("pnpm", ["--filter", "@ponderosa/web", "build"], {
+  cwd: repositoryRoot,
+  stdio: "inherit",
+});
+
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
@@ -133,7 +142,6 @@ for (const required of [
   if (!existsSync(required)) throw new Error(`Required build input is missing: ${required}`);
 }
 
-assertCleanSource();
 const nodeIdentity = nodeRuntimeIdentity(nodeBinary);
 const nodeSource = JSON.parse(readFileSync(nodeSourcePath, "utf8"));
 const nodeDistributionPlatform = targetPlatform === "win32" ? "win" : targetPlatform;

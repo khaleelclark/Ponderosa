@@ -321,7 +321,58 @@ app.get("/__ponderosa_bootstrap", async (_request, reply) => reply
 app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
   .type("text/javascript; charset=utf-8")
   .header("Cache-Control", "no-store")
-  .send(`(async()=>{const e=document.getElementById("status"),t=decodeURIComponent(location.hash.slice(1)),n=new URLSearchParams(location.search).get("next"),d=n==="/settings/engine"?n:"/";history.replaceState(null,"","/__ponderosa_bootstrap");if(!t){e.textContent="This launch link is incomplete. Open Ponderosa Engine again.";return}try{const r=await fetch("/api/launcher/session-exchange",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token:t})});if(!r.ok)throw new Error("exchange failed");location.replace(d)}catch{e.textContent="This launch link expired or was already used. Open Ponderosa Engine again."}})();`));
+  .send(`(async()=>{
+const status=document.getElementById("status");
+const token=decodeURIComponent(location.hash.slice(1));
+const requested=new URLSearchParams(location.search).get("next");
+const destination=requested==="/settings/engine"?requested:"/";
+history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
+if(!token){location.replace(destination);return}
+try{
+  const response=await fetch("/api/launcher/session-exchange",{
+    method:"POST",
+    headers:{"content-type":"application/json"},
+    body:JSON.stringify({token})
+  });
+  if(!response.ok)throw new Error("exchange failed");
+  if("serviceWorker" in navigator){
+    try{
+      const registration=await navigator.serviceWorker.getRegistration("/");
+      if(registration){
+        await registration.update();
+        let candidate=registration.waiting||registration.installing;
+        if(candidate&&candidate.state!=="installed"){
+          await Promise.race([
+            new Promise(resolve=>{
+              const changed=()=>{
+                if(candidate.state==="installed"||candidate.state==="redundant"){
+                  candidate.removeEventListener("statechange",changed);
+                  resolve();
+                }
+              };
+              candidate.addEventListener("statechange",changed);
+              changed();
+            }),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+        }
+        candidate=registration.waiting;
+        if(candidate){
+          const controlled=Promise.race([
+            new Promise(resolve=>navigator.serviceWorker.addEventListener("controllerchange",resolve,{once:true})),
+            new Promise(resolve=>setTimeout(resolve,5000))
+          ]);
+          candidate.postMessage({type:"SKIP_WAITING"});
+          await controlled;
+        }
+      }
+    }catch{}
+  }
+  location.replace(destination);
+}catch{
+  status.textContent="This launch link expired or was already used. Open Ponderosa Engine again.";
+}
+})();`));
 
 const beginShutdown = (reply: FastifyReply) => {
   if (isClosed()) return reply.code(409).send({ error: "Ponderosa is already shutting down" });
