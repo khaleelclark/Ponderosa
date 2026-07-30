@@ -241,6 +241,9 @@ Source: "${escapedBundle}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesub
 [Icons]
 Name: "{autoprograms}\\Ponderosa Engine"; Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; WorkingDir: "{app}"
 
+[InstallDelete]
+Type: files; Name: "{autoprograms}\\Ponderosa Beta.lnk"
+
 [Run]
 Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Description: "Open Ponderosa Engine"; Flags: nowait postinstall skipifsilent runhidden
 `);
