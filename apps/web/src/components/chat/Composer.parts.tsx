@@ -96,29 +96,20 @@ export function ComposerProjectDestinationAction({
     Number(hasBroadcastDestination) +
     Number(hasEveryoneDestination) +
     projectDestinations.length;
-  const matchingContinuation = Boolean(
-    explicitDestinationCount === 1 &&
-    projectDestinations.length === 1 &&
-    continueWith?.handle.toLocaleLowerCase() ===
-      projectDestinations[0]!.handle.toLocaleLowerCase(),
-  );
   const continuing =
     implicitContinueSelected &&
     Boolean(continueWith) &&
     explicitDestinationCount === 0;
-  const label = hasBroadcastDestination
-    ? "#broadcast"
-    : hasEveryoneDestination
-      ? "#everyone"
-      : projectDestinations.length > 1
-        ? `${projectDestinations.length} Agents`
-        : projectDestinations.length === 1
-          ? matchingContinuation
-            ? continueWith!.title
-            : `#${projectDestinations[0]!.handle}`
-          : continuing
-            ? continueWith!.title
-            : "New Agent";
+  const explicitLabels = [
+    ...(hasBroadcastDestination ? ["#broadcast"] : []),
+    ...(hasEveryoneDestination ? ["#everyone"] : []),
+    ...projectDestinations.map(destination => `#${destination.handle}`),
+  ];
+  const selectedLabel = continuing
+    ? continueWith!.title
+    : explicitLabels.length > 1
+      ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
+      : (explicitLabels[0] ?? "Destination");
   const clearExplicitDestinations = () => {
     clearDestination("broadcast");
     clearDestination("everyone");
@@ -151,25 +142,47 @@ export function ComposerProjectDestinationAction({
     }
     focusInput();
   };
-  const continuationSelected = continuing || matchingContinuation;
-  const resetToNewAgent =
-    continuationSelected || explicitDestinationCount > 0;
-  if (!continueWith && !resetToNewAgent) return null;
+  const hasSelectedDestination =
+    continuing || explicitDestinationCount > 0;
+  if (hasSelectedDestination) {
+    return (
+      <Tooltip title={`Clear ${selectedLabel} and start a new Agent`}>
+        <Chip
+          size="small"
+          color={
+            hasBroadcastDestination
+              ? "info"
+              : hasEveryoneDestination
+                ? "secondary"
+                : "primary"
+          }
+          icon={
+            hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
+          }
+          label={selectedLabel}
+          onDelete={chooseNewAgent}
+          sx={{
+            maxWidth: { xs: 148, sm: 240 },
+            height: 34,
+            fontWeight: 700,
+            "& .MuiChip-label": {
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            },
+          }}
+        />
+      </Tooltip>
+    );
+  }
+  if (!continueWith) return null;
   return (
-    <Tooltip
-      title={
-        resetToNewAgent
-          ? `Start a new Agent instead of ${label}`
-          : `Continue with ${continueWith!.title}`
-      }
-    >
+    <Tooltip title={`Continue with ${continueWith.title}`}>
       <Button
         size="small"
-        color={resetToNewAgent ? "inherit" : "primary"}
-        startIcon={
-          resetToNewAgent ? undefined : <SubdirectoryArrowRightIcon />
-        }
-        onClick={resetToNewAgent ? chooseNewAgent : chooseContinuation}
+        color="primary"
+        startIcon={<SubdirectoryArrowRightIcon />}
+        onClick={chooseContinuation}
         sx={{
           minHeight: 40,
           minWidth: 0,
@@ -187,9 +200,7 @@ export function ComposerProjectDestinationAction({
           noWrap
           sx={{ minWidth: 0, fontWeight: 700 }}
         >
-          {resetToNewAgent
-            ? "New Agent"
-            : `Continue with ${continueWith!.title}`}
+          Continue with {continueWith.title}
         </Typography>
       </Button>
     </Tooltip>
