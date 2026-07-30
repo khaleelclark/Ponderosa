@@ -10,6 +10,7 @@ import {
   PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
+  effectiveProviderPermissionMode,
   type AgentDto,
   type AgentEvent,
   type ChatMessage,
@@ -35,6 +36,7 @@ import type {
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
+import { AUTO_ALLOWED_DECISION_OPTION_ID } from "../runtime-elicitation-broker.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
 function humanizeProviderName(value: string): string {
@@ -330,6 +332,25 @@ export function startProviderRunExecution(
                 return { action: "cancel" };
               }
             }
+            const conversationAutoApproves =
+              Boolean(currentRun.conversationId) && (() => {
+                const conversation = store.getConversation(currentRun.conversationId!);
+                const project = conversation
+                  ? store.getProject(conversation.projectId)
+                  : undefined;
+                return Boolean(conversation && project &&
+                  effectiveProviderPermissionMode({
+                    conversation: conversation.providerPermissionMode,
+                    project: project.providerPermissionMode,
+                    workspace: workspace.getPreferences().providerPermissionMode,
+                  }) === "auto_confirmations");
+              })() &&
+              runtimeElicitations.canRememberForRun(request);
+            if (conversationAutoApproves ||
+                runtimeElicitations.allowsForRun(currentRun.runId, request)) {
+              return { action: "accept", content: {} };
+            }
+            const rememberableConfirmation = runtimeElicitations.canRememberForRun(request);
             const cursor = workspace.cursor();
             const providerName = humanizeProviderName(request.serverName);
             const decision = workspace.createDecision({
@@ -342,20 +363,30 @@ export function startProviderRunExecution(
               mode: "choice",
               question: request.mode === "url"
                 ? `${agent.title} needs a secure ${providerName} connection before it can continue.`
+                : rememberableConfirmation
+                  ? `${agent.title} needs permission for ${providerName} before it can continue.`
                 : `${agent.title} needs information for ${providerName} before it can continue.`,
               context: request.mode === "url"
                 ? `Open the secure ${providerName} connection page, then return here to confirm.`
+                : rememberableConfirmation
+                  ? `${providerName} requested confirmation. You can allow it once or for the rest of this Agent run.`
                 : `${providerName} needs this information to continue. Submitted values are sent directly to the provider and are not saved in Ponderosa.`,
               options: request.mode === "url"
                 ? [
                     { id: "accept", label: "I've Connected" },
                     { id: "decline", label: "Not Now" },
                   ]
+                : rememberableConfirmation
+                  ? [
+                      { id: "submit", label: "Allow once" },
+                      { id: "allow_run", label: "Allow for this run" },
+                      { id: "decline", label: "Not Now" },
+                    ]
                 : [
                     { id: "submit", label: "Submit" },
                     { id: "decline", label: "Not Now" },
                   ],
-              allowOther: false,
+              allowOther: true,
               blocking: true,
               runtimeAction: {
                 kind: "mcp_elicitation",
@@ -371,6 +402,36 @@ export function startProviderRunExecution(
               return { action: "cancel" };
             }
             const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
+            // Close the tiny race where the Chat policy changes after the
+            // initial check but before this provider request enters the broker.
+            if (rememberableConfirmation &&
+                currentRun.conversationId &&
+                (() => {
+                  const conversation = store.getConversation(currentRun.conversationId!);
+                  const project = conversation
+                    ? store.getProject(conversation.projectId)
+                    : undefined;
+                  return Boolean(conversation && project &&
+                    effectiveProviderPermissionMode({
+                      conversation: conversation.providerPermissionMode,
+                      project: project.providerPermissionMode,
+                      workspace: workspace.getPreferences().providerPermissionMode,
+                    }) === "auto_confirmations");
+                })()) {
+              const resolved = workspace.resolveDecision(decision.id, {
+                optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
+                text: "Allowed automatically by this Chat’s provider permissions.",
+                respondedAt: new Date().toISOString(),
+              });
+              if (resolved) {
+                runtimeElicitations.respond(decision.id, {
+                  action: "accept",
+                  content: {},
+                });
+                publishWorkspaceSince(cursor);
+                return waiting;
+              }
+            }
             workspace.createNotification({
               projectId: decision.projectId,
               conversationId: decision.conversationId,
@@ -385,6 +446,8 @@ export function startProviderRunExecution(
               action: { kind: "open_decision", targetId: decision.id },
               title: request.mode === "url"
                 ? `${agent.title} needs you to connect ${providerName}`
+                : rememberableConfirmation
+                  ? `${agent.title} needs permission for ${providerName}`
                 : `${agent.title} needs information for ${providerName}`,
               body: decision.question,
               decision: {
@@ -795,6 +858,7 @@ export function startProviderRunExecution(
       runError = workspaceIssue ?? message;
       await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
     } finally {
+      runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       const rolloverRequested = owned && scheduledSessionRollovers.delete(agent.id);

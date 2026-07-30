@@ -73,6 +73,7 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
   notifications: { mentions: true, directReplies: true, projectChatMessages: true, broadcasts: true, allMessages: false },
   fontFamily: "inter",
   providerAvailability: {},
+  providerPermissionMode: "ask",
   engineDefaults: {},
   claudeModelOptions: [],
   globalInstructions: "",
@@ -143,6 +144,9 @@ export class WorkspaceStore {
       starredResourceIds: record.event.preferences.starredResourceIds ?? [],
       starredProjectIds: record.event.preferences.starredProjectIds ?? [],
       providerAvailability: record.event.preferences.providerAvailability ?? {},
+      providerPermissionMode: record.event.preferences.providerPermissionMode === "auto_confirmations"
+        ? "auto_confirmations"
+        : "ask",
       engineDefaults: record.event.preferences.engineDefaults ?? {},
       claudeModelOptions: normalizeClaudeModelOptions(record.event.preferences.claudeModelOptions),
       globalInstructions: record.event.preferences.globalInstructions ?? "",
@@ -466,6 +470,7 @@ export class WorkspaceStore {
       starredResourceIds: patch.starredResourceIds ?? this.preferences.starredResourceIds,
       starredProjectIds: patch.starredProjectIds ?? this.preferences.starredProjectIds,
       providerAvailability: patch.providerAvailability ?? this.preferences.providerAvailability,
+      providerPermissionMode: patch.providerPermissionMode ?? this.preferences.providerPermissionMode,
       engineDefaults: patch.engineDefaults ?? this.preferences.engineDefaults,
       claudeModelOptions: patch.claudeModelOptions === undefined
         ? this.preferences.claudeModelOptions

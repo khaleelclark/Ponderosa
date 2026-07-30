@@ -2,6 +2,7 @@ import {
   LONG_TEXT_MAX_UTF8_BYTES,
   canonicalizeProviderText,
   shouldBackTextWithArtifact,
+  type CommunicationEvent,
   type CoordinationRequestUpdateKind,
   type SendAgentMessageRequest,
 } from "@ponderosa/core";
@@ -11,6 +12,10 @@ import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
+import {
+  isRequestCommunicationHandoffKind,
+  requestUpdateCommunicationEventId,
+} from "../request-update-communication.js";
 import type { CreateServerOptions } from "../app-contracts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -37,6 +42,12 @@ interface AgentRequestCommandRoutesContext {
   requestArtifactAccess: CommunicationArtifactAuthority["requestArtifactAccess"];
   runtimeArtifactMetadata: CommunicationArtifactAuthority["runtimeArtifactMetadata"];
   stageCommunicationArtifact: CommunicationArtifactAuthority["stageCommunicationArtifact"];
+  recordCommunication(event: CommunicationEvent): CommunicationEvent;
+  projectCommunicationToAgentAudit(
+    agentId: string,
+    event: CommunicationEvent,
+    renderedText: string,
+  ): void;
   publishCoordinationV3Changed(
     agentId: string,
     options?: { conversationIds?: string[] },
@@ -61,6 +72,8 @@ export function registerAgentRequestCommandRoutes(
     requestArtifactAccess,
     runtimeArtifactMetadata,
     stageCommunicationArtifact,
+    recordCommunication,
+    projectCommunicationToAgentAudit,
     publishCoordinationV3Changed,
     notifyScheduler,
     messageLifecycleFaults,
@@ -167,6 +180,85 @@ export function registerAgentRequestCommandRoutes(
         artifact,
         requestArtifactAccess(updateId, changedRequest),
       );
+      const projectId = store.getAgent(capability.agentId)!.projectId;
+      const requestLifecycle = changedRequest?.conversationId
+        ? coordinationV3.requestLifecycleDetails({
+            projectId,
+            conversationId: changedRequest.conversationId,
+            recordId: requestId,
+          })
+        : undefined;
+      const canonicalUpdate = requestLifecycle?.updates.find(
+        (candidate) => candidate.id === updateId,
+      );
+      const passiveText = canonicalUpdate?.text?.trim();
+      const peerAgentId = changedRequest?.recipientAgentId === capability.agentId
+        ? changedRequest.requesterAgentId
+        : changedRequest?.requesterAgentId === capability.agentId
+          ? changedRequest.recipientAgentId
+          : undefined;
+      if (
+        changedRequest?.conversationId
+        && canonicalUpdate?.actorKind === "agent"
+        && canonicalUpdate.actorId === capability.agentId
+        && passiveText
+        && peerAgentId
+        && peerAgentId !== capability.agentId
+        && isRequestCommunicationHandoffKind(canonicalUpdate.kind)
+      ) {
+        // The Request update remains the canonical handoff and owns the
+        // requester wake-up. This deterministic Communication is its passive,
+        // non-delivering audit copy for Team Chat and both Agent timelines.
+        const eventId = requestUpdateCommunicationEventId(
+          projectId,
+          requestId,
+          updateId,
+        );
+        const communication = recordCommunication({
+          eventId,
+          schemaVersion: 2,
+          projectId,
+          conversationId: changedRequest.conversationId,
+          sender: {
+            kind: "agent",
+            agentId: capability.agentId,
+          },
+          intent: "collaboration",
+          audience: { kind: "agents", agentIds: [peerAgentId] },
+          text: passiveText,
+          createdAt: canonicalUpdate.createdAt,
+          correlationId: requestId,
+          ...(requestLifecycle?.request.communicationEventId
+            ? { causationId: requestLifecycle.request.communicationEventId }
+            : {}),
+          idempotencyKey: `request-update:${requestId}:${updateId}`,
+        });
+        if (!store.getProjectedConversationMessageById(
+          changedRequest.conversationId,
+          "collaboration",
+          communication.eventId,
+        )) {
+          store.appendConversationMessage(
+            changedRequest.conversationId,
+            { role: "assistant", text: passiveText },
+            capability.agentId,
+            "collaboration",
+            undefined,
+            undefined,
+            communication.eventId,
+          );
+        }
+        projectCommunicationToAgentAudit(
+          capability.agentId,
+          communication,
+          passiveText,
+        );
+        projectCommunicationToAgentAudit(
+          peerAgentId,
+          communication,
+          passiveText,
+        );
+      }
       const conversationIds = changedRequest?.conversationId
         ? [changedRequest.conversationId]
         : [];

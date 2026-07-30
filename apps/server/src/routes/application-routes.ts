@@ -1,9 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type {
+  ConversationDto,
   DecisionDto,
   GlobalChatSearchResponseDto,
 } from "@ponderosa/core";
+import { effectiveProviderPermissionMode } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
   BrowserSessionError,
@@ -26,7 +28,10 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
-import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
+import {
+  AUTO_ALLOWED_DECISION_OPTION_ID,
+  type RuntimeElicitationBroker,
+} from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
@@ -64,11 +69,13 @@ import { registerWikiRoutes } from "./wiki.js";
 import { registerWorkspacePreferenceRoutes } from "./workspace-preferences.js";
 
 type ApplicationRoutesContext =
-  Parameters<typeof registerProjectRoutes>[1] &
+  Omit<Parameters<typeof registerProjectRoutes>[1],
+    "applyProviderPermissionMode"> &
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1],
     "logError" | "projectDeletionCleanupFaults"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" | "handleAgentConversationRemoval" | "refreshTriggers"> &
+    "hasActiveRun" | "handleAgentConversationRemoval" |
+    "applyProviderPermissionMode" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
@@ -80,7 +87,8 @@ type ApplicationRoutesContext =
   Parameters<typeof registerAgentMaintenanceRoutes>[1] &
   Omit<Parameters<typeof registerAgentMessageRunRoute>[1],
     "deploymentDraining" | "assetMetadata"> &
-  Parameters<typeof registerWorkspacePreferenceRoutes>[1] &
+  Omit<Parameters<typeof registerWorkspacePreferenceRoutes>[1],
+    "applyProviderPermissionMode"> &
   Parameters<typeof registerNotificationListRoute>[1] &
   Omit<Parameters<typeof registerPushRoutes>[1], "configuration"> &
   Omit<Parameters<typeof registerStreamRoutes>[1],
@@ -282,6 +290,45 @@ export function registerApplicationRoutes(
 
 registerLinkPreviewRoutes(app);
 
+const applyProviderPermissionMode = (conversation: ConversationDto): void => {
+  const project = store.getProject(conversation.projectId);
+  if (!project || effectiveProviderPermissionMode({
+    conversation: conversation.providerPermissionMode,
+    project: project.providerPermissionMode,
+    workspace: workspace.getPreferences().providerPermissionMode,
+  }) !== "auto_confirmations") return;
+  const cursor = workspace.cursor();
+  const affectedAgentIds = new Set<string>();
+  const respondedAt = new Date().toISOString();
+  for (const pending of workspace.listDecisions({
+    conversationId: conversation.id,
+    status: "pending",
+  })) {
+    if (!pending.runtimeAction) continue;
+    const liveRequest = runtimeElicitations.action(pending.id);
+    if (!liveRequest || !runtimeElicitations.canRememberForRun(liveRequest)) continue;
+    const resolved = workspace.resolveDecision(pending.id, {
+      optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
+      text: "Allowed automatically by this Chat’s provider permissions.",
+      respondedAt,
+    });
+    if (!resolved) continue;
+    runtimeElicitations.respond(pending.id, {
+      action: "accept",
+      content: {},
+    });
+    const notification = workspace.listNotifications().find((item) =>
+      item.dedupeKey === `decision:${pending.id}` &&
+      (item.status ?? "open") === "open");
+    if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+    affectedAgentIds.add(pending.agentId);
+  }
+  if (affectedAgentIds.size === 0) return;
+  publishWorkspaceSince(cursor);
+  for (const agentId of affectedAgentIds) publishMessageDeliveryChanged(agentId);
+  notifyScheduler();
+};
+
 registerProjectRoutes(app, {
   store,
   workspace,
@@ -293,6 +340,7 @@ registerProjectRoutes(app, {
   organizationEnvelopeStates,
   cachedModelOptions,
   appendWorkspace,
+  applyProviderPermissionMode,
   refreshCommunicationReconciliation,
   clearAgentResumeSession,
   persistentRuntimeForTermination,
@@ -355,6 +403,7 @@ registerConversationRoutes(app, {
   hasActiveRun: agentId => activeRuns.has(agentId),
   handleAgentConversationRemoval: (agentId, conversationId) =>
     coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+  applyProviderPermissionMode,
   refreshTriggers: () => triggerSources.refresh(),
   draftAttachmentSurfaceDir,
 });
@@ -587,6 +636,7 @@ registerWorkspacePreferenceRoutes(app, {
   opts, store, coordinationV3, workspace, engines, activeRuns, scheduledSessionRollovers,
   organizationEnvelopeStates, engineModelCatalogCache, cachedModelOptions,
   applyOperatorModelOptions, publishWorkspaceSince,
+  applyProviderPermissionMode,
   setMaxConcurrentRuns: setMaxConcurrentRuns,
   clearAgentResumeSession, persistentRuntimeForTermination, teardownPersistentRuntime,
 });
@@ -638,21 +688,31 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   const optionId = request.body?.optionId?.trim();
   const text = request.body?.text?.trim();
+  if (optionId && text) return reply.code(400).send({ error: "choose an option or enter another response, not both" });
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
   if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
-  if (!optionId && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+  if (!optionId && !current.runtimeAction && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+  const liveRuntimeAction = current.runtimeAction
+    ? runtimeElicitations.action(current.id)
+    : undefined;
   if (current.runtimeAction) {
-    if (!runtimeElicitations.action(current.id)) {
+    if (!liveRuntimeAction) {
       return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
     }
-    if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
-      return reply.code(400).send({ error: "Confirm the connection or choose Not Now" });
-    }
-    if (current.runtimeAction.mode !== "url" && optionId !== "submit" && optionId !== "decline") {
-      return reply.code(400).send({ error: "Submit the requested information or choose Not Now" });
-    }
-    if (optionId === "submit" && request.body?.content === undefined) {
-      return reply.code(400).send({ error: "The requested form is incomplete" });
+    if (!text) {
+      if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
+        return reply.code(400).send({ error: "Confirm the connection, choose Not Now, or send another response to the Agent" });
+      }
+      if (current.runtimeAction.mode !== "url" &&
+          optionId !== "submit" && optionId !== "allow_run" && optionId !== "decline") {
+        return reply.code(400).send({ error: "Submit the requested information, choose Not Now, or send another response to the Agent" });
+      }
+      if (optionId === "submit" && request.body?.content === undefined) {
+        return reply.code(400).send({ error: "The requested form is incomplete" });
+      }
+      if (optionId === "allow_run" && !runtimeElicitations.canRememberForRun(liveRuntimeAction)) {
+        return reply.code(400).send({ error: "Only confirmation requests can be allowed for the rest of this run" });
+      }
     }
   }
   const respondedAt = new Date().toISOString();
@@ -671,11 +731,23 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {
-    runtimeElicitations.respond(current.id, optionId === "decline"
-      ? { action: "decline" }
-      : optionId === "submit"
-        ? { action: "accept", content: request.body.content }
-        : { action: "accept" });
+    if (text) {
+      // Free-form answers are for the Agent, not fabricated provider form
+      // fields. Decline the live provider request, then resume the Agent with
+      // the canonical Decision response.
+      runtimeElicitations.respond(current.id, { action: "decline" });
+      ensureDecisionResponseActivation(decision);
+      notifyScheduler();
+    } else if (optionId === "allow_run") {
+      runtimeElicitations.rememberForRun(current.runId, liveRuntimeAction!);
+      runtimeElicitations.respond(current.id, { action: "accept", content: {} });
+    } else {
+      runtimeElicitations.respond(current.id, optionId === "decline"
+        ? { action: "decline" }
+        : optionId === "submit"
+          ? { action: "accept", content: request.body.content }
+          : { action: "accept" });
+    }
   } else {
     ensureDecisionResponseActivation(decision);
   }

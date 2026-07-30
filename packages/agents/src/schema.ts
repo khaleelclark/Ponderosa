@@ -13,6 +13,7 @@ export const projects = sqliteTable("projects", {
   defaultEngine: text("default_engine").notNull(),
   defaultModel: text("default_model"),
   defaultEffort: text("default_effort"),
+  providerPermissionMode: text("provider_permission_mode").notNull().default("inherit"),
   lastConversationId: text("last_conversation_id"),
 });
 
@@ -131,6 +132,7 @@ export const conversations = sqliteTable("conversations", {
   defaultEngine: text("default_engine"),
   defaultModel: text("default_model"),
   defaultEffort: text("default_effort"),
+  providerPermissionMode: text("provider_permission_mode").notNull().default("inherit"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   archived: integer("archived").notNull().default(0),

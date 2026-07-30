@@ -1,6 +1,7 @@
 import type { EngineId } from "../adapter.js";
 import type { BrowserControlOwner, BrowserSessionStatus } from "../events.js";
 import type { ProjectSort } from "./projects.js";
+import type { ProviderPermissionMode } from "./conversations.js";
 
 export type NotificationPreference = "direct_responses" | "project_responses" | "mentions" | "all_messages" | "everyone" | "broadcasts" | "none";
 
@@ -44,6 +45,8 @@ export interface WorkspacePreferencesDto {
   fontFamily: "inter" | "system" | "sans";
   /** Operator-controlled global runtime switches. Missing engines default to enabled. */
   providerAvailability: Record<string, boolean>;
+  /** Fallback provider confirmation policy for Projects and Chats that inherit. */
+  providerPermissionMode: ProviderPermissionMode;
   /** Provider whose subscription quota is shown by default when several are authenticated. */
   defaultUsageProvider?: EngineId;
   /** Concrete model/effort defaults chosen independently for each engine. */

@@ -213,6 +213,36 @@ function GeneralSettingsSection({
       </Paper>
       <Paper variant="outlined" sx={{ p: 2.5 }}>
         <Typography variant="h6" fontWeight={800}>
+          Provider Permissions
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+          This is the fallback for Projects and Chats that inherit their
+          provider confirmation policy. New Projects inherit this setting.
+        </Typography>
+        <FormControl fullWidth>
+          <InputLabel id="workspace-provider-permissions">
+            Workspace default
+          </InputLabel>
+          <Select
+            labelId="workspace-provider-permissions"
+            label="Workspace default"
+            value={preferences.providerPermissionMode}
+            onChange={event =>
+              onPreferences({
+                providerPermissionMode: event.target
+                  .value as WorkspacePreferencesDto["providerPermissionMode"],
+              })
+            }
+          >
+            <MenuItem value="ask">Ask for approval</MenuItem>
+            <MenuItem value="auto_confirmations">
+              Auto-approve confirmations
+            </MenuItem>
+          </Select>
+        </FormControl>
+      </Paper>
+      <Paper variant="outlined" sx={{ p: 2.5 }}>
+        <Typography variant="h6" fontWeight={800}>
           Provider Session Rollover
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>

@@ -1,7 +1,9 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
+import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
+  Box,
   Button,
   Chip,
   IconButton,
@@ -15,10 +17,68 @@ import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
 
 interface ComposerDestinationBarProps {
-  clearDestination(handle: string): void;
-  continueWith: ComposerProps["continueWith"];
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
+}
+
+export function ComposerDestinationBar({
+  destinationError,
+  destinationMode,
+}: ComposerDestinationBarProps): JSX.Element | null {
+  return destinationMode === "target-required" && destinationError ? (
+    <Typography
+      variant="caption"
+      color="error.main"
+      sx={{ display: "block", px: 0.25, pb: 0.75 }}
+    >
+      {destinationError}
+    </Typography>
+  ) : null;
+}
+
+export function ComposerTargetDestinationAction({
+  broadcast,
+  handles,
+  onClear,
+}: {
+  broadcast: boolean;
+  handles: string[];
+  onClear(): void;
+}): JSX.Element | null {
+  const labels = [
+    ...(broadcast ? ["#broadcast"] : []),
+    ...handles.map(handle => `#${handle}`),
+  ];
+  if (labels.length === 0) return null;
+  const label = labels.length > 1
+    ? `${labels[0]} +${labels.length - 1}`
+    : labels[0]!;
+  return (
+    <Chip
+      size="small"
+      color={broadcast ? "info" : "primary"}
+      icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
+      label={label}
+      title={labels.join(" ")}
+      aria-label={`Destinations: ${labels.join(", ")}`}
+      onDelete={onClear}
+      sx={{
+        maxWidth: { xs: 124, sm: 240 },
+        height: 34,
+        fontWeight: 700,
+        "& .MuiChip-label": {
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        },
+      }}
+    />
+  );
+}
+
+interface ComposerProjectDestinationActionProps {
+  clearDestination(handle: string): void;
+  continueWith: ComposerProps["continueWith"];
   hasBroadcastDestination: boolean;
   hasEveryoneDestination: boolean;
   inputRef: RefObject<HTMLTextAreaElement>;
@@ -26,14 +86,11 @@ interface ComposerDestinationBarProps {
   projectDestinations: Array<{ handle: string }>;
   selectImplicitContinue(selected: boolean): void;
   setDestination(handle: string): void;
-  targetRequiredDestinations: Array<{ handle: string }>;
 }
 
-export function ComposerDestinationBar({
+export function ComposerProjectDestinationAction({
   clearDestination,
   continueWith,
-  destinationError,
-  destinationMode,
   hasBroadcastDestination,
   hasEveryoneDestination,
   inputRef,
@@ -41,123 +98,128 @@ export function ComposerDestinationBar({
   projectDestinations,
   selectImplicitContinue,
   setDestination,
-  targetRequiredDestinations,
-}: ComposerDestinationBarProps): JSX.Element | null {
-  return destinationMode === "project-chat" ? (
-    <Stack
-      direction="row"
-      spacing={0.75}
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
+}: ComposerProjectDestinationActionProps): JSX.Element | null {
+  const explicitDestinationCount =
+    Number(hasBroadcastDestination) +
+    Number(hasEveryoneDestination) +
+    projectDestinations.length;
+  const continuing =
+    implicitContinueSelected &&
+    Boolean(continueWith) &&
+    explicitDestinationCount === 0;
+  const explicitLabels = [
+    ...(hasBroadcastDestination ? ["#broadcast"] : []),
+    ...(hasEveryoneDestination ? ["#everyone"] : []),
+    ...projectDestinations.map(destination => `#${destination.handle}`),
+  ];
+  const selectedLabel = continuing
+    ? continueWith!.title
+    : explicitLabels.length > 1
+      ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
+      : (explicitLabels[0] ?? "Destination");
+  const selectedDestinationLabels = continuing
+    ? [continueWith!.title]
+    : explicitLabels;
+  const clearExplicitDestinations = () => {
+    clearDestination("broadcast");
+    clearDestination("everyone");
+    for (const destination of projectDestinations) {
+      clearDestination(destination.handle);
+    }
+  };
+  const focusInput = () => {
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    });
+  };
+  const chooseNewAgent = () => {
+    clearExplicitDestinations();
+    selectImplicitContinue(false);
+    focusInput();
+  };
+  const chooseContinuation = () => {
+    if (!continueWith) return;
+    clearExplicitDestinations();
+    if (continueWith.responding) {
+      selectImplicitContinue(true);
+    } else {
+      selectImplicitContinue(false);
+      setDestination(continueWith.handle);
+    }
+    focusInput();
+  };
+  const hasSelectedDestination =
+    continuing || explicitDestinationCount > 0;
+  if (hasSelectedDestination) {
+    return (
+      <Chip
+        size="small"
+        color={
+          hasBroadcastDestination
+            ? "info"
+            : hasEveryoneDestination
+              ? "secondary"
+              : "primary"
+        }
+        icon={
+          hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
+        }
+        label={selectedLabel}
+        title={selectedDestinationLabels.join(" ")}
+        aria-label={`Destinations: ${selectedDestinationLabels.join(", ")}`}
+        onDelete={chooseNewAgent}
+        sx={{
+          maxWidth: { xs: 124, sm: 240 },
+          height: 34,
+          fontWeight: 700,
+          "& .MuiChip-label": {
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          },
+        }}
+      />
+    );
+  }
+  if (!continueWith) return null;
+  return (
+    <Button
+      aria-label={`Continue with ${continueWith.title}`}
+      size="small"
+      color="primary"
+      startIcon={<SubdirectoryArrowRightIcon />}
+      onClick={chooseContinuation}
+      sx={{
+        minHeight: 40,
+        minWidth: 0,
+        maxWidth: { xs: 124, sm: 240 },
+        px: { xs: 0.5, sm: 0.75 },
+        fontWeight: 700,
+        textTransform: "none",
+        justifyContent: "flex-start",
+        "& .MuiButton-startIcon": { mr: 0.5 },
+      }}
     >
-      {hasBroadcastDestination ? (
-        <Chip
-          size="small"
-          color="info"
-          icon={<CampaignOutlinedIcon />}
-          label="#broadcast"
-          onDelete={() => clearDestination("broadcast")}
-        />
-      ) : null}
-      {hasEveryoneDestination ? (
-        <Chip
-          size="small"
-          color="secondary"
-          label="#everyone"
-          onDelete={() => clearDestination("everyone")}
-        />
-      ) : null}
-      {projectDestinations.map(destination => (
-        <Chip
-          key={destination.handle.toLocaleLowerCase()}
-          size="small"
-          color="primary"
-          label={`#${destination.handle}`}
-          onDelete={() => clearDestination(destination.handle)}
-        />
-      ))}
-      {!hasBroadcastDestination &&
-      !hasEveryoneDestination &&
-      projectDestinations.length === 0 &&
-      !implicitContinueSelected ? (
-        <Chip size="small" variant="outlined" label="New Agent" />
-      ) : null}
-      {!hasBroadcastDestination &&
-      !hasEveryoneDestination &&
-      projectDestinations.length === 0 &&
-      continueWith ? (
-        implicitContinueSelected ? (
-          <>
-            <Chip
-              size="small"
-              color="primary"
-              label={`Continue with ${continueWith.title}`}
-            />
-            <Button size="small" onClick={() => selectImplicitContinue(false)}>
-              New Agent
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="small"
-            onClick={() => {
-              if (continueWith.responding) {
-                selectImplicitContinue(true);
-              } else {
-                setDestination(continueWith.handle);
-              }
-              window.requestAnimationFrame(() => {
-                const input = inputRef.current;
-                if (!input) return;
-                input.focus();
-                const end = input.value.length;
-                input.setSelectionRange(end, end);
-              });
-            }}
-          >
-            Continue with {continueWith.title}
-          </Button>
-        )
-      ) : null}
-    </Stack>
-  ) : destinationMode === "target-required" ? (
-    <Stack
-      direction="row"
-      spacing={0.75}
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-    >
-      {targetRequiredDestinations.map(destination => (
-        <Chip
-          key={destination.handle.toLocaleLowerCase()}
-          size="small"
-          color="primary"
-          label={`#${destination.handle}`}
-          onDelete={() => clearDestination(destination.handle)}
-        />
-      ))}
-      {hasBroadcastDestination ? (
-        <Chip
-          size="small"
-          color="info"
-          icon={<CampaignOutlinedIcon />}
-          label="#broadcast"
-          onDelete={() => clearDestination("broadcast")}
-        />
-      ) : null}
-      {targetRequiredDestinations.length === 0 &&
-      !hasBroadcastDestination ? (
-        <Chip size="small" variant="outlined" label="Choose an Agent" />
-      ) : null}
-      {destinationError ? (
-        <Typography variant="caption" color="error.main">
-          {destinationError}
-        </Typography>
-      ) : null}
-    </Stack>
-  ) : null;
+      <Typography
+        component="span"
+        variant="body2"
+        noWrap
+        sx={{ minWidth: 0, fontWeight: 700 }}
+      >
+        <Box
+          component="span"
+          sx={{ display: { xs: "none", sm: "inline" } }}
+        >
+          Continue with{" "}
+        </Box>
+        {continueWith.title}
+      </Typography>
+    </Button>
+  );
 }
 
 interface ComposerAttachmentListProps {

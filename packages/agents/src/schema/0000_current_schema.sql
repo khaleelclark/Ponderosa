@@ -184,6 +184,7 @@ CREATE TABLE continuation_handoffs (
 CREATE TABLE conversations (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
   default_engine TEXT, default_model TEXT, default_effort TEXT,
+  provider_permission_mode TEXT NOT NULL DEFAULT 'inherit',
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0
 );
@@ -322,7 +323,8 @@ CREATE TABLE project_deletion_receipts (
 CREATE TABLE projects (
   id TEXT PRIMARY KEY, label TEXT NOT NULL, host_path TEXT NOT NULL,
   created_at TEXT NOT NULL, last_used_at TEXT
-, default_engine TEXT NOT NULL DEFAULT 'codex', last_conversation_id TEXT, default_model TEXT, default_effort TEXT);
+, default_engine TEXT NOT NULL DEFAULT 'codex', last_conversation_id TEXT, default_model TEXT, default_effort TEXT,
+  provider_permission_mode TEXT NOT NULL DEFAULT 'inherit');
 CREATE TABLE provider_inputs (
   execution_id TEXT PRIMARY KEY,
   scheduler_run_id TEXT NOT NULL,

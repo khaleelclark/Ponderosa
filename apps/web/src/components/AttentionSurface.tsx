@@ -26,11 +26,14 @@ function issueCopy(item: WorkspaceNotificationDto): {
     const provider = item.decision.runtimeAction.serverName
       .replaceAll(/[_-]+/gu, " ")
       .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
+    const connection = item.decision.runtimeAction.mode === "url";
     return {
-      title: `${provider} needs to be connected`,
+      title: connection ? `${provider} needs to be connected` : `${provider} needs your response`,
       explanation: item.body,
       impact: "The Agent is paused at this step. Its current work remains open and will continue after you respond.",
-      recommendation: `Connect ${provider}, return to Ponderosa, and confirm the connection. Choose Not Now to let the Agent continue without it.`,
+      recommendation: connection
+        ? `Connect ${provider}, return to Ponderosa, and confirm the connection. Choose Not Now to let the Agent continue without it.`
+        : "Answer the provider request below. Choose Other to tell the Agent what you want instead.",
     };
   }
   const resolution = item.resolution;

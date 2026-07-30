@@ -9,6 +9,9 @@ import type {
 import { uniqueBy } from "../collections";
 import { engineIsAvailable } from "../conversationEngine";
 
+/** Reserved response identity for a server-applied provider permission. */
+const AUTO_ALLOWED_DECISION_OPTION_ID = "auto_allowed";
+
 function mergeConversationMessages(
   ...groups: ConversationMessageDto[][]
 ): ConversationMessageDto[] {
@@ -28,6 +31,11 @@ type MainTimelineEntry =
   | { kind: "decision-response"; id: string; at: string; event: ConversationDecisionEventDto; choice: string };
 
 function decisionChoice(decision: ConversationDecisionEventDto["decision"]): string | undefined {
+  if (
+    decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
+  ) {
+    return decision.response.text;
+  }
   return decision.response?.optionId
     ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
     : decision.response?.text;
@@ -79,6 +87,7 @@ function conversationComposerRuntime(
 }
 
 export {
+  AUTO_ALLOWED_DECISION_OPTION_ID,
   conversationComposerRuntime,
   decisionChoice,
   mergeConversationMessages,

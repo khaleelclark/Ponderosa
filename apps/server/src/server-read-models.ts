@@ -19,6 +19,10 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import type { ActiveRun, PersistentRuntime, RuntimeOwnershipState } from "./app-contracts.js";
+import {
+  isRequestCommunicationHandoffKind,
+  requestUpdateCommunicationEventId,
+} from "./request-update-communication.js";
 
 interface ReadModelContext {
   store: AgentStore;
@@ -311,10 +315,48 @@ export function createServerReadModels(context: ReadModelContext) {
     const selectedOperations = operations.slice(0, limit);
     const oldestOperation = selectedOperations.at(-1);
     const messagePage = store.getProjectedConversationMessagePage(conversationId, "collaboration", { limit, cursor: input.cursor, focusId: input.focusId });
+    const projectedMessages = withMessagePresentation(
+      conversation.projectId,
+      messagePage.messages,
+    );
+    const recoveredRequestHandoffs = selectedOperations.flatMap((operation) => {
+      if (operation.kind !== "request" || !operation.request?.requesterAgentId) return [];
+      const lifecycle = coordinationV3.requestLifecycleDetails({
+        projectId: conversation.projectId,
+        conversationId,
+        recordId: operation.request.recordId,
+      });
+      const update = [...(lifecycle?.updates ?? [])].reverse().find((candidate) =>
+        candidate.actorKind === "agent"
+        && Boolean(candidate.actorId)
+        && Boolean(candidate.text?.trim())
+        && isRequestCommunicationHandoffKind(candidate.kind));
+      if (!update?.actorId || !update.text?.trim()) return [];
+      const eventId = requestUpdateCommunicationEventId(
+        conversation.projectId,
+        operation.request.recordId,
+        update.id,
+      );
+      if (store.getProjectedConversationMessageById(
+        conversationId,
+        "collaboration",
+        eventId,
+      )) return [];
+      return [{
+        id: eventId,
+        conversationId,
+        role: "assistant" as const,
+        text: update.text.trim(),
+        createdAt: update.createdAt,
+        authorAgentId: update.actorId,
+      }];
+    });
+    const messages = [...projectedMessages, ...recoveredRequestHandoffs]
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
     return {
       agents,
       operations: selectedOperations.reverse(),
-      messages: withMessagePresentation(conversation.projectId, messagePage.messages),
+      messages,
       history: { limit, hasMore: messagePage.hasMore, ...(messagePage.cursor ? { cursor: messagePage.cursor } : {}) },
       operationHistory: {
         limit, hasMore: hasMoreOperations,

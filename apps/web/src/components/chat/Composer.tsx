@@ -24,7 +24,9 @@ import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
+  ComposerProjectDestinationAction,
   ComposerSendActions,
+  ComposerTargetDestinationAction,
 } from "./Composer.parts";
 import {
   ComposerAutocompleteMenu,
@@ -99,6 +101,7 @@ export function Composer({
   onCancel,
   draftStorageKey,
   conversationDraftId,
+  leadingControls,
   controls,
   insertTextRequest,
   destinationMode,
@@ -273,6 +276,19 @@ export function Composer({
   const clearRequiredRecipient = () => {
     const handle = targetRequiredHandles[0] ?? requiredRecipient?.handle;
     if (handle) update(current => removeHandle(current, handle));
+    requiredRecipient?.onClear();
+  };
+  const clearTargetDestinations = () => {
+    update(current => {
+      let next = current;
+      if (hasBroadcastDestination) {
+        next = removeHandle(next, "broadcast");
+      }
+      for (const handle of targetRequiredHandles) {
+        next = removeHandle(next, handle);
+      }
+      return next;
+    });
     requiredRecipient?.onClear();
   };
   const composerLocked = running && !allowSendWhileRunning;
@@ -767,18 +783,8 @@ export function Composer({
       sx={composerSurfaceSx}
     >
       <ComposerDestinationBar
-        clearDestination={clearDestination}
-        continueWith={continueWith}
         destinationError={destinationError}
         destinationMode={destinationMode}
-        hasBroadcastDestination={hasBroadcastDestination}
-        hasEveryoneDestination={hasEveryoneDestination}
-        inputRef={inputRef}
-        implicitContinueSelected={Boolean(implicitContinueHandle)}
-        projectDestinations={projectDestinations}
-        selectImplicitContinue={setImplicitContinueSelected}
-        setDestination={setDestination}
-        targetRequiredDestinations={targetRequiredDestinations}
       />
       <ComposerAttachmentList
         draftUploadStates={draftUploadStates}
@@ -839,6 +845,31 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
+        {destinationMode === "target-required" ? (
+          <ComposerTargetDestinationAction
+            broadcast={hasBroadcastDestination}
+            handles={targetRequiredHandles}
+            onClear={clearTargetDestinations}
+          />
+        ) : null}
+        {destinationMode === "project-chat" ? (
+          <ComposerProjectDestinationAction
+            clearDestination={clearDestination}
+            continueWith={continueWith}
+            hasBroadcastDestination={hasBroadcastDestination}
+            hasEveryoneDestination={hasEveryoneDestination}
+            inputRef={inputRef}
+            implicitContinueSelected={Boolean(implicitContinueHandle)}
+            projectDestinations={projectDestinations}
+            selectImplicitContinue={setImplicitContinueSelected}
+            setDestination={setDestination}
+          />
+        ) : null}
+        {leadingControls ? (
+          <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
+            {leadingControls}
+          </Box>
+        ) : null}
         <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
         {controls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>

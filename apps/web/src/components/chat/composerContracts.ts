@@ -24,5 +24,7 @@ export interface ChatComposerContract {
   onCommand?(command: EngineCommand, argumentsText?: string): Promise<unknown> | unknown;
   commands?: EngineCommand[];
   capabilities?: EngineComposerCapability[];
+  /** Controls placed beside the attachment/capability button. */
+  leadingControls?: ReactNode;
   controls?: ReactNode;
 }

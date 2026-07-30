@@ -3,10 +3,6 @@ import {
   Alert,
   Button,
   Checkbox,
-  Dialog,
-  DialogActions,
-  DialogContent,
-  DialogTitle,
   FormControlLabel,
   MenuItem,
   Stack,
@@ -28,37 +24,57 @@ interface FormField {
   options?: string[];
 }
 
+interface FormDescription {
+  fields: FormField[];
+  supported: boolean;
+}
+
 function titleCase(value: string): string {
   return value
     .replaceAll(/[_-]+/gu, " ")
     .replaceAll(/\b\p{L}/gu, (letter) => letter.toLocaleUpperCase());
 }
 
-function fieldsFor(action: RuntimeElicitationActionDto | undefined): FormField[] {
-  if (!action || action.mode === "url") return [];
+function describeForm(action: RuntimeElicitationActionDto | undefined): FormDescription {
+  if (!action || action.mode === "url") return { fields: [], supported: true };
   const schema = action.requestedSchema;
-  const properties = schema.properties && typeof schema.properties === "object" && !Array.isArray(schema.properties)
-    ? schema.properties as Record<string, unknown>
-    : {};
+  if (schema.type !== undefined && schema.type !== "object") return { fields: [], supported: false };
+  if (schema.properties !== undefined &&
+      (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties))) {
+    return { fields: [], supported: false };
+  }
+  const properties = (schema.properties ?? {}) as Record<string, unknown>;
   const required = new Set(Array.isArray(schema.required)
     ? schema.required.filter((item): item is string => typeof item === "string")
     : []);
-  return Object.entries(properties).flatMap(([name, raw]) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  let supported = schema.required === undefined ||
+    (Array.isArray(schema.required) && schema.required.every((item) => typeof item === "string"));
+  const fields = Object.entries(properties).flatMap(([name, raw]) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      supported = false;
+      return [];
+    }
     const property = raw as Record<string, unknown>;
     const type = property.type;
-    if (type !== "string" && type !== "number" && type !== "integer" && type !== "boolean") return [];
+    if (type !== "string" && type !== "number" && type !== "integer" && type !== "boolean") {
+      supported = false;
+      return [];
+    }
+    const options = Array.isArray(property.enum) && property.enum.every((item) => typeof item === "string")
+      ? property.enum as string[]
+      : undefined;
+    if (property.enum !== undefined && (type !== "string" || !options)) supported = false;
     return [{
       name,
       label: typeof property.title === "string" && property.title.trim() ? property.title : titleCase(name),
       ...(typeof property.description === "string" ? { description: property.description } : {}),
       type,
       required: required.has(name),
-      ...(Array.isArray(property.enum) && property.enum.every((item) => typeof item === "string")
-        ? { options: property.enum as string[] }
-        : {}),
+      ...(options ? { options } : {}),
     }];
   });
+  if ([...required].some((name) => !Object.hasOwn(properties, name))) supported = false;
+  return { fields, supported };
 }
 
 export function RuntimeElicitationActions({
@@ -72,9 +88,10 @@ export function RuntimeElicitationActions({
   error?: string;
   onRespond(response: DecisionResponse): Promise<unknown>;
 }): JSX.Element {
-  const [formOpen, setFormOpen] = useState(false);
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [otherOpen, setOtherOpen] = useState(false);
+  const [otherText, setOtherText] = useState("");
   const action = useQuery({
     queryKey: ["decision-action", decision.id],
     queryFn: () => api.getDecisionAction(decision.id),
@@ -82,13 +99,26 @@ export function RuntimeElicitationActions({
     gcTime: 0,
     retry: false,
   });
-  const fields = useMemo(() => fieldsFor(action.data), [action.data]);
+  const form = useMemo(() => describeForm(action.data), [action.data]);
+  const fields = form.fields;
+  const bareConfirmation = decision.options.some(
+    (option) => option.id === "allow_run",
+  );
+  const allowForRun = bareConfirmation;
+  const submitDisabled =
+    pending ||
+    !form.supported ||
+    (fields.length === 0 && !bareConfirmation);
   const provider = titleCase(decision.runtimeAction?.serverName ?? "Provider");
   const submit = async (): Promise<void> => {
     const content: Record<string, unknown> = {};
     const nextErrors: Record<string, string> = {};
     for (const field of fields) {
       const value = values[field.name];
+      if (field.type === "boolean") {
+        if (field.required || value !== undefined) content[field.name] = value === true;
+        continue;
+      }
       if (field.required && (value === undefined || value === "")) {
         nextErrors[field.name] = `${field.label} is required.`;
         continue;
@@ -108,10 +138,34 @@ export function RuntimeElicitationActions({
     setFieldErrors(nextErrors);
     if (Object.keys(nextErrors).length) return;
     await onRespond({ optionId: "submit", content });
-    setFormOpen(false);
   };
+  const submitOther = async (): Promise<void> => {
+    const text = otherText.trim();
+    if (!text) return;
+    await onRespond({ text });
+  };
+  const otherResponse = otherOpen ? (
+    <Stack spacing={0.75}>
+      <TextField
+        autoFocus
+        fullWidth
+        multiline
+        minRows={2}
+        label="Tell the Agent what you want instead"
+        value={otherText}
+        onChange={(event) => setOtherText(event.target.value)}
+      />
+      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+        <Button size="small" variant="contained" disabled={pending || !otherText.trim()} onClick={() => void submitOther()}>Send to Agent</Button>
+        <Button size="small" color="inherit" disabled={pending} onClick={() => { setOtherOpen(false); setOtherText(""); }}>Cancel</Button>
+      </Stack>
+      <Typography variant="caption" color="text.secondary">
+        This declines the provider request and sends your response to the Agent.
+      </Typography>
+    </Stack>
+  ) : null;
 
-  if (action.isPending) return <Typography variant="body2" color="text.secondary">Preparing secure connection…</Typography>;
+  if (action.isPending) return <Typography variant="body2" color="text.secondary">Preparing request…</Typography>;
   if (action.isError || !action.data) {
     return <Alert severity="warning">{action.error instanceof Error ? action.error.message : "This connection request is no longer available."}</Alert>;
   }
@@ -137,75 +191,88 @@ export function RuntimeElicitationActions({
           <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>
             Not Now
           </Button>
+          <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
         </Stack>
         <Typography variant="caption" color="text.secondary">
           The secure connection opens in a new tab. Return here and confirm when it is complete.
         </Typography>
+        {otherResponse}
         {error ? <Alert severity="error">{error}</Alert> : null}
       </Stack>
     );
   }
 
   return (
-    <>
+    <Stack spacing={1.25}>
+      <Typography variant="body2">{action.data.message}</Typography>
+      {fields.map((field) => field.type === "boolean" ? (
+        <Stack key={field.name} spacing={0}>
+          <FormControlLabel
+            control={<Checkbox checked={values[field.name] === true} onChange={(event) => {
+              setValues((current) => ({ ...current, [field.name]: event.target.checked }));
+              setFieldErrors((current) => {
+                const { [field.name]: _removed, ...rest } = current;
+                return rest;
+              });
+            }} />}
+            label={`${field.label}${field.required ? " *" : ""}`}
+          />
+          {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
+        </Stack>
+      ) : (
+        <TextField
+          key={field.name}
+          fullWidth
+          size="small"
+          label={field.label}
+          required={field.required}
+          type={field.type === "number" || field.type === "integer" ? "number" : "text"}
+          value={String(values[field.name] ?? "")}
+          error={Boolean(fieldErrors[field.name])}
+          helperText={fieldErrors[field.name] ?? field.description}
+          select={Boolean(field.options?.length)}
+          onChange={(event) => {
+            setValues((current) => ({ ...current, [field.name]: event.target.value }));
+            setFieldErrors((current) => {
+              const { [field.name]: _removed, ...rest } = current;
+              return rest;
+            });
+          }}
+        >
+          {field.options?.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
+        </TextField>
+      ))}
+      {!form.supported || (fields.length === 0 && !bareConfirmation) ? (
+        <Alert severity="warning">
+          This provider requested a form Ponderosa cannot safely display.
+          Choose Other to tell the Agent how to proceed.
+        </Alert>
+      ) : null}
+      {fields.length ? <Typography variant="caption" color="text.secondary">
+        Your answers go directly to the provider and are not saved in Ponderosa.
+      </Typography> : null}
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        <Button size="small" variant="contained" onClick={() => {
-          setFieldErrors({});
-          setFormOpen(true);
-        }}>Provide Information</Button>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={submitDisabled}
+          onClick={() => void submit()}
+        >
+          {fields.length > 0
+            ? "Submit"
+            : bareConfirmation
+              ? "Allow once"
+              : "Submit"}
+        </Button>
+        {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow for this run</Button> : null}
         <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>Not Now</Button>
+        <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
       </Stack>
+      {allowForRun ? <Typography variant="caption" color="text.secondary">
+        Run approval applies only to this exact {provider} confirmation until this Agent run ends.
+      </Typography> : null}
+      {otherResponse}
       {error ? <Alert severity="error">{error}</Alert> : null}
-      <Dialog open={formOpen} onClose={() => setFormOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>{provider} Needs Information</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2}>
-            <Typography variant="body2" color="text.secondary">{action.data.message}</Typography>
-            {fields.length ? fields.map((field) => field.type === "boolean" ? (
-              <Stack key={field.name} spacing={0}>
-                <FormControlLabel
-                  control={<Checkbox checked={values[field.name] === true} onChange={(event) => {
-                    setValues((current) => ({ ...current, [field.name]: event.target.checked }));
-                    setFieldErrors((current) => {
-                      const { [field.name]: _removed, ...rest } = current;
-                      return rest;
-                    });
-                  }} />}
-                  label={`${field.label}${field.required ? " *" : ""}`}
-                />
-                {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
-              </Stack>
-            ) : (
-              <TextField
-                key={field.name}
-                label={field.label}
-                required={field.required}
-                type={field.type === "number" || field.type === "integer" ? "number" : "text"}
-                value={String(values[field.name] ?? "")}
-                error={Boolean(fieldErrors[field.name])}
-                helperText={fieldErrors[field.name] ?? field.description}
-                select={Boolean(field.options?.length)}
-                onChange={(event) => {
-                  setValues((current) => ({ ...current, [field.name]: event.target.value }));
-                  setFieldErrors((current) => {
-                    const { [field.name]: _removed, ...rest } = current;
-                    return rest;
-                  });
-                }}
-              >
-                {field.options?.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
-              </TextField>
-            )) : <Alert severity="warning">This provider requested a form Ponderosa cannot safely display.</Alert>}
-            <Typography variant="caption" color="text.secondary">
-              Your answers go directly to the provider and are not saved in Ponderosa.
-            </Typography>
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setFormOpen(false)}>Cancel</Button>
-          <Button variant="contained" disabled={pending || !fields.length} onClick={() => void submit()}>Submit</Button>
-        </DialogActions>
-      </Dialog>
-    </>
+    </Stack>
   );
 }

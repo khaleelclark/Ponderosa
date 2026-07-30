@@ -18,6 +18,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
+  ProviderPermissionSetting,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -45,6 +46,7 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
@@ -319,6 +321,24 @@ export function ConversationView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.all,
+      });
+    },
+  });
+  const persistProviderPermissions = useMutation({
+    mutationFn: (providerPermissionMode: ProviderPermissionSetting) =>
+      api.updateConversation(conversationId, { providerPermissionMode }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(conversationId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.all,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.all,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.decisions.all,
       });
     },
   });
@@ -665,6 +685,23 @@ export function ConversationView({
         }}
       />
     ) : null;
+  const providerPermissionControl =
+    activeView === "main" ? (
+      <ComposerProviderPermissions
+        mode={conversation.providerPermissionMode ?? "ask"}
+        inheritedMode={
+          project?.providerPermissionMode === "ask" ||
+          project?.providerPermissionMode === "auto_confirmations"
+            ? project.providerPermissionMode
+            : preferencesQuery.data?.providerPermissionMode ?? "ask"
+        }
+        pending={persistProviderPermissions.isPending}
+        error={persistProviderPermissions.error instanceof Error
+          ? persistProviderPermissions.error.message
+          : undefined}
+        onChange={next => persistProviderPermissions.mutate(next)}
+      />
+    ) : null;
 
   return (
     <Box
@@ -930,10 +967,14 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
+            {agents.some(agent =>
+              Boolean(healthByAgentId.get(agent.id)?.runtimeActivity),
+            ) ? (
+              <MasterRespondingIndicator
+                agents={agents}
+                healthByAgentId={healthByAgentId}
+              />
+            ) : null}
           </Box>
         ) : null}
         {activeView === "main" && queuedMessageNotice ? (
@@ -986,6 +1027,7 @@ export function ConversationView({
               responding: lastRespondingAgentIsRunning,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
+            leadingControls={providerPermissionControl}
             controls={runtimeControls}
             disabled={busy}
             running={operationRunning}
@@ -1021,7 +1063,7 @@ export function ConversationView({
             placeholder={
               engineReady
                 ? "Write a message…"
-                : "Choose an available Agent with #, or use #broadcast"
+                : "Choose an available Agent with # or use #broadcast"
             }
             onSend={(text, files, stagedIds, draftOwnerId, context) =>
               submit(

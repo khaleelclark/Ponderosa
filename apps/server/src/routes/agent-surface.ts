@@ -210,6 +210,8 @@ registerAgentRequestCommandRoutes(app, {
   requestArtifactAccess,
   runtimeArtifactMetadata,
   stageCommunicationArtifact,
+  recordCommunication,
+  projectCommunicationToAgentAudit,
   publishCoordinationV3Changed,
   notifyScheduler: notifyScheduler,
   messageLifecycleFaults: opts.messageLifecycleFaults,
