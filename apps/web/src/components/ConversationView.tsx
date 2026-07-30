@@ -955,7 +955,10 @@ export function ConversationView({
         }}
         sx={{ bgcolor: "transparent" }}
       >
-        {activeView === "main" ? (
+        {activeView === "main" &&
+        agents.some(agent =>
+          Boolean(healthByAgentId.get(agent.id)?.runtimeActivity),
+        ) ? (
           <Box
             sx={{
               height: 28,
