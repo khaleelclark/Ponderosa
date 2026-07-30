@@ -143,7 +143,7 @@ export class AgentStore extends AgentEventSessionFacade {
         getConversation: conversationId => this.getConversation(conversationId),
         getAgent: agentId => this.getAgent(agentId),
         getProjectArtifact: (projectId, artifactId) => this.getProjectArtifact(projectId, artifactId),
-        communicationProjectionAllowed: (projectId, projection) => this.communicationProjectionAllowed(projectId, projection),
+        communicationProjectionAllowed: (projectId, projection) => this.canProjectCommunication(projectId, projection),
         appendCommunicationProjection: (projectId, projection) => this.appendCommunicationProjection(projectId, projection),
         encodeHistoryCursor: input => this.encodeHistoryCursor(input),
         decodeHistoryCursor: (cursor, stream, scope) => this.decodeHistoryCursor(cursor, stream, scope),
@@ -255,7 +255,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.communicationJournal.getCommunicationDocument(projectId, documentId);
   }
 
-  private communicationProjectionAllowed(
+  canProjectCommunication(
     projectId: string,
     projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey" | "message">,
   ): boolean {
@@ -277,6 +277,20 @@ export class AgentStore extends AgentEventSessionFacade {
 
   readCommunicationProjections(projectId: string): CommunicationProjection[] {
     return this.communicationProjectionLedger.readCommunicationProjections(projectId);
+  }
+
+  getCommunicationProjection(
+    projectId: string,
+    eventId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+  ): CommunicationProjection | undefined {
+    return this.communicationProjectionLedger.getCommunicationProjection(
+      projectId,
+      eventId,
+      surface,
+      projectionKey,
+    );
   }
 
   readProjectedCommunicationMessages(

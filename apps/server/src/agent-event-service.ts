@@ -93,9 +93,12 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     event: Extract<CommunicationEvent, { intent: "broadcast" }>,
     attachments?: AssetDto[],
   ): void {
-    if (store.readCommunicationProjections(event.projectId).some((projection) =>
-      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
-      projection.projectionKey === agentId && projection.message)) return;
+    if (store.getCommunicationProjection(
+      event.projectId,
+      event.eventId,
+      "direct_agent_audit",
+      agentId,
+    )?.message) return;
     const role = event.sender.kind === "user" ? "user" : event.sender.kind === "system" ? "system" : "assistant";
     const stored = store.appendEvent(agentId, {
       type: "communication_projection",
@@ -131,9 +134,12 @@ export function createAgentEventService(context: AgentEventServiceContext) {
     renderedText: string,
     attachments?: ImageAttachmentDto[],
   ): void {
-    const existing = store.readCommunicationProjections(event.projectId).find((projection) =>
-      projection.eventId === event.eventId && projection.surface === "direct_agent_audit" &&
-      projection.projectionKey === agentId && projection.message);
+    const existing = store.getCommunicationProjection(
+      event.projectId,
+      event.eventId,
+      "direct_agent_audit",
+      agentId,
+    );
     if (existing?.message?.sequence !== undefined) {
       if (attachments?.length && !existing.message.attachments?.length) {
         store.appendCommunicationProjection(event.projectId, {

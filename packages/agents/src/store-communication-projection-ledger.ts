@@ -206,6 +206,20 @@ export class AgentCommunicationProjectionLedger {
       this.communicationProjectionAllowed(projectId, projection));
   }
 
+  getCommunicationProjection(
+    projectId: string,
+    eventId: string,
+    surface: CommunicationProjection["surface"],
+    projectionKey: string,
+  ): CommunicationProjection | undefined {
+    if (!this.getProject(projectId)) throw new Error("communication project not found");
+    const projection = this.projectionIndex(projectId).byTuple
+      .get(`${eventId}\u0000${surface}\u0000${projectionKey}`);
+    return projection && this.communicationProjectionAllowed(projectId, projection)
+      ? projection
+      : undefined;
+  }
+
   readProjectedCommunicationMessages(
     projectId: string,
     surface: CommunicationProjection["surface"],
