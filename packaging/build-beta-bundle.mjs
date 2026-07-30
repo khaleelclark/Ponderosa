@@ -141,10 +141,22 @@ assertCleanSource();
 // This command is also a supported release entry point, so never trust a
 // previously generated web/dist tree. A stale PWA shell can otherwise make a
 // correct new daemon look like the old installed version.
-execFileSync("pnpm", ["--filter", "@ponderosa/web", "build"], {
-  cwd: repositoryRoot,
-  stdio: "inherit",
-});
+execFileSync(
+  path.join(
+    repositoryRoot,
+    "apps",
+    "web",
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "rsbuild.cmd" : "rsbuild",
+  ),
+  ["build"],
+  {
+    cwd: path.join(repositoryRoot, "apps", "web"),
+    stdio: "inherit",
+    env: { ...process.env, NODE_ENV: "production" },
+  },
+);
 
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
@@ -189,23 +201,32 @@ mkdirSync(bundleRoot, { recursive: true });
 
 const serverTarget = path.join(bundleRoot, "app", "server");
 mkdirSync(path.dirname(serverTarget), { recursive: true });
+const runtimeBuildEnvironment = {
+  ...process.env,
+  CI: process.env.CI ?? "true",
+  PATH: `${path.dirname(nodeBinary)}${path.delimiter}${process.env.PATH ?? ""}`,
+  npm_node_execpath: nodeBinary,
+};
+
 execFileSync(nodeBinary, [pnpmCli(),
+  "--config.verify-deps-before-run=false",
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
 ], {
   cwd: repositoryRoot,
   stdio: "inherit",
-  env: { ...process.env, CI: process.env.CI ?? "true" },
+  env: runtimeBuildEnvironment,
 });
 
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
 execFileSync(nodeBinary, [pnpmCli(),
+  "--config.verify-deps-before-run=false",
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
 ], {
   cwd: repositoryRoot,
   stdio: "inherit",
-  env: { ...process.env, CI: process.env.CI ?? "true" },
+  env: runtimeBuildEnvironment,
 });
 
 function removeDeployedWorkspaceSelfLink(packageTarget, packageName) {
