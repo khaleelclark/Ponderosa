@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
 import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
+import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -40,6 +41,16 @@ async function availablePort() {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : undefined;
       server.close((error) => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+async function portIsAvailable(port) {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.listen(port, "127.0.0.1", () => {
+      server.close(() => resolve(true));
     });
   });
 }
@@ -99,8 +110,11 @@ const guiEnvironment = Object.fromEntries(Object.entries({
   LANG: process.env.LANG,
   PATH: MACOS_GUI_PATH,
 }).filter((entry) => typeof entry[1] === "string"));
+assert(typeof guiEnvironment.HOME === "string", "Normal GUI qualification requires HOME.");
 const checks = [];
 let started = false;
+let launchAttempted = false;
+const observedPids = new Set();
 
 function launcherCall(command, args = [], allowFailure = false) {
   try {
@@ -119,7 +133,22 @@ function launcherCall(command, args = [], allowFailure = false) {
   }
 }
 
+function launcherJsonCall(command, args = []) {
+  try {
+    return JSON.parse(launcherCall(command, [...args, "--json"]));
+  } catch (error) {
+    const stdout = typeof error?.stdout === "string"
+      ? error.stdout
+      : Buffer.isBuffer(error?.stdout)
+        ? error.stdout.toString("utf8")
+        : "";
+    if (stdout.trim()) return JSON.parse(stdout);
+    throw error;
+  }
+}
+
 async function launchFromApplication(port) {
+  launchAttempted = true;
   run("open", [
     "-n",
     "-W",
@@ -132,6 +161,7 @@ async function launchFromApplication(port) {
     env: guiEnvironment,
   });
   const state = await readJsonEventually(statePath);
+  observedPids.add(state.pid);
   assert(state.installRoot === installRoot, "GUI launch recorded an unexpected install root.");
   assert(!/ponderosa-mac-qualification|\/Users\/patmi/iu.test(state.installRoot),
     "GUI launch retained a build-host path.");
@@ -142,6 +172,54 @@ async function launchFromApplication(port) {
   assert(health.ok, "GUI-launched daemon did not remain healthy.");
   started = true;
   return state;
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+async function cleanupGuiLaunch(port) {
+  const deadline = Date.now() + 15_000;
+  let lastStateError;
+  let quietSince;
+  while (Date.now() < deadline) {
+    if (existsSync(statePath)) {
+      try {
+        const state = JSON.parse(readFileSync(statePath, "utf8"));
+        if (Number.isSafeInteger(state.pid)) observedPids.add(state.pid);
+      } catch (error) {
+        lastStateError = error;
+      }
+    }
+    // Attempt the authoritative launcher stop even before state is observed:
+    // LaunchServices can return or fail while the packaged wrapper is still
+    // completing its state publication.
+    launcherCall("stop", [], true);
+    const clean = (
+      !existsSync(statePath) &&
+      [...observedPids].every((pid) => !processIsAlive(pid)) &&
+      await portIsAvailable(port)
+    );
+    if (clean) {
+      quietSince ??= Date.now();
+    } else {
+      quietSince = undefined;
+    }
+    if (quietSince && Date.now() - quietSince >= 2_000) {
+      started = false;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(
+    "GUI qualification cleanup did not observe state removal, process exit, and port release" +
+    `${lastStateError ? `: ${lastStateError.message}` : ""}`,
+  );
 }
 
 async function browserSession(state) {
@@ -175,6 +253,7 @@ checks.push({
 });
 
 const port = await availablePort();
+let primaryError;
 try {
   const firstState = await launchFromApplication(port);
   const baseUrl = `http://127.0.0.1:${firstState.port}`;
@@ -200,6 +279,13 @@ try {
     status: "pass",
     detail: "sanitized GUI launch resolved Codex without a bare-name spawn failure",
   });
+  const doctor = launcherJsonCall("doctor");
+  const codexDoctor = doctor.checks?.find((check) => check.id === "provider-codex");
+  const claudeDoctor = doctor.checks?.find((check) => check.id === "provider-claude");
+  assert(codexDoctor?.status === "pass", "Launcher doctor did not discover an executable Codex CLI.");
+  assert(/(?:^| · )\/.+(?:codex)(?: · |$)/u.test(codexDoctor.detail ?? ""),
+    "Launcher doctor did not bind Codex to an absolute macOS executable.");
+  assert(claudeDoctor, "Launcher doctor omitted Claude provider discovery.");
 
   const projectRoot = path.join(dataDir, "gui-qualification-project");
   mkdirSync(projectRoot, { recursive: true });
@@ -232,10 +318,32 @@ try {
       signal: AbortSignal.timeout(60_000),
     },
   );
-  assert(
-    claudeModels.ok || claudeModels.status === 503,
-    `Claude model endpoint returned unexpected HTTP ${claudeModels.status}.`,
-  );
+  const claudeResponseBody = await claudeModels.text();
+  const expectedClaude = expectedClaudeGuiExecutable(guiEnvironment.HOME, MACOS_GUI_PATH);
+  if (expectedClaude) {
+    assert(claudeDoctor.status === "pass",
+      "Launcher doctor did not discover the expected Claude executable.");
+    assert(claudeDoctor.detail?.includes(expectedClaude.executable),
+      "Launcher doctor did not select the expected Claude executable.");
+    if (expectedClaude.providerClass === "claude-desktop") {
+      assert(claudeModels.ok,
+        `Claude Desktop ${expectedClaude.version} model discovery failed: ${claudeResponseBody}`);
+    } else {
+      assert(
+        claudeModels.ok || (claudeModels.status === 503 && Boolean(claudeResponseBody.trim())),
+        `Configured or standard Claude returned unexplained HTTP ${claudeModels.status}.`,
+      );
+    }
+  } else {
+    assert(
+      claudeModels.ok || (
+        claudeModels.status === 503 &&
+        Boolean(claudeResponseBody.trim()) &&
+        ["pass", "warning"].includes(claudeDoctor.status)
+      ),
+      `Claude model endpoint returned unexplained HTTP ${claudeModels.status}.`,
+    );
+  }
   const postDiscoveryHealth = await fetch(`${baseUrl}/api/health`, {
     signal: AbortSignal.timeout(5_000),
   });
@@ -243,9 +351,11 @@ try {
   checks.push({
     id: "macos-gui-provider-survival",
     status: "pass",
-    detail: claudeModels.ok
-      ? "Codex capabilities and Desktop-managed Claude models resolved; daemon remained healthy"
-      : "Codex capabilities resolved; unavailable Claude returned 503 without terminating the daemon",
+    detail: expectedClaude?.providerClass === "claude-desktop"
+      ? `Codex capabilities and Claude Desktop ${expectedClaude.version} models resolved; daemon remained healthy`
+      : claudeModels.ok
+        ? "Codex capabilities and a non-Desktop Claude model provider resolved; daemon remained healthy"
+        : "Codex capabilities resolved; Claude was proven absent or unusable and returned 503 without terminating the daemon",
   });
 
   launcherCall("stop");
@@ -271,6 +381,22 @@ try {
     checks,
   }, null, 2)}\n`, { mode: 0o600 });
   process.stdout.write(`Normal macOS GUI launch qualification passed; report=${reportPath}\n`);
-} finally {
-  if (started) launcherCall("stop", [], true);
+} catch (error) {
+  primaryError = error;
 }
+let cleanupError;
+if (launchAttempted || started || existsSync(statePath)) {
+  try {
+    await cleanupGuiLaunch(port);
+  } catch (error) {
+    cleanupError = error;
+  }
+}
+if (primaryError && cleanupError) {
+  throw new AggregateError(
+    [primaryError, cleanupError],
+    "Normal macOS GUI launch qualification and cleanup failed",
+  );
+}
+if (primaryError) throw primaryError;
+if (cleanupError) throw cleanupError;

@@ -100,7 +100,7 @@ export function codexHome(env: NodeJS.ProcessEnv = process.env): string {
 export async function codexAuthStatus(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<EngineAuthStatus> {
-  const bin = env.PONDEROSA_CODEX_BIN ?? "codex";
+  const bin = env.PONDEROSA_CODEX_BIN?.trim() || "codex";
   try {
     const { stdout, stderr } = await containedAuthCommand(bin, ["login", "status"], {
       env: runtimeEnvironment(env),
@@ -163,7 +163,7 @@ export async function claudeAvailabilityStatus(
 ): Promise<EngineAvailabilityStatus> {
   const auth = await readAuth();
   if (!auth.authenticated) return { available: false, detail: auth.detail };
-  const bin = env.PONDEROSA_CLAUDE_BIN ?? "claude";
+  const bin = env.PONDEROSA_CLAUDE_BIN?.trim() || "claude";
   try {
     const { stdout } = await run(bin, [
       "--print",

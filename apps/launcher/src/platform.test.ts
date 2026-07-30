@@ -66,12 +66,38 @@ describe("macOS provider executable discovery", () => {
       "MacOS",
       "claude",
     ));
+    const tiedUpper = executable(path.join(
+      home,
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude-code",
+      "2.1.219-A",
+      "claude.app",
+      "Contents",
+      "MacOS",
+      "claude",
+    ));
+    const tiedLower = executable(path.join(
+      home,
+      "Library",
+      "Application Support",
+      "Claude",
+      "claude-code",
+      "2.1.219-a",
+      "claude.app",
+      "Contents",
+      "MacOS",
+      "claude",
+    ));
     const candidates = hostPlatformAdapter("darwin").executableCandidates(
       "claude",
       { PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
       home,
     );
     expect(candidates).toContain(older);
+    expect(candidates.indexOf(tiedLower)).toBeLessThan(candidates.indexOf(tiedUpper));
+    expect(candidates.indexOf(tiedUpper)).toBeLessThan(candidates.indexOf(newest));
     expect(candidates.indexOf(newest)).toBeLessThan(candidates.indexOf(older));
   });
 });

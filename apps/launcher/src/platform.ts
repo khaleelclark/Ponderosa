@@ -33,10 +33,7 @@ function claudeDesktopCandidates(homeDir: string): string[] {
     return readdirSync(versionsRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
-      .sort((left, right) => right.localeCompare(left, undefined, {
-        numeric: true,
-        sensitivity: "base",
-      }))
+      .sort(compareVersionDirectoryNamesDescending)
       .map((version) => path.join(
         versionsRoot,
         version,
@@ -48,6 +45,18 @@ function claudeDesktopCandidates(homeDir: string): string[] {
   } catch {
     return [];
   }
+}
+
+function compareVersionDirectoryNamesDescending(left: string, right: string): number {
+  const leftNumbers = left.match(/\d+/gu)?.map(Number) ?? [];
+  const rightNumbers = right.match(/\d+/gu)?.map(Number) ?? [];
+  const width = Math.max(leftNumbers.length, rightNumbers.length);
+  for (let index = 0; index < width; index += 1) {
+    const difference = (rightNumbers[index] ?? -1) - (leftNumbers[index] ?? -1);
+    if (difference) return difference;
+  }
+  if (left === right) return 0;
+  return left < right ? 1 : -1;
 }
 
 async function spawnDetached(command: string, args: string[]): Promise<void> {

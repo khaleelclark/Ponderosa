@@ -49,6 +49,7 @@ interface RawClaudeRecord {
 }
 
 const PROBE_TIMEOUT_MS = 20_000;
+const VERSION_TIMEOUT_MS = 10_000;
 const VALIDATION_TIMEOUT_MS = 45_000;
 
 function environmentFor(
@@ -247,6 +248,45 @@ function observeChildErrors(
   return failure;
 }
 
+function observeTerminationRequest(
+  handle: RuntimeProcessHandle,
+  context: EngineModelDiscoveryOptions,
+  timeoutMs: number,
+  timeoutMessage: string,
+): { failure: Promise<never>; dispose: () => void } {
+  let rejectFailure: (reason?: unknown) => void;
+  let requested = false;
+  const failure = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  const terminate = (reason: Error): void => {
+    if (requested) return;
+    requested = true;
+    void handle.close().then(
+      () => rejectFailure(reason),
+      (closeError) => rejectFailure(new AggregateError(
+        [reason, closeError],
+        "Claude model helper and cleanup failed",
+      )),
+    );
+  };
+  const timeout = setTimeout(() => terminate(new Error(timeoutMessage)), timeoutMs);
+  const abort = () => terminate(
+    context.signal.reason instanceof Error
+      ? context.signal.reason
+      : new Error("Claude model discovery was cancelled"),
+  );
+  context.signal.addEventListener("abort", abort, { once: true });
+  if (context.signal.aborted) abort();
+  return {
+    failure,
+    dispose: () => {
+      clearTimeout(timeout);
+      context.signal.removeEventListener("abort", abort);
+    },
+  };
+}
+
 export class ClaudeModelCatalogProbe {
   private readonly spawnFn: SpawnFn;
 
@@ -258,11 +298,47 @@ export class ClaudeModelCatalogProbe {
     cwd: string,
     context: EngineModelDiscoveryOptions,
   ): Promise<{ models: EngineModelOption[]; cliVersion: string }> {
-    const [models, cliVersion] = await Promise.all([
-      this.initializationModels(cwd, context),
-      this.cliVersion(cwd, context),
-    ]);
-    return { models, cliVersion };
+    const controller = new AbortController();
+    const abortFromCaller = () => {
+      if (!controller.signal.aborted) {
+        controller.abort(context.signal.reason ?? new Error("Claude model discovery was cancelled"));
+      }
+    };
+    if (context.signal.aborted) abortFromCaller();
+    else context.signal.addEventListener("abort", abortFromCaller, { once: true });
+    const branchContext: EngineModelDiscoveryOptions = {
+      signal: controller.signal,
+      onRuntimeSpawned: context.onRuntimeSpawned,
+    };
+    const cancelSiblingOnFailure = async <T>(operation: Promise<T>): Promise<T> => {
+      try {
+        return await operation;
+      } catch (error) {
+        if (!controller.signal.aborted) controller.abort(error);
+        throw error;
+      }
+    };
+    try {
+      const results = await Promise.allSettled([
+        cancelSiblingOnFailure(this.initializationModels(cwd, branchContext)),
+        cancelSiblingOnFailure(this.cliVersion(cwd, branchContext)),
+      ]);
+      const failures = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : []);
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Claude model discovery helpers failed");
+      }
+      if (results[0].status !== "fulfilled" || results[1].status !== "fulfilled") {
+        throw new Error("Claude model discovery helpers did not produce results");
+      }
+      return {
+        models: results[0].value,
+        cliVersion: results[1].value,
+      };
+    } finally {
+      context.signal.removeEventListener("abort", abortFromCaller);
+    }
   }
 
   async validate(
@@ -390,7 +466,14 @@ export class ClaudeModelCatalogProbe {
       context,
       spawned.authority,
     );
-    return closeAfter(() => Promise.race([(async () => {
+    const termination = observeTerminationRequest(
+      handle,
+      context,
+      PROBE_TIMEOUT_MS,
+      "Claude model catalog probe timed out",
+    );
+    try {
+      return await closeAfter(() => Promise.race([(async () => {
         const stdout = child.stdout;
         if (!stdout || !child.stdin) throw new Error("Claude model catalog transport is unavailable");
         let stderr = "";
@@ -403,31 +486,21 @@ export class ClaudeModelCatalogProbe {
           request_id: requestId,
           request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
         })}\n`);
-        let timedOut = false;
-        const timeout = setTimeout(() => {
-          timedOut = true;
-          void handle.close().catch(() => undefined);
-        }, PROBE_TIMEOUT_MS);
-        const abort = () => { void handle.close().catch(() => undefined); };
-        context.signal.addEventListener("abort", abort, { once: true });
-        try {
-          for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
-            const raw = value as RawClaudeRecord;
-            const response = raw.type === "control_response" ? raw.response : undefined;
-            if (response?.request_id !== requestId) continue;
-            if (response.subtype !== "success") {
-              throw new Error(typeof response.error === "string" ? response.error : "Claude model catalog probe failed");
-            }
-            return normalizeClaudeProviderModels(response.response?.models);
+        for await (const value of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+          const raw = value as RawClaudeRecord;
+          const response = raw.type === "control_response" ? raw.response : undefined;
+          if (response?.request_id !== requestId) continue;
+          if (response.subtype !== "success") {
+            throw new Error(typeof response.error === "string" ? response.error : "Claude model catalog probe failed");
           }
-          if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model catalog probe was cancelled");
-          if (timedOut) throw new Error("Claude model catalog probe timed out");
-          throw new Error(`Claude model catalog probe ended without a response${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
-        } finally {
-          clearTimeout(timeout);
-          context.signal.removeEventListener("abort", abort);
+          return normalizeClaudeProviderModels(response.response?.models);
         }
-      })(), childErrors]), handle);
+        if (context.signal.aborted) throw context.signal.reason ?? new Error("Claude model catalog probe was cancelled");
+        throw new Error(`Claude model catalog probe ended without a response${stderr.trim() ? `: ${stderr.trim()}` : ""}`);
+      })(), childErrors, termination.failure]), handle);
+    } finally {
+      termination.dispose();
+    }
   }
 
   private async cliVersion(
@@ -443,6 +516,7 @@ export class ClaudeModelCatalogProbe {
       spawnFn: this.spawnFn,
     });
     const child = spawned.child;
+    const childErrors = observeChildErrors(child, "Claude version check");
     const handle = registerProcess(
       child,
       "Claude version check",
@@ -450,21 +524,40 @@ export class ClaudeModelCatalogProbe {
       context,
       spawned.authority,
     );
-    return closeAfter(() => new Promise<string>((resolve, reject) => {
-      let output = "";
-      let stderr = "";
-      child.stdout?.setEncoding("utf8");
-      child.stdout?.on("data", (chunk: string) => { output = (output + chunk).slice(-4_096); });
-      child.stderr?.setEncoding("utf8");
-      child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4_096); });
-      child.once("error", reject);
-      child.once("exit", (code) => {
-        if (context.signal.aborted) reject(context.signal.reason ?? new Error("Claude version check was cancelled"));
-        else if (code === 0 && output.trim()) resolve(output.trim());
-        else reject(new Error(`Claude version check failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`));
-      });
-      const abort = () => { void handle.close().catch(() => undefined); };
-      context.signal.addEventListener("abort", abort, { once: true });
-    }), handle);
+    const termination = observeTerminationRequest(
+      handle,
+      context,
+      VERSION_TIMEOUT_MS,
+      "Claude version check timed out",
+    );
+    try {
+      return await closeAfter(async () => {
+        let output = "";
+        let stderr = "";
+        child.stdout?.setEncoding("utf8");
+        child.stdout?.on("data", (chunk: string) => { output = (output + chunk).slice(-4_096); });
+        child.stderr?.setEncoding("utf8");
+        child.stderr?.on("data", (chunk: string) => { stderr = (stderr + chunk).slice(-4_096); });
+        return Promise.race([
+          new Promise<string>((resolve, reject) => {
+            child.once("exit", (code) => {
+              if (context.signal.aborted) {
+                reject(context.signal.reason ?? new Error("Claude version check was cancelled"));
+              } else if (code === 0 && output.trim()) {
+                resolve(output.trim());
+              } else {
+                reject(new Error(
+                  `Claude version check failed${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+                ));
+              }
+            });
+          }),
+          childErrors,
+          termination.failure,
+        ]);
+      }, handle);
+    } finally {
+      termination.dispose();
+    }
   }
 }
