@@ -1069,7 +1069,7 @@ export function AgentDetail({
           running: false,
           placeholder: runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
-            : `Message ${detail.agent.title} directly · @ references Project files`,
+            : `Message ${detail.agent.title} directly`,
           agentResponding: Boolean(runtimeActivity),
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,
