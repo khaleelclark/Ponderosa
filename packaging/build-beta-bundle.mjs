@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -93,6 +94,22 @@ function executable(pathname) {
   try { chmodSync(pathname, 0o755); } catch { /* Windows does not use POSIX modes. */ }
 }
 
+function pnpmCli() {
+  const candidates = [
+    process.env.npm_execpath,
+    ...String(process.env.PATH ?? "")
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((directory) => path.join(directory, process.platform === "win32" ? "pnpm.cmd" : "pnpm")),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate || !existsSync(candidate)) continue;
+    const resolved = realpathSync(candidate);
+    if (/pnpm(?:\.c?js|\.mjs)?$/iu.test(resolved)) return resolved;
+  }
+  throw new Error("Could not locate the pnpm CLI needed to deploy production dependencies.");
+}
+
 const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
 const configuredVersion = option("version", process.env.PONDEROSA_BUILD_VERSION);
@@ -172,7 +189,7 @@ mkdirSync(bundleRoot, { recursive: true });
 
 const serverTarget = path.join(bundleRoot, "app", "server");
 mkdirSync(path.dirname(serverTarget), { recursive: true });
-execFileSync("pnpm", [
+execFileSync(nodeBinary, [pnpmCli(),
   "--filter", "@ponderosa/server",
   "deploy", "--prod", "--legacy", serverTarget,
 ], {
@@ -182,7 +199,7 @@ execFileSync("pnpm", [
 });
 
 const launcherTarget = path.join(bundleRoot, "app", "launcher");
-execFileSync("pnpm", [
+execFileSync(nodeBinary, [pnpmCli(),
   "--filter", "@ponderosa/launcher",
   "deploy", "--prod", "--legacy", launcherTarget,
 ], {
