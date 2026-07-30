@@ -99,6 +99,7 @@ export function Composer({
   onCancel,
   draftStorageKey,
   conversationDraftId,
+  leadingControls,
   controls,
   insertTextRequest,
   destinationMode,
@@ -839,6 +840,11 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
+        {leadingControls ? (
+          <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
+            {leadingControls}
+          </Box>
+        ) : null}
         <Box sx={{ flex: 1, minWidth: { xs: 0, sm: 24 } }} />
         {controls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%", overflowX: "auto" }}>

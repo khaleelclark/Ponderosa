@@ -630,16 +630,7 @@ export function ConversationView({
 
   const runtimeControls =
     activeView === "main" ? (
-      <Stack direction="row" spacing={0.25} sx={{ alignItems: "center" }}>
-        <ComposerProviderPermissions
-          mode={conversation.providerPermissionMode ?? "ask"}
-          pending={persistProviderPermissions.isPending}
-          error={persistProviderPermissions.error instanceof Error
-            ? persistProviderPermissions.error.message
-            : undefined}
-          onChange={next => persistProviderPermissions.mutate(next)}
-        />
-        <ComposerRuntimeSelector
+      <ComposerRuntimeSelector
         engine={engine}
         engines={engines.map(option => ({
           id: option.id,
@@ -692,8 +683,18 @@ export function ConversationView({
         onSpeedChange={next => {
           selectedRuntime.selectSpeed(next);
         }}
-        />
-      </Stack>
+      />
+    ) : null;
+  const providerPermissionControl =
+    activeView === "main" ? (
+      <ComposerProviderPermissions
+        mode={conversation.providerPermissionMode ?? "ask"}
+        pending={persistProviderPermissions.isPending}
+        error={persistProviderPermissions.error instanceof Error
+          ? persistProviderPermissions.error.message
+          : undefined}
+        onChange={next => persistProviderPermissions.mutate(next)}
+      />
     ) : null;
 
   return (
@@ -1016,6 +1017,7 @@ export function ConversationView({
               responding: lastRespondingAgentIsRunning,
             } : undefined}
             insertTextRequest={mentionInsertRequest}
+            leadingControls={providerPermissionControl}
             controls={runtimeControls}
             disabled={busy}
             running={operationRunning}

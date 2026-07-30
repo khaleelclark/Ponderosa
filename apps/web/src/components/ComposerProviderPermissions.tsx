@@ -41,11 +41,13 @@ export function ComposerProviderPermissions({
   mode,
   pending,
   error,
+  scopeDescription = "Applies to every Agent and subagent in this Chat.",
   onChange,
 }: {
   mode: ProviderPermissionMode;
   pending?: boolean;
   error?: string;
+  scopeDescription?: string;
   onChange(mode: ProviderPermissionMode): void;
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -111,7 +113,7 @@ export function ComposerProviderPermissions({
           <Box sx={{ px: 1.25, pt: 0.75, pb: 0.5 }}>
             <Typography fontWeight={800}>Provider permissions</Typography>
             <Typography variant="caption" color="text.secondary">
-              Applies to every Agent and subagent in this Chat.
+              {scopeDescription}
             </Typography>
           </Box>
           <MenuList disablePadding aria-label="Provider permission settings">
