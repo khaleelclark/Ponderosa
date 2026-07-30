@@ -134,6 +134,7 @@ export class AgentProjectionRebuilder {
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,
               defaultEffort: m.defaultEffort ?? null,
+              providerPermissionMode: m.providerPermissionMode ?? "ask",
               createdAt: m.createdAt,
               updatedAt: m.updatedAt,
               archived: m.archived ? 1 : 0,

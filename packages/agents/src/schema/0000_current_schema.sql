@@ -184,6 +184,7 @@ CREATE TABLE continuation_handoffs (
 CREATE TABLE conversations (
   id TEXT PRIMARY KEY, project_id TEXT NOT NULL, title TEXT NOT NULL,
   default_engine TEXT, default_model TEXT, default_effort TEXT,
+  provider_permission_mode TEXT NOT NULL DEFAULT 'ask',
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   archived INTEGER NOT NULL DEFAULT 0
 );

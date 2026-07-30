@@ -330,7 +330,13 @@ export function startProviderRunExecution(
                 return { action: "cancel" };
               }
             }
-            if (runtimeElicitations.allowsForRun(currentRun.runId, request)) {
+            const conversationAutoApproves =
+              Boolean(currentRun.conversationId) &&
+              store.getConversation(currentRun.conversationId!)
+                ?.providerPermissionMode === "auto_confirmations" &&
+              runtimeElicitations.canRememberForRun(request);
+            if (conversationAutoApproves ||
+                runtimeElicitations.allowsForRun(currentRun.runId, request)) {
               return { action: "accept", content: {} };
             }
             const rememberableConfirmation = runtimeElicitations.canRememberForRun(request);
@@ -385,6 +391,23 @@ export function startProviderRunExecution(
               return { action: "cancel" };
             }
             const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
+            // Close the tiny race where the Chat policy changes after the
+            // initial check but before this provider request enters the broker.
+            if (rememberableConfirmation &&
+                currentRun.conversationId &&
+                store.getConversation(currentRun.conversationId)
+                  ?.providerPermissionMode === "auto_confirmations" &&
+                runtimeElicitations.respond(decision.id, {
+                  action: "accept",
+                  content: {},
+                })) {
+              workspace.resolveDecision(decision.id, {
+                text: "Allowed automatically by this Chat’s provider permissions.",
+                respondedAt: new Date().toISOString(),
+              });
+              publishWorkspaceSince(cursor);
+              return waiting;
+            }
             workspace.createNotification({
               projectId: decision.projectId,
               conversationId: decision.conversationId,

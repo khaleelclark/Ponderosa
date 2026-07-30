@@ -456,16 +456,21 @@ function MainConversationTimeline({
         if (entry.kind === "decision") return <Box key={entry.id} sx={{ py: 1 }}>
           <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
         </Box>;
-        if (entry.kind === "decision-response") return <ChatMessageFrame
+        if (entry.kind === "decision-response") {
+          const automatic = entry.choice.startsWith("Allowed automatically");
+          return <ChatMessageFrame
           key={entry.id}
           message={{
             id: entry.id,
             author: { kind: "operator", profile: operatorProfile },
             createdAt: entry.at,
-            ariaLabel: `You chose ${entry.choice}`,
-            body: <Typography variant="body2">You chose {entry.choice}.</Typography>,
+            ariaLabel: automatic ? entry.choice : `You chose ${entry.choice}`,
+            body: <Typography variant="body2">
+              {automatic ? entry.choice : `You chose ${entry.choice}.`}
+            </Typography>,
           }}
-        />;
+          />;
+        }
         const message = entry.message;
         return <ConversationMessage
           key={entry.id}

@@ -68,7 +68,8 @@ type ApplicationRoutesContext =
   Omit<Parameters<typeof registerProjectDeletionRoutes>[1],
     "logError" | "projectDeletionCleanupFaults"> &
   Omit<Parameters<typeof registerConversationRoutes>[1],
-    "hasActiveRun" | "handleAgentConversationRemoval" | "refreshTriggers"> &
+    "hasActiveRun" | "handleAgentConversationRemoval" |
+    "applyProviderPermissionMode" | "refreshTriggers"> &
   Omit<Parameters<typeof registerConversationDeliveryRoutes>[1],
     "projectDeletionInProgress" | "assetMetadata"> &
   Parameters<typeof registerQueuedMessageRoutes>[1] &
@@ -355,6 +356,35 @@ registerConversationRoutes(app, {
   hasActiveRun: agentId => activeRuns.has(agentId),
   handleAgentConversationRemoval: (agentId, conversationId) =>
     coordinationV3.handleAgentConversationRemoval(agentId, conversationId),
+  applyProviderPermissionMode: (conversation) => {
+    if (conversation.providerPermissionMode !== "auto_confirmations") return;
+    const cursor = workspace.cursor();
+    const affectedAgentIds = new Set<string>();
+    const respondedAt = new Date().toISOString();
+    for (const pending of workspace.listDecisions({
+      conversationId: conversation.id,
+      status: "pending",
+    })) {
+      if (!pending.runtimeAction) continue;
+      const liveRequest = runtimeElicitations.action(pending.id);
+      if (!liveRequest || !runtimeElicitations.canRememberForRun(liveRequest)) continue;
+      if (!runtimeElicitations.respond(pending.id, { action: "accept", content: {} })) continue;
+      const resolved = workspace.resolveDecision(pending.id, {
+        text: "Allowed automatically by this Chat’s provider permissions.",
+        respondedAt,
+      });
+      if (!resolved) continue;
+      const notification = workspace.listNotifications().find((item) =>
+        item.dedupeKey === `decision:${pending.id}` &&
+        (item.status ?? "open") === "open");
+      if (notification) workspace.setNotificationStatus(notification.id, "resolved");
+      affectedAgentIds.add(pending.agentId);
+    }
+    if (affectedAgentIds.size === 0) return;
+    publishWorkspaceSince(cursor);
+    for (const agentId of affectedAgentIds) publishMessageDeliveryChanged(agentId);
+    notifyScheduler();
+  },
   refreshTriggers: () => triggerSources.refresh(),
   draftAttachmentSurfaceDir,
 });

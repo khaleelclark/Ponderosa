@@ -16,6 +16,8 @@ import type { DecisionDto } from "./workspace.js";
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
+export type ProviderPermissionMode = "ask" | "auto_confirmations";
+
 /** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
   id: string;
@@ -24,6 +26,8 @@ export interface ConversationDto {
   defaultEngine?: EngineId;
   defaultModel?: string;
   defaultEffort?: string;
+  /** Provider confirmation policy inherited by every Agent Run in this Chat. */
+  providerPermissionMode: ProviderPermissionMode;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -45,6 +49,7 @@ export interface UpdateConversationRequest {
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
   defaultEffort?: string | null;
+  providerPermissionMode?: ProviderPermissionMode;
   archived?: boolean;
 }
 

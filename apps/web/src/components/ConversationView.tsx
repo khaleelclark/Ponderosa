@@ -18,6 +18,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
+  ProviderPermissionMode,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -45,6 +46,7 @@ import { QueuedMessageTray } from "./chat/QueuedMessageTray";
 import { ChatSurface } from "./chat/ChatSurface";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
+import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 import { useMobileComposerAutoHide } from "../mobileChat";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { AttentionSurface } from "./AttentionSurface";
@@ -319,6 +321,24 @@ export function ConversationView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.conversations.all,
+      });
+    },
+  });
+  const persistProviderPermissions = useMutation({
+    mutationFn: (providerPermissionMode: ProviderPermissionMode) =>
+      api.updateConversation(conversationId, { providerPermissionMode }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(conversationId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.all,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.all,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.decisions.all,
       });
     },
   });
@@ -610,7 +630,16 @@ export function ConversationView({
 
   const runtimeControls =
     activeView === "main" ? (
-      <ComposerRuntimeSelector
+      <Stack direction="row" spacing={0.25} sx={{ alignItems: "center" }}>
+        <ComposerProviderPermissions
+          mode={conversation.providerPermissionMode ?? "ask"}
+          pending={persistProviderPermissions.isPending}
+          error={persistProviderPermissions.error instanceof Error
+            ? persistProviderPermissions.error.message
+            : undefined}
+          onChange={next => persistProviderPermissions.mutate(next)}
+        />
+        <ComposerRuntimeSelector
         engine={engine}
         engines={engines.map(option => ({
           id: option.id,
@@ -663,7 +692,8 @@ export function ConversationView({
         onSpeedChange={next => {
           selectedRuntime.selectSpeed(next);
         }}
-      />
+        />
+      </Stack>
     ) : null;
 
   return (

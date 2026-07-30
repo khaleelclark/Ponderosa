@@ -131,6 +131,7 @@ export const conversations = sqliteTable("conversations", {
   defaultEngine: text("default_engine"),
   defaultModel: text("default_model"),
   defaultEffort: text("default_effort"),
+  providerPermissionMode: text("provider_permission_mode").notNull().default("ask"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
   archived: integer("archived").notNull().default(0),

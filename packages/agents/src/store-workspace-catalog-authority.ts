@@ -77,6 +77,7 @@ export class AgentWorkspaceCatalogAuthority {
       id: conversationId, projectId: id, title: "New Chat", defaultEngine,
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
+      providerPermissionMode: "ask",
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -89,7 +90,7 @@ export class AgentWorkspaceCatalogAuthority {
       renameSync(stagingRoot, projectDir(this.dataDir, id));
       this.db.transaction((tx) => {
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, providerPermissionMode: "ask", createdAt: now, updatedAt: now, archived: 0 }).run();
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
@@ -222,6 +223,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
+      providerPermissionMode: "ask",
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -237,6 +239,7 @@ export class AgentWorkspaceCatalogAuthority {
         defaultEngine: input.defaultEngine ?? project.defaultEngine,
         defaultModel: input.defaultModel ?? null,
         defaultEffort: input.defaultEffort ?? null,
+        providerPermissionMode: "ask",
         createdAt: now,
         updatedAt: now,
         archived: 0,
@@ -291,6 +294,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: patch.defaultEngine === undefined ? row.defaultEngine : patch.defaultEngine,
       defaultModel: patch.defaultModel === undefined ? row.defaultModel : patch.defaultModel,
       defaultEffort: patch.defaultEffort === undefined ? row.defaultEffort : patch.defaultEffort,
+      providerPermissionMode: patch.providerPermissionMode ?? row.providerPermissionMode,
       archived: patch.archived ?? row.archived === 1,
     };
     this.db
@@ -300,6 +304,7 @@ export class AgentWorkspaceCatalogAuthority {
         defaultEngine: next.defaultEngine,
         defaultModel: next.defaultModel,
         defaultEffort: next.defaultEffort,
+        providerPermissionMode: next.providerPermissionMode,
         archived: next.archived ? 1 : 0,
         updatedAt: now,
       })
@@ -312,6 +317,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: next.defaultEngine ?? undefined,
       defaultModel: next.defaultModel ?? undefined,
       defaultEffort: next.defaultEffort ?? undefined,
+      providerPermissionMode: next.providerPermissionMode,
       updatedAt: now,
     });
     if (next.archived !== (row.archived === 1)) this.refreshAllChatFeedProject(row.projectId);
@@ -348,6 +354,9 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: row.defaultEngine ?? undefined,
       defaultModel: row.defaultModel ?? undefined,
       defaultEffort: row.defaultEffort ?? undefined,
+      providerPermissionMode: row.providerPermissionMode === "auto_confirmations"
+        ? "auto_confirmations"
+        : "ask",
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,

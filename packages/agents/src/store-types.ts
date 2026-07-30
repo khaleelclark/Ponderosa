@@ -5,6 +5,7 @@ import type {
   CommunicationAudience,
   ConversationChannel,
   ImageAttachmentDto,
+  ProviderPermissionMode,
 } from "@ponderosa/core";
 
 export interface ContextReadBoundary {
@@ -117,6 +118,7 @@ export interface ConversationJson {
   defaultEngine?: string;
   defaultModel?: string;
   defaultEffort?: string;
+  providerPermissionMode?: ProviderPermissionMode;
   createdAt: string;
   updatedAt: string;
   archived: boolean;

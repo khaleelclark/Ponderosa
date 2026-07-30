@@ -247,6 +247,39 @@ function createCollaborationChatInvalidator(
   };
 }
 
+/** Decision events share the notification envelope. Reconcile only the
+ * affected canonical Chat timeline and coalesce fan-out Decisions. */
+function createDecisionConversationInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 150,
+): { schedule(conversationId: string): void; flush(): void; dispose(): void } {
+  const conversationIds = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.decisions.all });
+    for (const conversationId of conversationIds) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(conversationId),
+      });
+    }
+    conversationIds.clear();
+  };
+  return {
+    schedule(conversationId) {
+      conversationIds.add(conversationId);
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      conversationIds.clear();
+    },
+  };
+}
+
 /** One authoritative live stream invalidates only caches affected by each event. */
 export function useWorkspaceStream(): void {
   const queryClient = useQueryClient();
@@ -258,12 +291,15 @@ export function useWorkspaceStream(): void {
     const agentDetailInvalidator = createAgentDetailInvalidator(queryClient);
     const agentStateInvalidator = createAgentStateInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
+    const decisionConversationInvalidator =
+      createDecisionConversationInvalidator(queryClient);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
+      decisionConversationInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
@@ -382,6 +418,9 @@ export function useWorkspaceStream(): void {
       }
       else if (event.type === "notification_changed") {
         void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
+        if (event.conversationId) {
+          decisionConversationInvalidator.schedule(event.conversationId);
+        }
         agentWorkInvalidator.schedule();
       }
     };
@@ -438,6 +477,7 @@ export function useWorkspaceStream(): void {
       agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
+      decisionConversationInvalidator.dispose();
     };
   }, [queryClient]);
 }
