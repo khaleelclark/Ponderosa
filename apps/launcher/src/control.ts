@@ -399,7 +399,7 @@ export async function requestBrowserBootstrap(
   if (typeof body.token !== "string" || body.token === "") {
     throw new Error("Ponderosa returned an invalid browser bootstrap.");
   }
-  const next = destination === "/settings/engine" ? destination : "/";
+  const next = destination === "/engine" ? destination : "/";
   await platform.openBrowser(
     `${baseUrl(state)}/__ponderosa_bootstrap?next=${encodeURIComponent(next)}#${encodeURIComponent(body.token)}`,
   );

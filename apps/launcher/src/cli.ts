@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { currentPonderosaStatus, startPonderosa, stopPonderosa } from "./control.js";
 import { writeDiagnosticBundle } from "./diagnostics.js";
 import { runDoctor } from "./doctor.js";
+import { supervisePonderosaEngine } from "./engine-supervisor.js";
 import { readBuildManifest } from "./manifest.js";
 import { ensureDataLayout, readLauncherState, resolveLauncherPaths } from "./paths.js";
 import { hostPlatformAdapter } from "./platform.js";
@@ -27,7 +28,7 @@ Usage:
 
 Commands:
   open          Start Ponderosa if necessary and open it in the default browser
-  engine        Start Ponderosa if necessary and open Engine status and logs
+  engine        Run the persistent Ponderosa Engine desktop supervisor
   start         Start Ponderosa without opening a browser
   stop          Gracefully stop Ponderosa and its provider processes
   restart       Stop, start, and open Ponderosa
@@ -205,7 +206,7 @@ async function main(argv: string[]): Promise<void> {
       (parsed.command === "open" || parsed.command === "engine") &&
       parsed.openBrowser,
     ...(parsed.command === "engine"
-      ? { browserPath: "/settings/engine" }
+      ? { browserPath: "/engine" }
       : {}),
   });
   if (parsed.command === "start" && parsed.openBrowser) {
@@ -213,6 +214,9 @@ async function main(argv: string[]): Promise<void> {
     process.stdout.write(`Ponderosa started at http://${state.host}:${state.port}\n`);
   } else {
     process.stdout.write(`Ponderosa is available at http://${state.host}:${state.port}\n`);
+  }
+  if (parsed.command === "engine") {
+    await supervisePonderosaEngine(paths);
   }
 }
 

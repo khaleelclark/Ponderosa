@@ -80,6 +80,15 @@ async function readJsonEventually(pathname, timeoutMs = 15_000) {
   throw lastError ?? new Error(`Timed out reading ${pathname}`);
 }
 
+async function waitForPathRemoval(pathname, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!existsSync(pathname)) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for ${pathname} to be removed`);
+}
+
 async function fetchEventually(url, init = {}, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -144,6 +153,7 @@ assert(canonicalPath(expectedLauncherStateLocation.installRoot) === installRoot,
 const nodeExecutable = canonicalPath(launcherPaths.nodeExecutable);
 const launcher = canonicalPath(path.join(installedLauncherDist, "cli.js"));
 const statePath = canonicalPath(launcherPaths.statePath);
+const engineSupervisorPath = canonicalPath(launcherPaths.engineSupervisorPath);
 const guiEnvironment = Object.fromEntries(Object.entries({
   HOME: process.env.HOME,
   USER: process.env.USER,
@@ -193,7 +203,6 @@ async function launchFromApplication(port) {
   launchAttempted = true;
   run("open", [
     "-n",
-    "-W",
     application,
     "--args",
     "--data-dir", dataDir,
@@ -241,12 +250,21 @@ async function cleanupGuiLaunch(port) {
         lastStateError = error;
       }
     }
+    if (existsSync(engineSupervisorPath)) {
+      try {
+        const supervisor = JSON.parse(readFileSync(engineSupervisorPath, "utf8"));
+        if (Number.isSafeInteger(supervisor.pid)) observedPids.add(supervisor.pid);
+      } catch (error) {
+        lastStateError = error;
+      }
+    }
     // Attempt the authoritative launcher stop even before state is observed:
     // LaunchServices can return or fail while the packaged wrapper is still
     // completing its state publication.
     launcherCall("stop", [], true);
     const clean = (
       !existsSync(statePath) &&
+      !existsSync(engineSupervisorPath) &&
       [...observedPids].every((pid) => !processIsAlive(pid)) &&
       await portIsAvailable(port)
     );
@@ -314,6 +332,19 @@ await seedLegacyPwaProfile(port, persistentProfile, chromiumExecutable);
 let primaryError;
 try {
   const firstState = await launchFromApplication(port);
+  const firstSupervisor = await readJsonEventually(engineSupervisorPath);
+  assert(Number.isSafeInteger(firstSupervisor.pid) && firstSupervisor.pid > 0,
+    "Ponderosa Engine did not publish its persistent desktop supervisor.");
+  assert(firstSupervisor.pid !== firstState.pid,
+    "Ponderosa Engine supervisor was incorrectly conflated with the detached server.");
+  assert(processIsAlive(firstSupervisor.pid),
+    "Ponderosa Engine desktop supervisor exited while its server remained healthy.");
+  observedPids.add(firstSupervisor.pid);
+  checks.push({
+    id: "macos-engine-supervisor",
+    status: "pass",
+    detail: "desktop Engine process remained alive independently of its detached server",
+  });
   const baseUrl = `http://127.0.0.1:${firstState.port}`;
   const persistentBootstrapToken = await browserBootstrapToken(firstState);
   const pwaUpgrade = await qualifyPersistentPwaUpgrade({
@@ -437,15 +468,27 @@ try {
   launcherCall("stop");
   started = false;
   assert(!existsSync(statePath), "GUI launcher stop left instance state behind.");
+  await waitForPathRemoval(engineSupervisorPath);
+  assert(!processIsAlive(firstSupervisor.pid),
+    "Ponderosa Engine desktop supervisor remained alive after explicit stop.");
   const secondState = await launchFromApplication(port);
   assert(secondState.pid !== firstState.pid, "GUI reopen reused the stopped daemon pid.");
-  launcherCall("stop");
+  const secondSupervisor = await readJsonEventually(engineSupervisorPath);
+  assert(processIsAlive(secondSupervisor.pid),
+    "Reopened Ponderosa Engine did not retain a desktop supervisor.");
+  observedPids.add(secondSupervisor.pid);
+  process.kill(secondSupervisor.pid, "SIGTERM");
+  await waitForPathRemoval(statePath, 35_000);
+  await waitForPathRemoval(engineSupervisorPath);
   started = false;
-  assert(!existsSync(statePath), "Second GUI launcher stop left instance state behind.");
+  assert(!processIsAlive(secondState.pid),
+    "Quitting Ponderosa Engine left its detached server alive.");
+  assert(!processIsAlive(secondSupervisor.pid),
+    "Reopened Ponderosa Engine remained alive after desktop Quit.");
   checks.push({
     id: "macos-gui-close-reopen",
     status: "pass",
-    detail: "normal packaged-app launch, stop, reopen, and observed stop all passed",
+    detail: "normal packaged-app launch, explicit stop, reopen, and desktop Quit all passed",
   });
 
   mkdirSync(path.dirname(reportPath), { recursive: true });

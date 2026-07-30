@@ -325,7 +325,7 @@ app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
 const status=document.getElementById("status");
 const token=decodeURIComponent(location.hash.slice(1));
 const requested=new URLSearchParams(location.search).get("next");
-const destination=requested==="/settings/engine"?requested:"/";
+const destination=requested==="/engine"?requested:"/";
 history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
 if(!token){location.replace(destination);return}
 try{

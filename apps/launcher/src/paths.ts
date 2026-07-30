@@ -48,6 +48,7 @@ export function resolveLauncherPaths(input: {
     configPath: path.join(configDir, "launcher.json"),
     statePath: path.join(stateDir, "instance.json"),
     operationLockPath: path.join(stateDir, "operation.lock"),
+    engineSupervisorPath: path.join(stateDir, "engine-supervisor.json"),
     stdoutLogPath: path.join(logsDir, "server.log"),
     stderrLogPath: path.join(logsDir, "server-error.log"),
   };

@@ -15,7 +15,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
@@ -36,11 +36,7 @@ function formatUptime(seconds: number): string {
   ].filter(Boolean).join(" ");
 }
 
-export function EngineSettingsSection({
-  onOpenPonderosa,
-}: {
-  onOpenPonderosa(): void;
-}): JSX.Element {
+function EngineControlPanel(): JSX.Element {
   const [stream, setStream] = useState<"server" | "error">("server");
   const [stopping, setStopping] = useState(false);
   const status = useQuery({
@@ -97,9 +93,12 @@ export function EngineSettingsSection({
           </Box>
           <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap" }}>
             <Button
+              component="a"
+              href="/"
+              target="_blank"
+              rel="noopener noreferrer"
               variant="contained"
               startIcon={<HomeOutlinedIcon />}
-              onClick={onOpenPonderosa}
             >
               Open Ponderosa
             </Button>
@@ -246,5 +245,47 @@ export function EngineSettingsSection({
         )}
       </Paper>
     </Stack>
+  );
+}
+
+export function PonderosaEngineView(): JSX.Element {
+  useEffect(() => {
+    const previous = document.title;
+    document.title = "Ponderosa Engine";
+    return () => {
+      document.title = previous;
+    };
+  }, []);
+
+  return (
+    <Box
+      className="ponderosa-scroll"
+      sx={{
+        minHeight: "100vh",
+        overflow: "auto",
+        bgcolor: "background.default",
+      }}
+    >
+      <Box
+        component="header"
+        sx={{
+          px: { xs: 2, md: 4 },
+          py: 2.5,
+          borderBottom: 1,
+          borderColor: "divider",
+          bgcolor: "var(--ponderosa-topbar)",
+        }}
+      >
+        <Typography component="h1" variant="h5" fontWeight={850}>
+          Ponderosa Engine
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Local server status, lifecycle, version, and logs
+        </Typography>
+      </Box>
+      <Box sx={{ width: "min(100%, 1040px)", mx: "auto", p: { xs: 2, md: 4 } }}>
+        <EngineControlPanel />
+      </Box>
+    </Box>
   );
 }
