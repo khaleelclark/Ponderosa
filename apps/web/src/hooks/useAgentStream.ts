@@ -3,8 +3,10 @@ import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFil
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
 export interface ExecutionItem {
@@ -47,17 +49,96 @@ function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event
   return current || event.type === "session" || event.type === "work_item_update" || executionTypes.has(event.type);
 }
 
+const AGENT_CURSOR_STORAGE_KEY = "ponderosa.agent.stream-cursors.v1";
 const MAX_CACHED_AGENT_CURSORS = 100;
-const streamCursors = new Map<string, { lastSeq?: number; instanceId?: string }>();
+const MAX_AGENT_CURSOR_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const CURSOR_PERSIST_DEBOUNCE_MS = 250;
+const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
+const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
 
-function rememberCursor(agentId: string, cursor: { lastSeq?: number; instanceId?: string }): void {
+interface AgentStreamCursor {
+  lastSeq?: number;
+  instanceId?: string;
+  updatedAt: number;
+}
+
+function validStoredCursor(value: unknown, now: number): value is [string, AgentStreamCursor] {
+  if (!Array.isArray(value) || value.length !== 2) return false;
+  const [agentId, cursor] = value as [unknown, unknown];
+  if (typeof agentId !== "string" || agentId.length === 0 || agentId.length > 256) return false;
+  if (!cursor || typeof cursor !== "object") return false;
+  const stored = cursor as Partial<AgentStreamCursor>;
+  if (
+    stored.lastSeq !== undefined
+    && (!Number.isSafeInteger(stored.lastSeq) || (stored.lastSeq ?? -1) < 0)
+  ) return false;
+  if (
+    stored.instanceId !== undefined
+    && (typeof stored.instanceId !== "string" || stored.instanceId.length === 0 || stored.instanceId.length > 256)
+  ) return false;
+  return typeof stored.updatedAt === "number"
+    && Number.isFinite(stored.updatedAt)
+    && stored.updatedAt <= now + 60_000
+    && now - stored.updatedAt <= MAX_AGENT_CURSOR_AGE_MS;
+}
+
+function loadStoredCursors(): Map<string, AgentStreamCursor> {
+  if (typeof window === "undefined") return new Map();
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(AGENT_CURSOR_STORAGE_KEY) ?? "[]") as unknown;
+    if (!Array.isArray(parsed)) throw new Error("Stored Agent cursors are not an array");
+    const now = Date.now();
+    return new Map(parsed.filter((entry) => validStoredCursor(entry, now)).slice(-MAX_CACHED_AGENT_CURSORS));
+  } catch {
+    window.sessionStorage.removeItem(AGENT_CURSOR_STORAGE_KEY);
+    return new Map();
+  }
+}
+
+const streamCursors = loadStoredCursors();
+let cursorPersistTimer: ReturnType<typeof setTimeout> | undefined;
+let cursorPersistencePending = false;
+
+function flushPendingCursors(): void {
+  if (typeof window === "undefined") return;
+  if (cursorPersistTimer) clearTimeout(cursorPersistTimer);
+  cursorPersistTimer = undefined;
+  if (!cursorPersistencePending) return;
+  cursorPersistencePending = false;
+  try {
+    window.sessionStorage.setItem(
+      AGENT_CURSOR_STORAGE_KEY,
+      JSON.stringify([...streamCursors.entries()]),
+    );
+  } catch {
+    // Cursor persistence is an optimization. A storage denial must not stop live updates.
+  }
+}
+
+function scheduleCursorPersistence(): void {
+  cursorPersistencePending = true;
+  cursorPersistTimer ??= setTimeout(
+    flushPendingCursors,
+    CURSOR_PERSIST_DEBOUNCE_MS,
+  );
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushPendingCursors);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPendingCursors();
+  });
+}
+
+function rememberCursor(agentId: string, cursor: AgentStreamCursor): void {
   streamCursors.delete(agentId);
-  streamCursors.set(agentId, cursor);
+  streamCursors.set(agentId, { ...cursor, updatedAt: Date.now() });
   while (streamCursors.size > MAX_CACHED_AGENT_CURSORS) {
     const oldest = streamCursors.keys().next().value as string | undefined;
     if (!oldest) break;
     streamCursors.delete(oldest);
   }
+  scheduleCursorPersistence();
 }
 
 function projectedArtifactId(agentId: string, seq: number): string {
@@ -357,10 +438,15 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
   return detail;
 }
 
-export function useAgentStream(agentId: string | undefined): StreamState {
+export function useAgentStream(
+  agentId: string | undefined,
+  knownProjectId?: string,
+): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
   const lastSeqRef = useRef<number | undefined>(undefined);
+  const projectIdRef = useRef(knownProjectId);
+  const retryProjectReconciliationRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     if (!agentId) {
@@ -369,83 +455,209 @@ export function useAgentStream(agentId: string | undefined): StreamState {
       return undefined;
     }
 
-    const cursor = streamCursors.get(agentId) ?? {};
+    const cursor: AgentStreamCursor = streamCursors.get(agentId) ?? { updatedAt: Date.now() };
     rememberCursor(agentId, cursor);
     lastSeqRef.current = cursor.lastSeq;
     setState({ ...initialStreamState, lastSeq: cursor.lastSeq });
 
-    const invalidateAgent = () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });
+    let stopped = false;
+    let subscription: StreamSubscription | undefined;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
+    let unregisterLiveStream: (() => void) | undefined;
+    let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconcileDetail = false;
+    let reconcileRoster = false;
+    let reconcileHealth = false;
+    let reconcileUsage = false;
+
+    const projectIdFromCache = (): string | undefined => {
+      if (projectIdRef.current) return projectIdRef.current;
+      for (const [, detail] of queryClient.getQueriesData<AgentDetailDto>({
+        queryKey: queryKeys.agents.detailPrefix(agentId),
+      })) {
+        if (detail?.agent.projectId) return detail.agent.projectId;
+      }
+      return undefined;
     };
 
-    const subscription = api.subscribeAgent(agentId, lastSeqRef.current, {
-      onOpen() {
-        setState((current) => ({ ...current, connected: true }));
-      },
-      onError() {
-        setState((current) => ({ ...current, connected: false }));
-      },
-      onStatus(status) {
-        const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
-        if (status.reset || changedInstance || (lastSeqRef.current ?? 0) > status.cursor) {
-          lastSeqRef.current = 0;
-          cursor.lastSeq = 0;
-          setState({ ...initialStreamState, connected: true, lastSeq: 0 });
-          invalidateAgent();
-        }
-        cursor.instanceId = status.instanceId;
-        rememberCursor(agentId, cursor);
-      },
-      onEvent(envelope) {
-        const reconciliation = reconcileCursor(
-          lastSeqRef.current ?? 0,
-          envelope,
-          item => item.seq,
-        );
-        if (reconciliation.duplicate) return;
-        if (reconciliation.gap) invalidateAgent();
-        lastSeqRef.current = reconciliation.cursor;
-        cursor.lastSeq = reconciliation.cursor;
-        rememberCursor(agentId, cursor);
+    const flushReconciliation = () => {
+      reconcileTimer = undefined;
+      const projectId = projectIdFromCache();
+      if (reconcileDetail) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+        reconcileDetail = false;
+      }
+      if (reconcileRoster && projectId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+        reconcileRoster = false;
+      }
+      if (reconcileHealth && projectId) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+        reconcileHealth = false;
+      }
+      if (reconcileUsage) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.agent(agentId) });
+        reconcileUsage = false;
+      }
+    };
 
-        setState((current) => ({
-          ...current,
-          connected: true,
-          running: runningAfterAgentEvent(current.running, envelope.event),
-          lastSeq: envelope.seq,
-          timeline: executionTypes.has(envelope.event.type)
-            ? [
-                ...current.timeline,
-                {
-                  id: `event-${envelope.seq}`,
-                  seq: envelope.seq,
-                  ts: envelope.ts,
-                  event: envelope.event as ExecutionItem["event"],
-                },
-              ]
-            : current.timeline,
-        }));
+    const scheduleReconciliation = (options: {
+      detail?: boolean;
+      roster?: boolean;
+      health?: boolean;
+      usage?: boolean;
+    }, restartWindow = false) => {
+      reconcileDetail ||= options.detail ?? false;
+      reconcileRoster ||= options.roster ?? false;
+      reconcileHealth ||= options.health ?? false;
+      reconcileUsage ||= options.usage ?? false;
+      if (restartWindow && reconcileTimer) {
+        clearTimeout(reconcileTimer);
+        reconcileTimer = undefined;
+      }
+      // Live lifecycle bursts use one fixed window. Replay restarts the window
+      // without fetching so reconciliation happens once after catch-up is quiet.
+      reconcileTimer ??= setTimeout(flushReconciliation, 250);
+    };
 
-        queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
-          detail ? updateAgentDetail(agentId, envelope, detail) : detail,
-        );
+    retryProjectReconciliationRef.current = () => {
+      if (
+        stopped
+        || reconcileTimer
+        || (!reconcileRoster && !reconcileHealth)
+        || !projectIdFromCache()
+      ) return;
+      reconcileTimer = setTimeout(flushReconciliation, 0);
+    };
 
-        if (envelope.event.type === "turn_done") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
-          void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.all });
-        }
-        if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "turn_done" || envelope.event.type === "error") {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.agents.healthAll });
-        }
-      },
-    });
+    const markStreamDisconnected = () => {
+      unregisterLiveStream?.();
+      unregisterLiveStream = undefined;
+    };
 
-    return () => subscription.close();
+    const connect = (lastSeenSeq: number | undefined) => {
+      if (stopped) return;
+      const nextSubscription = api.subscribeAgent(agentId, lastSeenSeq, {
+        onOpen() {
+          markStreamDisconnected();
+          unregisterLiveStream = registerLiveAgentStream(agentId);
+          setState((current) => ({ ...current, connected: true }));
+        },
+        onError() {
+          markStreamDisconnected();
+          setState((current) => ({ ...current, connected: false }));
+        },
+        onStatus(status) {
+          const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
+          if (changedInstance) {
+            lastSeqRef.current = 0;
+            cursor.lastSeq = 0;
+            cursor.instanceId = status.instanceId;
+            rememberCursor(agentId, cursor);
+            setState({ ...initialStreamState, connected: true, lastSeq: 0 });
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+            markStreamDisconnected();
+            nextSubscription.close();
+            if (!reconnectTimer) {
+              const delay = instanceMismatchDelay;
+              instanceMismatchDelay = Math.min(
+                instanceMismatchDelay * 2,
+                INSTANCE_MISMATCH_MAX_DELAY_MS,
+              );
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = undefined;
+                connect(0);
+              }, delay);
+            }
+            return;
+          }
+          instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
+          if (status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
+            lastSeqRef.current = 0;
+            cursor.lastSeq = 0;
+            setState({ ...initialStreamState, connected: true, lastSeq: 0 });
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+          }
+          cursor.instanceId = status.instanceId;
+          rememberCursor(agentId, cursor);
+        },
+        onEvent(envelope) {
+          const reconciliation = reconcileCursor(
+            lastSeqRef.current ?? 0,
+            envelope,
+            item => item.seq,
+          );
+          if (reconciliation.duplicate) return;
+          lastSeqRef.current = reconciliation.cursor;
+          cursor.lastSeq = reconciliation.cursor;
+          rememberCursor(agentId, cursor);
+
+          if (reconciliation.gap) {
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+          }
+
+          // Replay advances the durable cursor only. Canonical queries already
+          // contain this history, so replay must not look like fresh live work.
+          // A single reconciliation after replay goes quiet covers events missed
+          // while disconnected without refetching once per historical envelope.
+          if (envelope.replayed) {
+            scheduleReconciliation(
+              { detail: true, roster: true, health: true, usage: true },
+              true,
+            );
+            return;
+          }
+
+          setState((current) => ({
+            ...current,
+            connected: true,
+            running: runningAfterAgentEvent(current.running, envelope.event),
+            lastSeq: envelope.seq,
+            timeline: executionTypes.has(envelope.event.type)
+              ? [
+                  ...current.timeline,
+                  {
+                    id: `event-${envelope.seq}`,
+                    seq: envelope.seq,
+                    ts: envelope.ts,
+                    event: envelope.event as ExecutionItem["event"],
+                  },
+                ]
+              : current.timeline,
+          }));
+
+          queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
+            detail ? updateAgentDetail(agentId, envelope, detail) : detail,
+          );
+
+          if (envelope.event.type === "turn_done") {
+            scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
+          } else if (envelope.event.type === "agent_lifecycle" || envelope.event.type === "error") {
+            scheduleReconciliation({ roster: true, health: true });
+          }
+        },
+      });
+      subscription = nextSubscription;
+    };
+
+    connect(lastSeqRef.current);
+
+    return () => {
+      stopped = true;
+      subscription?.close();
+      markStreamDisconnected();
+      retryProjectReconciliationRef.current = () => undefined;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (reconcileTimer) clearTimeout(reconcileTimer);
+    };
   }, [queryClient, agentId]);
+
+  useEffect(() => {
+    projectIdRef.current = knownProjectId;
+    retryProjectReconciliationRef.current();
+  }, [knownProjectId]);
 
   return useMemo(() => state, [state]);
 }

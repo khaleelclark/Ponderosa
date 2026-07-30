@@ -104,7 +104,7 @@ export function ProviderUsageCard({
       <Stack direction="row" justifyContent="space-between" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} quota</Typography>
+            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} usage</Typography>
             {state.refreshing ? <CircularProgress size={14} aria-label={`Refreshing ${state.displayName} usage`} /> : null}
           </Stack>
           {reading?.accountLabel ? (
@@ -137,7 +137,7 @@ export function ProviderUsageCard({
         <Alert severity="error" sx={{ mt: 1.25 }}>{state.error}</Alert>
       ) : !reading ? (
         <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
-          No quota reading has been fetched yet.
+          No usage reading has been fetched yet.
         </Typography>
       ) : (
         <>
@@ -228,8 +228,8 @@ export function ProviderQuotaIndicator({
       ? `${selected.displayName} · ${Math.round(maximum)}%`
       : selected.refreshing
         ? `${selected.displayName} · loading`
-        : "Quota"
-    : query.isLoading ? "Quota" : "Quota unavailable";
+        : "Usage"
+    : query.isLoading ? "Usage" : "Usage unavailable";
 
   const open = (element: HTMLElement) => {
     setAnchor(element);
@@ -255,7 +255,7 @@ export function ProviderQuotaIndicator({
           variant="outlined"
           label={label}
           icon={constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
-          aria-label={`${label}. Open provider quota`}
+          aria-label={`${label}. Open provider usage`}
           onClick={(event) => open(event.currentTarget)}
           sx={{
             cursor: "pointer",
@@ -275,7 +275,7 @@ export function ProviderQuotaIndicator({
         slotProps={{ paper: { sx: { width: "min(420px, calc(100vw - 24px))", mt: 1 } } }}
       >
         <Box sx={{ p: 1.5 }}>
-          <Typography variant="overline" color="text.secondary">Provider quota</Typography>
+          <Typography variant="overline" color="text.secondary">Provider usage</Typography>
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25 }}>
             {[...authenticated]
               .sort((left, right) =>

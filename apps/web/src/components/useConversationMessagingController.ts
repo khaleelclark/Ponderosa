@@ -67,7 +67,6 @@ export function useConversationMessagingController({
     agentIds: string[];
     state: "starting" | "running";
   }>();
-  const [stoppedNotice, setStoppedNotice] = useState<string>();
   const [stopConfirmation, setStopConfirmation] = useState<{
     targets: { agentId: string; runId: string }[];
     names: string;
@@ -359,9 +358,7 @@ export function useConversationMessagingController({
   );
   const cancelOperationTargets = async (
     targets: { agentId: string; runId: string }[],
-    names: string,
   ) => {
-    setStoppedNotice(`Stopping ${names}. Partial output will remain visible.`);
     const requestId = stopOperationRequestId.current ?? createClientId();
     stopOperationRequestId.current = requestId;
     await Promise.allSettled(
@@ -374,7 +371,6 @@ export function useConversationMessagingController({
     );
     stopOperationRequestId.current = undefined;
     setStopConfirmation(undefined);
-    setStoppedNotice(`Stopped ${names}. Partial output remains visible.`);
     invalidate();
   };
   const stopOperation = async () => {
@@ -388,7 +384,7 @@ export function useConversationMessagingController({
       setStopConfirmation({ targets, names });
       return;
     }
-    await cancelOperationTargets(targets, names);
+    await cancelOperationTargets(targets);
   };
 
   const submit = async (
@@ -471,7 +467,6 @@ export function useConversationMessagingController({
     setStopConfirmation,
     steerQueued,
     stopConfirmation,
-    stoppedNotice,
     stopOperation,
     submit,
   };

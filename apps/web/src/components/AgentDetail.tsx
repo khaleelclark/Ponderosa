@@ -23,6 +23,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { createClientId } from "../clientId";
 import {
   agentStatusColor,
@@ -88,6 +89,7 @@ import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
 
 export function AgentDetail({
   agentId,
+  projectId,
   focusMessageId,
   focusTelemetry,
   technicalFocusId,
@@ -121,7 +123,7 @@ export function AgentDetail({
   onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
   const queryClient = useQueryClient();
-  const agentQuery = useAgent(agentId, 100);
+  const agentQuery = useAgent(agentId);
   const notificationsQuery = useNotifications();
   const [olderMessages, setOlderMessages] = useState<{
     messages: MessageDto[];
@@ -131,7 +133,7 @@ export function AgentDetail({
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();
-  const stream = useAgentStream(agentId);
+  const stream = useAgentStream(agentId, projectId);
   const [tab, setTab] = useState<AgentTab>(() => {
     if (initialView) return initialView === "activity" ? "chat" : initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
@@ -239,7 +241,12 @@ export function AgentDetail({
       if (focusedMessage.current !== `loading:${focusMessageId}`) {
         focusedMessage.current = `loading:${focusMessageId}`;
         void api
-          .getAgent(agentId, 100, undefined, focusMessageId)
+          .getAgent(
+            agentId,
+            AGENT_DETAIL_PAGE_SIZE,
+            undefined,
+            focusMessageId,
+          )
           .then(page => {
             setOlderMessages(current => ({
               messages: uniqueBy(
@@ -313,7 +320,7 @@ export function AgentDetail({
           .getAgentHistory(
             agentId,
             focusTelemetry.stream,
-            100,
+            AGENT_DETAIL_PAGE_SIZE,
             undefined,
             focusTelemetry.id,
           )
@@ -543,14 +550,14 @@ export function AgentDetail({
     try {
       const [messagePage, telemetryPages] = await Promise.all([
         loadMessages
-          ? api.getAgent(agentId, 100, messageCursor)
+          ? api.getAgent(agentId, AGENT_DETAIL_PAGE_SIZE, messageCursor)
           : Promise.resolve(undefined),
         Promise.all(
           telemetryStreams.map(stream =>
             api.getAgentHistory(
               agentId,
               stream,
-              100,
+              AGENT_DETAIL_PAGE_SIZE,
               detail?.telemetryHistory?.[stream]?.cursor,
             ),
           ),
@@ -651,7 +658,7 @@ export function AgentDetail({
           api.getAgentHistory(
             agentId,
             stream,
-            100,
+            AGENT_DETAIL_PAGE_SIZE,
             detail.telemetryHistory?.[stream]?.cursor,
           ),
         ),

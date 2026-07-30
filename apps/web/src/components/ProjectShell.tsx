@@ -268,6 +268,7 @@ export function ProjectShell({
       <AgentDetail
         key={route.agentId}
         agentId={route.agentId}
+        projectId={projectId}
         focusMessageId={route.focusMessageId}
         focusTelemetry={route.focusTelemetry}
         technicalFocusId={route.technicalFocusId}

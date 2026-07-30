@@ -10,6 +10,8 @@ function communicationV3Prompt(): string[] {
     "Your ordinary runtime response is Work log only; use a Ponderosa capability when another participant needs the result.",
     "Common reply: ponderosa_message({text}). Ponderosa inherits an unambiguous incoming audience and stable idempotency.",
     "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or use delegations for fan-out. Ponderosa creates one aggregate Join and wakes you as each new result arrives while preserving the open parent workflow.",
+    "A message, ordinary runtime output, or completed Run does not schedule future work. Never promise a later follow-up unless a capability response in this Run explicitly confirms that it created a durable wake source.",
+    "When no durable wake source was confirmed, finish the work now or state that you cannot self-resume and what the user must do next.",
     "A new Request is ordinary next-Run work and never interrupts an active recipient. Never create another Request just to tell a busy Agent to stop.",
     "To end work you requested, cancel the exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}). To enforceably stop an active descendant Run, use ponderosa_manage stop_agent.",
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",

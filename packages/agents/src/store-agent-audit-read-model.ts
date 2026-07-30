@@ -16,6 +16,7 @@ import type { Db } from "./db.js";
 import { messages } from "./schema.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
+const CHANGED_FILE_DETAIL_LIMIT = 100;
 
 /**
  * Hydrates the Agent detail audit surface from the smaller canonical read
@@ -93,7 +94,12 @@ export class AgentAuditReadModel {
     const activityPage = limit === undefined
       ? undefined
       : this.getActivityPage(id, { limit });
-    const changedFilePage = this.getChangedFilePage(id, { limit: limit ?? 100 });
+    // Changed files are also consumed by Project review, which has no
+    // load-older control. Keep that projection independently bounded instead
+    // of coupling it to the 25-entry Agent-detail history page.
+    const changedFilePage = this.getChangedFilePage(id, {
+      limit: CHANGED_FILE_DETAIL_LIMIT,
+    });
     const runPage = limit === undefined
       ? undefined
       : this.getRunPage(id, { limit });

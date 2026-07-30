@@ -5,6 +5,8 @@
  * refreshes every Project roster, while `queryKeys.agents.project(id)` only
  * refreshes one Project. Components should not spell these arrays themselves.
  */
+import { AGENT_DETAIL_PAGE_SIZE } from "./agentHistoryPagination";
+
 export const queryKeys = {
   health: {
     all: ["health"] as const,
@@ -53,7 +55,8 @@ export const queryKeys = {
     project: (projectId: string | undefined) => ["agents", projectId] as const,
     detailAll: ["agent"] as const,
     detailPrefix: (agentId: string) => ["agent", agentId] as const,
-    detail: (agentId: string | undefined, limit = 100) => ["agent", agentId, limit] as const,
+    detail: (agentId: string | undefined, limit = AGENT_DETAIL_PAGE_SIZE) =>
+      ["agent", agentId, limit] as const,
     healthAll: ["agent-health"] as const,
     health: (projectId: string | undefined) => ["agent-health", projectId] as const,
     presets: (projectId: string | undefined) => ["agent-presets", projectId] as const,

@@ -22,6 +22,7 @@ import type {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
   useEngines,
@@ -221,7 +222,7 @@ export function AllChatView({
   const selectedProjectId = replyTarget?.projectId;
   const selectedAgent = useQuery({
     queryKey: queryKeys.agents.detail(selectedAgentId),
-    queryFn: () => api.getAgent(selectedAgentId!, 100),
+    queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
   const engines = enginesQuery.data ?? [];
@@ -943,7 +944,7 @@ export function AllChatView({
           placeholder={
             replyTarget
               ? `Message ${replyTarget.title} directly`
-              : "Choose an Agent with #, then write a message"
+              : "Select an Agent with #, then write a message"
           }
           insertTextRequest={mentionInsertRequest}
           removeTextRequest={mentionRemoveRequest}

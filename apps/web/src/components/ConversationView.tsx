@@ -426,7 +426,6 @@ export function ConversationView({
     setStopConfirmation,
     steerQueued,
     stopConfirmation,
-    stoppedNotice,
     stopOperation,
     submit,
   } = useConversationMessagingController({
@@ -902,22 +901,6 @@ export function ConversationView({
             }
           />
         ) : null}
-        {activeView === "main" && !agentWorkOpen ? (
-          <Box
-            sx={{
-              position: "absolute",
-              insetInline: 0,
-              bottom: 2,
-              zIndex: 2,
-              pointerEvents: "none",
-            }}
-          >
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-          </Box>
-        ) : null}
       </Box>
 
       <Box
@@ -935,14 +918,27 @@ export function ConversationView({
         }}
         sx={{ bgcolor: "transparent" }}
       >
+        {activeView === "main" ? (
+          <Box
+            sx={{
+              height: 28,
+              px: { xs: 1, sm: 1.5 },
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              overflow: "hidden",
+              pointerEvents: "none",
+            }}
+          >
+            <MasterRespondingIndicator
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+          </Box>
+        ) : null}
         {activeView === "main" && queuedMessageNotice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessageNotice}
-          </Alert>
-        ) : null}
-        {activeView === "main" && stoppedNotice ? (
-          <Alert severity="warning" role="status" sx={{ mx: 1.5, mt: 1 }}>
-            {stoppedNotice}
           </Alert>
         ) : null}
         {sendError ? (
@@ -1024,7 +1020,7 @@ export function ConversationView({
             allowUnmentionedSend={engineReady}
             placeholder={
               engineReady
-                ? "Write a message · # targets Agents · #broadcast shares · @ references files"
+                ? "Write a message…"
                 : "Choose an available Agent with #, or use #broadcast"
             }
             onSend={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1079,9 +1075,7 @@ export function ConversationView({
         onImportClose={() => setImportOpen(false)}
         onImported={agentId => onOpenAgent(agentId)}
         onStopCancel={() => setStopConfirmation(undefined)}
-        onStopConfirm={(targets, names) =>
-          void cancelOperationTargets(targets, names)
-        }
+        onStopConfirm={targets => void cancelOperationTargets(targets)}
         onRenameClose={() => setRenameOpen(false)}
         onRenameValueChange={setRenameValue}
         onRename={() => rename.mutate(renameValue.trim())}

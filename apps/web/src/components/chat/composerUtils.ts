@@ -48,15 +48,9 @@ export function providerSlashSubmission(
   commands: readonly EngineCommand[],
 ): { command: EngineCommand; argumentsText?: string } | { error: string } | undefined {
   const match = /^\/([\p{L}\p{N}_:-]+)(?:\s+([\s\S]*))?$/u.exec(text.trim());
-  if (!match) {
-    return text.trimStart().startsWith("/")
-      ? { error: "This runtime does not advertise that slash command." }
-      : undefined;
-  }
+  if (!match) return undefined;
   const command = commands.find((candidate) => candidate.name === match[1]);
-  if (!command) {
-    return { error: `The active provider does not advertise /${match[1]}.` };
-  }
+  if (!command) return undefined;
   const unavailable = engineCommandDisabledReason(command);
   if (unavailable) return { error: unavailable };
   const argumentsText = match[2]?.trim();

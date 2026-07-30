@@ -243,6 +243,18 @@ export function createPonderosaTheme(mode: ColorMode) {
           },
         },
       },
+      MuiInputLabel: {
+        styleOverrides: {
+          root: {
+            "&.MuiInputLabel-outlined.MuiInputLabel-shrink": {
+              zIndex: 1,
+              marginLeft: -4,
+              paddingInline: 4,
+              backgroundColor: colors.surface,
+            },
+          },
+        },
+      },
       MuiOutlinedInput: {
         styleOverrides: {
           root: {

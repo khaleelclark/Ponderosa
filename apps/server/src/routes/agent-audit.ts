@@ -27,7 +27,7 @@ export function registerAgentAuditRoutes(
     Params: { id: string; stream: AgentTelemetryStream };
     Querystring: { limit?: string; cursor?: string; focusId?: string };
   }>("/api/agents/:id/history/:stream", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const limit = Math.min(500, Math.max(1, Number(request.query.limit ?? 100) || 100));
     const streams = new Set<AgentTelemetryStream>(["runOutput", "activity", "changedFiles", "runs", "workItems", "artifacts"]);
     if (!streams.has(request.params.stream)) return reply.code(404).send({ error: "history stream not found" });
@@ -61,7 +61,7 @@ export function registerAgentAuditRoutes(
     Params: { id: string; seq: string };
     Querystring: { cursor?: string; maxBytes?: string };
   }>("/api/agents/:id/activity/:seq/output", async (request, reply) => {
-    if (!store.getAgentDetail(request.params.id, 1, false)) return reply.code(404).send({ error: "agent not found" });
+    if (!store.getAgent(request.params.id)) return reply.code(404).send({ error: "agent not found" });
     const seq = Number(request.params.seq);
     if (!Number.isSafeInteger(seq) || seq < 1) return reply.code(400).send({ error: "invalid activity sequence" });
     try {

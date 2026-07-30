@@ -476,12 +476,12 @@ export function registerAgentCoordinationRoutes(
       requestDeliveries,
       ...(result.joinId ? {
         executionDirective: join?.wakePolicy === "each_result"
-          ? `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied.`
-          : `${queueDirective} End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition.`,
+          ? `${queueDirective} Durable wake source created. End this turn unless independent work remains. Ponderosa will reactivate you as new results arrive and keep the aggregate Join open until its final condition is satisfied. You may truthfully tell the user that you will resume when those tracked results arrive.`
+          : `${queueDirective} Durable wake source created. End this turn unless independent work remains. Ponderosa will reactivate you when the aggregate Join reaches its final condition. You may truthfully tell the user that you will resume when that tracked result is ready.`,
       } : completionMode === "record" ? {
-        executionDirective: `${queueDirective} The Request is tracked and its result will remain visible, but it will not wake you into another provider Run.`,
+        executionDirective: `${queueDirective} No durable wake source was created. The Request is tracked and its result will remain visible, but it will not wake you into another provider Run. Do not promise the user that you will follow up later based on this Request.`,
       } : completionMode === "callback" ? {
-        executionDirective: `${queueDirective} The Request is tracked without a Join; its terminal result will wake you as an individual callback.`,
+        executionDirective: `${queueDirective} Durable wake source created. The Request is tracked without a Join; its terminal result will wake you as an individual callback. You may truthfully tell the user that you will resume when that tracked result is ready.`,
       } : {}),
     };
   });
