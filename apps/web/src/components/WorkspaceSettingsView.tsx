@@ -699,7 +699,7 @@ function ProviderSettingsSection({
                 />
               </>
             ) : null}
-            {!engineIsAvailable(engine) ? (
+            {engine.enabled !== false && !engineIsAvailable(engine) ? (
               <Alert
                 severity="warning"
                 sx={{ mt: 2 }}

@@ -227,7 +227,7 @@ export default function App({
       window.removeEventListener("focus", recheckUnavailableProviders);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [queryClient]);
+  }, [engines, queryClient]);
   const preferredQuotaProvider = route.kind === "agent"
     ? projectAgentQueries[
         projects.findIndex((project) => project.id === route.projectId)
