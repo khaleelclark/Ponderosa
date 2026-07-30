@@ -3,7 +3,6 @@ import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import KeyIcon from "@mui/icons-material/Key";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import {
   Alert,
   Box,
@@ -20,8 +19,6 @@ import {
   FormControl,
   FormControlLabel,
   InputLabel,
-  IconButton,
-  Menu,
   MenuItem,
   Select,
   Stack,
@@ -153,10 +150,6 @@ export function TriggersPane({
   const [allowanceTrigger, setAllowanceTrigger] = useState<TriggerDefinitionDto>();
   const [rotateTrigger, setRotateTrigger] = useState<TriggerDefinitionDto>();
   const [deleteTrigger, setDeleteTrigger] = useState<TriggerDefinitionDto>();
-  const [triggerMenu, setTriggerMenu] = useState<{
-    anchor: HTMLElement;
-    trigger: TriggerDefinitionDto;
-  }>();
   const [expandedId, setExpandedId] = useState<string>();
   const [name, setName] = useState("");
   const [instructions, setInstructions] = useState("");
@@ -453,17 +446,17 @@ export function TriggersPane({
           <FormControlLabel control={<Switch inputProps={{ "aria-label": `${trigger.enabled ? "Disable" : "Enable"} ${trigger.name}` }} checked={trigger.enabled} disabled={update.isPending} onChange={(_, enabled) => update.mutate({ trigger, enabled })} />} label={trigger.enabled ? "Enabled" : "Disabled"} />
           <Button size="small" aria-expanded={expandedId === trigger.id} onClick={() => setExpandedId(expandedId === trigger.id ? undefined : trigger.id)}>{expandedId === trigger.id ? "Hide Full Details" : "Open Full Details"}</Button>
           <Button size="small" aria-label={`Edit ${trigger.name}`} onClick={() => openEditor(trigger)}>Edit</Button>
+          <Button
+            size="small"
+            color="error"
+            startIcon={<DeleteOutlineIcon />}
+            disabled={remove.isPending}
+            onClick={() => setDeleteTrigger(trigger)}
+          >
+            Delete
+          </Button>
           {trigger.runBudget ? <Button size="small" disabled={allowRuns.isPending} onClick={() => setAllowanceTrigger(trigger)}>Allow More Runs</Button> : null}
           {trigger.sourceKind === "webhook" ? <Button size="small" startIcon={<KeyIcon />} disabled={rotate.isPending} onClick={() => setRotateTrigger(trigger)}>Rotate Secret</Button> : null}
-          <IconButton
-            size="small"
-            aria-label={`Actions for ${trigger.name}`}
-            onClick={event =>
-              setTriggerMenu({ anchor: event.currentTarget, trigger })
-            }
-          >
-            <MoreVertIcon />
-          </IconButton>
         </CardActions>
         <Collapse in={expandedId === trigger.id}>
           <Box sx={{ px: 2, pb: 2 }}>
@@ -481,23 +474,6 @@ export function TriggersPane({
           {deletedTriggerOccurrences.map((occurrence) => <OccurrenceAudit key={occurrence.id} occurrence={occurrence} onOpenAgentWork={onOpenAgentWork} />)}
         </CardContent>
       </Card> : null}
-      <Menu
-        anchorEl={triggerMenu?.anchor}
-        open={Boolean(triggerMenu)}
-        onClose={() => setTriggerMenu(undefined)}
-      >
-        <MenuItem
-          sx={{ color: "error.main" }}
-          disabled={remove.isPending}
-          onClick={() => {
-            setDeleteTrigger(triggerMenu?.trigger);
-            setTriggerMenu(undefined);
-          }}
-        >
-          <DeleteOutlineIcon fontSize="small" sx={{ mr: 1.5 }} />
-          Delete Trigger
-        </MenuItem>
-      </Menu>
     </Stack>
     {createOnly ? (
       <Stack spacing={2.5}>

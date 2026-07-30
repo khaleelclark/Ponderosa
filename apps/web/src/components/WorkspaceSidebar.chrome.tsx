@@ -425,8 +425,13 @@ export function SettingsSidebarPanel({
           <ListItemText primary="Notifications" secondary="In-app and browser attention" />
         </ListItemButton>
         <ListItemButton
-          selected={route.kind === "usage"}
-          onClick={() => onNavigate({ kind: "usage" })}
+          selected={
+            (route.kind === "settings" && route.section === "activity") ||
+            route.kind === "usage"
+          }
+          onClick={() =>
+            onNavigate({ kind: "settings", section: "activity" })
+          }
           sx={{ borderRadius: 1.25 }}
         >
           <ListItemIcon>

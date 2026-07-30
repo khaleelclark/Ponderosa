@@ -20,7 +20,6 @@ import {
   AllAgentsWorkspace,
   AllChatsWorkspace,
   AllTriggersWorkspace,
-  ProviderActivityWorkspace,
 } from "./components/WorkspaceResourceViews";
 import { WikiView } from "./components/WikiView";
 import type { Route } from "./routing";
@@ -196,9 +195,15 @@ export function WorkspaceRouteOutlet({
           onPreferences={onPreferences}
         />
       ) : route.kind === "usage" ? (
-        <ProviderActivityWorkspace
+        <WorkspaceSettingsView
+          preferences={preferences}
+          engines={engines}
           projects={projects}
-          projectId={route.projectId}
+          colorMode={colorMode}
+          onToggleColorMode={onToggleColorMode}
+          onPreferences={onPreferences}
+          section="activity"
+          activityProjectId={route.projectId}
         />
       ) : isProjectRoute(route) ? (
         selectedProjectId ? (
@@ -224,7 +229,7 @@ export function WorkspaceRouteOutlet({
             onBrowserRequestHandled={onBrowserRequestHandled}
             openInNewTab={onOpenInNewTab}
             onResourceDeleted={onResourceDeleted}
-            onCreateAgent={context => onCreate("agent", context)}
+            onCreate={(kind, context) => onCreate(kind, context)}
           />
         ) : (
           <Box />

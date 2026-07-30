@@ -3,12 +3,12 @@ import FileUploadOutlinedIcon from "@mui/icons-material/FileUploadOutlined";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
-import MoreVertIcon from "@mui/icons-material/MoreVert";
 import FilterListOutlinedIcon from "@mui/icons-material/FilterListOutlined";
 import StarBorderRoundedIcon from "@mui/icons-material/StarBorderRounded";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import KeyboardArrowRightIcon from "@mui/icons-material/KeyboardArrowRight";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -231,7 +231,6 @@ export function AgentsTab({
   const [importOpen, setImportOpen] = useState(false);
   const [agentMenu, setAgentMenu] =
     useState<ResourceContextMenuState<string>>();
-  const [actionsAnchor, setActionsAnchor] = useState<HTMLElement>();
   const [statusAnchor, setStatusAnchor] = useState<HTMLElement>();
   const [draggedAgentId, setDraggedAgentId] = useState<string>();
   const [organizationView, setOrganizationView] = useState<
@@ -450,16 +449,68 @@ export function AgentsTab({
             : collection.detail,
       }
     : undefined;
+  const visibleAgentIds = filtered.map(({ agent }) => agent.id);
+  const allVisibleSelected =
+    visibleAgentIds.length > 0 &&
+    visibleAgentIds.every(id => selectedAgentIds.has(id));
+  const toggleVisibleSelection = () =>
+    setSelectedAgentIds(current => {
+      const next = new Set(current);
+      const shouldSelect = visibleAgentIds.some(id => !current.has(id));
+      visibleAgentIds.forEach(id =>
+        shouldSelect ? next.add(id) : next.delete(id),
+      );
+      return next;
+    });
+  const selectionControls = selectionMode ? (
+    <Stack
+      data-collection-toolbar-actions
+      direction="row"
+      spacing={0.75}
+      useFlexGap
+      flexWrap="wrap"
+      sx={{ alignItems: "center" }}
+    >
+      <Button color="inherit" size="small" onClick={toggleVisibleSelection}>
+        {allVisibleSelected ? "Clear Visible" : "Select All Visible"}
+      </Button>
+      <Button
+        color="error"
+        variant="outlined"
+        size="small"
+        disabled={selectedAgentIds.size === 0}
+        onClick={beginSelectedDeletion}
+      >
+        Delete Selected ({selectedAgentIds.size})
+      </Button>
+      <Button color="inherit" size="small" onClick={leaveSelectionMode}>
+        Cancel Selection
+      </Button>
+    </Stack>
+  ) : null;
   const headerActions = (
     <Stack
+      data-collection-toolbar-actions
       direction="row"
       spacing={1}
       useFlexGap
       flexWrap="wrap"
       sx={{ alignItems: "center" }}
     >
+      {selectionMode ? selectionControls : null}
+      {!selectionMode && selectionAllowed && agents.length > 0 ? (
+        <Button
+          size="small"
+          variant="outlined"
+          color="inherit"
+          onClick={() => setSelectionMode(true)}
+        >
+          Select Agents
+        </Button>
+      ) : null}
       {collection && !selectionMode ? (
         <Button
+          size="small"
           variant="contained"
           startIcon={<AddIcon />}
           onClick={() => onNewAgent(organizationRootAgentId)}
@@ -467,99 +518,28 @@ export function AgentsTab({
           New Agent
         </Button>
       ) : null}
-      {selectionMode ? (
-        <>
-          <Button
-            color="inherit"
-            size="small"
-            onClick={() => {
-              const visibleIds = filtered.map(({ agent }) => agent.id);
-              const allVisibleSelected =
-                visibleIds.length > 0 &&
-                visibleIds.every(id => selectedAgentIds.has(id));
-              setSelectedAgentIds(current => {
-                const next = new Set(current);
-                visibleIds.forEach(id =>
-                  allVisibleSelected ? next.delete(id) : next.add(id),
-                );
-                return next;
-              });
-            }}
-          >
-            {filtered.length > 0 &&
-            filtered.every(({ agent }) => selectedAgentIds.has(agent.id))
-              ? "Clear Visible"
-              : "Select All Visible"}
-          </Button>
-          <Button
-            color="error"
-            variant="outlined"
-            size="small"
-            disabled={selectedAgentIds.size === 0}
-            onClick={beginSelectedDeletion}
-          >
-            Delete Selected ({selectedAgentIds.size})
-          </Button>
-          <Button color="inherit" size="small" onClick={leaveSelectionMode}>
-            Cancel Selection
-          </Button>
-        </>
-      ) : (
-        <Tooltip title="Agent actions: stop, select, import, or create">
-          <IconButton
-            aria-label="Agent actions"
-            onClick={event => setActionsAnchor(event.currentTarget)}
-          >
-            <MoreVertIcon />
-          </IconButton>
-        </Tooltip>
-      )}
-      {actionsAnchor ? (
-        <Menu
-          anchorEl={actionsAnchor}
-          open
-          onClose={() => setActionsAnchor(undefined)}
+      {!selectionMode && activeRunTargets.length > 0 ? (
+        <Button
+          size="small"
+          color="error"
+          variant="outlined"
+          disabled={stoppingAll}
+          onClick={() => void stopAll()}
         >
-          <MenuItem
-            disabled={activeRunTargets.length === 0 || stoppingAll}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              void stopAll();
-            }}
-          >
-            Stop All
-          </MenuItem>
-          <MenuItem
-            disabled={agents.length === 0 || !selectionAllowed}
-            onClick={() => {
-              setActionsAnchor(undefined);
-              setSelectionMode(true);
-            }}
-          >
-            Select Agents
-          </MenuItem>
-          {showImportAction ? (
-            <MenuItem
-              disabled={!projectId}
-              onClick={() => {
-                setActionsAnchor(undefined);
-                setImportOpen(true);
-              }}
-            >
-              <FileUploadOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-              Import Agent or Organization
-            </MenuItem>
-          ) : null}
-          <MenuItem
-            onClick={() => {
-              setActionsAnchor(undefined);
-              onNewAgent(organizationRootAgentId);
-            }}
-          >
-            <AddIcon fontSize="small" sx={{ mr: 1 }} />
-            New Agent
-          </MenuItem>
-        </Menu>
+          {stoppingAll ? "Stopping…" : "Stop All"}
+        </Button>
+      ) : null}
+      {!selectionMode && showImportAction ? (
+        <Button
+          size="small"
+          color="inherit"
+          variant="outlined"
+          startIcon={<FileUploadOutlinedIcon />}
+          disabled={!projectId}
+          onClick={() => setImportOpen(true)}
+        >
+          Import
+        </Button>
       ) : null}
     </Stack>
   );
@@ -573,111 +553,112 @@ export function AgentsTab({
           search={search}
           onSearch={setSearch}
           searchLabel="Search Agents"
+          searchMaxWidth={300}
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
         >
           {toolbarControls}
-          <Stack
-            direction="row"
-            role="group"
-            aria-label="Agent organization view"
-            sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
-          >
-            <Tooltip title="Hierarchy">
-              <IconButton
-                size="small"
-                color={organizationView === "hierarchy" ? "primary" : "default"}
-                aria-pressed={organizationView === "hierarchy"}
-                aria-label="Show Agent hierarchy"
-                onClick={() => setOrganizationView("hierarchy")}
+              <Stack
+                direction="row"
+                role="group"
+                aria-label="Agent organization view"
+                sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
               >
-                <AccountTreeOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Flat List">
-              <IconButton
-                size="small"
-                color={organizationView === "flat" ? "primary" : "default"}
-                aria-pressed={organizationView === "flat"}
-                aria-label="Show flat Agent list"
-                onClick={() => setOrganizationView("flat")}
+                <Tooltip title="Hierarchy">
+                  <IconButton
+                    size="small"
+                    color={organizationView === "hierarchy" ? "primary" : "default"}
+                    aria-pressed={organizationView === "hierarchy"}
+                    aria-label="Show Agent hierarchy"
+                    onClick={() => setOrganizationView("hierarchy")}
+                  >
+                    <AccountTreeOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip title="Flat List">
+                  <IconButton
+                    size="small"
+                    color={organizationView === "flat" ? "primary" : "default"}
+                    aria-pressed={organizationView === "flat"}
+                    aria-label="Show flat Agent list"
+                    onClick={() => setOrganizationView("flat")}
+                  >
+                    <ViewListOutlinedIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <Button
+                color="inherit"
+                variant={statusFilters.length ? "outlined" : "text"}
+                startIcon={<FilterListOutlinedIcon />}
+                onClick={event => setStatusAnchor(event.currentTarget)}
+                aria-label="Filter Agents by status"
+                sx={{ minHeight: 40, whiteSpace: "nowrap" }}
               >
-                <ViewListOutlinedIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Stack>
-          <Button
-            color="inherit"
-            variant={statusFilters.length ? "outlined" : "text"}
-            startIcon={<FilterListOutlinedIcon />}
-            onClick={event => setStatusAnchor(event.currentTarget)}
-            aria-label="Filter Agents by status"
-            sx={{ minHeight: 40, whiteSpace: "nowrap" }}
-          >
-            {statusFilters.length
-              ? `Status (${statusFilters.length})`
-              : "Status"}
-          </Button>
-          {statusAnchor ? (
-            <Menu
-              anchorEl={statusAnchor}
-              open
-              onClose={() => setStatusAnchor(undefined)}
-            >
-              <MenuItem onClick={() => setStatusFilters([])}>
-                <Checkbox checked={statusFilters.length === 0} />
-                All ({scopedAgents.length})
-              </MenuItem>
-              {statusOptions
-                .filter(option => option.value !== "all")
-                .map(option => (
-                  <MenuItem
-                    key={option.value}
-                    onClick={() =>
-                      setStatusFilters(current =>
-                        current.includes(option.value as StatusFilter)
-                          ? current.filter(value => value !== option.value)
-                          : [...current, option.value as StatusFilter],
-                      )
+                {statusFilters.length
+                  ? `Status (${statusFilters.length})`
+                  : "Status"}
+              </Button>
+              {statusAnchor ? (
+                <Menu
+                  anchorEl={statusAnchor}
+                  open
+                  onClose={() => setStatusAnchor(undefined)}
+                >
+                  <MenuItem onClick={() => setStatusFilters([])}>
+                    <Checkbox checked={statusFilters.length === 0} />
+                    All ({scopedAgents.length})
+                  </MenuItem>
+                  {statusOptions
+                    .filter(option => option.value !== "all")
+                    .map(option => (
+                      <MenuItem
+                        key={option.value}
+                        onClick={() =>
+                          setStatusFilters(current =>
+                            current.includes(option.value as StatusFilter)
+                              ? current.filter(value => value !== option.value)
+                              : [...current, option.value as StatusFilter],
+                          )
+                        }
+                      >
+                        <Checkbox
+                          checked={statusFilters.includes(
+                            option.value as StatusFilter,
+                          )}
+                        />
+                        {option.label} ({option.count})
+                      </MenuItem>
+                    ))}
+                </Menu>
+              ) : null}
+              {embeddedCollection ? null : (
+                <FormControl
+                  size="small"
+                  sx={{ minWidth: 155, width: { xs: "100%", sm: "auto" } }}
+                >
+                  <InputLabel id="agents-master-filter-label">
+                    Project Chat
+                  </InputLabel>
+                  <Select
+                    labelId="agents-master-filter-label"
+                    label="Project Chat"
+                    value={masterFilter}
+                    onChange={(event: SelectChangeEvent) =>
+                      setMasterFilter(event.target.value)
                     }
                   >
-                    <Checkbox
-                      checked={statusFilters.includes(
-                        option.value as StatusFilter,
-                      )}
-                    />
-                    {option.label} ({option.count})
-                  </MenuItem>
-                ))}
-            </Menu>
-          ) : null}
-          {embeddedCollection ? null : (
-            <FormControl
-              size="small"
-              sx={{ minWidth: 200, width: { xs: "100%", sm: "auto" } }}
-            >
-              <InputLabel id="agents-master-filter-label">
-                Project Chat
-              </InputLabel>
-              <Select
-                labelId="agents-master-filter-label"
-                label="Project Chat"
-                value={masterFilter}
-                onChange={(event: SelectChangeEvent) =>
-                  setMasterFilter(event.target.value)
-                }
-              >
-                <MenuItem value="all">All Project Chats</MenuItem>
-                {conversations.map(master => (
-                  <MenuItem key={master.id} value={master.id}>
-                    {master.title}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          {embeddedCollection ? headerActions : null}
+                    <MenuItem value="all">All Project Chats</MenuItem>
+                    {conversations.map(master => (
+                      <MenuItem key={master.id} value={master.id}>
+                        {master.title}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
+              {embeddedCollection ? headerActions : null}
         </CollectionToolbar>
       }
     >
@@ -851,6 +832,7 @@ export function AgentsTab({
                           <Checkbox
                             checked={selectedAgentIds.has(agent.id)}
                             onChange={() => toggleSelection(agent.id)}
+                            onClick={event => event.stopPropagation()}
                             inputProps={{
                               "aria-label": `Select ${agent.title}`,
                             }}

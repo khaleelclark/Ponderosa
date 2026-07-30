@@ -6,10 +6,22 @@ import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import StarRoundedIcon from "@mui/icons-material/StarRounded";
-import { Box, Button, ButtonBase, Chip, Paper, Stack, Typography } from "@mui/material";
+import {
+  Box,
+  Button,
+  ButtonBase,
+  Chip,
+  ListItemIcon,
+  ListItemText,
+  Menu,
+  MenuItem,
+  Paper,
+  Stack,
+  Typography,
+} from "@mui/material";
 import type { EngineDto, ProjectDto, WorkspaceNotificationDto, WorkspacePreferencesDto } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type ReactElement } from "react";
+import { useState, type MouseEvent, type ReactElement } from "react";
 import { api } from "../api";
 import { useProjectAgentHealth, useProjectAgents, useProjectConversations } from "../hooks/useProjectCollections";
 import { queryKeys } from "../queryKeys";
@@ -108,6 +120,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
   const recencyQuery = useWorkspaceResourceRecency();
   const recency = workspaceResourceRecencyMap(recencyQuery.data);
   const [tabMenu, setTabMenu] = useState<ResourceContextMenuState<Route>>();
+  const [createAnchor, setCreateAnchor] = useState<HTMLElement>();
   const [tab, setTab] = useState<"overview" | "work">("overview");
   const conversationQueries = useProjectConversations(projects);
   const agentQueries = useProjectAgents(projects);
@@ -170,15 +183,55 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
       </Box>
 
       <Box component="section" aria-labelledby="home-create-heading">
-        <Box sx={{ mb: 1.5 }}>
+        <Box sx={{ mb: 1.5, display: { xs: "flex", sm: "block" }, gap: 1.5, alignItems: "center" }}>
+          <Box sx={{ flex: 1, minWidth: 0 }}>
           <Typography id="home-create-heading" variant="h6" fontWeight={800}>
             Create
           </Typography>
           <Typography variant="body2" color="text.secondary">
             Create a new Project, Chat, Agent, or Trigger to get started. You can also open existing Projects from the sidebar.
           </Typography>
+          </Box>
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            aria-haspopup="menu"
+            aria-expanded={Boolean(createAnchor)}
+            onClick={(event: MouseEvent<HTMLElement>) =>
+              setCreateAnchor(event.currentTarget)
+            }
+            sx={{ display: { xs: "inline-flex", sm: "none" }, minHeight: 44, flexShrink: 0 }}
+          >
+            Create
+          </Button>
         </Box>
-        <Stack spacing={1}>
+        <Menu
+          anchorEl={createAnchor}
+          open={Boolean(createAnchor)}
+          onClose={() => setCreateAnchor(undefined)}
+          slotProps={{ paper: { sx: { width: "min(calc(100vw - 32px), 360px)" } } }}
+        >
+          {[
+            { label: "Project", icon: <FolderOutlinedIcon />, disabled: false, action: onCreateProject },
+            { label: "Chat", icon: <ChatBubbleOutlineIcon />, disabled: !projects.length, action: onCreateChat },
+            { label: "Agent", icon: <SmartToyOutlinedIcon />, disabled: !projects.length, action: onCreateAgent },
+            { label: "Trigger", icon: <BoltOutlinedIcon />, disabled: !projects.length, action: onCreateTrigger },
+          ].map(item => (
+            <MenuItem
+              key={item.label}
+              disabled={item.disabled}
+              onClick={() => {
+                setCreateAnchor(undefined);
+                item.action();
+              }}
+              sx={{ minHeight: 48 }}
+            >
+              <ListItemIcon>{item.icon}</ListItemIcon>
+              <ListItemText primary={`Create ${item.label}`} />
+            </MenuItem>
+          ))}
+        </Menu>
+        <Stack spacing={1} sx={{ display: { xs: "none", sm: "flex" } }}>
           <CreateEntry
             icon={<FolderOutlinedIcon />}
             title="Project"
@@ -211,7 +264,7 @@ export function HomeView({ projects, engines, notifications, preferences, onNavi
 
       {needsAttention > 0 ? <Paper variant="outlined" sx={{ p: 2, borderColor: "warning.main" }}><Stack direction="row" spacing={1.25} sx={{ alignItems: "center" }}><WarningAmberOutlinedIcon color="warning" /><Box sx={{ flex: 1 }}><Typography fontWeight={800}>{needsAttention} open {needsAttention === 1 ? "issue" : "issues"}</Typography><Typography variant="body2" color="text.secondary">Review decisions, blockers, and failures that still need action.</Typography></Box><Button onClick={onOpenInbox}>Open Inbox</Button></Stack></Paper> : null}</> : null}
 
-      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} />)}</Stack></Box> : null}
+      {tab === "work" ? <>{starred.length ? <Box component="section"><Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Starred</Typography><Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">{starred.map((item) => <Chip key={item.id} clickable icon={item.icon} deleteIcon={<StarRoundedIcon />} label={item.title} onClick={() => openResource(item)} onDelete={() => unstar(item)} onContextMenu={(event) => { event.preventDefault(); setTabMenu({ anchor: event.currentTarget, resource: item.route }); }} sx={{ "& .MuiChip-deleteIcon, & .MuiChip-deleteIcon:hover": { color: "var(--ponderosa-star)" } }} />)}</Stack></Box> : null}
 
       <Box component="section">
         <Typography variant="h6" fontWeight={800} sx={{ mb: 1 }}>Recent</Typography>

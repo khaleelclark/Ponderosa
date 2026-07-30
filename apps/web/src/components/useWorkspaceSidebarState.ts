@@ -13,7 +13,7 @@ import type { ResourceContextMenuState } from "./ResourceContextMenu";
 export function useWorkspaceSidebarNavigation(route: Route) {
   const [sidebarSection, setSidebarSection] =
     useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
-  const previousRouteKind = useRef(route.kind);
+  const previousRoute = useRef(route);
   const [filter, setFilter] = useState("");
   const [draggedResource, setDraggedResource] = useState<{
     kind: "home" | "chat" | "agent" | "trigger";
@@ -32,8 +32,8 @@ export function useWorkspaceSidebarNavigation(route: Route) {
       resource: { route, ...(conversation ? { conversation } : {}) },
     });
   useEffect(() => {
-    const previousKind = previousRouteKind.current;
-    previousRouteKind.current = route.kind;
+    const previous = previousRoute.current;
+    previousRoute.current = route;
     // Directory workplaces are destinations, not sidebar-section commands.
     // Keep the operator's current panel, filter, and scroll state when one opens.
     const section = routeSynchronizedSidebarSection(route);
@@ -42,14 +42,16 @@ export function useWorkspaceSidebarNavigation(route: Route) {
       setFilter("");
       return;
     }
-    // A Create workspace owns the Create sidebar until creation or cancellation
-    // sends the active tab somewhere else. Clicking the rail + alone does not
-    // change the route, so it must leave the chosen sidebar panel in place.
-    if (previousKind === "create") {
+    // Only the global Create flow owns the Create sidebar. Contextual creation
+    // keeps the operator's existing sidebar while replacing the workspace.
+    if (
+      previous.kind === "create" &&
+      previous.surface !== "workspace"
+    ) {
       setSidebarSection(routeInitialSidebarSection(route));
       setFilter("");
     }
-  }, [route.kind]);
+  }, [route]);
 
   return {
     sidebarSection,

@@ -53,7 +53,7 @@ export function CollectionHeader({
     component="header"
     direction={{ xs: "column", sm: "row" }}
     spacing={1.5}
-    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { sm: "center" }, borderBottom: 1, borderColor: "divider" }}
+    sx={{ px: { xs: 2, md: 3 }, py: 2, alignItems: { xs: "flex-start", sm: "center" }, borderBottom: 1, borderColor: "divider" }}
   >
     <Box sx={{ flex: 1, minWidth: 0 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
@@ -67,8 +67,10 @@ export function CollectionHeader({
         sx={{
           flexShrink: 0,
           width: { xs: "100%", sm: "auto" },
+          display: "flex",
+          justifyContent: "flex-start",
           "& .MuiButton-root": {
-            width: { xs: "100%", sm: "auto" },
+            width: "auto",
             whiteSpace: "nowrap",
           },
         }}
@@ -152,6 +154,7 @@ export interface CollectionToolbarProps {
   search: string;
   onSearch(value: string): void;
   searchLabel: string;
+  searchMaxWidth?: number;
   reorderHint?: boolean;
   children?: ReactNode;
 }
@@ -160,6 +163,7 @@ export function CollectionToolbar({
   search,
   onSearch,
   searchLabel,
+  searchMaxWidth,
   reorderHint = false,
   children,
 }: CollectionToolbarProps): JSX.Element {
@@ -179,9 +183,41 @@ export function CollectionToolbar({
       placeholder="Search"
       inputProps={{ "aria-label": searchLabel }}
       InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment> }}
-      sx={{ flex: 1, minWidth: { md: 240 } }}
+      sx={{
+        flex: {
+          xs: "0 0 auto",
+          md: searchMaxWidth ? "1 1 320px" : 1,
+        },
+        width: { xs: "100%", md: "auto" },
+        minWidth: { md: 240 },
+        maxWidth: searchMaxWidth ? { md: searchMaxWidth } : undefined,
+      }}
     />
-    {children}
+    {children ? (
+      <Box
+        sx={theme => ({
+          display: { xs: "flex", md: "contents" },
+          width: { xs: "100%", md: "auto" },
+          minWidth: 0,
+          gap: 1,
+          alignItems: "center",
+          flexWrap: "wrap",
+          [theme.breakpoints.down("md")]: {
+            "& > .MuiFormControl-root": {
+              width: "auto",
+              minWidth: 140,
+              flex: "1 1 140px",
+            },
+            "& > [data-collection-toolbar-actions]": {
+              flex: "1 1 100%",
+              justifyContent: "flex-start",
+            },
+          },
+        })}
+      >
+        {children}
+      </Box>
+    ) : null}
     {reorderHint ? (
       <Typography
         variant="caption"
@@ -200,19 +236,24 @@ export function CollectionDirectoryControls({
   onProject,
   sort,
   onSort,
+  compact = false,
 }: {
   projects?: ProjectDto[];
   projectId?: string;
   onProject?(value: string): void;
   sort: ProjectSort;
   onSort(value: ProjectSort): void;
+  compact?: boolean;
 }): JSX.Element {
   const controlId = useId();
   return <>
     {projects && onProject ? (
       <FormControl
         size="small"
-        sx={{ minWidth: 190, width: { xs: "100%", sm: "auto" } }}
+        sx={{
+          minWidth: compact ? 145 : 190,
+          width: { xs: "100%", sm: "auto" },
+        }}
       >
         <InputLabel id={`${controlId}-project`}>Project</InputLabel>
         <Select
@@ -232,7 +273,10 @@ export function CollectionDirectoryControls({
     ) : null}
     <FormControl
       size="small"
-      sx={{ minWidth: 170, width: { xs: "100%", sm: "auto" } }}
+      sx={{
+        minWidth: compact ? 150 : 170,
+        width: { xs: "100%", sm: "auto" },
+      }}
     >
       <InputLabel id={`${controlId}-sort`}>Sort</InputLabel>
       <Select

@@ -19,6 +19,7 @@ import type {
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 
@@ -192,9 +193,11 @@ function mergeProvider(
 export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
+  renderTrigger,
 }: {
   preferredProvider?: string;
   mobile?: boolean;
+  renderTrigger?: (open: (element: HTMLElement) => void) => ReactNode;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement>();
@@ -246,21 +249,23 @@ export function ProviderQuotaIndicator({
 
   return (
     <>
-      <Chip
-        size="small"
-        variant="outlined"
-        label={label}
-        icon={constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
-        aria-label={`${label}. Open provider quota`}
-        onClick={(event) => open(event.currentTarget)}
-        sx={{
-          cursor: "pointer",
-          maxWidth: mobile ? 150 : 170,
-          color: mobile ? undefined : "var(--ponderosa-rail-foreground)",
-          borderColor: mobile ? undefined : "var(--ponderosa-rail-border)",
-          "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
-        }}
-      />
+      {renderTrigger ? renderTrigger(open) : (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={label}
+          icon={constrained?.refreshing ? <CircularProgress size={13} /> : undefined}
+          aria-label={`${label}. Open provider quota`}
+          onClick={(event) => open(event.currentTarget)}
+          sx={{
+            cursor: "pointer",
+            maxWidth: mobile ? 150 : 170,
+            color: mobile ? undefined : "var(--ponderosa-rail-foreground)",
+            borderColor: mobile ? undefined : "var(--ponderosa-rail-border)",
+            "& .MuiChip-label": { overflow: "hidden", textOverflow: "ellipsis" },
+          }}
+        />
+      )}
       <Popover
         open={Boolean(anchor)}
         anchorEl={anchor}

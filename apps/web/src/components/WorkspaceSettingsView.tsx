@@ -7,6 +7,7 @@ import {
   Checkbox,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   InputLabel,
   ListItemText,
   ListSubheader,
@@ -30,6 +31,7 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import type { ColorMode } from "../theme";
+import { ProviderActivitySettingsSection } from "./WorkspaceResourceViews";
 import {
   inspectWebPush,
   syncWebPush,
@@ -410,7 +412,7 @@ function ClaudeModelOptionsSettings({
   };
   return (
     <Box sx={{ mt: 2, pt: 2, borderTop: 1, borderColor: "divider" }}>
-      <Typography fontWeight={700}>Pinned Claude model versions</Typography>
+      <Typography fontWeight={700}>Pinned Claude Model Versions</Typography>
       {catalogLoading ? (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
           Refreshing Claude models…
@@ -548,7 +550,7 @@ function ProviderSettingsSection({
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
           <Typography variant="h6" fontWeight={800}>
-            Provider quota
+            Provider Quota
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
             Choose which provider appears in the quota button by default.
@@ -578,6 +580,9 @@ function ProviderSettingsSection({
       {engines.map(engine => {
         const resolved = resolveRuntimeSelection(engine, preferences);
         const modelState = runtimeControlState(engine, resolved);
+        const selectedModel = modelState.models.find(
+          option => option.id === resolved.model,
+        );
         const efforts = effortOptionsForModel(engine, resolved.model);
         return (
           <Paper key={engine.id} variant="outlined" sx={{ p: 2.5 }}>
@@ -616,6 +621,7 @@ function ProviderSettingsSection({
                   labelId={`settings-model-${engine.id}`}
                   label="Default Model"
                   value={resolved.model}
+                  renderValue={() => selectedModel?.label ?? resolved.model}
                   onChange={event => {
                     const model = event.target.value;
                     const effort =
@@ -638,6 +644,9 @@ function ProviderSettingsSection({
                     </MenuItem>,
                   ])}
                 </Select>
+                {selectedModel?.detail ? (
+                  <FormHelperText>{selectedModel.detail}</FormHelperText>
+                ) : null}
               </FormControl>
               <FormControl fullWidth>
                 <InputLabel id={`settings-effort-${engine.id}`}>
@@ -701,6 +710,7 @@ export function WorkspaceSettingsView({
   onToggleColorMode,
   onPreferences,
   section = "general",
+  activityProjectId,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
@@ -708,7 +718,8 @@ export function WorkspaceSettingsView({
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  section?: "general" | "providers" | "notifications";
+  section?: "general" | "providers" | "notifications" | "activity";
+  activityProjectId?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const validationProject = projects[0];
@@ -856,6 +867,12 @@ export function WorkspaceSettingsView({
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+          />
+        ) : null}
+        {section === "activity" ? (
+          <ProviderActivitySettingsSection
+            projects={projects}
+            projectId={activityProjectId}
           />
         ) : null}
       </Box>

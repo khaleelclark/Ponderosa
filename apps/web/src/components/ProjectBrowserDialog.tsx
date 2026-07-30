@@ -99,7 +99,7 @@ export function ProjectBrowserDialog({
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
           {embedded ? <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip> : null}
           <Typography variant="h6" noWrap sx={{ flex: 1, minWidth: 0 }}>Interactive Browser</Typography>
-          {session ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
+          {session?.status === "ready" ? <Chip size="small" variant="outlined" color={operator ? "success" : "warning"} label={operator ? "You have control" : `${controllerName ?? "Agent"} has control`} /> : null}
           {!embedded ? <Tooltip title="Close Panel"><IconButton aria-label="Close Interactive Browser" onClick={onClose}><CloseIcon /></IconButton></Tooltip> : null}
         </Stack>
         <Typography variant="caption" color="text.secondary">Project-scoped session · persists across Agent Runs until closed</Typography>

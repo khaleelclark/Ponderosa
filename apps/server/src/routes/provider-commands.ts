@@ -121,6 +121,10 @@ app.post<{ Params: { id: string }; Body?: CancelAgentRunRequest }>("/api/agents/
   }
   const ownedTarget = current && current.runId === result.runId ? current : undefined;
   if (!result.replayed && ownedTarget) {
+    // The scheduler cancellation is already canonical at this point. Reflect
+    // that loss of live execution authority immediately so health projections
+    // do not keep advertising a responding Run while process teardown drains.
+    ownedTarget.ownershipState = "cancelling";
     // A rollover requested by this exact Run is part of the cancelled work,
     // not an independent queued user instruction. Do not let it immediately
     // manufacture a successor after the operator stops the Run.

@@ -31,7 +31,9 @@ import {
   useProjects,
   useWorkspacePreferences,
 } from "./hooks/queries";
-import { useProjectAgents } from "./hooks/useProjectCollections";
+import {
+  useProjectAgents,
+} from "./hooks/useProjectCollections";
 import { useWorkspaceStream } from "./hooks/useWorkspaceStream";
 import {
   loadLastProjectId,
@@ -41,7 +43,10 @@ import {
   useRoute,
   type Route,
 } from "./routing";
-import { isProjectRoute, workspaceTabKey } from "./routeRegistry";
+import {
+  isProjectRoute,
+  workspaceTabKey,
+} from "./routeRegistry";
 import type { ColorMode } from "./theme";
 import {
   closeReadPushNotifications,
@@ -85,6 +90,7 @@ import {
   markWorkspaceResourceUsed,
   workspaceResourceFromRoute,
 } from "./workspaceRecency";
+import { MobileWorkspaceActionsProvider } from "./components/MobileWorkspaceActionsContext";
 
 const OPERATOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const OPERATOR_PROFILE_IMAGE_ACCEPT =
@@ -151,10 +157,6 @@ export default function App({
   });
   const engines = enginesQuery.data ?? [];
   const engineAvailability = engineAvailabilityPresentation(engines);
-  const appIconSource =
-    colorMode === "light"
-      ? "/icons/app-icon-inverted.png"
-      : "/icons/app-icon.png";
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
 
@@ -173,6 +175,7 @@ export default function App({
   const [projectBrowserRequest, setProjectBrowserRequest] =
     useState<ProjectBrowserRequest>();
   const projectBrowserRequestId = useRef(0);
+  const creationOriginByWorkspace = useRef(new Map<string, Route>());
   const readinessQuery = useQuery({
     queryKey: queryKeys.readiness.all,
     queryFn: () => api.getReadiness(),
@@ -390,6 +393,9 @@ export default function App({
     }
   };
   const navigateWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
     recordWorkspaceRouteUse(next);
     const reusable = reusableWorkspaceTab(
       workspaceTabs,
@@ -399,6 +405,16 @@ export default function App({
     const targetKey = reusable?.key ?? activeWorkspaceTabKey;
     if (reusable) setActiveWorkspaceTabKey(targetKey);
     setWorkspaceTabs(current => navigateWorkspaceTab(current, targetKey, next));
+    navigate(next);
+  };
+  const replaceActiveWorkspace = (next: Route) => {
+    if (next.kind !== "create") {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+    }
+    recordWorkspaceRouteUse(next);
+    setWorkspaceTabs(current =>
+      navigateWorkspaceTab(current, activeWorkspaceTabKey, next),
+    );
     navigate(next);
   };
   const activateWorkspaceView = (key: string) => {
@@ -435,9 +451,13 @@ export default function App({
       agentId?: string;
     },
   ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
     const destination: Route = {
       kind: "create",
       resource: kind,
+      surface: "workspace",
       ...(context?.projectId ? { projectId: context.projectId } : {}),
       ...(context?.conversationId
         ? { conversationId: context.conversationId }
@@ -447,8 +467,18 @@ export default function App({
         : {}),
       ...(context?.agentId ? { agentId: context.agentId } : {}),
     };
-    if (route.kind === "create") navigateWorkspace(destination);
-    else openWorkspaceRoute(destination);
+    replaceActiveWorkspace(destination);
+  };
+  const replaceWorkspaceWithCreationForm = (
+    kind: "project" | "chat" | "agent" | "trigger",
+  ) => {
+    if (route.kind !== "create") {
+      creationOriginByWorkspace.current.set(activeWorkspaceTabKey, route);
+    }
+    replaceActiveWorkspace({
+      kind: "create",
+      resource: kind,
+    });
   };
   const openWorkspaceRouteInBackground = (next: Route) => {
     recordWorkspaceRouteUse(next);
@@ -499,6 +529,14 @@ export default function App({
     }
   };
   const cancelCreationWorkspace = () => {
+    const origin = creationOriginByWorkspace.current.get(
+      activeWorkspaceTabKey,
+    );
+    if (origin) {
+      creationOriginByWorkspace.current.delete(activeWorkspaceTabKey);
+      replaceActiveWorkspace(origin);
+      return;
+    }
     if (workspaceTabs.length > 1) {
       closeWorkspaceView(activeWorkspaceTabKey);
       return;
@@ -607,6 +645,7 @@ export default function App({
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser }}
     >
+      <MobileWorkspaceActionsProvider>
       <Box
         data-testid="ponderosa-app"
         sx={{
@@ -643,7 +682,6 @@ export default function App({
           Skip to content
         </Box>
         <MobileWorkspaceHeader
-          appIconSource={appIconSource}
           preferredQuotaProvider={displayedQuotaProvider}
           engineAvailability={engineAvailability}
           unreadNotifications={(notificationsQuery.data ?? []).filter(
@@ -653,7 +691,6 @@ export default function App({
           onOpenNavigation={() => setMobileNavOpen(true)}
           onOpenEngineStatus={() => setEngineStatusOpen(true)}
           onOpenNotifications={() => setNotificationPanelOpen(true)}
-          onCreateProject={() => openCreationForm("project")}
           onOpenProfile={openOperatorProfile}
           onOpenSettings={openSettings}
         />
@@ -677,7 +714,7 @@ export default function App({
               notifications={notificationsQuery.data ?? []}
               onNavigate={navigateWorkspace}
               onOpenInNewTab={openWorkspaceRouteInBackground}
-              onCreate={kind => openCreationForm(kind)}
+              onCreate={replaceWorkspaceWithCreationForm}
               onPreferences={savePreferences}
               onRenameConversation={conversation =>
                 openSidebarConversationAction("rename", conversation)
@@ -780,7 +817,7 @@ export default function App({
           onOpenChange={setMobileNavOpen}
           onNavigate={navigateWorkspace}
           onOpenInNewTab={openWorkspaceRoute}
-          onCreate={openCreationForm}
+          onCreate={replaceWorkspaceWithCreationForm}
           onPreferences={savePreferences}
           onConversationAction={openSidebarConversationAction}
           onSearch={() => setGlobalSearchOpen(true)}
@@ -877,6 +914,7 @@ export default function App({
           onSave={profile => savePreferences({ profile })}
         />
       </Box>
+      </MobileWorkspaceActionsProvider>
     </ProjectBrowserContext.Provider>
   );
 }
