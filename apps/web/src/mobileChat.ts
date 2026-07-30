@@ -8,30 +8,11 @@ export function mobileOperationalStatus(state: string): string {
   return `• ${state.replaceAll("_", " ")}`;
 }
 
-type MobileComposerScrollAction = "hide" | "show" | "none";
-
-function mobileComposerScrollAction({
-  mobileViewport,
-  hidden,
-  initialized,
-  transitionActive,
-  nearBottom,
-  previousScrollTop,
-  scrollTop,
-}: {
-  mobileViewport: boolean;
-  hidden: boolean;
-  initialized: boolean;
-  transitionActive: boolean;
-  nearBottom: boolean;
-  previousScrollTop: number;
-  scrollTop: number;
-}): MobileComposerScrollAction {
-  if (!mobileViewport || transitionActive) return "none";
-  if (!initialized) return nearBottom ? "none" : "hide";
-  if (hidden) return nearBottom ? "show" : "none";
-  return !nearBottom && scrollTop < previousScrollTop - 1 ? "hide" : "none";
-}
+const MOBILE_COMPOSER_HIDE_TRAVEL = 24;
+const MOBILE_COMPOSER_TRUE_BOTTOM = 8;
+const MOBILE_COMPOSER_SHOW_DELAY = 100;
+const MOBILE_SCROLL_INTENT_WINDOW = 1_200;
+const MOBILE_VIEWPORT_SETTLE_DELAY = 300;
 
 /**
  * A transition-fenced mobile composer controller. Visibility changes resize the
@@ -52,6 +33,12 @@ export function useMobileComposerAutoHide(mobileViewport: boolean): {
   const scrollElementRef = useRef<HTMLElement>();
   const transitionRef = useRef<"hiding" | "showing">();
   const unlockTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const viewportSettleTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const viewportResizeUntilRef = useRef(0);
+  const userScrollIntentUntilRef = useRef(0);
+  const upwardTravelRef = useRef(0);
+  const detachScrollIntentRef = useRef<() => void>();
 
   const setHidden = useCallback((next: boolean) => {
     hiddenRef.current = next;
@@ -64,6 +51,27 @@ export function useMobileComposerAutoHide(mobileViewport: boolean): {
     transitionRef.current = undefined;
   }, []);
 
+  const clearShowTimer = useCallback(() => {
+    if (showTimerRef.current !== undefined) {
+      globalThis.clearTimeout(showTimerRef.current);
+    }
+    showTimerRef.current = undefined;
+  }, []);
+
+  const clearViewportSettle = useCallback(() => {
+    if (viewportSettleTimerRef.current !== undefined) {
+      globalThis.clearTimeout(viewportSettleTimerRef.current);
+    }
+    viewportSettleTimerRef.current = undefined;
+    viewportResizeUntilRef.current = 0;
+  }, []);
+
+  const detachScrollIntent = useCallback(() => {
+    detachScrollIntentRef.current?.();
+    detachScrollIntentRef.current = undefined;
+    userScrollIntentUntilRef.current = 0;
+  }, []);
+
   const beginTransition = useCallback((phase: "hiding" | "showing") => {
     transitionRef.current = phase;
     if (unlockTimerRef.current !== undefined) globalThis.clearTimeout(unlockTimerRef.current);
@@ -73,51 +81,202 @@ export function useMobileComposerAutoHide(mobileViewport: boolean): {
 
   const reset = useCallback(() => {
     clearTransition();
+    clearShowTimer();
+    clearViewportSettle();
+    detachScrollIntent();
     initializedRef.current = false;
     lastScrollTopRef.current = 0;
     scrollElementRef.current = undefined;
+    upwardTravelRef.current = 0;
     setHidden(false);
-  }, [clearTransition, setHidden]);
+  }, [
+    clearShowTimer,
+    clearTransition,
+    clearViewportSettle,
+    detachScrollIntent,
+    setHidden,
+  ]);
 
   useEffect(() => {
     if (!mobileViewport) reset();
-    return clearTransition;
-  }, [clearTransition, mobileViewport, reset]);
+    return () => {
+      clearTransition();
+      clearShowTimer();
+      clearViewportSettle();
+      detachScrollIntent();
+    };
+  }, [
+    clearShowTimer,
+    clearTransition,
+    clearViewportSettle,
+    detachScrollIntent,
+    mobileViewport,
+    reset,
+  ]);
 
-  const observeScroll = useCallback((element: HTMLElement, nearBottom: boolean) => {
+  useEffect(() => {
+    if (!mobileViewport || typeof window === "undefined") return;
+    const markViewportResize = () => {
+      clearShowTimer();
+      upwardTravelRef.current = 0;
+      viewportResizeUntilRef.current =
+        Date.now() + MOBILE_VIEWPORT_SETTLE_DELAY;
+      if (viewportSettleTimerRef.current !== undefined) {
+        globalThis.clearTimeout(viewportSettleTimerRef.current);
+      }
+      viewportSettleTimerRef.current = globalThis.setTimeout(() => {
+        viewportSettleTimerRef.current = undefined;
+        viewportResizeUntilRef.current = 0;
+      }, MOBILE_VIEWPORT_SETTLE_DELAY);
+    };
+    window.visualViewport?.addEventListener("resize", markViewportResize);
+    window.addEventListener("resize", markViewportResize);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", markViewportResize);
+      window.removeEventListener("resize", markViewportResize);
+    };
+  }, [clearShowTimer, mobileViewport]);
+
+  const observeScrollIntent = useCallback((element: HTMLElement) => {
+    if (scrollElementRef.current === element && detachScrollIntentRef.current) {
+      return;
+    }
+    detachScrollIntent();
     scrollElementRef.current = element;
-    const scrollTop = element.scrollTop;
-    const action = mobileComposerScrollAction({
-      mobileViewport,
-      hidden: hiddenRef.current,
-      initialized: initializedRef.current,
-      transitionActive: transitionRef.current !== undefined,
-      nearBottom,
-      previousScrollTop: lastScrollTopRef.current,
-      scrollTop,
-    });
-    lastScrollTopRef.current = scrollTop;
-    initializedRef.current = true;
-    if (action === "hide") {
-      beginTransition("hiding");
-      setHidden(true);
-    } else if (action === "show") {
+    const markIntent = () => {
+      userScrollIntentUntilRef.current =
+        Date.now() + MOBILE_SCROLL_INTENT_WINDOW;
+    };
+    element.addEventListener("pointerdown", markIntent, { passive: true });
+    element.addEventListener("touchstart", markIntent, { passive: true });
+    element.addEventListener("touchmove", markIntent, { passive: true });
+    element.addEventListener("wheel", markIntent, { passive: true });
+    detachScrollIntentRef.current = () => {
+      element.removeEventListener("pointerdown", markIntent);
+      element.removeEventListener("touchstart", markIntent);
+      element.removeEventListener("touchmove", markIntent);
+      element.removeEventListener("wheel", markIntent);
+    };
+  }, [detachScrollIntent]);
+
+  const showAfterStableBottom = useCallback((element: HTMLElement) => {
+    if (showTimerRef.current !== undefined) return;
+    const check = () => {
+      showTimerRef.current = undefined;
+      const distanceFromBottom =
+        element.scrollHeight - element.clientHeight - element.scrollTop;
+      if (
+        !mobileViewport ||
+        !hiddenRef.current ||
+        scrollElementRef.current !== element ||
+        distanceFromBottom > MOBILE_COMPOSER_TRUE_BOTTOM
+      ) {
+        return;
+      }
+      if (
+        transitionRef.current !== undefined ||
+        Date.now() < viewportResizeUntilRef.current
+      ) {
+        showTimerRef.current = globalThis.setTimeout(
+          check,
+          MOBILE_COMPOSER_SHOW_DELAY,
+        );
+        return;
+      }
       beginTransition("showing");
       setHidden(false);
-    }
+    };
+    showTimerRef.current = globalThis.setTimeout(
+      check,
+      MOBILE_COMPOSER_SHOW_DELAY,
+    );
   }, [beginTransition, mobileViewport, setHidden]);
+
+  const observeScroll = useCallback((element: HTMLElement, nearBottom: boolean) => {
+    observeScrollIntent(element);
+    const scrollTop = element.scrollTop;
+    const previousScrollTop = lastScrollTopRef.current;
+    const initialized = initializedRef.current;
+    lastScrollTopRef.current = scrollTop;
+    initializedRef.current = true;
+    if (!mobileViewport) return;
+    if (!initialized) {
+      if (!nearBottom) {
+        beginTransition("hiding");
+        setHidden(true);
+      }
+      return;
+    }
+    if (Date.now() < viewportResizeUntilRef.current) {
+      clearShowTimer();
+      upwardTravelRef.current = 0;
+      return;
+    }
+    const distanceFromBottom =
+      element.scrollHeight - element.clientHeight - scrollTop;
+    if (hiddenRef.current) {
+      upwardTravelRef.current = 0;
+      if (distanceFromBottom <= MOBILE_COMPOSER_TRUE_BOTTOM) {
+        showAfterStableBottom(element);
+      } else {
+        clearShowTimer();
+      }
+      return;
+    }
+    clearShowTimer();
+    if (transitionRef.current !== undefined || nearBottom) {
+      upwardTravelRef.current = 0;
+      return;
+    }
+    const upwardDelta = previousScrollTop - scrollTop;
+    if (
+      upwardDelta <= 0 ||
+      Date.now() > userScrollIntentUntilRef.current
+    ) {
+      upwardTravelRef.current = 0;
+      return;
+    }
+    upwardTravelRef.current += upwardDelta;
+    if (upwardTravelRef.current < MOBILE_COMPOSER_HIDE_TRAVEL) return;
+    upwardTravelRef.current = 0;
+    const activeElement =
+      typeof document === "undefined" ? undefined : document.activeElement;
+    if (
+      typeof HTMLElement !== "undefined" &&
+      activeElement instanceof HTMLElement &&
+      activeElement.closest(".ponderosa-composer")
+    ) {
+      activeElement.blur();
+    }
+    beginTransition("hiding");
+    setHidden(true);
+  }, [
+    beginTransition,
+    clearShowTimer,
+    mobileViewport,
+    observeScrollIntent,
+    setHidden,
+    showAfterStableBottom,
+  ]);
 
   const showAtLatest = useCallback((element?: HTMLElement | null) => {
     const target = element ?? scrollElementRef.current;
+    clearShowTimer();
+    upwardTravelRef.current = 0;
     if (target) {
-      scrollElementRef.current = target;
+      observeScrollIntent(target);
       target.scrollTop = target.scrollHeight;
       lastScrollTopRef.current = target.scrollTop;
     }
     initializedRef.current = true;
     if (hiddenRef.current) beginTransition("showing");
     setHidden(false);
-  }, [beginTransition, setHidden]);
+  }, [
+    beginTransition,
+    clearShowTimer,
+    observeScrollIntent,
+    setHidden,
+  ]);
 
   const finishTransition = useCallback(() => {
     const target = scrollElementRef.current;

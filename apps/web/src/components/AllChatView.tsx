@@ -17,6 +17,7 @@ import type {
   AllChatItemDto,
   EngineCommand,
   EngineDto,
+  ProviderPermissionSetting,
   WorkspaceNotificationDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,6 +26,7 @@ import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
   useAllChat,
+  useConversations,
   useEngines,
   useProjects,
   useWorkspacePreferences,
@@ -52,6 +54,7 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
+import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -225,6 +228,7 @@ export function AllChatView({
     queryFn: () => api.getAgent(selectedAgentId!, AGENT_DETAIL_PAGE_SIZE),
     enabled: Boolean(selectedAgentId),
   });
+  const conversationsQuery = useConversations(selectedProjectId);
   const engines = enginesQuery.data ?? [];
   const project = projectsQuery.data?.find(
     item => item.id === selectedProjectId,
@@ -325,6 +329,29 @@ export function AllChatView({
       });
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
+      });
+    },
+  });
+  const persistProviderPermissions = useMutation({
+    mutationFn: ({
+      conversationId,
+      providerPermissionMode,
+    }: {
+      conversationId: string;
+      providerPermissionMode: ProviderPermissionSetting;
+    }) => api.updateConversation(conversationId, { providerPermissionMode }),
+    onSuccess: conversation => {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.project(conversation.projectId),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.conversations.detailPrefix(conversation.id),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.notifications.all,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.decisions.all,
       });
     },
   });
@@ -609,6 +636,34 @@ export function AllChatView({
             },
           );
         }}
+      />
+    ) : null;
+  const providerPermissionConversation = conversationsQuery.data?.find(
+    conversation =>
+      conversation.id === selectedAgent.data?.agent.conversationId,
+  );
+  const providerPermissionControl =
+    replyTarget && providerPermissionConversation ? (
+      <ComposerProviderPermissions
+        mode={providerPermissionConversation.providerPermissionMode ?? "ask"}
+        inheritedMode={
+          project?.providerPermissionMode === "ask" ||
+          project?.providerPermissionMode === "auto_confirmations"
+            ? project.providerPermissionMode
+            : workspacePreferences.data?.providerPermissionMode ?? "ask"
+        }
+        pending={persistProviderPermissions.isPending}
+        error={
+          persistProviderPermissions.error instanceof Error
+            ? persistProviderPermissions.error.message
+            : undefined
+        }
+        scopeDescription={`Applies to every Agent and subagent in “${providerPermissionConversation.title}”.`}
+        onChange={providerPermissionMode =>
+          persistProviderPermissions.mutate({
+            conversationId: providerPermissionConversation.id,
+            providerPermissionMode,
+          })}
       />
     ) : null;
   return (
@@ -936,6 +991,7 @@ export function AllChatView({
           }
           onCapabilitiesOpen={refreshSelectedCapabilities}
           onCommand={replyTarget ? invokeCommand : undefined}
+          leadingControls={providerPermissionControl}
           controls={runtimeControls}
           disabled={send.isPending || updateRuntimeEngine.isPending}
           running={false}

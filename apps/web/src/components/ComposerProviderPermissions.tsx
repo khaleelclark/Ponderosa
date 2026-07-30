@@ -88,7 +88,8 @@ export function ComposerProviderPermissions({
       onClick={(event) => setAnchor(anchor ? null : event.currentTarget)}
       sx={{
         minHeight: 40,
-        px: 1,
+        minWidth: { xs: 40, sm: "auto" },
+        px: { xs: 0.5, sm: 1 },
         borderRadius: 1.25,
         color: (mode === "auto_confirmations" ||
           (mode === "inherit" && inheritedMode === "auto_confirmations"))
@@ -102,12 +103,22 @@ export function ComposerProviderPermissions({
         },
       }}
     >
-      <Stack direction="row" spacing={0.6} sx={{ alignItems: "center" }}>
-        <ShieldOutlinedIcon sx={{ fontSize: 18 }} />
-        <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>
+      <Stack
+        direction="row"
+        spacing={{ xs: 0, sm: 0.6 }}
+        sx={{ alignItems: "center" }}
+      >
+        <ShieldOutlinedIcon sx={{ fontSize: { xs: 20, sm: 18 } }} />
+        <Typography
+          variant="body2"
+          noWrap
+          sx={{ display: { xs: "none", sm: "block" }, fontWeight: 700 }}
+        >
           {selected.shortLabel}
         </Typography>
-        <KeyboardArrowDownIcon sx={{ fontSize: 20 }} />
+        <KeyboardArrowDownIcon
+          sx={{ display: { xs: "none", sm: "block" }, fontSize: 20 }}
+        />
       </Stack>
     </ButtonBase>
     <Popper

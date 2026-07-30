@@ -122,7 +122,12 @@ export function ComposerRuntimeSelector({
     >
       <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
-        <Typography variant="body2" color="text.secondary" noWrap>
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          noWrap
+          sx={{ display: { xs: "none", sm: "block" } }}
+        >
           · {selectedEffort?.label ?? "Reasoning unavailable"}
         </Typography>
         <KeyboardArrowDownIcon sx={{ alignSelf: "center", color: "text.secondary", fontSize: 20 }} />
