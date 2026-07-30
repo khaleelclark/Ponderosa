@@ -9,6 +9,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
 import path from "node:path";
+import { canonicalPath } from "./canonical-path.mjs";
 import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
 import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
 
@@ -90,13 +91,19 @@ if (process.platform !== "darwin") {
   throw new Error("Normal GUI launch qualification requires macOS.");
 }
 
-const application = path.resolve(option("application", ""));
-const installRoot = path.resolve(option("install-root", ""));
-const dataDir = path.resolve(option("data-dir", ""));
-const reportPath = path.resolve(option("report", path.join(dataDir, "macos-gui-launch.json")));
-if (!application || !installRoot || !dataDir) {
+const applicationOption = option("application", "");
+const installRootOption = option("install-root", "");
+const dataDirOption = option("data-dir", "");
+if (!applicationOption || !installRootOption || !dataDirOption) {
   throw new Error("GUI launch qualification requires application, install-root, and data-dir.");
 }
+const application = canonicalPath(applicationOption);
+const installRoot = canonicalPath(installRootOption);
+const dataDir = canonicalPath(dataDirOption);
+const reportPath = canonicalPath(option(
+  "report",
+  path.join(dataDir, "macos-gui-launch.json"),
+));
 
 const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa");
 const nodeExecutable = path.join(installRoot, "runtime", "node");
@@ -162,8 +169,11 @@ async function launchFromApplication(port) {
   });
   const state = await readJsonEventually(statePath);
   observedPids.add(state.pid);
-  assert(state.installRoot === installRoot, "GUI launch recorded an unexpected install root.");
-  assert(!/ponderosa-mac-qualification|\/Users\/patmi/iu.test(state.installRoot),
+  const stateInstallRoot = canonicalPath(state.installRoot);
+  const stateDataDir = canonicalPath(state.dataDir);
+  assert(stateInstallRoot === installRoot, "GUI launch recorded an unexpected install root.");
+  assert(stateDataDir === dataDir, "GUI launch recorded an unexpected data directory.");
+  assert(!/ponderosa-mac-qualification|\/Users\/patmi/iu.test(stateInstallRoot),
     "GUI launch retained a build-host path.");
   const health = await fetchEventually(
     `http://127.0.0.1:${state.port}/api/health`,
