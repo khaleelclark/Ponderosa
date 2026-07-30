@@ -125,7 +125,6 @@ function scheduleCursorPersistence(): void {
 
 if (typeof window !== "undefined") {
   window.addEventListener("pagehide", flushPendingCursors);
-  window.addEventListener("beforeunload", flushPendingCursors);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushPendingCursors();
   });
@@ -448,7 +447,6 @@ export function useAgentStream(
   const lastSeqRef = useRef<number | undefined>(undefined);
   const projectIdRef = useRef(knownProjectId);
   const retryProjectReconciliationRef = useRef<() => void>(() => undefined);
-  projectIdRef.current = knownProjectId;
 
   useEffect(() => {
     if (!agentId) {
@@ -657,6 +655,7 @@ export function useAgentStream(
   }, [queryClient, agentId]);
 
   useEffect(() => {
+    projectIdRef.current = knownProjectId;
     retryProjectReconciliationRef.current();
   }, [knownProjectId]);
 
