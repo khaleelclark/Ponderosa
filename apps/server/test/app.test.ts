@@ -26,6 +26,7 @@ import { createServer, type EngineRegistration } from "../src/app.js";
 class BehavioralAdapter implements Adapter {
   readonly id = "codex";
   readonly displayName = "Behavioral adapter";
+  seedCalls = 0;
 
   listModels() {
     return [{ id: "test-model", label: "Test model" }];
@@ -36,6 +37,7 @@ class BehavioralAdapter implements Adapter {
   }
 
   async *seed(_options: SeedOptions): AsyncIterable<AgentEvent> {
+    this.seedCalls += 1;
     yield { type: "turn_done" };
   }
 
@@ -439,6 +441,66 @@ describe("server public API behavior", () => {
     expect((await app.inject({ method: "GET", url: "/api/projects" })).statusCode).toBe(401);
     expect((await app.inject({ method: "POST", url: "/sw.js" })).statusCode).toBe(401);
     expect((await app.inject({ method: "GET", url: "/api-lookalike.js" })).statusCode).toBe(401);
+  });
+
+  it("lets the scheduler dispatch Agent work in launcher-authenticated mode", async () => {
+    const adapter = new BehavioralAdapter();
+    const project = store.createProject({
+      label: "Installed",
+      hostPath: repoDir,
+      defaultEngine: "codex",
+    });
+    const agent = store.createAgent(project.id, {
+      title: "Installed Agent",
+      engine: "codex",
+      conversationId: project.lastConversationId,
+    });
+    const app = server({
+      dataDir,
+      store,
+      engines: [{
+        adapter,
+        authStatus: async () => ({ authenticated: true, detail: "test subscription" }),
+      }],
+      logger: false,
+      launcherSecurity: { controlToken: "launcher-secret" },
+      communicationV3: { pollMs: 5 },
+    });
+
+    expect((await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      headers: { "x-ponderosa-v3-dispatch": "forged-dispatch-key" },
+      payload: { text: "Bypass launcher authentication." },
+    })).statusCode).toBe(401);
+
+    const bootstrap = await app.inject({
+      method: "POST",
+      url: "/api/launcher/bootstrap",
+      headers: { authorization: "Bearer launcher-secret" },
+    });
+    const exchange = await app.inject({
+      method: "POST",
+      url: "/api/launcher/session-exchange",
+      payload: { token: bootstrap.json<{ token: string }>().token },
+    });
+    const cookie = exchange.headers["set-cookie"];
+    expect(exchange.statusCode).toBe(204);
+    expect(typeof cookie).toBe("string");
+
+    const sent = await app.inject({
+      method: "POST",
+      url: `/api/agents/${agent.id}/messages`,
+      headers: { cookie: cookie as string },
+      payload: { text: "Confirm installed dispatch." },
+    });
+    expect(sent.statusCode).toBe(202);
+
+    const deadline = Date.now() + 2_000;
+    while (adapter.seedCalls === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(adapter.seedCalls).toBe(1);
   });
 
   it("reports engine authentication without invoking provider credentials", async () => {

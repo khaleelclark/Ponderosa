@@ -94,7 +94,10 @@ function executable(pathname) {
 
 const targetPlatform = option("platform", process.platform);
 const targetArch = option("arch", process.arch);
-const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? "0.0.0-beta.local");
+const productVersion = JSON.parse(
+  readFileSync(path.join(repositoryRoot, "package.json"), "utf8"),
+).version;
+const version = option("version", process.env.PONDEROSA_BUILD_VERSION ?? productVersion);
 const channel = option("channel", process.env.PONDEROSA_RELEASE_CHANNEL ?? "beta");
 const preparedNode = path.join(
   repositoryRoot,

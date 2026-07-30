@@ -44,6 +44,7 @@ import type { createEngineControlPlane } from "../engine-control-plane.js";
 import type { EngineAvailabilityStore } from "../engine-availability-store.js";
 import type { createRuntimeAuthority } from "../runtime-authority.js";
 import type { createRuntimeEventAuthority } from "../runtime-event-authority.js";
+import { secretEqual } from "../security.js";
 import type { createServerReadModels } from "../server-read-models.js";
 import type { createOperationalNotifications } from "../operational-notifications.js";
 import type { createCommunicationDocumentAuthority } from "../communication-document-authority.js";
@@ -248,7 +249,8 @@ export function registerAgentMessageRunRoute(
       if (userMessageIdempotencyKey && userMessageIdempotencyKey.length > 200) {
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
       }
-      const internalV3Dispatch = request.headers["x-ponderosa-v3-dispatch"] === v3DispatchKey;
+      const internalV3Dispatch = typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
+        secretEqual(request.headers["x-ponderosa-v3-dispatch"], v3DispatchKey);
       const v3SchedulerRunId = request.body.v3SchedulerRunId;
       const v3FencingToken = request.body.v3FencingToken;
       const v3InjectionId = request.body.v3InjectionId;

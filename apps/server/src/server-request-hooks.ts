@@ -46,6 +46,7 @@ export function registerBodyParsers(
 
 interface RequestSecurityHooksContext {
   opts: CreateServerOptions;
+  v3DispatchKey: string;
   agentMessageCapabilities: Map<string, AgentMessageCapability>;
   deletingAgentIds: ReadonlySet<string>;
   validLauncherSession(header: string | undefined): boolean;
@@ -60,6 +61,7 @@ export function registerRequestSecurityHooks(
 ): void {
   const {
     opts,
+    v3DispatchKey,
     agentMessageCapabilities,
     deletingAgentIds,
     validLauncherSession,
@@ -79,6 +81,11 @@ export function registerRequestSecurityHooks(
           secretEqual(provided, opts.launcherSecurity.controlToken)) return;
       return reply.code(401).send({ error: "launcher authorization required" });
     }
+    const internalV3Dispatch = request.method === "POST" &&
+      /^\/api\/agents\/[^/?]+\/messages(?:\?|$)/u.test(request.url) &&
+      typeof request.headers["x-ponderosa-v3-dispatch"] === "string" &&
+      secretEqual(request.headers["x-ponderosa-v3-dispatch"], v3DispatchKey);
+    if (internalV3Dispatch) return;
     if (opts.launcherSecurity && (browserBootstrapPath || launcherExchange)) return;
     if (isPublicWebAssetRequest(request.method, request.url)) return;
     const agentToolRequest = isAgentToolRoute(request.url);
