@@ -146,64 +146,60 @@ export function ComposerProjectDestinationAction({
     continuing || explicitDestinationCount > 0;
   if (hasSelectedDestination) {
     return (
-      <Tooltip title={`Clear ${selectedLabel} and start a new Agent`}>
-        <Chip
-          size="small"
-          color={
-            hasBroadcastDestination
-              ? "info"
-              : hasEveryoneDestination
-                ? "secondary"
-                : "primary"
-          }
-          icon={
-            hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
-          }
-          label={selectedLabel}
-          onDelete={chooseNewAgent}
-          sx={{
-            maxWidth: { xs: 148, sm: 240 },
-            height: 34,
-            fontWeight: 700,
-            "& .MuiChip-label": {
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            },
-          }}
-        />
-      </Tooltip>
+      <Chip
+        size="small"
+        color={
+          hasBroadcastDestination
+            ? "info"
+            : hasEveryoneDestination
+              ? "secondary"
+              : "primary"
+        }
+        icon={
+          hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
+        }
+        label={selectedLabel}
+        onDelete={chooseNewAgent}
+        sx={{
+          maxWidth: { xs: 148, sm: 240 },
+          height: 34,
+          fontWeight: 700,
+          "& .MuiChip-label": {
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          },
+        }}
+      />
     );
   }
   if (!continueWith) return null;
   return (
-    <Tooltip title={`Continue with ${continueWith.title}`}>
-      <Button
-        size="small"
-        color="primary"
-        startIcon={<SubdirectoryArrowRightIcon />}
-        onClick={chooseContinuation}
-        sx={{
-          minHeight: 40,
-          minWidth: 0,
-          maxWidth: { xs: 148, sm: 240 },
-          px: 0.75,
-          fontWeight: 700,
-          textTransform: "none",
-          justifyContent: "flex-start",
-          "& .MuiButton-startIcon": { mr: 0.5 },
-        }}
+    <Button
+      size="small"
+      color="primary"
+      startIcon={<SubdirectoryArrowRightIcon />}
+      onClick={chooseContinuation}
+      sx={{
+        minHeight: 40,
+        minWidth: 0,
+        maxWidth: { xs: 148, sm: 240 },
+        px: 0.75,
+        fontWeight: 700,
+        textTransform: "none",
+        justifyContent: "flex-start",
+        "& .MuiButton-startIcon": { mr: 0.5 },
+      }}
+    >
+      <Typography
+        component="span"
+        variant="body2"
+        noWrap
+        sx={{ minWidth: 0, fontWeight: 700 }}
       >
-        <Typography
-          component="span"
-          variant="body2"
-          noWrap
-          sx={{ minWidth: 0, fontWeight: 700 }}
-        >
-          Continue with {continueWith.title}
-        </Typography>
-      </Button>
-    </Tooltip>
+        Continue with {continueWith.title}
+      </Typography>
+    </Button>
   );
 }
 
