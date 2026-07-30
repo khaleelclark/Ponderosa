@@ -18,7 +18,7 @@ import type {
   ProjectEngineCapabilitiesDto,
   ResponseFileActivityDto,
   AgentDto,
-  ProviderPermissionMode,
+  ProviderPermissionSetting,
   WorkspacePreferencesDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -325,7 +325,7 @@ export function ConversationView({
     },
   });
   const persistProviderPermissions = useMutation({
-    mutationFn: (providerPermissionMode: ProviderPermissionMode) =>
+    mutationFn: (providerPermissionMode: ProviderPermissionSetting) =>
       api.updateConversation(conversationId, { providerPermissionMode }),
     onSuccess: () => {
       void queryClient.invalidateQueries({
@@ -689,6 +689,12 @@ export function ConversationView({
     activeView === "main" ? (
       <ComposerProviderPermissions
         mode={conversation.providerPermissionMode ?? "ask"}
+        inheritedMode={
+          project?.providerPermissionMode === "ask" ||
+          project?.providerPermissionMode === "auto_confirmations"
+            ? project.providerPermissionMode
+            : preferencesQuery.data?.providerPermissionMode ?? "ask"
+        }
         pending={persistProviderPermissions.isPending}
         error={persistProviderPermissions.error instanceof Error
           ? persistProviderPermissions.error.message

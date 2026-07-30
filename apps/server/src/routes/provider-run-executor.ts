@@ -10,6 +10,7 @@ import {
   PONDEROSA_ROLLOVER_TOOL,
   PONDEROSA_TEAM_DIRECTORY_TOOL,
   PONDEROSA_UPDATE_REQUEST_TOOL,
+  effectiveProviderPermissionMode,
   type AgentDto,
   type AgentEvent,
   type ChatMessage,
@@ -331,9 +332,18 @@ export function startProviderRunExecution(
               }
             }
             const conversationAutoApproves =
-              Boolean(currentRun.conversationId) &&
-              store.getConversation(currentRun.conversationId!)
-                ?.providerPermissionMode === "auto_confirmations" &&
+              Boolean(currentRun.conversationId) && (() => {
+                const conversation = store.getConversation(currentRun.conversationId!);
+                const project = conversation
+                  ? store.getProject(conversation.projectId)
+                  : undefined;
+                return Boolean(conversation && project &&
+                  effectiveProviderPermissionMode({
+                    conversation: conversation.providerPermissionMode,
+                    project: project.providerPermissionMode,
+                    workspace: workspace.getPreferences().providerPermissionMode,
+                  }) === "auto_confirmations");
+              })() &&
               runtimeElicitations.canRememberForRun(request);
             if (conversationAutoApproves ||
                 runtimeElicitations.allowsForRun(currentRun.runId, request)) {
@@ -395,8 +405,18 @@ export function startProviderRunExecution(
             // initial check but before this provider request enters the broker.
             if (rememberableConfirmation &&
                 currentRun.conversationId &&
-                store.getConversation(currentRun.conversationId)
-                  ?.providerPermissionMode === "auto_confirmations" &&
+                (() => {
+                  const conversation = store.getConversation(currentRun.conversationId!);
+                  const project = conversation
+                    ? store.getProject(conversation.projectId)
+                    : undefined;
+                  return Boolean(conversation && project &&
+                    effectiveProviderPermissionMode({
+                      conversation: conversation.providerPermissionMode,
+                      project: project.providerPermissionMode,
+                      workspace: workspace.getPreferences().providerPermissionMode,
+                    }) === "auto_confirmations");
+                })() &&
                 runtimeElicitations.respond(decision.id, {
                   action: "accept",
                   content: {},

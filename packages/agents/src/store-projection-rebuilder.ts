@@ -106,6 +106,7 @@ export class AgentProjectionRebuilder {
           defaultEngine: p.defaultEngine ?? "codex",
           defaultModel: p.defaultModel ?? null,
           defaultEffort: p.defaultEffort ?? null,
+          providerPermissionMode: p.providerPermissionMode ?? "inherit",
           lastConversationId: p.lastConversationId ?? null,
         })
         .run();

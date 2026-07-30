@@ -75,6 +75,7 @@ import type {
   RuntimeElicitationActionDto,
   RunOutputTextDto,
   MultiAgentDirectMessageResponse,
+  ApplyProjectProviderPermissionDefaultResponse,
   ProjectBrowserControlRequest,
   ProjectBrowserSessionDto,
   ProjectDto,
@@ -237,6 +238,14 @@ export const realApi = {
       method: "PATCH",
       body: JSON.stringify(patch satisfies UpdateProjectRequest),
     });
+  },
+  applyProjectProviderPermissionDefault(
+    projectId: string,
+  ): Promise<ApplyProjectProviderPermissionDefaultResponse> {
+    return requestJson<ApplyProjectProviderPermissionDefaultResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/provider-permissions/apply`,
+      { method: "POST" },
+    );
   },
   deleteProject(projectId: string): Promise<void> {
     return requestJson<void>(`/api/projects/${encodeURIComponent(projectId)}`, { method: "DELETE" });

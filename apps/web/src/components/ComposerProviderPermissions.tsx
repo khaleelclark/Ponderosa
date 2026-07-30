@@ -13,10 +13,13 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import type { ProviderPermissionMode } from "@ponderosa/core";
+import type {
+  ProviderPermissionMode,
+  ProviderPermissionSetting,
+} from "@ponderosa/core";
 import { useId, useState } from "react";
 
-const options: Array<{
+const concreteOptions: Array<{
   id: ProviderPermissionMode;
   label: string;
   shortLabel: string;
@@ -39,19 +42,39 @@ const options: Array<{
 
 export function ComposerProviderPermissions({
   mode,
+  inheritedMode = "ask",
+  inheritedLabel = "Project default",
   pending,
   error,
   scopeDescription = "Applies to every Agent and subagent in this Chat.",
   onChange,
 }: {
-  mode: ProviderPermissionMode;
+  mode: ProviderPermissionSetting;
+  inheritedMode?: ProviderPermissionMode;
+  inheritedLabel?: string;
   pending?: boolean;
   error?: string;
   scopeDescription?: string;
-  onChange(mode: ProviderPermissionMode): void;
+  onChange(mode: ProviderPermissionSetting): void;
 }): JSX.Element {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const menuId = useId();
+  const inheritedModeLabel =
+    inheritedMode === "auto_confirmations" ? "Auto-approve" : "Ask";
+  const options: Array<{
+    id: ProviderPermissionSetting;
+    label: string;
+    shortLabel: string;
+    detail: string;
+  }> = [
+    {
+      id: "inherit",
+      label: `Use ${inheritedLabel}`,
+      shortLabel: `${inheritedLabel}: ${inheritedModeLabel}`,
+      detail: `Follow the ${inheritedLabel.toLocaleLowerCase()}, currently ${inheritedModeLabel}.`,
+    },
+    ...concreteOptions,
+  ];
   const selected = options.find(option => option.id === mode) ?? options[0]!;
   const close = () => setAnchor(null);
 
@@ -67,7 +90,10 @@ export function ComposerProviderPermissions({
         minHeight: 40,
         px: 1,
         borderRadius: 1.25,
-        color: mode === "auto_confirmations" ? "warning.main" : "text.secondary",
+        color: (mode === "auto_confirmations" ||
+          (mode === "inherit" && inheritedMode === "auto_confirmations"))
+          ? "warning.main"
+          : "text.secondary",
         "&:hover": { bgcolor: "action.hover" },
         "&:focus-visible": {
           outline: "2px solid",

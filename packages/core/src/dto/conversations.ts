@@ -17,6 +17,16 @@ import type { DecisionDto } from "./workspace.js";
 // ─── Conversations ────────────────────────────────────────────────────────────
 
 export type ProviderPermissionMode = "ask" | "auto_confirmations";
+export type ProviderPermissionSetting = "inherit" | ProviderPermissionMode;
+
+export function effectiveProviderPermissionMode(input: {
+  conversation: ProviderPermissionSetting;
+  project: ProviderPermissionSetting;
+  workspace: ProviderPermissionMode;
+}): ProviderPermissionMode {
+  if (input.conversation !== "inherit") return input.conversation;
+  return input.project === "inherit" ? input.workspace : input.project;
+}
 
 /** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
@@ -27,7 +37,7 @@ export interface ConversationDto {
   defaultModel?: string;
   defaultEffort?: string;
   /** Provider confirmation policy inherited by every Agent Run in this Chat. */
-  providerPermissionMode: ProviderPermissionMode;
+  providerPermissionMode: ProviderPermissionSetting;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -49,7 +59,7 @@ export interface UpdateConversationRequest {
   defaultEngine?: EngineId | null;
   defaultModel?: string | null;
   defaultEffort?: string | null;
-  providerPermissionMode?: ProviderPermissionMode;
+  providerPermissionMode?: ProviderPermissionSetting;
   archived?: boolean;
 }
 

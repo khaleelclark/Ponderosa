@@ -19,7 +19,7 @@ import type {
   AgentDetailDto,
   AgentDto,
   AgentTelemetryStream,
-  ProviderPermissionMode,
+  ProviderPermissionSetting,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -523,7 +523,7 @@ export function AgentDetail({
       providerPermissionMode,
     }: {
       conversationId: string;
-      providerPermissionMode: ProviderPermissionMode;
+      providerPermissionMode: ProviderPermissionSetting;
     }) => api.updateConversation(conversationId, { providerPermissionMode }),
     onSuccess: conversation => {
       void queryClient.invalidateQueries({
@@ -774,6 +774,12 @@ export function AgentDetail({
   const providerPermissionControl = providerPermissionConversation ? (
     <ComposerProviderPermissions
       mode={providerPermissionConversation.providerPermissionMode ?? "ask"}
+      inheritedMode={
+        project?.providerPermissionMode === "ask" ||
+        project?.providerPermissionMode === "auto_confirmations"
+          ? project.providerPermissionMode
+          : preferencesQuery.data?.providerPermissionMode ?? "ask"
+      }
       pending={persistProviderPermissions.isPending}
       error={persistProviderPermissions.error instanceof Error
         ? persistProviderPermissions.error.message

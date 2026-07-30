@@ -7,7 +7,7 @@ import type {
   ConversationDto,
   ConversationDetailDto,
   ModelOption,
-  ProviderPermissionMode,
+  ProviderPermissionSetting,
   TeamDirectoryDto,
   UpdateConversationRequest,
 } from "@ponderosa/core";
@@ -143,7 +143,8 @@ export function registerConversationRoutes(
     if (permissionMode && !([
       "ask",
       "auto_confirmations",
-    ] satisfies ProviderPermissionMode[]).includes(permissionMode)) {
+      "inherit",
+    ] satisfies ProviderPermissionSetting[]).includes(permissionMode)) {
       return reply.code(400).send({ error: "invalid provider permission mode" });
     }
     if (request.body?.defaultEngine && !engines.has(request.body.defaultEngine)) {

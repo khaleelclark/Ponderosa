@@ -69,6 +69,7 @@ export class AgentWorkspaceCatalogAuthority {
       createdAt: now,
       lastUsedAt: now,
       defaultEngine,
+      providerPermissionMode: "inherit",
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
       lastConversationId: conversationId,
@@ -77,7 +78,7 @@ export class AgentWorkspaceCatalogAuthority {
       id: conversationId, projectId: id, title: "New Chat", defaultEngine,
       ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}),
       ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}),
-      providerPermissionMode: "ask",
+      providerPermissionMode: "inherit",
       createdAt: now, updatedAt: now, archived: false,
     };
     const stagingId = `.${id}.creating`;
@@ -89,8 +90,8 @@ export class AgentWorkspaceCatalogAuthority {
       mkdirSync(agentsDir(this.dataDir, stagingId), { recursive: true });
       renameSync(stagingRoot, projectDir(this.dataDir, id));
       this.db.transaction((tx) => {
-        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, providerPermissionMode: "ask", createdAt: now, updatedAt: now, archived: 0 }).run();
+        tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, providerPermissionMode: "inherit", lastConversationId: conversationId }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, title: "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, providerPermissionMode: "inherit", createdAt: now, updatedAt: now, archived: 0 }).run();
       });
     } catch (error) {
       rmSync(stagingRoot, { recursive: true, force: true });
@@ -98,7 +99,7 @@ export class AgentWorkspaceCatalogAuthority {
       throw error;
     }
     for (const preset of BUILTIN_PRESETS) this.createAgentPreset(id, preset);
-    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
+    return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), providerPermissionMode: "inherit", lastConversationId: conversationId };
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -110,18 +111,20 @@ export class AgentWorkspaceCatalogAuthority {
     const defaultEngine = input.defaultEngine ?? current.defaultEngine;
     const defaultModel = input.defaultModel === null ? undefined : input.defaultModel ?? current.defaultModel;
     const defaultEffort = input.defaultEffort === null ? undefined : input.defaultEffort ?? current.defaultEffort;
+    const providerPermissionMode = input.providerPermissionMode ?? current.providerPermissionMode;
     const { instructions: _previousInstructions, ...projectWithoutInstructions } = current;
     const record: ProjectJson = {
       ...projectWithoutInstructions,
       label,
       defaultEngine,
+      providerPermissionMode,
       ...(defaultModel ? { defaultModel } : { defaultModel: undefined }),
       ...(defaultEffort ? { defaultEffort } : { defaultEffort: undefined }),
       ...(instructions ? { instructions } : {}),
     };
     writeJson(projectJsonPath(this.dataDir, id), record);
-    this.db.update(projects).set({ label, defaultEngine, defaultModel: defaultModel ?? null, defaultEffort: defaultEffort ?? null }).where(eq(projects.id, id)).run();
-    return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), ...(instructions ? { instructions } : {}) };
+    this.db.update(projects).set({ label, defaultEngine, defaultModel: defaultModel ?? null, defaultEffort: defaultEffort ?? null, providerPermissionMode }).where(eq(projects.id, id)).run();
+    return { ...projectWithoutInstructions, label, defaultEngine, ...(defaultModel ? { defaultModel } : {}), ...(defaultEffort ? { defaultEffort } : {}), providerPermissionMode, ...(instructions ? { instructions } : {}) };
   }
 
   listAgentPresets(projectId: string): AgentPresetDto[] {
@@ -164,6 +167,10 @@ export class AgentWorkspaceCatalogAuthority {
         defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
         defaultModel: r.defaultModel ?? undefined,
         defaultEffort: r.defaultEffort ?? undefined,
+        providerPermissionMode: r.providerPermissionMode === "ask" ||
+          r.providerPermissionMode === "auto_confirmations"
+          ? r.providerPermissionMode
+          : "inherit",
         lastConversationId: r.lastConversationId ?? undefined,
         ...this.projectInstructions(r.id),
       }));
@@ -181,6 +188,10 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: r.defaultEngine as ProjectDto["defaultEngine"],
       defaultModel: r.defaultModel ?? undefined,
       defaultEffort: r.defaultEffort ?? undefined,
+      providerPermissionMode: r.providerPermissionMode === "ask" ||
+        r.providerPermissionMode === "auto_confirmations"
+        ? r.providerPermissionMode
+        : "inherit",
       lastConversationId: r.lastConversationId ?? undefined,
       ...this.projectInstructions(r.id),
     };
@@ -223,7 +234,7 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: input.defaultEngine ?? project.defaultEngine,
       defaultModel: input.defaultModel,
       defaultEffort: input.defaultEffort,
-      providerPermissionMode: "ask",
+      providerPermissionMode: "inherit",
       createdAt: now,
       updatedAt: now,
       archived: false,
@@ -239,7 +250,7 @@ export class AgentWorkspaceCatalogAuthority {
         defaultEngine: input.defaultEngine ?? project.defaultEngine,
         defaultModel: input.defaultModel ?? null,
         defaultEffort: input.defaultEffort ?? null,
-        providerPermissionMode: "ask",
+        providerPermissionMode: "inherit",
         createdAt: now,
         updatedAt: now,
         archived: 0,
@@ -354,9 +365,10 @@ export class AgentWorkspaceCatalogAuthority {
       defaultEngine: row.defaultEngine ?? undefined,
       defaultModel: row.defaultModel ?? undefined,
       defaultEffort: row.defaultEffort ?? undefined,
-      providerPermissionMode: row.providerPermissionMode === "auto_confirmations"
-        ? "auto_confirmations"
-        : "ask",
+      providerPermissionMode: row.providerPermissionMode === "auto_confirmations" ||
+        row.providerPermissionMode === "ask"
+        ? row.providerPermissionMode
+        : "inherit",
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       archived: row.archived === 1,

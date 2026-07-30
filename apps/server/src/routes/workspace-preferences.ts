@@ -1,4 +1,5 @@
 import type {
+  ConversationDto,
   MarkWorkspaceResourceUsedRequest,
   ModelOption,
   ProjectEngineModelCatalogDto,
@@ -44,6 +45,7 @@ interface WorkspacePreferenceRoutesContext {
   applyOperatorModelOptions(): void;
   publishWorkspaceSince(cursor: number): void;
   setMaxConcurrentRuns(maxConcurrentRuns: number): void;
+  applyProviderPermissionMode(conversation: ConversationDto): void;
   clearAgentResumeSession(agentId: string, reason: string): void;
   persistentRuntimeForTermination(agentId: string): PersistentRuntime | undefined;
   teardownPersistentRuntime(
@@ -72,6 +74,7 @@ export function registerWorkspacePreferenceRoutes(
     applyOperatorModelOptions,
     publishWorkspaceSince,
     setMaxConcurrentRuns,
+    applyProviderPermissionMode,
     clearAgentResumeSession,
     persistentRuntimeForTermination,
     teardownPersistentRuntime,
@@ -151,6 +154,11 @@ export function registerWorkspacePreferenceRoutes(
     }
     if (patch.notifications !== undefined && (typeof patch.notifications !== "object" || patch.notifications === null || Object.entries(patch.notifications).some(([key, value]) => !["mentions", "directReplies", "projectChatMessages", "broadcasts", "allMessages"].includes(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "notification preferences must be independent toggles" });
     if (patch.providerAvailability !== undefined && (typeof patch.providerAvailability !== "object" || patch.providerAvailability === null || Object.entries(patch.providerAvailability).some(([key, value]) => !engines.has(key) || typeof value !== "boolean"))) return reply.code(400).send({ error: "provider availability must contain configured engines and boolean values" });
+    if (patch.providerPermissionMode !== undefined &&
+        patch.providerPermissionMode !== "ask" &&
+        patch.providerPermissionMode !== "auto_confirmations") {
+      return reply.code(400).send({ error: "invalid provider permission mode" });
+    }
     if (patch.defaultUsageProvider !== undefined && (typeof patch.defaultUsageProvider !== "string" || !engines.get(patch.defaultUsageProvider)?.adapter.readProviderUsage)) {
       return reply.code(400).send({ error: "default usage provider must expose subscription usage" });
     }
@@ -228,6 +236,18 @@ export function registerWorkspacePreferenceRoutes(
       setMaxConcurrentRuns(preferences.maxConcurrentAgentRuns);
     }
     publishWorkspaceSince(cursor);
+    if (patch.providerPermissionMode !== undefined &&
+        preferences.providerPermissionMode !==
+          previousPreferences.providerPermissionMode) {
+      for (const project of store.listProjects()) {
+        if (project.providerPermissionMode !== "inherit") continue;
+        for (const conversation of store.listConversations(project.id)) {
+          if (conversation.providerPermissionMode === "inherit") {
+            applyProviderPermissionMode(conversation);
+          }
+        }
+      }
+    }
     if (globalInstructionsChanged || profileChanged) for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
       organizationEnvelopeStates.delete(agent.id);
       if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
