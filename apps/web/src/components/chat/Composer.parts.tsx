@@ -1,22 +1,16 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
-import CheckIcon from "@mui/icons-material/Check";
-import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
-  ButtonBase,
+  Button,
   Chip,
   IconButton,
-  ListItemIcon,
-  Menu,
-  MenuItem,
   Stack,
   Tooltip,
   Typography,
 } from "@mui/material";
 import type { RefObject } from "react";
-import { useId, useState } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -75,7 +69,7 @@ export function ComposerDestinationBar({
   ) : null;
 }
 
-interface ComposerProjectDestinationPickerProps {
+interface ComposerProjectDestinationActionProps {
   clearDestination(handle: string): void;
   continueWith: ComposerProps["continueWith"];
   hasBroadcastDestination: boolean;
@@ -87,7 +81,7 @@ interface ComposerProjectDestinationPickerProps {
   setDestination(handle: string): void;
 }
 
-export function ComposerProjectDestinationPicker({
+export function ComposerProjectDestinationAction({
   clearDestination,
   continueWith,
   hasBroadcastDestination,
@@ -97,9 +91,7 @@ export function ComposerProjectDestinationPicker({
   projectDestinations,
   selectImplicitContinue,
   setDestination,
-}: ComposerProjectDestinationPickerProps): JSX.Element {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const menuId = useId();
+}: ComposerProjectDestinationActionProps): JSX.Element | null {
   const explicitDestinationCount =
     Number(hasBroadcastDestination) +
     Number(hasEveryoneDestination) +
@@ -146,7 +138,6 @@ export function ComposerProjectDestinationPicker({
   const chooseNewAgent = () => {
     clearExplicitDestinations();
     selectImplicitContinue(false);
-    setAnchor(null);
     focusInput();
   };
   const chooseContinuation = () => {
@@ -158,87 +149,50 @@ export function ComposerProjectDestinationPicker({
       selectImplicitContinue(false);
       setDestination(continueWith.handle);
     }
-    setAnchor(null);
     focusInput();
   };
-  const canChoose = Boolean(continueWith) || explicitDestinationCount > 0;
+  const continuationSelected = continuing || matchingContinuation;
+  const resetToNewAgent =
+    continuationSelected || explicitDestinationCount > 0;
+  if (!continueWith && !resetToNewAgent) return null;
   return (
-    <>
-      <Tooltip title="Choose who should handle this message">
-        <ButtonBase
-          aria-label={`Message destination: ${label}`}
-          aria-haspopup={canChoose ? "menu" : undefined}
-          aria-controls={anchor ? menuId : undefined}
-          aria-expanded={anchor ? true : undefined}
-          aria-disabled={!canChoose}
-          onClick={event => {
-            if (canChoose) setAnchor(event.currentTarget);
-          }}
-          sx={{
-            minHeight: 40,
-            minWidth: 0,
-            maxWidth: { xs: 132, sm: 220 },
-            px: 0.75,
-            borderRadius: 1.25,
-            color: continuing || explicitDestinationCount > 0
-              ? "primary.main"
-              : "text.secondary",
-            "&:hover": { bgcolor: "action.hover" },
-            "&:focus-visible": {
-              outline: "2px solid",
-              outlineColor: "primary.main",
-              outlineOffset: 2,
-            },
-          }}
-        >
-          <SubdirectoryArrowRightIcon sx={{ mr: 0.5, fontSize: 19 }} />
-          <Typography
-            variant="body2"
-            noWrap
-            sx={{ minWidth: 0, fontWeight: 700 }}
-          >
-            {label}
-          </Typography>
-          {canChoose ? (
-            <KeyboardArrowDownIcon sx={{ ml: 0.25, fontSize: 19 }} />
-          ) : null}
-        </ButtonBase>
-      </Tooltip>
-      <Menu
-        id={menuId}
-        anchorEl={anchor}
-        open={Boolean(anchor)}
-        onClose={() => setAnchor(null)}
-        anchorOrigin={{ vertical: "top", horizontal: "left" }}
-        transformOrigin={{ vertical: "bottom", horizontal: "left" }}
-        slotProps={{ paper: { sx: { minWidth: 220, maxWidth: 320 } } }}
+    <Tooltip
+      title={
+        resetToNewAgent
+          ? `Start a new Agent instead of ${label}`
+          : `Continue with ${continueWith!.title}`
+      }
+    >
+      <Button
+        size="small"
+        color={resetToNewAgent ? "inherit" : "primary"}
+        startIcon={
+          resetToNewAgent ? undefined : <SubdirectoryArrowRightIcon />
+        }
+        onClick={resetToNewAgent ? chooseNewAgent : chooseContinuation}
+        sx={{
+          minHeight: 40,
+          minWidth: 0,
+          maxWidth: { xs: 148, sm: 240 },
+          px: 0.75,
+          fontWeight: 700,
+          textTransform: "none",
+          justifyContent: "flex-start",
+          "& .MuiButton-startIcon": { mr: 0.5 },
+        }}
       >
-        <MenuItem
-          selected={!continuing && explicitDestinationCount === 0}
-          onClick={chooseNewAgent}
+        <Typography
+          component="span"
+          variant="body2"
+          noWrap
+          sx={{ minWidth: 0, fontWeight: 700 }}
         >
-          <ListItemIcon>
-            {!continuing && explicitDestinationCount === 0 ? (
-              <CheckIcon fontSize="small" />
-            ) : null}
-          </ListItemIcon>
-          New Agent
-        </MenuItem>
-        {continueWith ? (
-          <MenuItem
-            selected={continuing || matchingContinuation}
-            onClick={chooseContinuation}
-          >
-            <ListItemIcon>
-              {continuing || matchingContinuation ? (
-                <CheckIcon fontSize="small" />
-              ) : null}
-            </ListItemIcon>
-            <Typography noWrap>Continue with {continueWith.title}</Typography>
-          </MenuItem>
-        ) : null}
-      </Menu>
-    </>
+          {resetToNewAgent
+            ? "New Agent"
+            : `Continue with ${continueWith!.title}`}
+        </Typography>
+      </Button>
+    </Tooltip>
   );
 }
 

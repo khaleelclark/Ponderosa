@@ -24,7 +24,7 @@ import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
-  ComposerProjectDestinationPicker,
+  ComposerProjectDestinationAction,
   ComposerSendActions,
 } from "./Composer.parts";
 import {
@@ -835,7 +835,7 @@ export function Composer({
           onApplyCapability={applyCapability}
         />
         {destinationMode === "project-chat" ? (
-          <ComposerProjectDestinationPicker
+          <ComposerProjectDestinationAction
             clearDestination={clearDestination}
             continueWith={continueWith}
             hasBroadcastDestination={hasBroadcastDestination}
