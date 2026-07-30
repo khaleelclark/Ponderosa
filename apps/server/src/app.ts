@@ -41,6 +41,10 @@ import { createOperationalNotifications } from "./operational-notifications.js";
 import {
   descriptorRelativeFilesystemCapability
 } from "./project-file-access.js";
+import {
+  publicWebAssetPaths,
+  publicWebAssetRequest,
+} from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
 import { registerAgentSurface } from "./routes/agent-surface.js";
 import { registerApplicationRoutes } from "./routes/application-routes.js";
@@ -117,6 +121,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     validLauncherSession,
   } = createLauncherSecurity(opts);
   const store = opts.store ?? new AgentStore(opts.dataDir);
+  const publicWebAssets = publicWebAssetPaths(opts.webDist);
   const artifactFilesystem = (opts.artifactFilesystemCapabilityProbe ??
     (() => descriptorRelativeFilesystemCapability(opts.dataDir)))();
   const processContainment = (opts.processContainmentCapabilityProbe ?? (() =>
@@ -747,6 +752,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     validLauncherSession,
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
+    isPublicWebAssetRequest: (method, url) =>
+      publicWebAssetRequest(method, url, publicWebAssets),
   });
 
   registerServerLifecycle(app, {

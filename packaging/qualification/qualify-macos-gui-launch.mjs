@@ -17,6 +17,11 @@ import {
 } from "./http-response.mjs";
 import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
 import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
+import {
+  findMacosChromiumExecutable,
+  qualifyPersistentPwaUpgrade,
+  seedLegacyPwaProfile,
+} from "./persistent-pwa-upgrade.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -116,6 +121,7 @@ const reportPath = canonicalPath(reportOption);
 
 const appExecutable = path.join(application, "Contents", "MacOS", "Ponderosa");
 const installedLauncherDist = path.join(installRoot, "app", "launcher", "dist");
+const installedWebDist = path.join(installRoot, "app", "web", "dist");
 const {
   launcherStateLocation,
   resolveLauncherPaths,
@@ -261,7 +267,7 @@ async function cleanupGuiLaunch(port) {
   );
 }
 
-async function browserSession(state) {
+async function browserBootstrapToken(state) {
   const baseUrl = `http://127.0.0.1:${state.port}`;
   const bootstrap = await fetch(`${baseUrl}/api/launcher/bootstrap`, {
     method: "POST",
@@ -270,6 +276,14 @@ async function browserSession(state) {
   });
   assert(bootstrap.ok, "GUI-launched daemon rejected launcher control proof.");
   const token = (await bootstrap.json()).token;
+  assert(typeof token === "string" && token.length > 0,
+    "GUI-launched daemon returned an invalid browser bootstrap.");
+  return token;
+}
+
+async function browserSession(state) {
+  const baseUrl = `http://127.0.0.1:${state.port}`;
+  const token = await browserBootstrapToken(state);
   const exchange = await fetch(`${baseUrl}/api/launcher/session-exchange`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -292,10 +306,28 @@ checks.push({
 });
 
 const port = await availablePort();
+const persistentProfile = path.join(dataDir, "persistent-pwa-profile");
+const chromiumExecutable = findMacosChromiumExecutable();
+assert(chromiumExecutable,
+  "Normal GUI qualification requires an installed Chromium browser for the persistent-profile upgrade gate.");
+await seedLegacyPwaProfile(port, persistentProfile, chromiumExecutable);
 let primaryError;
 try {
   const firstState = await launchFromApplication(port);
   const baseUrl = `http://127.0.0.1:${firstState.port}`;
+  const persistentBootstrapToken = await browserBootstrapToken(firstState);
+  const pwaUpgrade = await qualifyPersistentPwaUpgrade({
+    port: firstState.port,
+    profileDir: persistentProfile,
+    webDist: installedWebDist,
+    bootstrapUrl: `${baseUrl}/__ponderosa_bootstrap#${encodeURIComponent(persistentBootstrapToken)}`,
+    browserExecutable: chromiumExecutable,
+  });
+  checks.push({
+    id: "macos-persistent-pwa-upgrade",
+    status: "pass",
+    detail: `${pwaUpgrade.publicAssetCount} exact web assets updated a controlling persistent Chromium profile; APIs remained authenticated and restart retained current assets`,
+  });
   const cookie = await browserSession(firstState);
   assert(cookie, "GUI-launched daemon did not issue a browser session.");
   const headers = {

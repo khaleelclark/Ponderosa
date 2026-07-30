@@ -393,6 +393,54 @@ describe("server public API behavior", () => {
     expect(apiMiss.body).not.toContain("<main>app</main>");
   });
 
+  it("allows unauthenticated PWA updates without exposing APIs or SPA routes", async () => {
+    const webDist = mkdtempSync(path.join(tmpdir(), "ponderosa-server-pwa-"));
+    extraDirectories.push(webDist);
+    mkdirSync(path.join(webDist, "static", "js"), { recursive: true });
+    mkdirSync(path.join(webDist, "icons"), { recursive: true });
+    for (const [relative, body] of [
+      ["index.html", "<main>current shell</main>"],
+      ["sw.js", "self.addEventListener('install', () => undefined);"],
+      ["register-sw.js", "navigator.serviceWorker.register('/sw.js');"],
+      ["push-handler.js", "self.addEventListener('push', () => undefined);"],
+      ["manifest.webmanifest", "{}"],
+      [path.join("static", "js", "current.123.js"), "console.log('current');"],
+      [path.join("icons", "app-icon.png"), "fixture"],
+    ]) {
+      writeFileSync(path.join(webDist, relative), body, "utf8");
+    }
+    const app = server({
+      dataDir,
+      store,
+      engines,
+      webDist,
+      logger: false,
+      authToken: "api-secret",
+      launcherSecurity: { controlToken: "launcher-secret" },
+    });
+
+    for (const url of [
+      "/index.html",
+      "/sw.js",
+      "/register-sw.js",
+      "/push-handler.js",
+      "/manifest.webmanifest",
+      "/static/js/current.123.js",
+      "/icons/app-icon.png",
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url).toBe(200);
+    }
+
+    const updateHead = await app.inject({ method: "HEAD", url: "/sw.js?update=1" });
+    expect(updateHead.statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/agents/stale-route" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api/projects" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "POST", url: "/sw.js" })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/api-lookalike.js" })).statusCode).toBe(401);
+  });
+
   it("reports engine authentication without invoking provider credentials", async () => {
     const broken = new BehavioralAdapter();
     Object.defineProperties(broken, {

@@ -51,6 +51,7 @@ interface RequestSecurityHooksContext {
   validLauncherSession(header: string | undefined): boolean;
   artifactFilesystemError(): string | undefined;
   isArtifactDependentWorkIntake(method: string, url: string, body?: unknown): boolean;
+  isPublicWebAssetRequest(method: string, url: string): boolean;
 }
 
 export function registerRequestSecurityHooks(
@@ -64,6 +65,7 @@ export function registerRequestSecurityHooks(
     validLauncherSession,
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
+    isPublicWebAssetRequest,
   } = context;
 
   app.addHook("onRequest", async (request, reply) => {
@@ -78,6 +80,7 @@ export function registerRequestSecurityHooks(
       return reply.code(401).send({ error: "launcher authorization required" });
     }
     if (opts.launcherSecurity && (browserBootstrapPath || launcherExchange)) return;
+    if (isPublicWebAssetRequest(request.method, request.url)) return;
     const agentToolRequest = isAgentToolRoute(request.url);
     const capability = agentToolRequest && provided ? agentMessageCapabilities.get(provided) : undefined;
     if (capability) {
