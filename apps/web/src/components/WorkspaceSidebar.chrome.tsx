@@ -373,9 +373,11 @@ export function WikiSidebarPanel({
 
 export function SettingsSidebarPanel({
   route,
+  version,
   onNavigate,
 }: {
   route: Route;
+  version?: string;
   onNavigate(route: Route): void;
 }): JSX.Element {
   return (
@@ -383,7 +385,7 @@ export function SettingsSidebarPanel({
       sx={{
         minHeight: 0,
         display: "grid",
-        gridTemplateRows: "auto minmax(0, 1fr)",
+        gridTemplateRows: "auto minmax(0, 1fr) auto",
         bgcolor: sidebarSurface,
       }}
     >
@@ -440,6 +442,13 @@ export function SettingsSidebarPanel({
           <ListItemText primary="Provider Activity" secondary="Tokens and Run telemetry" />
         </ListItemButton>
       </List>
+      <Typography
+        variant="caption"
+        color="text.disabled"
+        sx={{ px: 2.25, pb: 2 }}
+      >
+        Ponderosa{version ? ` v${version}` : ""}
+      </Typography>
     </Box>
   );
 }
