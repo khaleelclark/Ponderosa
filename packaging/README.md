@@ -25,7 +25,7 @@ On the target operating system:
 ```bash
 pnpm install --frozen-lockfile
 pnpm beta:node
-pnpm beta:bundle -- --version 0.1.0-beta.1 --channel beta
+pnpm beta:bundle -- --version 0.1.0-beta.2 --channel beta
 pnpm beta:verify
 ```
 
