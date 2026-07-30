@@ -259,6 +259,7 @@ function createBrowserProcess(executablePath, profileDir) {
     "--headless=new",
     "--remote-debugging-pipe",
     `--user-data-dir=${profileDir}`,
+    ...(process.platform === "darwin" ? ["--use-mock-keychain"] : []),
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-background-networking",
