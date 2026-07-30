@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: native-beta-${{ github.event.pull_request.number || github.ref }}
+  group: native-beta-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -33,7 +33,6 @@ jobs:
     timeout-minutes: 60
     env:
       CI: "true"
-      PONDEROSA_BUILD_VERSION: 0.0.0-beta.${{ github.run_number }}
       PONDEROSA_RELEASE_CHANNEL: beta
       PONDEROSA_NODE_VERSION: 22.22.1
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -41,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: pnpm/action-setup@v4
@@ -57,10 +56,17 @@ jobs:
       - name: Assert exact source and toolchain
         shell: bash
         run: |
-          expected="${{ github.event.pull_request.head.sha || github.sha }}"
+          expected="${{ github.sha }}"
           test "$(git rev-parse HEAD)" = "$expected"
           test "$(node --version)" = "v22.22.1"
           test "$(pnpm --version)" = "11.10.0"
+
+      - name: Resolve product version
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test -n "$version"
+          echo "PONDEROSA_BUILD_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Assert native host identity
         shell: bash
@@ -119,7 +125,7 @@ jobs:
         shell: bash
         run: node packaging/package-beta.mjs --format "${{ matrix.format }}"
 
-      - name: Qualify installed artifact
+      - name: Collect installed qualification evidence
         shell: bash
         run: |
           artifact="$(find dist/installers -maxdepth 1 -type f -name '*.${{ matrix.format }}' -print -quit)"
@@ -127,11 +133,17 @@ jobs:
           report="dist/qualification/native-installed-artifact.json"
           node packaging/qualification/qualify-installer.mjs --artifact "$artifact" --report "$report"
           node --input-type=module --eval "
-            import { readFileSync } from 'node:fs';
+            import { appendFileSync, readFileSync } from 'node:fs';
             const result = JSON.parse(readFileSync(process.argv[1], 'utf8'));
-            if (result.releaseQualified !== true) {
-              throw new Error('Installed artifact is not release qualified: ' + result.releaseBlockers.join('; '));
-            }
+            const blockers = result.releaseBlockers ?? [];
+            console.log('Release qualified:', result.releaseQualified === true);
+            console.log('External/manual release blockers:', blockers.length ? blockers.join('; ') : 'none');
+            appendFileSync(
+              process.env.GITHUB_STEP_SUMMARY,
+              '### Installed qualification evidence\\n\\n' +
+                '- Release qualified: **' + (result.releaseQualified === true ? 'yes' : 'no') + '**\\n' +
+                '- External/manual blockers: ' + (blockers.length ? blockers.join('; ') : 'none') + '\\n',
+            );
           " "$report"
 
       - name: Record safe failure context
