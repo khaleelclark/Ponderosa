@@ -6,6 +6,7 @@ import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
+import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
 export interface ExecutionItem {
@@ -51,6 +52,9 @@ function runningAfterAgentEvent(current: boolean, event: SseEventEnvelope["event
 const AGENT_CURSOR_STORAGE_KEY = "ponderosa.agent.stream-cursors.v1";
 const MAX_CACHED_AGENT_CURSORS = 100;
 const MAX_AGENT_CURSOR_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+const CURSOR_PERSIST_DEBOUNCE_MS = 250;
+const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
+const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
 
 interface AgentStreamCursor {
   lastSeq?: number;
@@ -92,9 +96,15 @@ function loadStoredCursors(): Map<string, AgentStreamCursor> {
 }
 
 const streamCursors = loadStoredCursors();
+let cursorPersistTimer: ReturnType<typeof setTimeout> | undefined;
+let cursorPersistencePending = false;
 
-function persistCursors(): void {
+function flushPendingCursors(): void {
   if (typeof window === "undefined") return;
+  if (cursorPersistTimer) clearTimeout(cursorPersistTimer);
+  cursorPersistTimer = undefined;
+  if (!cursorPersistencePending) return;
+  cursorPersistencePending = false;
   try {
     window.sessionStorage.setItem(
       AGENT_CURSOR_STORAGE_KEY,
@@ -105,6 +115,22 @@ function persistCursors(): void {
   }
 }
 
+function scheduleCursorPersistence(): void {
+  cursorPersistencePending = true;
+  cursorPersistTimer ??= setTimeout(
+    flushPendingCursors,
+    CURSOR_PERSIST_DEBOUNCE_MS,
+  );
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushPendingCursors);
+  window.addEventListener("beforeunload", flushPendingCursors);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushPendingCursors();
+  });
+}
+
 function rememberCursor(agentId: string, cursor: AgentStreamCursor): void {
   streamCursors.delete(agentId);
   streamCursors.set(agentId, { ...cursor, updatedAt: Date.now() });
@@ -113,7 +139,7 @@ function rememberCursor(agentId: string, cursor: AgentStreamCursor): void {
     if (!oldest) break;
     streamCursors.delete(oldest);
   }
-  persistCursors();
+  scheduleCursorPersistence();
 }
 
 function projectedArtifactId(agentId: string, seq: number): string {
@@ -413,10 +439,16 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
   return detail;
 }
 
-export function useAgentStream(agentId: string | undefined): StreamState {
+export function useAgentStream(
+  agentId: string | undefined,
+  knownProjectId?: string,
+): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
   const lastSeqRef = useRef<number | undefined>(undefined);
+  const projectIdRef = useRef(knownProjectId);
+  const retryProjectReconciliationRef = useRef<() => void>(() => undefined);
+  projectIdRef.current = knownProjectId;
 
   useEffect(() => {
     if (!agentId) {
@@ -432,7 +464,9 @@ export function useAgentStream(agentId: string | undefined): StreamState {
 
     let stopped = false;
     let subscription: StreamSubscription | undefined;
-    let reconnectQueued = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
+    let unregisterLiveStream: (() => void) | undefined;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let reconcileDetail = false;
     let reconcileRoster = false;
@@ -440,6 +474,7 @@ export function useAgentStream(agentId: string | undefined): StreamState {
     let reconcileUsage = false;
 
     const projectIdFromCache = (): string | undefined => {
+      if (projectIdRef.current) return projectIdRef.current;
       for (const [, detail] of queryClient.getQueriesData<AgentDetailDto>({
         queryKey: queryKeys.agents.detailPrefix(agentId),
       })) {
@@ -453,21 +488,21 @@ export function useAgentStream(agentId: string | undefined): StreamState {
       const projectId = projectIdFromCache();
       if (reconcileDetail) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) });
+        reconcileDetail = false;
       }
       if (reconcileRoster && projectId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId) });
+        reconcileRoster = false;
       }
       if (reconcileHealth && projectId) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.agents.health(projectId) });
+        reconcileHealth = false;
       }
       if (reconcileUsage) {
         void queryClient.invalidateQueries({ queryKey: queryKeys.tokenUsage.all });
         void queryClient.invalidateQueries({ queryKey: queryKeys.providerUsage.agent(agentId) });
+        reconcileUsage = false;
       }
-      reconcileDetail = false;
-      reconcileRoster = false;
-      reconcileHealth = false;
-      reconcileUsage = false;
     };
 
     const scheduleReconciliation = (options: {
@@ -489,13 +524,31 @@ export function useAgentStream(agentId: string | undefined): StreamState {
       reconcileTimer ??= setTimeout(flushReconciliation, 250);
     };
 
+    retryProjectReconciliationRef.current = () => {
+      if (
+        stopped
+        || reconcileTimer
+        || (!reconcileRoster && !reconcileHealth)
+        || !projectIdFromCache()
+      ) return;
+      reconcileTimer = setTimeout(flushReconciliation, 0);
+    };
+
+    const markStreamDisconnected = () => {
+      unregisterLiveStream?.();
+      unregisterLiveStream = undefined;
+    };
+
     const connect = (lastSeenSeq: number | undefined) => {
       if (stopped) return;
-      subscription = api.subscribeAgent(agentId, lastSeenSeq, {
+      const nextSubscription = api.subscribeAgent(agentId, lastSeenSeq, {
         onOpen() {
+          markStreamDisconnected();
+          unregisterLiveStream = registerLiveAgentStream(agentId);
           setState((current) => ({ ...current, connected: true }));
         },
         onError() {
+          markStreamDisconnected();
           setState((current) => ({ ...current, connected: false }));
         },
         onStatus(status) {
@@ -507,16 +560,22 @@ export function useAgentStream(agentId: string | undefined): StreamState {
             rememberCursor(agentId, cursor);
             setState({ ...initialStreamState, connected: true, lastSeq: 0 });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
-            subscription?.close();
-            if (!reconnectQueued) {
-              reconnectQueued = true;
-              queueMicrotask(() => {
-                reconnectQueued = false;
+            markStreamDisconnected();
+            nextSubscription.close();
+            if (!reconnectTimer) {
+              const delay = instanceMismatchDelay;
+              instanceMismatchDelay = Math.min(
+                instanceMismatchDelay * 2,
+                INSTANCE_MISMATCH_MAX_DELAY_MS,
+              );
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = undefined;
                 connect(0);
-              });
+              }, delay);
             }
             return;
           }
+          instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
             lastSeqRef.current = 0;
             cursor.lastSeq = 0;
@@ -582,6 +641,7 @@ export function useAgentStream(agentId: string | undefined): StreamState {
           }
         },
       });
+      subscription = nextSubscription;
     };
 
     connect(lastSeqRef.current);
@@ -589,9 +649,16 @@ export function useAgentStream(agentId: string | undefined): StreamState {
     return () => {
       stopped = true;
       subscription?.close();
+      markStreamDisconnected();
+      retryProjectReconciliationRef.current = () => undefined;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (reconcileTimer) clearTimeout(reconcileTimer);
     };
   }, [queryClient, agentId]);
+
+  useEffect(() => {
+    retryProjectReconciliationRef.current();
+  }, [knownProjectId]);
 
   return useMemo(() => state, [state]);
 }

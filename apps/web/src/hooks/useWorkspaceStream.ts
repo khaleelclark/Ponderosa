@@ -4,10 +4,13 @@ import type { WorkspaceEvent, WorkspaceEventEnvelope } from "@ponderosa/core";
 import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
+import { hasLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 
 const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
+const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
+const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
 
 function initialCursor(): number {
   try {
@@ -105,12 +108,6 @@ function invalidateActiveQueries(queryClient: QueryClient, queryKey: readonly un
   }
 }
 
-function hasActiveQuery(queryClient: QueryClient, queryKey: readonly unknown[]): boolean {
-  return queryClient.getQueryCache()
-    .findAll({ queryKey })
-    .some((query) => query.getObserversCount() > 0);
-}
-
 /** Coalesces a burst of coordination events into one refetch per affected
  * Project. A global invalidation supersedes narrower pending work. */
 function createAgentWorkInvalidator(
@@ -142,6 +139,38 @@ function createAgentWorkInvalidator(
       timer = undefined;
       invalidateAll = false;
       projectIds.clear();
+    },
+  };
+}
+
+/** Coalesces workspace fallbacks for Agent-detail surfaces that do not mount
+ * their own Agent stream, such as Project review. */
+function createAgentDetailInvalidator(
+  queryClient: Pick<QueryClient, "invalidateQueries">,
+  delayMs = 350,
+): { schedule(agentId: string): void; flush(): void; dispose(): void } {
+  const agentIds = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+    for (const agentId of agentIds) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detailPrefix(agentId),
+      });
+    }
+    agentIds.clear();
+  };
+  return {
+    schedule(agentId) {
+      agentIds.add(agentId);
+      timer ??= setTimeout(flush, delayMs);
+    },
+    flush,
+    dispose() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      agentIds.clear();
     },
   };
 }
@@ -226,11 +255,13 @@ export function useWorkspaceStream(): void {
 
   useEffect(() => {
     const agentWorkInvalidator = createAgentWorkInvalidator(queryClient);
+    const agentDetailInvalidator = createAgentDetailInvalidator(queryClient);
     const agentStateInvalidator = createAgentStateInvalidator(queryClient);
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     let replayReconcileTimer: ReturnType<typeof setTimeout> | undefined;
     const invalidateAll = () => {
       agentWorkInvalidator.dispose();
+      agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all });
@@ -260,13 +291,13 @@ export function useWorkspaceStream(): void {
       if (reconciliation.duplicate) return;
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
-      if (reconciliation.gap) {
-        invalidateAll();
-        return;
-      }
       const event = envelope.event;
       if (event.type === "preferences_updated") {
         queryClient.setQueryData(queryKeys.workspacePreferences.all, event.preferences);
+      }
+      if (reconciliation.gap) {
+        invalidateAll();
+        return;
       }
       // Replayed workspace events are historical catch-up. The canonical
       // queries already include them, so applying live invalidations here
@@ -325,15 +356,14 @@ export function useWorkspaceStream(): void {
         agentWorkInvalidator.schedule(event.projectId);
       }
       else if (event.type === "agent_event") {
+        if (!hasLiveAgentStream(event.agentId)) {
+          agentDetailInvalidator.schedule(event.agentId);
+        }
         for (const queryKey of fileActivityConversationQueryKeys(event)) {
           void queryClient.invalidateQueries({ queryKey });
         }
         if (event.category === "lifecycle") {
-          // The mounted Agent stream owns its live detail, roster, health, and
-          // terminal reconciliation. Workspace events cover inactive Agents.
-          if (!hasActiveQuery(queryClient, queryKeys.agents.detailPrefix(event.agentId))) {
-            agentStateInvalidator.schedule(event.projectId);
-          }
+          agentStateInvalidator.schedule(event.projectId);
           collaborationChatInvalidator.schedule(event.conversationIds);
           agentWorkInvalidator.schedule(event.projectId);
         }
@@ -357,10 +387,11 @@ export function useWorkspaceStream(): void {
     };
     let stopped = false;
     let subscription: StreamSubscription | undefined;
-    let reconnectQueued = false;
+    let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+    let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     const connect = (lastSeenId: number) => {
       if (stopped) return;
-      subscription = api.subscribeWorkspace(lastSeenId, {
+      const nextSubscription = api.subscribeWorkspace(lastSeenId, {
         onEvent: apply,
         onStatus: (status) => {
           const changedInstance = Boolean(
@@ -371,16 +402,21 @@ export function useWorkspaceStream(): void {
             instanceId.current = status.instanceId;
             persistWorkspaceCursor(0, status.instanceId);
             invalidateAll();
-            subscription?.close();
-            if (!reconnectQueued) {
-              reconnectQueued = true;
-              queueMicrotask(() => {
-                reconnectQueued = false;
+            nextSubscription.close();
+            if (!reconnectTimer) {
+              const delay = instanceMismatchDelay;
+              instanceMismatchDelay = Math.min(
+                instanceMismatchDelay * 2,
+                INSTANCE_MISMATCH_MAX_DELAY_MS,
+              );
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = undefined;
                 connect(0);
-              });
+              }, delay);
             }
             return;
           }
+          instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.reset || cursor.current > status.cursor) {
             cursor.current = 0;
             invalidateAll();
@@ -390,13 +426,16 @@ export function useWorkspaceStream(): void {
         },
         onError: () => undefined,
       });
+      subscription = nextSubscription;
     };
     connect(cursor.current);
     return () => {
       stopped = true;
       subscription?.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
       agentWorkInvalidator.dispose();
+      agentDetailInvalidator.dispose();
       agentStateInvalidator.dispose();
       collaborationChatInvalidator.dispose();
     };

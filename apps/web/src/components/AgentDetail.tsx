@@ -89,6 +89,7 @@ import { AgentDetailSettingsController } from "./AgentDetailSettingsController";
 
 export function AgentDetail({
   agentId,
+  projectId,
   focusMessageId,
   focusTelemetry,
   technicalFocusId,
@@ -132,7 +133,7 @@ export function AgentDetail({
   const [olderTelemetry, setOlderTelemetry] = useState<TelemetryPageState>({});
   const [loadingOlder, setLoadingOlder] = useState(false);
   const focusedTelemetryRef = useRef<string>();
-  const stream = useAgentStream(agentId);
+  const stream = useAgentStream(agentId, projectId);
   const [tab, setTab] = useState<AgentTab>(() => {
     if (initialView) return initialView === "activity" ? "chat" : initialView;
     const saved = readChatState(chatStateKey("view", `agent.${agentId}`));
