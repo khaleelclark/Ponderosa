@@ -17,57 +17,61 @@ import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
 
 interface ComposerDestinationBarProps {
-  clearDestination(handle: string): void;
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
-  hasBroadcastDestination: boolean;
-  targetRequiredDestinations: Array<{ handle: string }>;
 }
 
 export function ComposerDestinationBar({
-  clearDestination,
   destinationError,
   destinationMode,
-  hasBroadcastDestination,
-  targetRequiredDestinations,
 }: ComposerDestinationBarProps): JSX.Element | null {
-  return destinationMode === "target-required" ? (
-    <Stack
-      direction="row"
-      spacing={0.75}
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
+  return destinationMode === "target-required" && destinationError ? (
+    <Typography
+      variant="caption"
+      color="error.main"
+      sx={{ display: "block", px: 0.25, pb: 0.75 }}
     >
-      {targetRequiredDestinations.map(destination => (
-        <Chip
-          key={destination.handle.toLocaleLowerCase()}
-          size="small"
-          color="primary"
-          label={`#${destination.handle}`}
-          onDelete={() => clearDestination(destination.handle)}
-        />
-      ))}
-      {hasBroadcastDestination ? (
-        <Chip
-          size="small"
-          color="info"
-          icon={<CampaignOutlinedIcon />}
-          label="#broadcast"
-          onDelete={() => clearDestination("broadcast")}
-        />
-      ) : null}
-      {targetRequiredDestinations.length === 0 &&
-      !hasBroadcastDestination ? (
-        <Chip size="small" variant="outlined" label="Choose an Agent" />
-      ) : null}
-      {destinationError ? (
-        <Typography variant="caption" color="error.main">
-          {destinationError}
-        </Typography>
-      ) : null}
-    </Stack>
+      {destinationError}
+    </Typography>
   ) : null;
+}
+
+export function ComposerTargetDestinationAction({
+  broadcast,
+  handles,
+  onClear,
+}: {
+  broadcast: boolean;
+  handles: string[];
+  onClear(): void;
+}): JSX.Element | null {
+  const labels = [
+    ...(broadcast ? ["#broadcast"] : []),
+    ...handles.map(handle => `#${handle}`),
+  ];
+  if (labels.length === 0) return null;
+  const label = labels.length > 1
+    ? `${labels[0]} +${labels.length - 1}`
+    : labels[0]!;
+  return (
+    <Chip
+      size="small"
+      color={broadcast ? "info" : "primary"}
+      icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
+      label={label}
+      onDelete={onClear}
+      sx={{
+        maxWidth: { xs: 124, sm: 240 },
+        height: 34,
+        fontWeight: 700,
+        "& .MuiChip-label": {
+          minWidth: 0,
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        },
+      }}
+    />
+  );
 }
 
 interface ComposerProjectDestinationActionProps {
