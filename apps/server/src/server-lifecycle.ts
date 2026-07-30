@@ -80,6 +80,9 @@ type ServerLifecycleContext =
     reconcileRuntimeCommunicationProjections(filter?: {
       projectId?: string;
       communicationEventId?: string;
+    }, options?: {
+      yieldEvery?: number;
+      shouldContinue?(): boolean;
     }): Promise<number>;
     clearRunLeaseTimer(run: ActiveRun): void;
     clearRunLivenessTimer(run: ActiveRun): void;
@@ -148,6 +151,30 @@ export function registerServerLifecycle(
   let agentDeletionCleanupSweep: NodeJS.Timeout | undefined;
   let agentDeletionCleanupDraining = false;
   let linkPreviewSweep: NodeJS.Timeout | undefined;
+  let startupProjectionRecoveryImmediate: NodeJS.Immediate | undefined;
+  let startupProjectionRecovery: Promise<void> | undefined;
+
+  const scheduleStartupProjectionRecovery = (): void => {
+    startupProjectionRecoveryImmediate = setImmediate(() => {
+      startupProjectionRecoveryImmediate = undefined;
+      if (isClosed()) return;
+      startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
+        yieldEvery: 25,
+        shouldContinue: () => !isClosed(),
+      }).then((repaired) => {
+        if (!isClosed()) {
+          app.log.info({ repaired }, "runtime communication projection startup recovery completed");
+        }
+      }).catch((error) => {
+        if (!isClosed()) {
+          app.log.error({ err: error }, "runtime communication projection startup recovery failed");
+        }
+      }).finally(() => {
+        startupProjectionRecovery = undefined;
+      });
+    });
+    startupProjectionRecoveryImmediate.unref();
+  };
 
   const drainAgentDeletionCleanup = async (): Promise<void> => {
     if (agentDeletionCleanupDraining || isClosed()) return;
@@ -195,7 +222,11 @@ export function registerServerLifecycle(
           assets.removeRuntimeArtifactReservation(project.id, removed);
         }
       }
-      await reconcileRuntimeCommunicationProjections();
+      // Historical projection repair is idempotent and exact live retries
+      // reconcile their own Communication before reporting success. Run the
+      // full backlog after readiness so a large ledger cannot hold the listener
+      // closed, and yield between bounded batches to preserve the event loop.
+      scheduleStartupProjectionRecovery();
       for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
         const request = coordinationV3.requestForUpdate(artifact.ownerId);
         if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
@@ -367,6 +398,7 @@ export function registerServerLifecycle(
 
   app.addHook("onClose", async () => {
     setClosed();
+    if (startupProjectionRecoveryImmediate) clearImmediate(startupProjectionRecoveryImmediate);
     if (assetSweep) clearInterval(assetSweep);
     if (agentDeletionCleanupSweep) clearInterval(agentDeletionCleanupSweep);
     stopCommunicationReconciliation();
@@ -393,6 +425,10 @@ export function registerServerLifecycle(
       boundedBackgroundShutdown("web-push delivery", () => webPushDelivery?.stop()),
       boundedBackgroundShutdown("trigger sources", () => triggerSources.stop()),
       boundedBackgroundShutdown("coordination scheduler", () => coordinationV3Scheduler.stop()),
+      boundedBackgroundShutdown(
+        "runtime communication projection recovery",
+        () => startupProjectionRecovery,
+      ),
       ...runBrowserClosures,
       Promise.resolve().then(() => browserSessions.closeAll("server_shutdown")),
       Promise.resolve().then(() => projectBrowserSessions.closeAll("server_shutdown")),

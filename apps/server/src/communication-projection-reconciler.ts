@@ -32,6 +32,15 @@ interface CommunicationProjectionReconcilerContext {
   ): void;
 }
 
+interface CommunicationProjectionReconciliationOptions {
+  yieldEvery?: number;
+  shouldContinue?(): boolean;
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 function runtimeProjectionTargets(
   event: CommunicationEvent,
   recipientAgentIds: readonly string[],
@@ -79,14 +88,21 @@ export function createCommunicationProjectionReconciler(
   async function reconcileRuntimeCommunicationProjections(filter?: {
     projectId?: string;
     communicationEventId?: string;
-  }): Promise<number> {
+  }, options: CommunicationProjectionReconciliationOptions = {}): Promise<number> {
     let repaired = 0;
     let skippedUnavailableTargets = 0;
+    let scanned = 0;
     const repairedProjectIds = new Set<string>();
     const exactCanonicalEvents = new Map<string, CommunicationEvent>();
     const exactRecipientAgentIds = new Map<string, string[]>();
     for (const row of coordinationV3.runtimeCommunications()) {
       if (filter?.projectId && row.projectId !== filter.projectId) continue;
+      if (options.shouldContinue && !options.shouldContinue()) break;
+      scanned += 1;
+      if (options.yieldEvery && scanned > 1 && (scanned - 1) % options.yieldEvery === 0) {
+        await yieldToEventLoop();
+        if (options.shouldContinue && !options.shouldContinue()) break;
+      }
       const payload = row.payload && typeof row.payload === "object"
         ? row.payload as Record<string, unknown>
         : undefined;
@@ -275,17 +291,12 @@ export function createCommunicationProjectionReconciler(
 
         const behavior = deriveCommunicationBehavior(canonical);
         const runtimeTargets = runtimeProjectionTargets(canonical, recipientAgentIds);
-        const projectionTargets = runtimeTargets.filter((target) => {
-          if (target.surface === "conversation" || target.surface === "collaboration_view") {
-            const conversation = store.getConversation(target.projectionKey);
-            return Boolean(conversation && conversation.projectId === canonical.projectId && !conversation.archived);
-          }
-          if (target.surface === "direct_agent_audit" || target.surface === "agent_inbox") {
-            const agent = store.getAgent(target.projectionKey);
-            return Boolean(agent && agent.projectId === canonical.projectId && !agent.archived);
-          }
-          return true;
-        });
+        const projectionTargets = runtimeTargets.filter((target) =>
+          store.canProjectCommunication(canonical.projectId, {
+            eventId: canonical.eventId,
+            surface: target.surface,
+            projectionKey: target.projectionKey,
+          }));
         skippedUnavailableTargets += runtimeTargets.length - projectionTargets.length;
         const recipientIds = canonical.intent === "broadcast" && canonical.sender.kind === "user"
           ? recipientAgentIds
@@ -360,9 +371,12 @@ export function createCommunicationProjectionReconciler(
         }
 
         for (const target of projectionTargets.filter((item) => item.surface === "direct_agent_audit")) {
-          const before = store.readCommunicationProjections(canonical.projectId).find((projection) =>
-            projection.eventId === canonical.eventId && projection.surface === target.surface &&
-            projection.projectionKey === target.projectionKey);
+          const before = store.getCommunicationProjection(
+            canonical.projectId,
+            canonical.eventId,
+            target.surface,
+            target.projectionKey,
+          );
           const targetAttachments = canonical.intent === "broadcast" &&
               canonical.sender.kind === "user" &&
               recipientAgentIds.includes(target.projectionKey)
@@ -375,9 +389,12 @@ export function createCommunicationProjectionReconciler(
             ? renderScopedMessage("broadcast", canonical.text)
             : dispatchText;
           projectCommunicationToAgentAudit(target.projectionKey, canonical, auditText, targetAttachments);
-          const after = store.readCommunicationProjections(canonical.projectId).find((projection) =>
-            projection.eventId === canonical.eventId && projection.surface === target.surface &&
-            projection.projectionKey === target.projectionKey);
+          const after = store.getCommunicationProjection(
+            canonical.projectId,
+            canonical.eventId,
+            target.surface,
+            target.projectionKey,
+          );
           if (JSON.stringify(before) !== JSON.stringify(after)) {
             repaired += 1;
             repairedProjectIds.add(canonical.projectId);
@@ -406,7 +423,6 @@ export function createCommunicationProjectionReconciler(
     if (filter?.projectId && filter.communicationEventId) {
       const canonical = [...exactCanonicalEvents.values()][0] ??
         store.getCommunicationEvent(filter.projectId, filter.communicationEventId);
-      const projections = canonical ? store.readCommunicationProjections(filter.projectId) : [];
       // Legacy audit-first recovery can already own the one stable room
       // dispatch under the canonical idempotency receipt while the newer V3
       // runtime row has a different deterministic event ID. That durable
@@ -430,8 +446,12 @@ export function createCommunicationProjectionReconciler(
               return false;
             }
             return !((target.surface === "conversation" || target.surface === "collaboration_view") && receiptMessage) &&
-              !projections.some((projection) => projection.eventId === canonical.eventId &&
-                projection.surface === target.surface && projection.projectionKey === target.projectionKey && projection.message);
+              !store.getCommunicationProjection(
+                canonical.projectId,
+                canonical.eventId,
+                target.surface,
+                target.projectionKey,
+              )?.message;
           })
         : [];
       if (!canonical || incompleteTargets.length > 0) {
