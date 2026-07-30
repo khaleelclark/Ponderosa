@@ -142,15 +142,20 @@ assertCleanSource();
 // previously generated web/dist tree. A stale PWA shell can otherwise make a
 // correct new daemon look like the old installed version.
 execFileSync(
-  path.join(
-    repositoryRoot,
-    "apps",
-    "web",
-    "node_modules",
-    ".bin",
-    process.platform === "win32" ? "rsbuild.cmd" : "rsbuild",
-  ),
-  ["build"],
+  process.execPath,
+  [
+    path.join(
+      repositoryRoot,
+      "apps",
+      "web",
+      "node_modules",
+      "@rsbuild",
+      "core",
+      "bin",
+      "rsbuild.js",
+    ),
+    "build",
+  ],
   {
     cwd: path.join(repositoryRoot, "apps", "web"),
     stdio: "inherit",
