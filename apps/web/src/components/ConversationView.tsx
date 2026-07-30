@@ -1020,7 +1020,7 @@ export function ConversationView({
             allowUnmentionedSend={engineReady}
             placeholder={
               engineReady
-                ? "Write a message · # targets Agents · #broadcast shares · @ references files"
+                ? "Write a message…"
                 : "Choose an available Agent with #, or use #broadcast"
             }
             onSend={(text, files, stagedIds, draftOwnerId, context) =>

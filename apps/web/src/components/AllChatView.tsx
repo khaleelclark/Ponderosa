@@ -944,7 +944,7 @@ export function AllChatView({
           placeholder={
             replyTarget
               ? `Message ${replyTarget.title} directly`
-              : "Choose an Agent with #, then write a message"
+              : "Select an Agent with #, then write a message"
           }
           insertTextRequest={mentionInsertRequest}
           removeTextRequest={mentionRemoveRequest}
