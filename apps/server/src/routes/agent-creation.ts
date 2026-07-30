@@ -334,12 +334,14 @@ export function registerAgentCreationRoutes(
             eventId,
           );
         }
-        const audit = sharedOpening ? undefined : store.appendEvent(agent.id, {
+        // The opening Broadcast remains organizational context, while this
+        // exact Activation recipient owns an audit copy in its Agent chat.
+        const audit = store.appendEvent(agent.id, {
           type: "user_message", text: openingPrepared!.publishedText, communicationEventId: eventId,
           ...(openingAttachments.length ? { attachments: openingAttachments } : {}),
         });
         if (openingAttachments.length) await assets.associate(agent.projectId, agent.id, openingAttachments.map((item) => item.id));
-        if (audit) publish(agent.id, audit);
+        publish(agent.id, audit);
         publishMessageDeliveryChanged(agent.id);
         notifyScheduler();
       }
