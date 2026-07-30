@@ -642,19 +642,26 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
   if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
   if (!optionId && !current.runtimeAction && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+  const liveRuntimeAction = current.runtimeAction
+    ? runtimeElicitations.action(current.id)
+    : undefined;
   if (current.runtimeAction) {
-    if (!runtimeElicitations.action(current.id)) {
+    if (!liveRuntimeAction) {
       return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
     }
     if (!text) {
       if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
         return reply.code(400).send({ error: "Confirm the connection, choose Not Now, or send another response to the Agent" });
       }
-      if (current.runtimeAction.mode !== "url" && optionId !== "submit" && optionId !== "decline") {
+      if (current.runtimeAction.mode !== "url" &&
+          optionId !== "submit" && optionId !== "allow_run" && optionId !== "decline") {
         return reply.code(400).send({ error: "Submit the requested information, choose Not Now, or send another response to the Agent" });
       }
       if (optionId === "submit" && request.body?.content === undefined) {
         return reply.code(400).send({ error: "The requested form is incomplete" });
+      }
+      if (optionId === "allow_run" && !runtimeElicitations.canRememberForRun(liveRuntimeAction)) {
+        return reply.code(400).send({ error: "Only confirmation requests can be allowed for the rest of this run" });
       }
     }
   }
@@ -681,6 +688,9 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
       runtimeElicitations.respond(current.id, { action: "decline" });
       ensureDecisionResponseActivation(decision);
       notifyScheduler();
+    } else if (optionId === "allow_run") {
+      runtimeElicitations.rememberForRun(current.runId, liveRuntimeAction!);
+      runtimeElicitations.respond(current.id, { action: "accept", content: {} });
     } else {
       runtimeElicitations.respond(current.id, optionId === "decline"
         ? { action: "decline" }

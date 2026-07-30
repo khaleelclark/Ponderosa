@@ -330,6 +330,10 @@ export function startProviderRunExecution(
                 return { action: "cancel" };
               }
             }
+            if (runtimeElicitations.allowsForRun(currentRun.runId, request)) {
+              return { action: "accept", content: {} };
+            }
+            const rememberableConfirmation = runtimeElicitations.canRememberForRun(request);
             const cursor = workspace.cursor();
             const providerName = humanizeProviderName(request.serverName);
             const decision = workspace.createDecision({
@@ -342,15 +346,25 @@ export function startProviderRunExecution(
               mode: "choice",
               question: request.mode === "url"
                 ? `${agent.title} needs a secure ${providerName} connection before it can continue.`
+                : rememberableConfirmation
+                  ? `${agent.title} needs permission for ${providerName} before it can continue.`
                 : `${agent.title} needs information for ${providerName} before it can continue.`,
               context: request.mode === "url"
                 ? `Open the secure ${providerName} connection page, then return here to confirm.`
+                : rememberableConfirmation
+                  ? `${providerName} requested confirmation. You can allow it once or for the rest of this Agent run.`
                 : `${providerName} needs this information to continue. Submitted values are sent directly to the provider and are not saved in Ponderosa.`,
               options: request.mode === "url"
                 ? [
                     { id: "accept", label: "I've Connected" },
                     { id: "decline", label: "Not Now" },
                   ]
+                : rememberableConfirmation
+                  ? [
+                      { id: "submit", label: "Allow once" },
+                      { id: "allow_run", label: "Allow for this run" },
+                      { id: "decline", label: "Not Now" },
+                    ]
                 : [
                     { id: "submit", label: "Submit" },
                     { id: "decline", label: "Not Now" },
@@ -385,6 +399,8 @@ export function startProviderRunExecution(
               action: { kind: "open_decision", targetId: decision.id },
               title: request.mode === "url"
                 ? `${agent.title} needs you to connect ${providerName}`
+                : rememberableConfirmation
+                  ? `${agent.title} needs permission for ${providerName}`
                 : `${agent.title} needs information for ${providerName}`,
               body: decision.question,
               decision: {
@@ -795,6 +811,7 @@ export function startProviderRunExecution(
       runError = workspaceIssue ?? message;
       await persistRuntimeEvent(agent.id, activeRun, { type: "error", message: runError });
     } finally {
+      runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
       const rolloverRequested = owned && scheduledSessionRollovers.delete(agent.id);

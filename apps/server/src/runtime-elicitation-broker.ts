@@ -10,12 +10,53 @@ interface PendingElicitation {
   abort(): void;
 }
 
+function confirmationKey(request: RuntimeElicitationRequest): string | undefined {
+  if (request.mode === "url") return undefined;
+  const schema = request.requestedSchema;
+  if (schema.type !== undefined && schema.type !== "object") return undefined;
+  const properties = schema.properties;
+  if (properties !== undefined &&
+      (!properties || typeof properties !== "object" || Array.isArray(properties) ||
+        Object.keys(properties).length > 0)) return undefined;
+  const required = schema.required;
+  if (required !== undefined && (!Array.isArray(required) || required.length > 0)) return undefined;
+  if (typeof schema.minProperties === "number" && schema.minProperties > 0) return undefined;
+  if (["allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependencies"]
+    .some((key) => Object.hasOwn(schema, key))) return undefined;
+  // Exact message equality narrows the lease without inferring a tool name or
+  // permission scope from provider-authored prose.
+  return `${request.serverName}\0${request.message}`;
+}
+
 /**
  * Keeps live provider elicitations out of durable state. OAuth URLs and form
  * values exist only while the corresponding provider request is waiting.
  */
 export class RuntimeElicitationBroker {
   private readonly pending = new Map<string, PendingElicitation>();
+  private readonly runConfirmationApprovals = new Map<string, Set<string>>();
+
+  canRememberForRun(request: RuntimeElicitationRequest): boolean {
+    return confirmationKey(request) !== undefined;
+  }
+
+  allowsForRun(runId: string, request: RuntimeElicitationRequest): boolean {
+    const key = confirmationKey(request);
+    return Boolean(key && this.runConfirmationApprovals.get(runId)?.has(key));
+  }
+
+  rememberForRun(runId: string, request: RuntimeElicitationRequest): boolean {
+    const key = confirmationKey(request);
+    if (!key) return false;
+    const approvals = this.runConfirmationApprovals.get(runId) ?? new Set<string>();
+    approvals.add(key);
+    this.runConfirmationApprovals.set(runId, approvals);
+    return true;
+  }
+
+  clearRun(runId: string): void {
+    this.runConfirmationApprovals.delete(runId);
+  }
 
   wait(
     decisionId: string,
