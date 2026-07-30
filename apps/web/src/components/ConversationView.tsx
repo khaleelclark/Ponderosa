@@ -1062,7 +1062,7 @@ export function ConversationView({
             placeholder={
               engineReady
                 ? "Write a message…"
-                : "Choose an available Agent with #, or use #broadcast"
+                : "Choose an available Agent with # or use #broadcast"
             }
             onSend={(text, files, stagedIds, draftOwnerId, context) =>
               submit(
