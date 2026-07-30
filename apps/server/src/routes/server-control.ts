@@ -5,8 +5,6 @@ import type { FastifyReply } from "fastify";
 import {
   canonicalizeProviderText,
   type EngineLogDto,
-  type EngineLogFileDto,
-  type EngineStatusDto,
   unicodeCodePointLength,
   type CommunicationReconciliationReport,
   type ReadinessCheckDto,
@@ -76,23 +74,6 @@ interface ServerControlRoutesContext {
 }
 
 const ENGINE_LOG_TAIL_BYTES = 64 * 1024;
-
-async function engineLogMetadata(pathname: string | undefined): Promise<EngineLogFileDto> {
-  if (!pathname) return { available: false, sizeBytes: 0 };
-  try {
-    const stat = await fs.stat(pathname);
-    return {
-      available: stat.isFile(),
-      sizeBytes: stat.isFile() ? stat.size : 0,
-      updatedAt: stat.mtime.toISOString(),
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { available: false, sizeBytes: 0 };
-    }
-    throw error;
-  }
-}
 
 async function engineLogTail(
   pathname: string | undefined,
@@ -227,37 +208,11 @@ app.get("/api/launcher/status", async () => ({
   channel: opts.releaseChannel?.trim() || "development",
   acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
   leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
+  activeRunCount: activeRuns.size,
 }));
 
-app.get("/api/engine/status", async (): Promise<EngineStatusDto> => {
-  const serverLogPath = opts.launcherDataDir
-    ? path.join(opts.launcherDataDir, "logs", "server.log")
-    : undefined;
-  const errorLogPath = opts.launcherDataDir
-    ? path.join(opts.launcherDataDir, "logs", "server-error.log")
-    : undefined;
-  const uptimeSeconds = Math.floor(process.uptime());
-  return {
-    status: "running",
-    pid: process.pid,
-    version: opts.buildVersion?.trim() || "0.0.0",
-    revision: opts.buildRevision?.trim() || "development",
-    channel: opts.releaseChannel?.trim() || "development",
-    uptimeSeconds,
-    startedAt: new Date(Date.now() - uptimeSeconds * 1_000).toISOString(),
-    acceptingDurableIntake:
-      !isClosed() && artifactFilesystem.ok && processContainment.ok,
-    leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
-    dataDir: opts.dataDir,
-    logs: {
-      server: await engineLogMetadata(serverLogPath),
-      error: await engineLogMetadata(errorLogPath),
-    },
-  };
-});
-
 app.get<{ Querystring: { stream?: string } }>(
-  "/api/engine/logs",
+  "/api/launcher/logs",
   async (request, reply) => {
     const stream = request.query.stream;
     if (stream !== "server" && stream !== "error") {
@@ -324,8 +279,7 @@ app.get("/__ponderosa_bootstrap.js", async (_request, reply) => reply
   .send(`(async()=>{
 const status=document.getElementById("status");
 const token=decodeURIComponent(location.hash.slice(1));
-const requested=new URLSearchParams(location.search).get("next");
-const destination=requested==="/engine"?requested:"/";
+const destination="/";
 history.replaceState(null,"","/__ponderosa_bootstrap"+location.search);
 if(!token){location.replace(destination);return}
 try{
@@ -387,9 +341,6 @@ const beginShutdown = (reply: FastifyReply) => {
 };
 
 app.post("/api/launcher/shutdown", async (_request, reply) =>
-  beginShutdown(reply));
-
-app.post("/api/engine/shutdown", async (_request, reply) =>
   beginShutdown(reply));
 
 app.post("/api/deployment/drain", async (_request, reply) => {

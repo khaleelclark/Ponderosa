@@ -422,30 +422,6 @@ export interface HealthDto {
   revision: string;
 }
 
-export interface EngineLogFileDto {
-  available: boolean;
-  sizeBytes: number;
-  updatedAt?: string;
-}
-
-/** Browser-authenticated status for the installed Ponderosa Engine. */
-export interface EngineStatusDto {
-  status: "running";
-  pid: number;
-  version: string;
-  revision: string;
-  channel: string;
-  uptimeSeconds: number;
-  startedAt: string;
-  acceptingDurableIntake: boolean;
-  leasingRuns: boolean;
-  dataDir: string;
-  logs: {
-    server: EngineLogFileDto;
-    error: EngineLogFileDto;
-  };
-}
-
 /** Bounded tail of one installed-engine log. */
 export interface EngineLogDto {
   stream: "server" | "error";

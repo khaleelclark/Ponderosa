@@ -6,19 +6,30 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   auditPortableSymlinkTree,
   copyPortableTree,
 } from "./qualification/symlink-portability.mjs";
-import { macosInfoPlist } from "./qualification/macos-bundle-metadata.mjs";
-import { macosLauncherEntry } from "./qualification/macos-gui-entry.mjs";
+import { expectedMacosBundleIdentity } from "./qualification/macos-bundle-metadata.mjs";
+
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const engineRequire = createRequire(path.join(
+  repositoryRoot,
+  "apps",
+  "engine-desktop",
+  "package.json",
+));
+const { packager } = engineRequire("@electron/packager");
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -34,6 +45,51 @@ function run(command, args) {
 function writeExecutable(pathname, content) {
   writeFileSync(pathname, content, { mode: 0o755 });
   try { chmodSync(pathname, 0o755); } catch { /* Windows ignores POSIX modes. */ }
+}
+
+async function packageElectronApplication({
+  outputDirectory,
+  platform,
+  arch,
+  icon,
+}) {
+  const paths = await packager({
+    dir: path.join(bundle, "app", "engine-desktop"),
+    out: outputDirectory,
+    overwrite: true,
+    platform,
+    arch,
+    name: "Ponderosa Engine",
+    executableName: platform === "linux" ? "ponderosa-engine" : "Ponderosa Engine",
+    appBundleId: "app.ponderosa.beta",
+    appVersion: manifest.version,
+    buildVersion: platform === "darwin"
+      ? expectedMacosBundleIdentity(manifest).bundleVersion
+      : manifest.version,
+    electronVersion: engineRequire("electron/package.json").version,
+    asar: true,
+    prune: false,
+    ...(icon ? { icon } : {}),
+  });
+  if (paths.length !== 1) {
+    throw new Error(`Electron packaging produced ${paths.length} application directories.`);
+  }
+  const application = paths[0];
+  const resources = platform === "darwin"
+    ? path.join(application, "Contents", "Resources")
+    : path.join(application, "resources");
+  copyPortableTree(bundle, path.join(resources, "Ponderosa"), {
+    label: `staged ${platform} Electron application`,
+  });
+  return application;
+}
+
+function setPlistString(plist, key, value) {
+  try {
+    execFileSync("plutil", ["-replace", key, "-string", value, plist]);
+  } catch {
+    execFileSync("plutil", ["-insert", key, "-string", value, plist]);
+  }
 }
 
 function finalizeArtifact(target, security) {
@@ -70,12 +126,9 @@ if (format === "dmg") {
   const stage = path.join(os.tmpdir(), `ponderosa-dmg-${process.pid}`);
   const app = path.join(stage, "Ponderosa Engine.app");
   rmSync(stage, { recursive: true, force: true });
-  mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
-  mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
-  copyPortableTree(bundle, path.join(app, "Contents", "Resources", "Ponderosa"), {
-    label: "staged macOS application bundle",
-  });
   const iconset = path.join(stage, "Ponderosa.iconset");
+  const icon = path.join(stage, "Ponderosa.icns");
+  mkdirSync(stage, { recursive: true });
   const iconSource = path.join(bundle, "app", "web", "dist", "icons", "app-icon.png");
   mkdirSync(iconset);
   for (const [pixels, name] of [
@@ -98,15 +151,32 @@ if (format === "dmg") {
   }
   run("iconutil", [
     "--convert", "icns",
-    "--output", path.join(app, "Contents", "Resources", "Ponderosa.icns"),
+    "--output", icon,
     iconset,
   ]);
   rmSync(iconset, { recursive: true, force: true });
-  writeExecutable(
-    path.join(app, "Contents", "MacOS", "Ponderosa"),
-    macosLauncherEntry(),
-  );
-  writeFileSync(path.join(app, "Contents", "Info.plist"), macosInfoPlist(manifest));
+  const electronOutput = path.join(stage, "electron");
+  const packaged = await packageElectronApplication({
+    outputDirectory: electronOutput,
+    platform: "darwin",
+    arch: manifest.target.arch,
+    icon,
+  });
+  renameSync(packaged, app);
+  rmSync(electronOutput, { recursive: true, force: true });
+  rmSync(icon, { force: true });
+  const identity = expectedMacosBundleIdentity(manifest);
+  const plist = path.join(app, "Contents", "Info.plist");
+  for (const [key, value] of [
+    ["CFBundleName", "Ponderosa Engine"],
+    ["CFBundleDisplayName", "Ponderosa Engine"],
+    ["CFBundleIdentifier", "app.ponderosa.beta"],
+    ["CFBundleVersion", identity.bundleVersion],
+    ["CFBundleShortVersionString", identity.shortVersion],
+    ["CFBundleGetInfoString", identity.infoString],
+    ["PonderosaBuildVersion", identity.exactVersion],
+    ["PonderosaBuildCommit", identity.exactCommit],
+  ]) setPlistString(plist, key, value);
   const signingIdentity = process.env.PONDEROSA_MACOS_SIGN_IDENTITY?.trim();
   if (signingIdentity) {
     run("codesign", [
@@ -142,20 +212,25 @@ if (format === "dmg") {
   rmSync(appDir, { recursive: true, force: true });
   mkdirSync(path.join(appDir, "usr", "lib"), { recursive: true });
   mkdirSync(path.join(appDir, "usr", "share", "icons", "hicolor", "256x256", "apps"), { recursive: true });
-  copyPortableTree(bundle, path.join(appDir, "usr", "lib", "ponderosa-beta"), {
-    label: "staged AppImage application bundle",
+  const electronOutput = path.join(os.tmpdir(), `ponderosa-electron-${process.pid}`);
+  rmSync(electronOutput, { recursive: true, force: true });
+  const packaged = await packageElectronApplication({
+    outputDirectory: electronOutput,
+    platform: "linux",
+    arch: manifest.target.arch,
+    icon: path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
   });
+  copyPortableTree(packaged, path.join(appDir, "usr", "lib", "ponderosa-engine"), {
+    label: "staged AppImage Electron application",
+  });
+  rmSync(electronOutput, { recursive: true, force: true });
   cpSync(
     path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
     path.join(appDir, "ponderosa-beta.png"),
   );
   writeExecutable(path.join(appDir, "AppRun"), `#!/bin/sh
 set -eu
-ROOT="$APPDIR/usr/lib/ponderosa-beta"
-if [ "$#" -eq 0 ]; then
-  exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" engine --install-root "$ROOT"
-fi
-exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" --install-root "$ROOT" "$@"
+exec "$APPDIR/usr/lib/ponderosa-engine/ponderosa-engine" "$@"
 `);
   writeFileSync(path.join(appDir, "ponderosa-beta.desktop"), `[Desktop Entry]
 Type=Application
@@ -183,11 +258,20 @@ Terminal=false
   mkdirSync(path.join(root, "opt"), { recursive: true });
   mkdirSync(path.join(root, "usr", "bin"), { recursive: true });
   mkdirSync(path.join(root, "usr", "share", "applications"), { recursive: true });
-  copyPortableTree(bundle, path.join(root, "opt", "ponderosa-beta"), {
-    label: "staged Debian application bundle",
+  const electronOutput = path.join(os.tmpdir(), `ponderosa-electron-${process.pid}`);
+  rmSync(electronOutput, { recursive: true, force: true });
+  const packaged = await packageElectronApplication({
+    outputDirectory: electronOutput,
+    platform: "linux",
+    arch: manifest.target.arch,
+    icon: path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
   });
+  copyPortableTree(packaged, path.join(root, "opt", "ponderosa-engine"), {
+    label: "staged Debian Electron application",
+  });
+  rmSync(electronOutput, { recursive: true, force: true });
   writeExecutable(path.join(root, "usr", "bin", "ponderosa-beta"), `#!/bin/sh
-exec /opt/ponderosa-beta/runtime/node /opt/ponderosa-beta/app/launcher/dist/cli.js --install-root /opt/ponderosa-beta "$@"
+exec /opt/ponderosa-engine/ponderosa-engine "$@"
 `);
   writeFileSync(path.join(root, "usr", "share", "applications", "ponderosa-beta.desktop"), `[Desktop Entry]
 Type=Application
@@ -219,7 +303,15 @@ Terminal=false
   if (process.platform !== "win32") throw new Error("Windows installers must be built on Windows.");
   const iscc = process.env.ISCC?.trim() || "ISCC.exe";
   const script = path.join(os.tmpdir(), `ponderosa-${process.pid}.iss`);
-  const escapedBundle = bundle.replaceAll("\\", "\\\\");
+  const electronOutput = path.join(os.tmpdir(), `ponderosa-electron-${process.pid}`);
+  rmSync(electronOutput, { recursive: true, force: true });
+  const packaged = await packageElectronApplication({
+    outputDirectory: electronOutput,
+    platform: "win32",
+    arch: manifest.target.arch,
+    icon: path.join(bundle, "app", "web", "dist", "icons", "app-icon.png"),
+  });
+  const escapedBundle = packaged.replaceAll("\\", "\\\\");
   const escapedOutput = output.replaceAll("\\", "\\\\");
   writeFileSync(script, `#define MyAppVersion "${manifest.version}"
 [Setup]
@@ -239,16 +331,17 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Source: "${escapedBundle}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\\Ponderosa Engine"; Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; WorkingDir: "{app}"
+Name: "{autoprograms}\\Ponderosa Engine"; Filename: "{app}\\Ponderosa Engine.exe"; WorkingDir: "{app}"
 
 [InstallDelete]
 Type: files; Name: "{autoprograms}\\Ponderosa Beta.lnk"
 
 [Run]
-Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Description: "Open Ponderosa Engine"; Flags: nowait postinstall skipifsilent runhidden
+Filename: "{app}\\Ponderosa Engine.exe"; Description: "Open Ponderosa Engine"; Flags: nowait postinstall skipifsilent
 `);
   run(iscc, [script]);
   rmSync(script, { force: true });
+  rmSync(electronOutput, { recursive: true, force: true });
   const target = path.join(output, `${artifactBase}.exe`);
   const signingCertificate = process.env.PONDEROSA_WINDOWS_CERT_SHA1?.trim();
   if (signingCertificate) {

@@ -90,6 +90,11 @@ function acquireSupervisorLease(pathname: string): (() => void) | undefined {
 export async function supervisePonderosaEngine(paths: LauncherPaths): Promise<"supervised" | "already_supervised"> {
   const release = acquireSupervisorLease(paths.engineSupervisorPath);
   if (!release) return "already_supervised";
+  const parentPid = Number(process.env.PONDEROSA_ENGINE_PARENT_PID);
+  const monitoredParentPid =
+    Number.isSafeInteger(parentPid) && parentPid > 0
+      ? parentPid
+      : undefined;
 
   let quitRequested = false;
   let wake: (() => void) | undefined;
@@ -102,7 +107,7 @@ export async function supervisePonderosaEngine(paths: LauncherPaths): Promise<"s
 
   try {
     while (true) {
-      if (quitRequested) {
+      if (quitRequested || (monitoredParentPid && !processAlive(monitoredParentPid))) {
         await stopPonderosa({ paths });
         return "supervised";
       }

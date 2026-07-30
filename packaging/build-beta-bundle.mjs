@@ -131,6 +131,7 @@ execFileSync("pnpm", ["--filter", "@ponderosa/web", "build"], {
 
 for (const required of [
   path.join(repositoryRoot, "apps", "launcher", "dist", "cli.js"),
+  path.join(repositoryRoot, "apps", "engine-desktop", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "server", "dist", "main.js"),
   path.join(repositoryRoot, "apps", "web", "dist", "index.html"),
   path.join(repositoryRoot, "packaging", "qualification", "verify-installed-bundle.mjs"),
@@ -258,6 +259,18 @@ cpSync(
   path.join(bundleRoot, "app", "web", "dist"),
   { recursive: true },
 );
+const engineDesktopTarget = path.join(bundleRoot, "app", "engine-desktop");
+cpSync(
+  path.join(repositoryRoot, "apps", "engine-desktop", "dist"),
+  path.join(engineDesktopTarget, "dist"),
+  { recursive: true },
+);
+writeFileSync(path.join(engineDesktopTarget, "package.json"), `${JSON.stringify({
+  name: "ponderosa-engine-desktop",
+  private: true,
+  type: "module",
+  main: "dist/main.js",
+}, null, 2)}\n`);
 mkdirSync(path.join(bundleRoot, "runtime"), { recursive: true });
 cpSync(nodeBinary, path.join(bundleRoot, "runtime", runtimeNodeName));
 executable(path.join(bundleRoot, "runtime", runtimeNodeName));
@@ -323,16 +336,6 @@ set "ROOT=%~dp0"\r
 "%ROOT%runtime\\node.exe" "%ROOT%app\\launcher\\dist\\cli.js" --install-root "%ROOT%" %*\r
 `;
 writeFileSync(path.join(bundleRoot, "ponderosa.cmd"), windowsLauncher);
-
-const windowsGuiLauncher = `Option Explicit\r
-Dim shell, fso, root, command\r
-Set shell = CreateObject("WScript.Shell")\r
-Set fso = CreateObject("Scripting.FileSystemObject")\r
-root = fso.GetParentFolderName(WScript.ScriptFullName)\r
-command = Chr(34) & root & "\\runtime\\node.exe" & Chr(34) & " " & Chr(34) & root & "\\app\\launcher\\dist\\cli.js" & Chr(34) & " engine --install-root " & Chr(34) & root & Chr(34)\r
-shell.Run command, 0, False\r
-`;
-writeFileSync(path.join(bundleRoot, "ponderosa.vbs"), windowsGuiLauncher);
 
 writeFileSync(path.join(bundleRoot, "INSTALLATION.txt"), [
   "Ponderosa private beta",

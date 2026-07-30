@@ -503,7 +503,7 @@ describe("server public API behavior", () => {
     expect(adapter.seedCalls).toBe(1);
   });
 
-  it("exposes bounded Engine diagnostics only to an authenticated browser", async () => {
+  it("exposes bounded Engine diagnostics only to its native launcher", async () => {
     const launcherDataDir = mkdtempSync(path.join(tmpdir(), "ponderosa-engine-data-"));
     extraDirectories.push(launcherDataDir);
     const logsDir = path.join(launcherDataDir, "logs");
@@ -528,45 +528,26 @@ describe("server public API behavior", () => {
 
     expect((await app.inject({
       method: "GET",
-      url: "/__ponderosa_bootstrap?next=%2Fsettings%2Fengine",
-    })).statusCode).toBe(200);
-    expect((await app.inject({
-      method: "GET",
-      url: "/api/engine/status",
+      url: "/api/launcher/status",
     })).statusCode).toBe(401);
 
-    const bootstrap = await app.inject({
-      method: "POST",
-      url: "/api/launcher/bootstrap",
-      headers: { authorization: "Bearer launcher-secret" },
-    });
-    const exchange = await app.inject({
-      method: "POST",
-      url: "/api/launcher/session-exchange",
-      payload: { token: bootstrap.json<{ token: string }>().token },
-    });
-    const cookie = exchange.headers["set-cookie"] as string;
     const status = await app.inject({
       method: "GET",
-      url: "/api/engine/status",
-      headers: { cookie },
+      url: "/api/launcher/status",
+      headers: { authorization: "Bearer launcher-secret" },
     });
     expect(status.statusCode).toBe(200);
     expect(status.json()).toMatchObject({
-      status: "running",
       version: "0.1.0-beta.engine-test",
-      revision: "engine-test-revision",
+      commit: "engine-test-revision",
       channel: "beta",
-      logs: {
-        server: { available: true },
-        error: { available: true },
-      },
+      activeRunCount: 0,
     });
 
     const log = await app.inject({
       method: "GET",
-      url: "/api/engine/logs?stream=server",
-      headers: { cookie },
+      url: "/api/launcher/logs?stream=server",
+      headers: { authorization: "Bearer launcher-secret" },
     });
     expect(log.statusCode).toBe(200);
     expect(log.json()).toMatchObject({
@@ -578,8 +559,8 @@ describe("server public API behavior", () => {
     );
     expect((await app.inject({
       method: "GET",
-      url: "/api/engine/logs?stream=other",
-      headers: { cookie },
+      url: "/api/launcher/logs?stream=other",
+      headers: { authorization: "Bearer launcher-secret" },
     })).statusCode).toBe(400);
   });
 

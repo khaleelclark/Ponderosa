@@ -387,7 +387,6 @@ export async function requestBrowserBootstrap(
   state: LauncherState,
   platform: PlatformAdapter,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
-  destination = "/",
 ): Promise<void> {
   const response = await fetchFn(`${baseUrl(state)}/api/launcher/bootstrap`, {
     method: "POST",
@@ -399,9 +398,8 @@ export async function requestBrowserBootstrap(
   if (typeof body.token !== "string" || body.token === "") {
     throw new Error("Ponderosa returned an invalid browser bootstrap.");
   }
-  const next = destination === "/engine" ? destination : "/";
   await platform.openBrowser(
-    `${baseUrl(state)}/__ponderosa_bootstrap?next=${encodeURIComponent(next)}#${encodeURIComponent(body.token)}`,
+    `${baseUrl(state)}/__ponderosa_bootstrap#${encodeURIComponent(body.token)}`,
   );
 }
 
@@ -411,7 +409,6 @@ export async function startPonderosa(input: {
   platform: PlatformAdapter;
   requestedPort?: number;
   openBrowser?: boolean;
-  browserPath?: string;
   dependencies?: LauncherDependencies;
 }): Promise<LauncherState> {
   ensureDataLayout(input.paths);
@@ -432,7 +429,6 @@ export async function startPonderosa(input: {
             recovered,
             input.platform,
             fetchFn,
-            input.browserPath,
           );
         }
         return recovered;
@@ -520,7 +516,6 @@ export async function startPonderosa(input: {
         state,
         input.platform,
         fetchFn,
-        input.browserPath,
       );
     }
     return state;

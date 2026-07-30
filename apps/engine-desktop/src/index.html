@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+    <title>Ponderosa Engine</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body data-state="starting">
+    <main>
+      <header>
+        <div class="identity">
+          <div class="mark" aria-hidden="true">P</div>
+          <div>
+            <h1>Ponderosa Engine</h1>
+            <p>The local service that runs Agents and serves Ponderosa.</p>
+          </div>
+        </div>
+        <div class="status"><span id="state-dot" class="state-dot starting"></span><span id="state-label">Starting</span></div>
+      </header>
+
+      <section class="summary">
+        <p id="detail">Starting the local Ponderosa service…</p>
+        <div class="actions">
+          <button id="open" class="primary" disabled>Open Ponderosa</button>
+          <button id="restart" disabled>Restart</button>
+          <button id="quit">Quit Engine</button>
+        </div>
+      </section>
+
+      <section class="facts" aria-label="Engine details">
+        <div><span>Version</span><strong id="version">—</strong></div>
+        <div><span>Revision</span><strong id="revision">—</strong></div>
+        <div><span>Uptime</span><strong id="uptime">—</strong></div>
+        <div><span>Process</span><strong id="process">—</strong></div>
+        <div><span>Work intake</span><strong id="intake">Unavailable</strong></div>
+        <div><span>Agent Runs</span><strong id="agents">None active</strong></div>
+      </section>
+
+      <section class="path">
+        <span>Data</span>
+        <code id="data-dir">—</code>
+      </section>
+
+      <section class="logs">
+        <div class="logs-header">
+          <div>
+            <h2>Live logs</h2>
+            <p>A bounded tail updates every two seconds.</p>
+          </div>
+          <div class="log-actions">
+            <button id="refresh">Refresh</button>
+            <button id="copy">Copy</button>
+          </div>
+        </div>
+        <div class="log-tabs">
+          <button id="server-log" data-selected="true">Server</button>
+          <button id="error-log" data-selected="false">Errors</button>
+        </div>
+        <pre id="log-output" aria-live="polite">Waiting for Ponderosa Engine…</pre>
+      </section>
+    </main>
+    <script type="module" src="./renderer.js"></script>
+  </body>
+</html>

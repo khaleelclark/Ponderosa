@@ -205,9 +205,6 @@ async function main(argv: string[]): Promise<void> {
     openBrowser:
       (parsed.command === "open" || parsed.command === "engine") &&
       parsed.openBrowser,
-    ...(parsed.command === "engine"
-      ? { browserPath: "/engine" }
-      : {}),
   });
   if (parsed.command === "start" && parsed.openBrowser) {
     // "start" deliberately leaves browser opening to the explicit open command.
