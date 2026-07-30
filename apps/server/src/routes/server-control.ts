@@ -199,20 +199,25 @@ app.post<{ Body: { handoff?: string } }>("/api/agent-session/rollover", async (r
 
 registerHealthRoutes(app, serverContext);
 
-app.get("/api/launcher/status", async () => ({
-  service: "ponderosa",
-  pid: process.pid,
-  dataDir: opts.dataDir,
-  version: opts.buildVersion?.trim() || "0.0.0",
-  commit: opts.buildRevision?.trim() || "development",
-  channel: opts.releaseChannel?.trim() || "development",
-  acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
-  leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
-  activeRunCount: activeRuns.size,
-}));
+app.get(
+  "/api/launcher/status",
+  { logLevel: "silent" },
+  async () => ({
+    service: "ponderosa",
+    pid: process.pid,
+    dataDir: opts.dataDir,
+    version: opts.buildVersion?.trim() || "0.0.0",
+    commit: opts.buildRevision?.trim() || "development",
+    channel: opts.releaseChannel?.trim() || "development",
+    acceptingDurableIntake: !isClosed() && artifactFilesystem.ok && processContainment.ok,
+    leasingRuns: coordinationV3Scheduler.isLeasingRuns(),
+    activeRunCount: activeRuns.size,
+  }),
+);
 
 app.get<{ Querystring: { stream?: string } }>(
   "/api/launcher/logs",
+  { logLevel: "silent" },
   async (request, reply) => {
     const stream = request.query.stream;
     if (stream !== "server" && stream !== "error") {
