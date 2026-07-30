@@ -74,7 +74,11 @@ async function packageElectronApplication({
   if (paths.length !== 1) {
     throw new Error(`Electron packaging produced ${paths.length} application directories.`);
   }
-  const application = paths[0];
+  const packagedRoot = paths[0];
+  const nestedMacApplication = path.join(packagedRoot, "Ponderosa Engine.app");
+  const application = platform === "darwin" && existsSync(nestedMacApplication)
+    ? nestedMacApplication
+    : packagedRoot;
   const resources = platform === "darwin"
     ? path.join(application, "Contents", "Resources")
     : path.join(application, "resources");
