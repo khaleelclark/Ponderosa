@@ -66,25 +66,25 @@ describe("macOS provider executable discovery", () => {
       "MacOS",
       "claude",
     ));
-    const tiedUpper = executable(path.join(
+    const tiedAlpha = executable(path.join(
       home,
       "Library",
       "Application Support",
       "Claude",
       "claude-code",
-      "2.1.219-A",
+      "2.1.219-alpha",
       "claude.app",
       "Contents",
       "MacOS",
       "claude",
     ));
-    const tiedLower = executable(path.join(
+    const tiedZeta = executable(path.join(
       home,
       "Library",
       "Application Support",
       "Claude",
       "claude-code",
-      "2.1.219-a",
+      "2.1.219-zeta",
       "claude.app",
       "Contents",
       "MacOS",
@@ -96,8 +96,8 @@ describe("macOS provider executable discovery", () => {
       home,
     );
     expect(candidates).toContain(older);
-    expect(candidates.indexOf(tiedLower)).toBeLessThan(candidates.indexOf(tiedUpper));
-    expect(candidates.indexOf(tiedUpper)).toBeLessThan(candidates.indexOf(newest));
+    expect(candidates.indexOf(tiedZeta)).toBeLessThan(candidates.indexOf(tiedAlpha));
+    expect(candidates.indexOf(tiedAlpha)).toBeLessThan(candidates.indexOf(newest));
     expect(candidates.indexOf(newest)).toBeLessThan(candidates.indexOf(older));
   });
 });

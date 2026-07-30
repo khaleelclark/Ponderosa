@@ -30,13 +30,13 @@ test("selects the newest executable Desktop-managed Claude deterministically", (
       return pathname;
     };
     executable("2.1.220", 0o644);
-    executable("2.1.219-A");
-    const expected = executable("2.1.219-a");
+    executable("2.1.219-alpha");
+    const expected = executable("2.1.219-zeta");
     executable("2.1.99");
 
     assert.deepEqual(newestClaudeDesktopManagedCli(home), {
       executable: expected,
-      version: "2.1.219-a",
+      version: "2.1.219-zeta",
     });
   } finally {
     rmSync(home, { recursive: true, force: true });
