@@ -638,21 +638,24 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   }
   const optionId = request.body?.optionId?.trim();
   const text = request.body?.text?.trim();
+  if (optionId && text) return reply.code(400).send({ error: "choose an option or enter another response, not both" });
   if (optionId && !current.options.some((option) => option.id === optionId)) return reply.code(400).send({ error: "unknown Decision option" });
   if (!optionId && !text) return reply.code(400).send({ error: "choose an option or enter a response" });
-  if (!optionId && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
+  if (!optionId && !current.runtimeAction && current.mode !== "text" && !current.allowOther) return reply.code(400).send({ error: "this Decision does not accept another response" });
   if (current.runtimeAction) {
     if (!runtimeElicitations.action(current.id)) {
       return reply.code(410).send({ error: "Connection request expired. Ask the Agent to try connecting again." });
     }
-    if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
-      return reply.code(400).send({ error: "Confirm the connection or choose Not Now" });
-    }
-    if (current.runtimeAction.mode !== "url" && optionId !== "submit" && optionId !== "decline") {
-      return reply.code(400).send({ error: "Submit the requested information or choose Not Now" });
-    }
-    if (optionId === "submit" && request.body?.content === undefined) {
-      return reply.code(400).send({ error: "The requested form is incomplete" });
+    if (!text) {
+      if (current.runtimeAction.mode === "url" && optionId !== "accept" && optionId !== "decline") {
+        return reply.code(400).send({ error: "Confirm the connection, choose Not Now, or send another response to the Agent" });
+      }
+      if (current.runtimeAction.mode !== "url" && optionId !== "submit" && optionId !== "decline") {
+        return reply.code(400).send({ error: "Submit the requested information, choose Not Now, or send another response to the Agent" });
+      }
+      if (optionId === "submit" && request.body?.content === undefined) {
+        return reply.code(400).send({ error: "The requested form is incomplete" });
+      }
     }
   }
   const respondedAt = new Date().toISOString();
@@ -671,11 +674,20 @@ app.post<{ Params: { id: string }; Body: { optionId?: string; text?: string; con
   if (notification) workspace.setNotificationStatus(notification.id, "resolved");
   publishWorkspaceSince(cursor);
   if (current.runtimeAction) {
-    runtimeElicitations.respond(current.id, optionId === "decline"
-      ? { action: "decline" }
-      : optionId === "submit"
-        ? { action: "accept", content: request.body.content }
-        : { action: "accept" });
+    if (text) {
+      // Free-form answers are for the Agent, not fabricated provider form
+      // fields. Decline the live provider request, then resume the Agent with
+      // the canonical Decision response.
+      runtimeElicitations.respond(current.id, { action: "decline" });
+      ensureDecisionResponseActivation(decision);
+      notifyScheduler();
+    } else {
+      runtimeElicitations.respond(current.id, optionId === "decline"
+        ? { action: "decline" }
+        : optionId === "submit"
+          ? { action: "accept", content: request.body.content }
+          : { action: "accept" });
+    }
   } else {
     ensureDecisionResponseActivation(decision);
   }

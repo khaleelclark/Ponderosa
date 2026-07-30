@@ -355,7 +355,7 @@ export function startProviderRunExecution(
                     { id: "submit", label: "Submit" },
                     { id: "decline", label: "Not Now" },
                   ],
-              allowOther: false,
+              allowOther: true,
               blocking: true,
               runtimeAction: {
                 kind: "mcp_elicitation",
