@@ -955,10 +955,7 @@ export function ConversationView({
         }}
         sx={{ bgcolor: "transparent" }}
       >
-        {activeView === "main" &&
-        agents.some(agent =>
-          Boolean(healthByAgentId.get(agent.id)?.runtimeActivity),
-        ) ? (
+        {activeView === "main" ? (
           <Box
             sx={{
               height: 28,
@@ -970,10 +967,14 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
-            <MasterRespondingIndicator
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
+            {agents.some(agent =>
+              Boolean(healthByAgentId.get(agent.id)?.runtimeActivity),
+            ) ? (
+              <MasterRespondingIndicator
+                agents={agents}
+                healthByAgentId={healthByAgentId}
+              />
+            ) : null}
           </Box>
         ) : null}
         {activeView === "main" && queuedMessageNotice ? (

@@ -59,6 +59,8 @@ export function ComposerTargetDestinationAction({
       color={broadcast ? "info" : "primary"}
       icon={broadcast ? <CampaignOutlinedIcon /> : undefined}
       label={label}
+      title={labels.join(" ")}
+      aria-label={`Destinations: ${labels.join(", ")}`}
       onDelete={onClear}
       sx={{
         maxWidth: { xs: 124, sm: 240 },
@@ -115,6 +117,9 @@ export function ComposerProjectDestinationAction({
     : explicitLabels.length > 1
       ? `${explicitLabels[0]} +${explicitLabels.length - 1}`
       : (explicitLabels[0] ?? "Destination");
+  const selectedDestinationLabels = continuing
+    ? [continueWith!.title]
+    : explicitLabels;
   const clearExplicitDestinations = () => {
     clearDestination("broadcast");
     clearDestination("everyone");
@@ -164,6 +169,8 @@ export function ComposerProjectDestinationAction({
           hasBroadcastDestination ? <CampaignOutlinedIcon /> : undefined
         }
         label={selectedLabel}
+        title={selectedDestinationLabels.join(" ")}
+        aria-label={`Destinations: ${selectedDestinationLabels.join(", ")}`}
         onDelete={chooseNewAgent}
         sx={{
           maxWidth: { xs: 124, sm: 240 },

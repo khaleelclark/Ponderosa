@@ -45,7 +45,10 @@ import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
 import { DecisionCard } from "./decisions/DecisionCard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { TabbedWorkspaceFrame } from "./WorkspaceFrame";
-import type { MainTimelineEntry } from "./ConversationView.helpers";
+import {
+  AUTO_ALLOWED_DECISION_OPTION_ID,
+  type MainTimelineEntry,
+} from "./ConversationView.helpers";
 
 function stripLeadingAgentMentions(
   text: string,
@@ -457,12 +460,16 @@ function MainConversationTimeline({
           <DecisionCard decision={entry.event.decision} title={entry.event.decision.question} context={entry.event.decision.context} />
         </Box>;
         if (entry.kind === "decision-response") {
-          const automatic = entry.choice.startsWith("Allowed automatically");
+          const automatic =
+            entry.event.decision.response?.optionId ===
+            AUTO_ALLOWED_DECISION_OPTION_ID;
           return <ChatMessageFrame
           key={entry.id}
           message={{
             id: entry.id,
-            author: { kind: "operator", profile: operatorProfile },
+            author: automatic
+              ? { kind: "notice" }
+              : { kind: "operator", profile: operatorProfile },
             createdAt: entry.at,
             ariaLabel: automatic ? entry.choice : `You chose ${entry.choice}`,
             body: <Typography variant="body2">

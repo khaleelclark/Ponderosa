@@ -12,7 +12,10 @@ import type { ActiveRun, AgentMessageCapability } from "../app-contracts.js";
 import type { createCommunicationArtifactAuthority } from "../communication-artifacts.js";
 import type { PreparedCommunicationArtifact } from "./conversation-deliveries.js";
 import { derivedRunActionKey } from "../security.js";
-import { requestUpdateCommunicationEventId } from "../request-update-communication.js";
+import {
+  isRequestCommunicationHandoffKind,
+  requestUpdateCommunicationEventId,
+} from "../request-update-communication.js";
 import type { CreateServerOptions } from "../app-contracts.js";
 
 type CommunicationArtifactAuthority = ReturnType<typeof createCommunicationArtifactAuthority>;
@@ -201,6 +204,7 @@ export function registerAgentRequestCommandRoutes(
         && passiveText
         && peerAgentId
         && peerAgentId !== capability.agentId
+        && isRequestCommunicationHandoffKind(canonicalUpdate.kind)
       ) {
         // The Request update remains the canonical handoff and owns the
         // requester wake-up. This deterministic Communication is its passive,

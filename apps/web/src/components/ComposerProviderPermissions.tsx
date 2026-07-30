@@ -137,6 +137,14 @@ export function ComposerProviderPermissions({
           id={menuId}
           role="menu"
           elevation={12}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            const trigger = anchor;
+            close();
+            trigger?.focus();
+          }}
           sx={{
             width: 350,
             maxWidth: "calc(100vw - 24px)",
@@ -153,7 +161,11 @@ export function ComposerProviderPermissions({
               {scopeDescription}
             </Typography>
           </Box>
-          <MenuList disablePadding aria-label="Provider permission settings">
+          <MenuList
+            autoFocusItem
+            disablePadding
+            aria-label="Provider permission settings"
+          >
             {options.map(option => (
               <MenuItem
                 key={option.id}

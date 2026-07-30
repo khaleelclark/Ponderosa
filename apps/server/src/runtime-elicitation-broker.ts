@@ -10,9 +10,24 @@ interface PendingElicitation {
   abort(): void;
 }
 
+const BARE_CONFIRMATION_SCHEMA_KEYS = new Set([
+  "type",
+  "title",
+  "description",
+  "properties",
+  "required",
+  "additionalProperties",
+]);
+
+/** Reserved response identity for a server-applied provider permission. */
+export const AUTO_ALLOWED_DECISION_OPTION_ID = "auto_allowed";
+
 function confirmationKey(request: RuntimeElicitationRequest): string | undefined {
   if (request.mode === "url") return undefined;
   const schema = request.requestedSchema;
+  if (Object.keys(schema).some((key) => !BARE_CONFIRMATION_SCHEMA_KEYS.has(key))) {
+    return undefined;
+  }
   if (schema.type !== undefined && schema.type !== "object") return undefined;
   const properties = schema.properties;
   if (properties !== undefined &&
@@ -20,9 +35,8 @@ function confirmationKey(request: RuntimeElicitationRequest): string | undefined
         Object.keys(properties).length > 0)) return undefined;
   const required = schema.required;
   if (required !== undefined && (!Array.isArray(required) || required.length > 0)) return undefined;
-  if (typeof schema.minProperties === "number" && schema.minProperties > 0) return undefined;
-  if (["allOf", "anyOf", "oneOf", "not", "if", "then", "else", "dependentRequired", "dependencies"]
-    .some((key) => Object.hasOwn(schema, key))) return undefined;
+  if (schema.additionalProperties !== undefined &&
+      typeof schema.additionalProperties !== "boolean") return undefined;
   // Exact message equality narrows the lease without inferring a tool name or
   // permission scope from provider-authored prose.
   return `${request.serverName}\0${request.message}`;

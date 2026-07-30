@@ -55,6 +55,7 @@ import {
 } from "../conversationEngine";
 import { useRuntimeControls } from "../hooks/useRuntimeControls";
 import { ComposerProviderPermissions } from "./ComposerProviderPermissions";
+import { AUTO_ALLOWED_DECISION_OPTION_ID } from "./ConversationView.helpers";
 
 function allChatSourceRoute(item: AllChatItemDto): Route {
   if (item.source.kind === "agent") {
@@ -101,6 +102,11 @@ type AllChatReplyTarget = {
 
 function allChatDecisionChoice(item: AllChatDecisionEventDto): string | undefined {
   const { decision } = item;
+  if (
+    decision.response?.optionId === AUTO_ALLOWED_DECISION_OPTION_ID
+  ) {
+    return decision.response.text;
+  }
   return decision.response?.optionId
     ? decision.options.find((option) => option.id === decision.response?.optionId)?.label
     : decision.response?.text;
@@ -785,16 +791,34 @@ export function AllChatView({
               />
               <Typography variant="caption" color="text.secondary">{entry.item.project.label} · {entry.item.source.title}</Typography>
             </Box>;
-            if (entry.kind === "decision-response") return <ChatMessageFrame
+            if (entry.kind === "decision-response") {
+              const automatic =
+                entry.item.decision.response?.optionId ===
+                AUTO_ALLOWED_DECISION_OPTION_ID;
+              return <ChatMessageFrame
               key={entry.id}
               message={{
                 id: entry.id,
-                author: { kind: "operator", profile: workspacePreferences.data?.profile },
+                author: automatic
+                  ? { kind: "notice" }
+                  : {
+                      kind: "operator",
+                      profile: workspacePreferences.data?.profile,
+                    },
                 createdAt: entry.at,
-                ariaLabel: `You chose ${entry.choice}`,
-                body: <Typography variant="body2">You chose {entry.choice}.</Typography>,
+                ariaLabel: automatic
+                  ? entry.choice
+                  : `You chose ${entry.choice}`,
+                body: (
+                  <Typography variant="body2">
+                    {automatic
+                      ? entry.choice
+                      : `You chose ${entry.choice}.`}
+                  </Typography>
+                ),
               }}
-            />;
+              />;
+            }
             const item = entry.item;
             const fromUser = item.author.kind === "user";
             return (

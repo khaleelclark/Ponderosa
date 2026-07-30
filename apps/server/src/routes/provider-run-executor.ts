@@ -36,6 +36,7 @@ import type {
 import type { ContextCursor } from "../context-cursors.js";
 import { PROVIDER_DYNAMIC_TOOLS } from "../runtime-selection.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
+import { AUTO_ALLOWED_DECISION_OPTION_ID } from "../runtime-elicitation-broker.js";
 import type { AgentMessageRunContext } from "./agent-message-run.js";
 
 function humanizeProviderName(value: string): string {
@@ -416,17 +417,20 @@ export function startProviderRunExecution(
                       project: project.providerPermissionMode,
                       workspace: workspace.getPreferences().providerPermissionMode,
                     }) === "auto_confirmations");
-                })() &&
-                runtimeElicitations.respond(decision.id, {
-                  action: "accept",
-                  content: {},
-                })) {
-              workspace.resolveDecision(decision.id, {
+                })()) {
+              const resolved = workspace.resolveDecision(decision.id, {
+                optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
                 text: "Allowed automatically by this Chat’s provider permissions.",
                 respondedAt: new Date().toISOString(),
               });
-              publishWorkspaceSince(cursor);
-              return waiting;
+              if (resolved) {
+                runtimeElicitations.respond(decision.id, {
+                  action: "accept",
+                  content: {},
+                });
+                publishWorkspaceSince(cursor);
+                return waiting;
+              }
             }
             workspace.createNotification({
               projectId: decision.projectId,

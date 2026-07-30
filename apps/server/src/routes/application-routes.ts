@@ -28,7 +28,10 @@ import {
 } from "../project-files.js";
 import { runtimeSelectionError } from "../runtime-selection.js";
 import type { ServerContext } from "../server-context.js";
-import type { RuntimeElicitationBroker } from "../runtime-elicitation-broker.js";
+import {
+  AUTO_ALLOWED_DECISION_OPTION_ID,
+  type RuntimeElicitationBroker,
+} from "../runtime-elicitation-broker.js";
 import { registerAgentAuditRoutes } from "./agent-audit.js";
 import { registerAgentCreationRoutes } from "./agent-creation.js";
 import { registerAgentMaintenanceRoutes } from "./agent-maintenance.js";
@@ -304,12 +307,16 @@ const applyProviderPermissionMode = (conversation: ConversationDto): void => {
     if (!pending.runtimeAction) continue;
     const liveRequest = runtimeElicitations.action(pending.id);
     if (!liveRequest || !runtimeElicitations.canRememberForRun(liveRequest)) continue;
-    if (!runtimeElicitations.respond(pending.id, { action: "accept", content: {} })) continue;
     const resolved = workspace.resolveDecision(pending.id, {
+      optionId: AUTO_ALLOWED_DECISION_OPTION_ID,
       text: "Allowed automatically by this Chat’s provider permissions.",
       respondedAt,
     });
     if (!resolved) continue;
+    runtimeElicitations.respond(pending.id, {
+      action: "accept",
+      content: {},
+    });
     const notification = workspace.listNotifications().find((item) =>
       item.dedupeKey === `decision:${pending.id}` &&
       (item.status ?? "open") === "open");

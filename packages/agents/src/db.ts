@@ -154,9 +154,12 @@ function establishAdditiveSchema(sqlite: Database.Database): void {
     .prepare("PRAGMA table_info(conversations)")
     .all() as Array<{ name: string }>;
   if (!conversationColumns.some((column) => column.name === "provider_permission_mode")) {
-    sqlite.exec(
-      "ALTER TABLE conversations ADD COLUMN provider_permission_mode TEXT NOT NULL DEFAULT 'ask'",
-    );
+    sqlite.exec(`
+      ALTER TABLE conversations
+        ADD COLUMN provider_permission_mode TEXT NOT NULL DEFAULT 'inherit';
+      UPDATE conversations
+        SET provider_permission_mode = 'ask';
+    `);
   }
 }
 

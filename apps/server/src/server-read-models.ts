@@ -19,7 +19,10 @@ import { projectAgentHealth, type ActiveRunObservation } from "./agent-health.js
 import { decodeTimelineCursor, encodeTimelineCursor } from "./cursors.js";
 import { resolveAgentMentionBindings } from "./mention-bindings.js";
 import type { ActiveRun, PersistentRuntime, RuntimeOwnershipState } from "./app-contracts.js";
-import { requestUpdateCommunicationEventId } from "./request-update-communication.js";
+import {
+  isRequestCommunicationHandoffKind,
+  requestUpdateCommunicationEventId,
+} from "./request-update-communication.js";
 
 interface ReadModelContext {
   store: AgentStore;
@@ -327,7 +330,7 @@ export function createServerReadModels(context: ReadModelContext) {
         candidate.actorKind === "agent"
         && Boolean(candidate.actorId)
         && Boolean(candidate.text?.trim())
-        && ["answer", "completed", "blocked", "failed"].includes(candidate.kind));
+        && isRequestCommunicationHandoffKind(candidate.kind));
       if (!update?.actorId || !update.text?.trim()) return [];
       const eventId = requestUpdateCommunicationEventId(
         conversation.projectId,

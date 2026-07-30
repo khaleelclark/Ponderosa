@@ -101,8 +101,14 @@ export function RuntimeElicitationActions({
   });
   const form = useMemo(() => describeForm(action.data), [action.data]);
   const fields = form.fields;
-  const allowForRun = form.supported && fields.length === 0 &&
-    decision.options.some((option) => option.id === "allow_run");
+  const bareConfirmation = decision.options.some(
+    (option) => option.id === "allow_run",
+  );
+  const allowForRun = bareConfirmation;
+  const submitDisabled =
+    pending ||
+    !form.supported ||
+    (fields.length === 0 && !bareConfirmation);
   const provider = titleCase(decision.runtimeAction?.serverName ?? "Provider");
   const submit = async (): Promise<void> => {
     const content: Record<string, unknown> = {};
@@ -236,12 +242,28 @@ export function RuntimeElicitationActions({
           {field.options?.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
         </TextField>
       ))}
-      {!form.supported ? <Alert severity="warning">Some requested fields cannot be displayed safely. Choose Other to tell the Agent how to proceed.</Alert> : null}
+      {!form.supported || (fields.length === 0 && !bareConfirmation) ? (
+        <Alert severity="warning">
+          This provider requested a form Ponderosa cannot safely display.
+          Choose Other to tell the Agent how to proceed.
+        </Alert>
+      ) : null}
       {fields.length ? <Typography variant="caption" color="text.secondary">
         Your answers go directly to the provider and are not saved in Ponderosa.
       </Typography> : null}
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        <Button size="small" variant="contained" disabled={pending || !form.supported} onClick={() => void submit()}>{fields.length ? "Submit" : "Allow once"}</Button>
+        <Button
+          size="small"
+          variant="contained"
+          disabled={submitDisabled}
+          onClick={() => void submit()}
+        >
+          {fields.length > 0
+            ? "Submit"
+            : bareConfirmation
+              ? "Allow once"
+              : "Submit"}
+        </Button>
         {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow for this run</Button> : null}
         <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>Not Now</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
