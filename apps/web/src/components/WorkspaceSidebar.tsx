@@ -152,11 +152,11 @@ export function WorkspaceSidebar({
     enabled: showingWiki,
     staleTime: 60_000,
   });
-  const readinessQuery = useQuery({
-    queryKey: queryKeys.readiness.all,
-    queryFn: () => api.getReadiness(),
+  const healthQuery = useQuery({
+    queryKey: queryKeys.health.all,
+    queryFn: () => api.getHealth(),
     enabled: showingSettings,
-    staleTime: 30_000,
+    staleTime: 60_000,
   });
   const showNavigation = (next?: Route) => {
     setSidebarSection("home");
@@ -887,7 +887,7 @@ export function WorkspaceSidebar({
   const settingsPanel = (
     <SettingsSidebarPanel
       route={route}
-      version={readinessQuery.data?.version}
+      version={healthQuery.data?.version}
       onNavigate={onNavigate}
     />
   );

@@ -57,6 +57,7 @@ import type {
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
+  HealthDto,
   AllChatPageDto,
   CreateHostFolderRequest,
   HostFolderCreateDto,
@@ -593,6 +594,9 @@ export const realApi = {
   },
   listEngines(): Promise<EngineDto[]> {
     return requestJson<EngineDto[]>("/api/engines");
+  },
+  getHealth(): Promise<HealthDto> {
+    return requestJson<HealthDto>("/api/health");
   },
   getReadiness(): Promise<ReadinessDto> {
     return requestJson<ReadinessDto>("/api/ready", undefined, [503]);

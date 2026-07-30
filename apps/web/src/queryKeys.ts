@@ -6,6 +6,9 @@
  * refreshes one Project. Components should not spell these arrays themselves.
  */
 export const queryKeys = {
+  health: {
+    all: ["health"] as const,
+  },
   readiness: {
     all: ["readiness"] as const,
   },
