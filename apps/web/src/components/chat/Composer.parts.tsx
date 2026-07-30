@@ -1,127 +1,42 @@
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import CampaignOutlinedIcon from "@mui/icons-material/CampaignOutlined";
+import CheckIcon from "@mui/icons-material/Check";
+import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import StopCircleIcon from "@mui/icons-material/StopCircle";
+import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import {
-  Button,
+  ButtonBase,
   Chip,
   IconButton,
+  ListItemIcon,
+  Menu,
+  MenuItem,
   Stack,
   Tooltip,
   Typography,
 } from "@mui/material";
 import type { RefObject } from "react";
+import { useId, useState } from "react";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
 
 interface ComposerDestinationBarProps {
   clearDestination(handle: string): void;
-  continueWith: ComposerProps["continueWith"];
   destinationError: string | undefined;
   destinationMode: ComposerProps["destinationMode"];
   hasBroadcastDestination: boolean;
-  hasEveryoneDestination: boolean;
-  inputRef: RefObject<HTMLTextAreaElement>;
-  implicitContinueSelected: boolean;
-  projectDestinations: Array<{ handle: string }>;
-  selectImplicitContinue(selected: boolean): void;
-  setDestination(handle: string): void;
   targetRequiredDestinations: Array<{ handle: string }>;
 }
 
 export function ComposerDestinationBar({
   clearDestination,
-  continueWith,
   destinationError,
   destinationMode,
   hasBroadcastDestination,
-  hasEveryoneDestination,
-  inputRef,
-  implicitContinueSelected,
-  projectDestinations,
-  selectImplicitContinue,
-  setDestination,
   targetRequiredDestinations,
 }: ComposerDestinationBarProps): JSX.Element | null {
-  return destinationMode === "project-chat" ? (
-    <Stack
-      direction="row"
-      spacing={0.75}
-      useFlexGap
-      flexWrap="wrap"
-      sx={{ px: 0.25, pb: 0.75, alignItems: "center" }}
-    >
-      {hasBroadcastDestination ? (
-        <Chip
-          size="small"
-          color="info"
-          icon={<CampaignOutlinedIcon />}
-          label="#broadcast"
-          onDelete={() => clearDestination("broadcast")}
-        />
-      ) : null}
-      {hasEveryoneDestination ? (
-        <Chip
-          size="small"
-          color="secondary"
-          label="#everyone"
-          onDelete={() => clearDestination("everyone")}
-        />
-      ) : null}
-      {projectDestinations.map(destination => (
-        <Chip
-          key={destination.handle.toLocaleLowerCase()}
-          size="small"
-          color="primary"
-          label={`#${destination.handle}`}
-          onDelete={() => clearDestination(destination.handle)}
-        />
-      ))}
-      {!hasBroadcastDestination &&
-      !hasEveryoneDestination &&
-      projectDestinations.length === 0 &&
-      !implicitContinueSelected ? (
-        <Chip size="small" variant="outlined" label="New Agent" />
-      ) : null}
-      {!hasBroadcastDestination &&
-      !hasEveryoneDestination &&
-      projectDestinations.length === 0 &&
-      continueWith ? (
-        implicitContinueSelected ? (
-          <>
-            <Chip
-              size="small"
-              color="primary"
-              label={`Continue with ${continueWith.title}`}
-            />
-            <Button size="small" onClick={() => selectImplicitContinue(false)}>
-              New Agent
-            </Button>
-          </>
-        ) : (
-          <Button
-            size="small"
-            onClick={() => {
-              if (continueWith.responding) {
-                selectImplicitContinue(true);
-              } else {
-                setDestination(continueWith.handle);
-              }
-              window.requestAnimationFrame(() => {
-                const input = inputRef.current;
-                if (!input) return;
-                input.focus();
-                const end = input.value.length;
-                input.setSelectionRange(end, end);
-              });
-            }}
-          >
-            Continue with {continueWith.title}
-          </Button>
-        )
-      ) : null}
-    </Stack>
-  ) : destinationMode === "target-required" ? (
+  return destinationMode === "target-required" ? (
     <Stack
       direction="row"
       spacing={0.75}
@@ -158,6 +73,173 @@ export function ComposerDestinationBar({
       ) : null}
     </Stack>
   ) : null;
+}
+
+interface ComposerProjectDestinationPickerProps {
+  clearDestination(handle: string): void;
+  continueWith: ComposerProps["continueWith"];
+  hasBroadcastDestination: boolean;
+  hasEveryoneDestination: boolean;
+  inputRef: RefObject<HTMLTextAreaElement>;
+  implicitContinueSelected: boolean;
+  projectDestinations: Array<{ handle: string }>;
+  selectImplicitContinue(selected: boolean): void;
+  setDestination(handle: string): void;
+}
+
+export function ComposerProjectDestinationPicker({
+  clearDestination,
+  continueWith,
+  hasBroadcastDestination,
+  hasEveryoneDestination,
+  inputRef,
+  implicitContinueSelected,
+  projectDestinations,
+  selectImplicitContinue,
+  setDestination,
+}: ComposerProjectDestinationPickerProps): JSX.Element {
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const menuId = useId();
+  const explicitDestinationCount =
+    Number(hasBroadcastDestination) +
+    Number(hasEveryoneDestination) +
+    projectDestinations.length;
+  const matchingContinuation = Boolean(
+    explicitDestinationCount === 1 &&
+    projectDestinations.length === 1 &&
+    continueWith?.handle.toLocaleLowerCase() ===
+      projectDestinations[0]!.handle.toLocaleLowerCase(),
+  );
+  const continuing =
+    implicitContinueSelected &&
+    Boolean(continueWith) &&
+    explicitDestinationCount === 0;
+  const label = hasBroadcastDestination
+    ? "#broadcast"
+    : hasEveryoneDestination
+      ? "#everyone"
+      : projectDestinations.length > 1
+        ? `${projectDestinations.length} Agents`
+        : projectDestinations.length === 1
+          ? matchingContinuation
+            ? continueWith!.title
+            : `#${projectDestinations[0]!.handle}`
+          : continuing
+            ? continueWith!.title
+            : "New Agent";
+  const clearExplicitDestinations = () => {
+    clearDestination("broadcast");
+    clearDestination("everyone");
+    for (const destination of projectDestinations) {
+      clearDestination(destination.handle);
+    }
+  };
+  const focusInput = () => {
+    window.requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+    });
+  };
+  const chooseNewAgent = () => {
+    clearExplicitDestinations();
+    selectImplicitContinue(false);
+    setAnchor(null);
+    focusInput();
+  };
+  const chooseContinuation = () => {
+    if (!continueWith) return;
+    clearExplicitDestinations();
+    if (continueWith.responding) {
+      selectImplicitContinue(true);
+    } else {
+      selectImplicitContinue(false);
+      setDestination(continueWith.handle);
+    }
+    setAnchor(null);
+    focusInput();
+  };
+  const canChoose = Boolean(continueWith) || explicitDestinationCount > 0;
+  return (
+    <>
+      <Tooltip title="Choose who should handle this message">
+        <ButtonBase
+          aria-label={`Message destination: ${label}`}
+          aria-haspopup={canChoose ? "menu" : undefined}
+          aria-controls={anchor ? menuId : undefined}
+          aria-expanded={anchor ? true : undefined}
+          aria-disabled={!canChoose}
+          onClick={event => {
+            if (canChoose) setAnchor(event.currentTarget);
+          }}
+          sx={{
+            minHeight: 40,
+            minWidth: 0,
+            maxWidth: { xs: 132, sm: 220 },
+            px: 0.75,
+            borderRadius: 1.25,
+            color: continuing || explicitDestinationCount > 0
+              ? "primary.main"
+              : "text.secondary",
+            "&:hover": { bgcolor: "action.hover" },
+            "&:focus-visible": {
+              outline: "2px solid",
+              outlineColor: "primary.main",
+              outlineOffset: 2,
+            },
+          }}
+        >
+          <SubdirectoryArrowRightIcon sx={{ mr: 0.5, fontSize: 19 }} />
+          <Typography
+            variant="body2"
+            noWrap
+            sx={{ minWidth: 0, fontWeight: 700 }}
+          >
+            {label}
+          </Typography>
+          {canChoose ? (
+            <KeyboardArrowDownIcon sx={{ ml: 0.25, fontSize: 19 }} />
+          ) : null}
+        </ButtonBase>
+      </Tooltip>
+      <Menu
+        id={menuId}
+        anchorEl={anchor}
+        open={Boolean(anchor)}
+        onClose={() => setAnchor(null)}
+        anchorOrigin={{ vertical: "top", horizontal: "left" }}
+        transformOrigin={{ vertical: "bottom", horizontal: "left" }}
+        slotProps={{ paper: { sx: { minWidth: 220, maxWidth: 320 } } }}
+      >
+        <MenuItem
+          selected={!continuing && explicitDestinationCount === 0}
+          onClick={chooseNewAgent}
+        >
+          <ListItemIcon>
+            {!continuing && explicitDestinationCount === 0 ? (
+              <CheckIcon fontSize="small" />
+            ) : null}
+          </ListItemIcon>
+          New Agent
+        </MenuItem>
+        {continueWith ? (
+          <MenuItem
+            selected={continuing || matchingContinuation}
+            onClick={chooseContinuation}
+          >
+            <ListItemIcon>
+              {continuing || matchingContinuation ? (
+                <CheckIcon fontSize="small" />
+              ) : null}
+            </ListItemIcon>
+            <Typography noWrap>Continue with {continueWith.title}</Typography>
+          </MenuItem>
+        ) : null}
+      </Menu>
+    </>
+  );
 }
 
 interface ComposerAttachmentListProps {

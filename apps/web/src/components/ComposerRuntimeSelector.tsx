@@ -121,11 +121,6 @@ export function ComposerRuntimeSelector({
       }}
     >
       <Stack direction="row" spacing={0.6} sx={{ alignItems: "baseline", minWidth: 0 }}>
-        {canSwitchEngine ? (
-          <Typography variant="body2" color="text.secondary" noWrap>
-            {selectedEngine?.label ?? "Engine"}
-          </Typography>
-        ) : null}
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography variant="body2" color="text.secondary" noWrap>
           · {selectedEffort?.label ?? "Reasoning unavailable"}

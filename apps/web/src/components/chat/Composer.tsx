@@ -24,6 +24,7 @@ import type { ComposerProps } from "./Composer.types";
 import {
   ComposerAttachmentList,
   ComposerDestinationBar,
+  ComposerProjectDestinationPicker,
   ComposerSendActions,
 } from "./Composer.parts";
 import {
@@ -769,16 +770,9 @@ export function Composer({
     >
       <ComposerDestinationBar
         clearDestination={clearDestination}
-        continueWith={continueWith}
         destinationError={destinationError}
         destinationMode={destinationMode}
         hasBroadcastDestination={hasBroadcastDestination}
-        hasEveryoneDestination={hasEveryoneDestination}
-        inputRef={inputRef}
-        implicitContinueSelected={Boolean(implicitContinueHandle)}
-        projectDestinations={projectDestinations}
-        selectImplicitContinue={setImplicitContinueSelected}
-        setDestination={setDestination}
         targetRequiredDestinations={targetRequiredDestinations}
       />
       <ComposerAttachmentList
@@ -840,6 +834,19 @@ export function Composer({
           onFilterChange={setCapabilityFilter}
           onApplyCapability={applyCapability}
         />
+        {destinationMode === "project-chat" ? (
+          <ComposerProjectDestinationPicker
+            clearDestination={clearDestination}
+            continueWith={continueWith}
+            hasBroadcastDestination={hasBroadcastDestination}
+            hasEveryoneDestination={hasEveryoneDestination}
+            inputRef={inputRef}
+            implicitContinueSelected={Boolean(implicitContinueHandle)}
+            projectDestinations={projectDestinations}
+            selectImplicitContinue={setImplicitContinueSelected}
+            setDestination={setDestination}
+          />
+        ) : null}
         {leadingControls ? (
           <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
             {leadingControls}
