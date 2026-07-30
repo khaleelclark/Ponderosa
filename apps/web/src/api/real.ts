@@ -53,7 +53,9 @@ import type {
   EditQueuedMessageRequest,
   EditQueuedMessageResponse,
   EngineDto,
+  EngineLogDto,
   EngineModelValidationDto,
+  EngineStatusDto,
   FilesResponse,
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
@@ -598,6 +600,17 @@ export const realApi = {
   },
   getHealth(): Promise<HealthDto> {
     return requestJson<HealthDto>("/api/health");
+  },
+  getEngineStatus(): Promise<EngineStatusDto> {
+    return requestJson<EngineStatusDto>("/api/engine/status");
+  },
+  getEngineLog(stream: "server" | "error"): Promise<EngineLogDto> {
+    return requestJson<EngineLogDto>(
+      `/api/engine/logs?stream=${encodeURIComponent(stream)}`,
+    );
+  },
+  async stopEngine(): Promise<void> {
+    await requestJson("/api/engine/shutdown", { method: "POST" }, [202]);
   },
   getReadiness(): Promise<ReadinessDto> {
     return requestJson<ReadinessDto>("/api/ready", undefined, [503]);

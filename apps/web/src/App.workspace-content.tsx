@@ -188,6 +188,7 @@ export function WorkspaceRouteOutlet({
           onToggleColorMode={onToggleColorMode}
           onPreferences={onPreferences}
           section={route.section}
+          onNavigate={onNavigate}
         />
       ) : route.kind === "profile" ? (
         <OperatorProfileWorkspace
@@ -204,6 +205,7 @@ export function WorkspaceRouteOutlet({
           onPreferences={onPreferences}
           section="activity"
           activityProjectId={route.projectId}
+          onNavigate={onNavigate}
         />
       ) : isProjectRoute(route) ? (
         selectedProjectId ? (

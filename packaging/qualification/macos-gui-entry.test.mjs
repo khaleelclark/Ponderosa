@@ -8,6 +8,6 @@ import {
 test("macOS packaged entry sanitizes GUI PATH and forwards explicit qualification arguments", () => {
   const entry = macosLauncherEntry();
   assert.match(entry, new RegExp(`PATH="${MACOS_GUI_PATH.replaceAll("/", "\\/")}"`, "u"));
-  assert.match(entry, /open --install-root "\$ROOT" "\$@"/u);
+  assert.match(entry, /engine --install-root "\$ROOT" "\$@"/u);
   assert.doesNotMatch(entry, /opt\/homebrew/u);
 });

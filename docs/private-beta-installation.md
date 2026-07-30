@@ -29,8 +29,17 @@ ponderosa-beta
 macOS:
 
 1. Open the `.dmg`.
-2. Copy **Ponderosa Beta.app** to Applications.
+2. Copy **Ponderosa Engine.app** to Applications.
 3. Open the application.
+
+Older beta candidates were named **Ponderosa Beta.app**. After copying the new
+application, remove that old application bundle so Finder shows only one launcher.
+Do not remove `~/Library/Application Support/Ponderosa Beta`; the renamed Engine
+continues to use that data directory so existing Projects and history remain intact.
+
+The Engine opens a local status page with the installed version, uptime,
+bounded live logs, and a safe stop control. Use **Open Ponderosa** there to
+enter the main web application.
 
 When a newly installed package opens while a different Ponderosa Server build
 is still running, the launcher identifies both builds and asks whether to
@@ -41,7 +50,7 @@ Choosing **Not Now** leaves the existing server running and opens it normally.
 Windows:
 
 1. Run the `.exe` as the intended user.
-2. Use the **Ponderosa Beta** Start-menu shortcut.
+2. Use the **Ponderosa Engine** Start-menu shortcut.
 
 The Windows installer requests lowest privileges and installs below
 `LocalAppData`. The Debian package uses ordinary package-manager authority to
@@ -85,7 +94,7 @@ profiles, and notarization credentials are not included in Ponderosa artifacts.
 | Platform | Ponderosa data | Application files |
 | --- | --- | --- |
 | Ubuntu | `$XDG_DATA_HOME/ponderosa-beta`, or `~/.local/share/ponderosa-beta` | `/opt/ponderosa-beta` |
-| macOS | `~/Library/Application Support/Ponderosa Beta` | `Ponderosa Beta.app` |
+| macOS | `~/Library/Application Support/Ponderosa Beta` | `Ponderosa Engine.app` |
 | Windows | `%LOCALAPPDATA%\\Ponderosa Beta` | `%LOCALAPPDATA%\\Programs\\Ponderosa Beta` |
 
 Selected Project source folders remain in their original host locations.
@@ -93,6 +102,11 @@ Ponderosa Project deletion and installer removal must never delete those
 folders.
 
 ## Diagnostics and recovery
+
+Opening **Ponderosa Engine** shows whether the local service is running, its
+exact version and revision, uptime, work-intake state, and bounded live Server
+and Error logs. The same page can stop the Engine safely. Reopen the desktop
+application to start it again.
 
 Run:
 
@@ -112,6 +126,11 @@ browser bootstrap and session tokens, provider credentials, OAuth material,
 environment secrets, raw logs, `.env` contents, Project file contents, message
 bodies, and artifact bytes.
 
+Raw local logs remain available below the platform data directory in `logs/`.
+At Engine startup, each log larger than 5 MiB is rotated with three archives
+retained. This bounds ordinary beta log growth without adding a second
+background supervisor.
+
 If startup state is stale, the launcher authenticates the recorded loopback
 server before repairing it. It refuses to discard state for a still-live
 unproven process. Collect diagnostics before manual recovery.
@@ -119,8 +138,8 @@ unproven process. Collect diagnostics before manual recovery.
 ## Uninstall
 
 - Ubuntu: `sudo apt remove ponderosa-beta`
-- macOS: remove **Ponderosa Beta.app**
-- Windows: uninstall **Ponderosa Beta** from Installed apps
+- macOS: remove **Ponderosa Engine.app**
+- Windows: uninstall **Ponderosa Engine** from Installed apps
 
 Uninstall removes application bytes only. It preserves Ponderosa data and every
 selected Project source folder. Delete preserved Ponderosa data manually only

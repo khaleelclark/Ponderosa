@@ -21,7 +21,7 @@ test("macOS metadata exposes an exact identifiable beta candidate", () => {
   assert.match(plist, /<key>CFBundleShortVersionString<\/key><string>0\.0\.0<\/string>/u);
   assert.match(
     plist,
-    /Ponderosa Beta 0\.0\.0-beta\.mac9 \(a&amp;&lt;&gt;&apos;&quot;bc\)/u,
+    /Ponderosa Engine 0\.0\.0-beta\.mac9 \(a&amp;&lt;&gt;&apos;&quot;bc\)/u,
   );
   assert.match(plist, /<key>PonderosaBuildVersion<\/key><string>0\.0\.0-beta\.mac9<\/string>/u);
   assert.match(

@@ -65,7 +65,7 @@ export type Route =
   | { kind: "allChats"; filterProjectId?: string }
   | { kind: "allAgents"; filterProjectId?: string }
   | { kind: "allTriggers" }
-  | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" }
+  | { kind: "settings"; section?: "general" | "providers" | "notifications" | "activity" | "engine" }
   | { kind: "profile" }
   | { kind: "usage"; projectId?: string }
   | { kind: "wiki"; articleId?: string }
@@ -128,7 +128,7 @@ export function parseRoute(pathname: string, search = ""): Route {
   if (parts.length === 1 && parts[0] === "triggers") return { kind: "allTriggers" };
   if (parts[0] === "settings") {
     const section = parts[1];
-    return { kind: "settings", ...(["general", "providers", "notifications", "activity"].includes(section ?? "") ? { section: section as "general" | "providers" | "notifications" | "activity" } : {}) };
+    return { kind: "settings", ...(["general", "providers", "notifications", "activity", "engine"].includes(section ?? "") ? { section: section as "general" | "providers" | "notifications" | "activity" | "engine" } : {}) };
   }
   if (parts.length === 1 && parts[0] === "profile") return { kind: "profile" };
   if (parts.length === 1 && parts[0] === "usage") return { kind: "usage", ...(query.get("project") ? { projectId: query.get("project")! } : {}) };

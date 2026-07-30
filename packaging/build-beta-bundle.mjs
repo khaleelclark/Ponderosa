@@ -321,7 +321,7 @@ Dim shell, fso, root, command\r
 Set shell = CreateObject("WScript.Shell")\r
 Set fso = CreateObject("Scripting.FileSystemObject")\r
 root = fso.GetParentFolderName(WScript.ScriptFullName)\r
-command = Chr(34) & root & "\\runtime\\node.exe" & Chr(34) & " " & Chr(34) & root & "\\app\\launcher\\dist\\cli.js" & Chr(34) & " open --install-root " & Chr(34) & root & Chr(34)\r
+command = Chr(34) & root & "\\runtime\\node.exe" & Chr(34) & " " & Chr(34) & root & "\\app\\launcher\\dist\\cli.js" & Chr(34) & " engine --install-root " & Chr(34) & root & Chr(34)\r
 shell.Run command, 0, False\r
 `;
 writeFileSync(path.join(bundleRoot, "ponderosa.vbs"), windowsGuiLauncher);

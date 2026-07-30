@@ -68,7 +68,7 @@ auditPortableSymlinkTree(bundle, { label: "pre-package native bundle" });
 if (format === "dmg") {
   if (process.platform !== "darwin") throw new Error("DMG packages must be built on macOS.");
   const stage = path.join(os.tmpdir(), `ponderosa-dmg-${process.pid}`);
-  const app = path.join(stage, "Ponderosa Beta.app");
+  const app = path.join(stage, "Ponderosa Engine.app");
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
   mkdirSync(path.join(app, "Contents", "Resources"), { recursive: true });
@@ -121,7 +121,7 @@ if (format === "dmg") {
   }
   const target = path.join(output, `${artifactBase}.dmg`);
   rmSync(target, { force: true });
-  run("hdiutil", ["create", "-volname", "Ponderosa Beta", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
+  run("hdiutil", ["create", "-volname", "Ponderosa Engine", "-srcfolder", stage, "-ov", "-format", "UDZO", target]);
   rmSync(stage, { recursive: true, force: true });
   const notaryProfile = process.env.PONDEROSA_MACOS_NOTARY_PROFILE?.trim();
   if (notaryProfile) {
@@ -152,11 +152,14 @@ if (format === "dmg") {
   writeExecutable(path.join(appDir, "AppRun"), `#!/bin/sh
 set -eu
 ROOT="$APPDIR/usr/lib/ponderosa-beta"
-exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" open --install-root "$ROOT"
+if [ "$#" -eq 0 ]; then
+  exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" engine --install-root "$ROOT"
+fi
+exec "$ROOT/runtime/node" "$ROOT/app/launcher/dist/cli.js" --install-root "$ROOT" "$@"
 `);
   writeFileSync(path.join(appDir, "ponderosa-beta.desktop"), `[Desktop Entry]
 Type=Application
-Name=Ponderosa Beta
+Name=Ponderosa Engine
 Exec=ponderosa-beta
 Icon=ponderosa-beta
 Categories=Development;
@@ -184,12 +187,12 @@ Terminal=false
     label: "staged Debian application bundle",
   });
   writeExecutable(path.join(root, "usr", "bin", "ponderosa-beta"), `#!/bin/sh
-exec /opt/ponderosa-beta/runtime/node /opt/ponderosa-beta/app/launcher/dist/cli.js open --install-root /opt/ponderosa-beta "$@"
+exec /opt/ponderosa-beta/runtime/node /opt/ponderosa-beta/app/launcher/dist/cli.js --install-root /opt/ponderosa-beta "$@"
 `);
   writeFileSync(path.join(root, "usr", "share", "applications", "ponderosa-beta.desktop"), `[Desktop Entry]
 Type=Application
-Name=Ponderosa Beta
-Exec=ponderosa-beta
+Name=Ponderosa Engine
+Exec=ponderosa-beta engine
 Icon=/opt/ponderosa-beta/app/web/dist/icons/app-icon.png
 Categories=Development;
 Terminal=false
@@ -221,7 +224,7 @@ Terminal=false
   writeFileSync(script, `#define MyAppVersion "${manifest.version}"
 [Setup]
 AppId={{F6108742-BCEE-4C42-89D5-642384612310}
-AppName=Ponderosa Beta
+AppName=Ponderosa Engine
 AppVersion={#MyAppVersion}
 DefaultDirName={localappdata}\\Programs\\Ponderosa Beta
 PrivilegesRequired=lowest
@@ -236,10 +239,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 Source: "${escapedBundle}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\\Ponderosa Beta"; Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; WorkingDir: "{app}"
+Name: "{autoprograms}\\Ponderosa Engine"; Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; WorkingDir: "{app}"
 
 [Run]
-Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Description: "Open Ponderosa Beta"; Flags: nowait postinstall skipifsilent runhidden
+Filename: "{sys}\\wscript.exe"; Parameters: """{app}\\ponderosa.vbs"""; Description: "Open Ponderosa Engine"; Flags: nowait postinstall skipifsilent runhidden
 `);
   run(iscc, [script]);
   rmSync(script, { force: true });

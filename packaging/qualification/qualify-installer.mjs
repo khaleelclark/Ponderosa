@@ -98,8 +98,8 @@ try {
     mounted = path.join(disposable, "mounted");
     mkdirSync(mounted);
     run("hdiutil", ["attach", "-nobrowse", "-readonly", "-mountpoint", mounted, artifact]);
-    const sourceApp = path.join(mounted, "Ponderosa Beta.app");
-    const installedApp = path.join(disposable, "Applications", "Ponderosa Beta.app");
+    const sourceApp = path.join(mounted, "Ponderosa Engine.app");
+    const installedApp = path.join(disposable, "Applications", "Ponderosa Engine.app");
     mkdirSync(path.dirname(installedApp), { recursive: true });
     copyPortableTree(sourceApp, installedApp, {
       label: "copied macOS installed application",

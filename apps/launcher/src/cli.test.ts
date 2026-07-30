@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
-import { isDirectInvocation } from "./cli.js";
+import { isDirectInvocation, parseArguments } from "./cli.js";
 
 describe("launcher CLI entry identity", () => {
   const disposable: string[] = [];
@@ -54,5 +54,12 @@ describe("launcher CLI entry identity", () => {
     writeFileSync(other, "");
 
     expect(isDirectInvocation(other, pathToFileURL(entry).href)).toBe(false);
+  });
+
+  it("recognizes the Engine dashboard command", () => {
+    expect(parseArguments(["engine"])).toMatchObject({
+      command: "engine",
+      openBrowser: true,
+    });
   });
 });

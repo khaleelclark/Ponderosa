@@ -3,6 +3,7 @@ import {
   existsSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -33,6 +34,8 @@ const LOOPBACK_HOST = "127.0.0.1" as const;
 const START_TIMEOUT_MS = 45_000;
 const STOP_TIMEOUT_MS = 30_000;
 const OPERATION_LOCK_INITIALIZATION_GRACE_MS = 5_000;
+const LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+const LOG_ARCHIVE_COUNT = 3;
 
 function processAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
@@ -198,6 +201,19 @@ async function defaultSpawnServer(
   state: LauncherState,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
+  for (const logPath of [paths.stdoutLogPath, paths.stderrLogPath]) {
+    try {
+      if (statSync(logPath).size < LOG_ROTATE_BYTES) continue;
+      rmSync(`${logPath}.${LOG_ARCHIVE_COUNT}`, { force: true });
+      for (let index = LOG_ARCHIVE_COUNT - 1; index >= 1; index -= 1) {
+        const source = `${logPath}.${index}`;
+        if (existsSync(source)) renameSync(source, `${logPath}.${index + 1}`);
+      }
+      renameSync(logPath, `${logPath}.1`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   const stdout = openSync(paths.stdoutLogPath, "a", 0o600);
   const stderr = openSync(paths.stderrLogPath, "a", 0o600);
   try {
@@ -371,6 +387,7 @@ export async function requestBrowserBootstrap(
   state: LauncherState,
   platform: PlatformAdapter,
   fetchFn: typeof globalThis.fetch = globalThis.fetch,
+  destination = "/",
 ): Promise<void> {
   const response = await fetchFn(`${baseUrl(state)}/api/launcher/bootstrap`, {
     method: "POST",
@@ -382,7 +399,10 @@ export async function requestBrowserBootstrap(
   if (typeof body.token !== "string" || body.token === "") {
     throw new Error("Ponderosa returned an invalid browser bootstrap.");
   }
-  await platform.openBrowser(`${baseUrl(state)}/__ponderosa_bootstrap#${encodeURIComponent(body.token)}`);
+  const next = destination === "/settings/engine" ? destination : "/";
+  await platform.openBrowser(
+    `${baseUrl(state)}/__ponderosa_bootstrap?next=${encodeURIComponent(next)}#${encodeURIComponent(body.token)}`,
+  );
 }
 
 export async function startPonderosa(input: {
@@ -391,6 +411,7 @@ export async function startPonderosa(input: {
   platform: PlatformAdapter;
   requestedPort?: number;
   openBrowser?: boolean;
+  browserPath?: string;
   dependencies?: LauncherDependencies;
 }): Promise<LauncherState> {
   ensureDataLayout(input.paths);
@@ -407,7 +428,12 @@ export async function startPonderosa(input: {
         const recovered = existing.pid > 0 ? existing : { ...existing, pid: current.pid };
         if (existing.pid <= 0) writeJsonAtomic(input.paths.statePath, recovered);
         if (input.openBrowser !== false) {
-          await requestBrowserBootstrap(recovered, input.platform, fetchFn);
+          await requestBrowserBootstrap(
+            recovered,
+            input.platform,
+            fetchFn,
+            input.browserPath,
+          );
         }
         return recovered;
       }
@@ -442,6 +468,7 @@ export async function startPonderosa(input: {
       PONDEROSA_BUILD_VERSION: input.manifest.version,
       PONDEROSA_RELEASE_CHANNEL: input.manifest.channel,
       PONDEROSA_LAUNCHER_CONTROL_TOKEN: provisional.controlToken,
+      PONDEROSA_LAUNCHER_DATA_DIR: input.paths.dataDir,
       PONDEROSA_INSTALL_ROOT: input.paths.installRoot,
     };
     for (const provider of providers) {
@@ -489,7 +516,12 @@ export async function startPonderosa(input: {
       throw error;
     }
     if (input.openBrowser !== false) {
-      await requestBrowserBootstrap(state, input.platform, fetchFn);
+      await requestBrowserBootstrap(
+        state,
+        input.platform,
+        fetchFn,
+        input.browserPath,
+      );
     }
     return state;
   } finally {

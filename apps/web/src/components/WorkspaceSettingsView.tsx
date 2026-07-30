@@ -31,6 +31,8 @@ import {
   runtimeControlState,
 } from "../conversationEngine";
 import type { ColorMode } from "../theme";
+import type { Route } from "../routing";
+import { EngineSettingsSection } from "./EngineSettingsSection";
 import { ProviderActivitySettingsSection } from "./WorkspaceResourceViews";
 import {
   inspectWebPush,
@@ -711,6 +713,7 @@ export function WorkspaceSettingsView({
   onPreferences,
   section = "general",
   activityProjectId,
+  onNavigate,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
@@ -718,8 +721,9 @@ export function WorkspaceSettingsView({
   colorMode: ColorMode;
   onToggleColorMode(): void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
-  section?: "general" | "providers" | "notifications" | "activity";
+  section?: "general" | "providers" | "notifications" | "activity" | "engine";
   activityProjectId?: string;
+  onNavigate(route: Route): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const validationProject = projects[0];
@@ -874,6 +878,9 @@ export function WorkspaceSettingsView({
             projects={projects}
             projectId={activityProjectId}
           />
+        ) : null}
+        {section === "engine" ? (
+          <EngineSettingsSection onOpenPonderosa={() => onNavigate({ kind: "home" })} />
         ) : null}
       </Box>
     </Box>

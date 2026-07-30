@@ -2,6 +2,7 @@ import AddIcon from "@mui/icons-material/Add";
 import BoltOutlinedIcon from "@mui/icons-material/BoltOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import DataUsageOutlinedIcon from "@mui/icons-material/DataUsageOutlined";
+import DnsOutlinedIcon from "@mui/icons-material/DnsOutlined";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
 import HomeOutlinedIcon from "@mui/icons-material/HomeOutlined";
 import MenuBookOutlinedIcon from "@mui/icons-material/MenuBookOutlined";
@@ -440,6 +441,19 @@ export function SettingsSidebarPanel({
             <DataUsageOutlinedIcon />
           </ListItemIcon>
           <ListItemText primary="Provider Activity" secondary="Tokens and Run telemetry" />
+        </ListItemButton>
+        <ListItemButton
+          selected={route.kind === "settings" && route.section === "engine"}
+          onClick={() => onNavigate({ kind: "settings", section: "engine" })}
+          sx={{ borderRadius: 1.25 }}
+        >
+          <ListItemIcon>
+            <DnsOutlinedIcon />
+          </ListItemIcon>
+          <ListItemText
+            primary="Ponderosa Engine"
+            secondary="Status, logs, and lifecycle"
+          />
         </ListItemButton>
       </List>
       <Typography
