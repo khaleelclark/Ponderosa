@@ -11,6 +11,10 @@ import { createServer } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { canonicalPath } from "./canonical-path.mjs";
+import {
+  parseSuccessfulJsonResponse,
+  requireSuccessfulResponse,
+} from "./http-response.mjs";
 import { MACOS_GUI_PATH } from "./macos-gui-entry.mjs";
 import { expectedClaudeGuiExecutable } from "./macos-provider-evidence.mjs";
 
@@ -335,8 +339,10 @@ try {
     }),
     signal: AbortSignal.timeout(15_000),
   });
-  assert(projectResponse.ok, `GUI qualification Project creation failed: ${await projectResponse.text()}`);
-  const project = await projectResponse.json();
+  const project = await parseSuccessfulJsonResponse(
+    projectResponse,
+    "GUI qualification Project creation failed",
+  );
 
   const capabilities = await fetch(
     `${baseUrl}/api/projects/${project.id}/engine-capabilities?engineId=codex&refresh=true`,
@@ -345,7 +351,10 @@ try {
       signal: AbortSignal.timeout(60_000),
     },
   );
-  assert(capabilities.ok, `Codex capability discovery failed under GUI launch: ${await capabilities.text()}`);
+  await requireSuccessfulResponse(
+    capabilities,
+    "Codex capability discovery failed under GUI launch",
+  );
   const claudeModels = await fetch(
     `${baseUrl}/api/projects/${project.id}/engine-models/claude?refresh=true`,
     {
