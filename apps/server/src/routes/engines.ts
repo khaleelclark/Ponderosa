@@ -188,9 +188,12 @@ export function registerEngineRoutes(
         : { authenticated: true };
       if (!auth.authenticated) return engineDto(registration);
       if (!registration.availabilityProbe) {
-        return reply.code(409).send({
-          error: "this runtime does not provide an entitlement probe",
-        });
+        const refreshed = await engineDto(registration);
+        if (refreshed.available) {
+          resolveOperationalNotification(`provider:${request.params.id}:unavailable`);
+          notifyScheduler();
+        }
+        return refreshed;
       }
       let result: EngineAvailabilityStatus;
       try {
