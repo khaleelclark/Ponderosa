@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import {
   existsSync,
   mkdtempSync,
@@ -13,10 +15,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  combinedQualificationFailure,
   documentAssetPaths,
   findMacosChromiumExecutable,
   qualifyPersistentPwaUpgrade,
   seedLegacyPwaProfile,
+  stopDetachedProcessGroup,
   webAssetPaths,
 } from "./persistent-pwa-upgrade.mjs";
 
@@ -67,6 +71,50 @@ const testBrowser = process.platform === "darwin"
     ].find((candidate) =>
       candidate && path.isAbsolute(candidate) && existsSync(candidate)
     );
+
+test("observes and terminates a detached browser process group after its root exits", {
+  skip: process.platform === "win32",
+  timeout: 15_000,
+}, async () => {
+  const root = spawn(process.execPath, [
+    "-e",
+    `const { spawn } = require("node:child_process");
+const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" });
+child.unref();`,
+  ], {
+    detached: true,
+    stdio: "ignore",
+  });
+  assert(Number.isSafeInteger(root.pid));
+  const processGroupId = root.pid;
+  await once(root, "exit");
+  assert.doesNotThrow(() => process.kill(-processGroupId, 0),
+    "fixture descendant did not remain after its process-group root exited");
+
+  await stopDetachedProcessGroup(
+    processGroupId,
+    async () => {
+      throw new Error("injected graceful-close failure");
+    },
+    2_000,
+  );
+  assert.throws(
+    () => process.kill(-processGroupId, 0),
+    (error) => error?.code === "ESRCH",
+  );
+});
+
+test("preserves primary and cleanup failures together", () => {
+  const primary = new Error("injected qualification failure");
+  const cleanup = new Error("injected process-group cleanup failure");
+  const failure = combinedQualificationFailure(
+    primary,
+    [cleanup],
+    "qualification and cleanup failed",
+  );
+  assert(failure instanceof AggregateError);
+  assert.deepEqual(failure.errors, [primary, cleanup]);
+});
 
 test("replaces a controlling legacy worker in one persistent profile", {
   skip: !testBrowser,

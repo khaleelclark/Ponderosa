@@ -5,10 +5,13 @@ describe("PWA navigation fallback", () => {
   it("never intercepts authenticated APIs or launcher bootstrap routes", () => {
     for (const pathname of [
       "/api",
+      "/api?probe=1",
       "/api/projects",
       "/__ponderosa_bootstrap",
+      "/__ponderosa_bootstrap?probe=1",
       "/__ponderosa_bootstrap/more",
       "/__ponderosa_bootstrap.js",
+      "/__ponderosa_bootstrap.js?probe=1",
     ]) {
       expect(pwaNavigationFallbackAllowed(pathname), pathname).toBe(false);
     }
@@ -17,6 +20,7 @@ describe("PWA navigation fallback", () => {
   it("continues to serve the application shell for ordinary UI routes", () => {
     for (const pathname of [
       "/",
+      "/api-lookalike?probe=1",
       "/agents/current",
       "/projects/current/work",
     ]) {

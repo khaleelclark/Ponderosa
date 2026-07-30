@@ -140,46 +140,122 @@ class CdpConnection {
   }
 }
 
-async function observedExit(child, timeoutMs) {
-  if (child.exitCode !== null || child.signalCode !== null) return true;
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      child.off("exit", exited);
-      resolve(false);
-    }, timeoutMs);
-    const exited = () => {
-      clearTimeout(timer);
-      resolve(true);
-    };
-    child.once("exit", exited);
-  });
+function processGroupExists(processGroupId) {
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    throw error;
+  }
 }
 
-async function stopBrowser(child, connection) {
-  await connection.send("Browser.close").catch(() => undefined);
-  if (await observedExit(child, 5_000)) return;
-  if (child.pid) {
-    try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
+async function observeProcessGroupExit(processGroupId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!processGroupExists(processGroupId)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  if (await observedExit(child, 5_000)) return;
-  if (child.pid) {
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      child.kill("SIGKILL");
-    }
+  return !processGroupExists(processGroupId);
+}
+
+function signalProcessGroup(processGroupId, signal) {
+  try {
+    process.kill(-processGroupId, signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") throw error;
   }
-  if (!(await observedExit(child, 5_000))) {
+}
+
+export async function stopDetachedProcessGroup(
+  processGroupId,
+  requestGracefulClose = async () => undefined,
+  timeoutMs = 5_000,
+) {
+  assert(Number.isSafeInteger(processGroupId) && processGroupId > 0,
+    "qualification browser process-group id is unavailable");
+  await requestGracefulClose().catch(() => undefined);
+  if (await observeProcessGroupExit(processGroupId, timeoutMs)) return;
+  signalProcessGroup(processGroupId, "SIGTERM");
+  if (await observeProcessGroupExit(processGroupId, timeoutMs)) return;
+  signalProcessGroup(processGroupId, "SIGKILL");
+  if (!(await observeProcessGroupExit(processGroupId, timeoutMs))) {
     throw new Error("qualification browser process group did not exit");
   }
 }
 
-async function openBrowser(executablePath, profileDir) {
-  const child = spawn(executablePath, [
+export function combinedQualificationFailure(primaryError, cleanupErrors, message) {
+  if (!primaryError && cleanupErrors.length === 0) return undefined;
+  if (primaryError && cleanupErrors.length === 0) return primaryError;
+  if (!primaryError && cleanupErrors.length === 1) return cleanupErrors[0];
+  return new AggregateError(
+    [...(primaryError ? [primaryError] : []), ...cleanupErrors],
+    message,
+  );
+}
+
+async function closeBrowserWithPrimary(browser, primaryError, message) {
+  const cleanupErrors = [];
+  try {
+    await browser.close();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  const failure = combinedQualificationFailure(primaryError, cleanupErrors, message);
+  if (failure) throw failure;
+}
+
+async function stopBrowser(child, connection) {
+  if (!child.pid) {
+    throw new Error("qualification browser process-group id is unavailable");
+  }
+  await stopDetachedProcessGroup(
+    child.pid,
+    () => connection.send("Browser.close"),
+  );
+}
+
+async function stopSpawnedBrowser(child) {
+  if (!child.pid) {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    throw new Error("qualification browser process-group id is unavailable");
+  }
+  await stopDetachedProcessGroup(child.pid);
+}
+
+function browserLaunchFailure(error, launchError, cleanupErrors = []) {
+  const detail = launchError.trim();
+  const primary = detail
+    ? new Error(`${error instanceof Error ? error.message : String(error)}\n${detail}`)
+    : error instanceof Error ? error : new Error(String(error));
+  const failure = combinedQualificationFailure(
+    primary,
+    cleanupErrors,
+    "qualification browser startup and process-group cleanup failed",
+  );
+  return failure ?? primary;
+}
+
+async function ensureDebuggingPipes(child, launchError) {
+  const input = child.stdio[3];
+  const output = child.stdio[4];
+  if (input && output) return { input, output };
+  const cleanupErrors = [];
+  try {
+    await stopSpawnedBrowser(child);
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  throw browserLaunchFailure(
+    new Error("qualification browser debugging pipe is unavailable"),
+    launchError,
+    cleanupErrors,
+  );
+}
+
+function createBrowserProcess(executablePath, profileDir) {
+  return spawn(executablePath, [
     "--headless=new",
     "--remote-debugging-pipe",
     `--user-data-dir=${profileDir}`,
@@ -198,18 +274,40 @@ async function openBrowser(executablePath, profileDir) {
     ),
     detached: true,
   });
+}
+
+async function spawnBrowser(executablePath, profileDir) {
+  const child = createBrowserProcess(executablePath, profileDir);
   let launchError = "";
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (chunk) => {
     launchError = `${launchError}${chunk}`.slice(-4_000);
   });
-  await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("spawn", resolve);
-  });
-  const input = child.stdio[3];
-  const output = child.stdio[4];
-  if (!input || !output) throw new Error("qualification browser debugging pipe is unavailable");
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("spawn", resolve);
+    });
+  } catch (error) {
+    const cleanupErrors = [];
+    try {
+      await stopSpawnedBrowser(child);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    throw browserLaunchFailure(error, launchError, cleanupErrors);
+  }
+  const pipes = await ensureDebuggingPipes(child, launchError);
+  return { child, launchError: () => launchError, ...pipes };
+}
+
+async function openBrowser(executablePath, profileDir) {
+  const {
+    child,
+    input,
+    output,
+    launchError,
+  } = await spawnBrowser(executablePath, profileDir);
   const connection = new CdpConnection(input, output);
   try {
     const created = await connection.send("Target.createTarget", { url: "about:blank" });
@@ -254,11 +352,13 @@ async function openBrowser(executablePath, profileDir) {
       close: () => stopBrowser(child, connection),
     };
   } catch (error) {
-    await stopBrowser(child, connection).catch(() => undefined);
-    const detail = launchError.trim();
-    throw new Error(detail
-      ? `${error instanceof Error ? error.message : String(error)}\n${detail}`
-      : error instanceof Error ? error.message : String(error));
+    const cleanupErrors = [];
+    try {
+      await stopBrowser(child, connection);
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    throw browserLaunchFailure(error, launchError(), cleanupErrors);
   }
 }
 
@@ -310,6 +410,7 @@ export async function seedLegacyPwaProfile(port, profileDir, browserExecutable) 
     server.listen(port, "127.0.0.1", resolve);
   });
   let browser;
+  let primaryError;
   try {
     browser = await openBrowser(browserExecutable, profileDir);
     await browser.navigate(`http://127.0.0.1:${port}/`);
@@ -317,9 +418,29 @@ export async function seedLegacyPwaProfile(port, profileDir, browserExecutable) 
       `(async()=>navigator.serviceWorker.controller?.scriptURL.endsWith("/sw.js")&&globalThis.__PONDEROSA_ASSET_MARKER__===${JSON.stringify(LEGACY_ASSET_MARKER)}&&Boolean(await caches.match("/old.js")))()`,
       "legacy service worker did not take control of the persistent profile",
     );
+  } catch (error) {
+    primaryError = error;
   } finally {
-    if (browser) await browser.close();
-    await new Promise((resolve) => server.close(resolve));
+    const cleanupErrors = [];
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      await new Promise((resolve, reject) =>
+        server.close((error) => error ? reject(error) : resolve()));
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+    const failure = combinedQualificationFailure(
+      primaryError,
+      cleanupErrors,
+      "legacy PWA profile seeding and cleanup failed",
+    );
+    if (failure) throw failure;
   }
 }
 
@@ -358,6 +479,7 @@ export async function qualifyPersistentPwaUpgrade({
   const baseUrl = `http://127.0.0.1:${port}`;
   const publicAssetCount = await unauthenticatedUpdateSurface(baseUrl, webDist);
   let browser = await openBrowser(browserExecutable, profileDir);
+  let primaryError;
   try {
     await browser.navigate(`${baseUrl}/`);
     await browser.waitFor(
@@ -369,20 +491,31 @@ export async function qualifyPersistentPwaUpgrade({
       `location.pathname==="/"&&${currentAssetExpression(expectedAssets, true)}`,
       "service worker blocked browser bootstrap or the authenticated current build",
     );
-  } finally {
-    await browser.close();
+  } catch (error) {
+    primaryError = error;
   }
+  await closeBrowserWithPrimary(
+    browser,
+    primaryError,
+    "persistent PWA upgrade and browser cleanup failed",
+  );
 
   browser = await openBrowser(browserExecutable, profileDir);
+  primaryError = undefined;
   try {
     await browser.navigate(`${baseUrl}/`);
     await browser.waitFor(
       currentAssetExpression(expectedAssets, true),
       "persistent browser restart regressed to legacy assets or lost authentication",
     );
-  } finally {
-    await browser.close();
+  } catch (error) {
+    primaryError = error;
   }
+  await closeBrowserWithPrimary(
+    browser,
+    primaryError,
+    "persistent PWA restart and browser cleanup failed",
+  );
   return {
     browserExecutable,
     publicAssetCount,
