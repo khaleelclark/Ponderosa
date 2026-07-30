@@ -17,6 +17,7 @@ import {
   auditPortableSymlinkTree,
   copyPortableTree,
 } from "./qualification/symlink-portability.mjs";
+import { macosInfoPlist } from "./macos-bundle-metadata.mjs";
 import { macosLauncherEntry } from "./qualification/macos-gui-entry.mjs";
 
 function option(name, fallback) {
@@ -51,11 +52,6 @@ function finalizeArtifact(target, security) {
     ...security,
   }, null, 2)}\n`);
   process.stdout.write(`${target}\n${checksumPath}\n${metadataPath}\n`);
-}
-
-function numericAppleVersion(version) {
-  const values = version.match(/\d+/gu)?.slice(0, 3) ?? [];
-  return [...values, "0", "0", "0"].slice(0, 3).join(".");
 }
 
 const bundle = path.resolve(option(
@@ -110,19 +106,7 @@ if (format === "dmg") {
     path.join(app, "Contents", "MacOS", "Ponderosa"),
     macosLauncherEntry(),
   );
-  writeFileSync(path.join(app, "Contents", "Info.plist"), `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>Ponderosa Beta</string>
-<key>CFBundleDisplayName</key><string>Ponderosa Beta</string>
-<key>CFBundleIdentifier</key><string>app.ponderosa.beta</string>
-<key>CFBundleVersion</key><string>${numericAppleVersion(manifest.version)}</string>
-<key>CFBundleShortVersionString</key><string>${numericAppleVersion(manifest.version)}</string>
-<key>CFBundleExecutable</key><string>Ponderosa</string>
-<key>CFBundleIconFile</key><string>Ponderosa.icns</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
-<key>NSHighResolutionCapable</key><true/>
-</dict></plist>`);
+  writeFileSync(path.join(app, "Contents", "Info.plist"), macosInfoPlist(manifest));
   const signingIdentity = process.env.PONDEROSA_MACOS_SIGN_IDENTITY?.trim();
   if (signingIdentity) {
     run("codesign", [

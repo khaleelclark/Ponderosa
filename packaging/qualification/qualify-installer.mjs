@@ -33,6 +33,18 @@ function run(command, args, options = {}) {
   });
 }
 
+function capture(command, args) {
+  return execFileSync(command, args, {
+    encoding: "utf8",
+    windowsHide: true,
+    stdio: "pipe",
+  }).trim();
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
 function defaultDataDir() {
   if (process.platform === "darwin") {
     return path.join(os.homedir(), "Library", "Application Support", "Ponderosa Beta");
@@ -71,6 +83,7 @@ let uninstall = () => undefined;
 let mounted;
 let installed = false;
 let removed = false;
+const installerChecks = [];
 try {
   if (process.platform === "linux") {
     if (!artifact.endsWith(".deb")) throw new Error("Linux installer qualification requires a .deb.");
@@ -110,6 +123,39 @@ try {
     installed = true;
   } else {
     throw new Error(`Unsupported installer qualification host: ${process.platform}/${process.arch}`);
+  }
+
+  if (process.platform === "darwin") {
+    const manifest = JSON.parse(readFileSync(
+      path.join(installedRoot, "build-manifest.json"),
+      "utf8",
+    ));
+    const infoPlist = path.join(installedApplication, "Contents", "Info.plist");
+    const plistValue = (key) => capture(
+      "plutil",
+      ["-extract", key, "raw", "-o", "-", infoPlist],
+    );
+    const bundleVersion = plistValue("CFBundleVersion");
+    const exactVersion = plistValue("PonderosaBuildVersion");
+    const exactCommit = plistValue("PonderosaBuildCommit");
+    const infoString = plistValue("CFBundleGetInfoString");
+    assert(exactVersion === manifest.version,
+      "Installed macOS application does not expose its exact beta version.");
+    assert(exactCommit === manifest.commit,
+      "Installed macOS application does not expose its exact build commit.");
+    assert(infoString.includes(manifest.version) &&
+      infoString.includes(manifest.commit.slice(0, 8)),
+      "Installed macOS application info string does not identify its beta candidate.");
+    const macCandidate = manifest.version.match(/(?:^|[._+-])mac(\d+)(?:$|[._+-])/iu);
+    if (macCandidate) {
+      assert(bundleVersion.endsWith(`.${Number.parseInt(macCandidate[1], 10)}`),
+        "Installed macOS bundle build does not identify its mac candidate.");
+    }
+    installerChecks.push({
+      id: "macos-beta-identity",
+      status: "pass",
+      detail: `${manifest.version} (${bundleVersion}) ${manifest.commit}`,
+    });
   }
 
   const installedSymlinks = auditPortableSymlinkTree(installedRoot, {
@@ -154,6 +200,7 @@ try {
     artifact: path.basename(artifact),
     checks: [
       ...nativeQualification.checks,
+      ...installerChecks,
       ...guiQualification.checks,
       ...lifecycleQualification.checks,
       {
