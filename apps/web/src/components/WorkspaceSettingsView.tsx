@@ -39,6 +39,7 @@ import {
   type WebPushState,
 } from "../pushNotifications";
 import { queryKeys } from "../queryKeys";
+import { recheckProvider } from "../providerAuthRefresh";
 import {
   OperatorProfileEditor,
   useOperatorProfileForm,
@@ -520,16 +521,24 @@ function ProviderSettingsSection({
   updatePending,
   validationProjectId,
   modelCatalogLoading,
+  recheckEngineId,
+  recheckPendingEngineId,
+  recheckError,
   onPreferences,
   onToggleEngine,
+  onRecheckEngine,
 }: {
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   updatePending: boolean;
   validationProjectId?: string;
   modelCatalogLoading: boolean;
+  recheckEngineId?: string;
+  recheckPendingEngineId?: string;
+  recheckError?: string;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
   onToggleEngine(engineId: string, enabled: boolean): void;
+  onRecheckEngine(engineId: string): void;
 }): JSX.Element {
   const usageProviders = engines.filter(engine =>
     engine.authenticated && Boolean(engine.providerUsageCommand)
@@ -690,9 +699,31 @@ function ProviderSettingsSection({
                 />
               </>
             ) : null}
-            {!engineIsAvailable(engine) ? (
-              <Alert severity="warning" sx={{ mt: 2 }}>
-                This provider needs attention before it can start new work.
+            {engine.enabled !== false && !engineIsAvailable(engine) ? (
+              <Alert
+                severity="warning"
+                sx={{ mt: 2 }}
+                action={
+                  <Button
+                    color="inherit"
+                    size="small"
+                    disabled={recheckPendingEngineId === engine.id}
+                    onClick={() => onRecheckEngine(engine.id)}
+                  >
+                    {recheckPendingEngineId === engine.id
+                      ? "Checking…"
+                      : "Recheck sign-in"}
+                  </Button>
+                }
+              >
+                {engine.authenticated
+                  ? "Provider access needs attention before it can start new work."
+                  : "Sign in on this host, then return to Ponderosa. Sign-in will be checked automatically."}
+              </Alert>
+            ) : null}
+            {recheckError && recheckEngineId === engine.id ? (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                {recheckError}
               </Alert>
             ) : null}
           </Paper>
@@ -776,6 +807,9 @@ export function WorkspaceSettingsView({
         ),
       );
     },
+  });
+  const recheckEngine = useMutation({
+    mutationFn: (engineId: string) => recheckProvider(queryClient, engineId),
   });
   const saveAgentDefaults = useMutation({
     mutationFn: (patch: {
@@ -863,10 +897,22 @@ export function WorkspaceSettingsView({
             updatePending={updateEngine.isPending}
             validationProjectId={validationProject?.id}
             modelCatalogLoading={modelCatalogQuery.isLoading}
+            recheckEngineId={recheckEngine.variables}
+            recheckPendingEngineId={
+              recheckEngine.isPending ? recheckEngine.variables : undefined
+            }
+            recheckError={
+              recheckEngine.isError
+                ? recheckEngine.error instanceof Error
+                  ? recheckEngine.error.message
+                  : "Provider sign-in could not be checked."
+                : undefined
+            }
             onPreferences={onPreferences}
             onToggleEngine={(engineId, enabled) =>
               updateEngine.mutate({ engineId, enabled })
             }
+            onRecheckEngine={engineId => recheckEngine.mutate(engineId)}
           />
         ) : null}
         {section === "activity" ? (

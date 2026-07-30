@@ -25,17 +25,21 @@ export class EngineAuthStatusCache {
     if (current?.value && current.expiresAt > now) return Promise.resolve(current.value);
     if (current?.pending) return current.pending;
 
+    const entry: CachedStatus = { expiresAt: now };
     const pending = load().then(
       (value) => {
-        this.entries.set(id, { value, expiresAt: this.now() + this.ttlMs });
+        if (this.entries.get(id) === entry) {
+          this.entries.set(id, { value, expiresAt: this.now() + this.ttlMs });
+        }
         return value;
       },
       (error) => {
-        this.entries.delete(id);
+        if (this.entries.get(id) === entry) this.entries.delete(id);
         throw error;
       },
     );
-    this.entries.set(id, { expiresAt: now, pending });
+    entry.pending = pending;
+    this.entries.set(id, entry);
     return pending;
   }
 
