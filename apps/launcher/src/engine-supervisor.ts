@@ -3,6 +3,7 @@ import {
   openSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -65,6 +66,15 @@ function acquireSupervisorLease(pathname: string): (() => void) | undefined {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const current = readReceipt(pathname);
       if (current && processAlive(current.pid)) return undefined;
+      try {
+        // Do not unlink another launcher between its exclusive create and
+        // receipt write. A genuinely stale or corrupt receipt is recoverable.
+        if (!current && Date.now() - statSync(pathname).mtimeMs < 5_000) {
+          return undefined;
+        }
+      } catch {
+        // A concurrent release is handled by the retry.
+      }
       rmSync(pathname, { force: true });
     }
   }
