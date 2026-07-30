@@ -17,7 +17,7 @@ import {
   auditPortableSymlinkTree,
   copyPortableTree,
 } from "./qualification/symlink-portability.mjs";
-import { macosInfoPlist } from "./macos-bundle-metadata.mjs";
+import { macosInfoPlist } from "./qualification/macos-bundle-metadata.mjs";
 import { macosLauncherEntry } from "./qualification/macos-gui-entry.mjs";
 
 function option(name, fallback) {

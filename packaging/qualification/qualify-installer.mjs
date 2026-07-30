@@ -16,6 +16,7 @@ import {
   auditPortableSymlinkTree,
   copyPortableTree,
 } from "./symlink-portability.mjs";
+import { assertMacosBundleIdentity } from "./macos-bundle-metadata.mjs";
 
 function option(name, fallback) {
   const inline = process.argv.find((argument) => argument.startsWith(`--${name}=`));
@@ -135,26 +136,17 @@ try {
       "plutil",
       ["-extract", key, "raw", "-o", "-", infoPlist],
     );
-    const bundleVersion = plistValue("CFBundleVersion");
-    const exactVersion = plistValue("PonderosaBuildVersion");
-    const exactCommit = plistValue("PonderosaBuildCommit");
-    const infoString = plistValue("CFBundleGetInfoString");
-    assert(exactVersion === manifest.version,
-      "Installed macOS application does not expose its exact beta version.");
-    assert(exactCommit === manifest.commit,
-      "Installed macOS application does not expose its exact build commit.");
-    assert(infoString.includes(manifest.version) &&
-      infoString.includes(manifest.commit.slice(0, 8)),
-      "Installed macOS application info string does not identify its beta candidate.");
-    const macCandidate = manifest.version.match(/(?:^|[._+-])mac(\d+)(?:$|[._+-])/iu);
-    if (macCandidate) {
-      assert(bundleVersion.endsWith(`.${Number.parseInt(macCandidate[1], 10)}`),
-        "Installed macOS bundle build does not identify its mac candidate.");
-    }
+    const identity = assertMacosBundleIdentity(manifest, {
+      bundleVersion: plistValue("CFBundleVersion"),
+      shortVersion: plistValue("CFBundleShortVersionString"),
+      exactVersion: plistValue("PonderosaBuildVersion"),
+      exactCommit: plistValue("PonderosaBuildCommit"),
+      infoString: plistValue("CFBundleGetInfoString"),
+    });
     installerChecks.push({
       id: "macos-beta-identity",
       status: "pass",
-      detail: `${manifest.version} (${bundleVersion}) ${manifest.commit}`,
+      detail: `${identity.exactVersion} (${identity.bundleVersion}) ${identity.exactCommit}`,
     });
   }
 
